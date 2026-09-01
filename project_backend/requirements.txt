@@ -1,0 +1,13 @@
+﻿fastapi==0.110.0
+uvicorn==0.28.0
+pydantic==2.6.4
+opencv-python-headless==4.9.0.80
+pillow
+numpy
+pymupdf
+psycopg2-binary>=2.9.9
+pythainlp
+beautifulsoup4
+lxml
+python-multipart
+requests

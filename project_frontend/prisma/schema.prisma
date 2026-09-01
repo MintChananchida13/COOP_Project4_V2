@@ -1,0 +1,301 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  role         String   @default("USER")
+  createdAt    DateTime @default(now())
+}
+
+model Template {
+  id                       String   @id @default(uuid())
+  name                     String
+  documentType             String?  @map("document_type")
+  category                 String?
+  status                   String   @default("draft")
+  version                  Int      @default(1)
+  pageCount                Int      @default(1) @map("page_count")
+  similarityThreshold      Float    @default(0.75) @map("similarity_threshold")
+  finalConfidenceThreshold Float    @default(0.8) @map("final_confidence_threshold")
+  createdBy                String?  @map("created_by")
+  approvedBy               String?  @map("approved_by")
+  rejectionReason          String?  @map("rejection_reason")
+  createdAt                DateTime @default(now()) @map("created_at")
+  updatedAt                DateTime @updatedAt @map("updated_at")
+
+  pages             TemplatePage[]
+  fields            TemplateField[]
+  ignoreRegions     IgnoreRegion[]
+  embeddingJobs     EmbeddingJob[]
+  convertedRequests TemplateRequest[] @relation("ConvertedTemplate")
+  detectedDocuments Document[]        @relation("DetectedTemplate")
+  detectedPages     DocumentPage[]    @relation("DetectedPageTemplate")
+  candidateLogs     DetectionLog[]    @relation("CandidateTemplate")
+
+  @@map("templates")
+}
+
+model EmbeddingJob {
+  id           String   @id @default(uuid())
+  templateId   String   @map("template_id")
+  status       String   @default("queued")
+  requestedAt  DateTime @default(now()) @map("requested_at")
+  startedAt    DateTime? @map("started_at")
+  completedAt  DateTime? @map("completed_at")
+  errorMessage String?  @map("error_message")
+  vectorId     String?  @map("vector_id")
+  metadataJson String?  @map("metadata_json")
+
+  template Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([templateId, requestedAt])
+  @@map("embedding_jobs")
+}
+
+model TemplatePage {
+  id                       String   @id @default(uuid())
+  templateId               String   @map("template_id")
+  pageNumber               Int      @map("page_number")
+  pageName                 String?  @map("page_name")
+  sampleImageUrl           String?  @map("sample_image_url")
+  normalizedImageUrl       String?  @map("normalized_image_url")
+  layoutSignatureJson      String?  @map("layout_signature_json")
+  similarityThreshold      Float?   @map("similarity_threshold")
+  finalConfidenceThreshold Float?   @map("final_confidence_threshold")
+  createdAt                DateTime @default(now()) @map("created_at")
+  updatedAt                DateTime @updatedAt @map("updated_at")
+
+  template      Template       @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  fields        TemplateField[]
+  ignoreRegions IgnoreRegion[]
+  detectedPages DocumentPage[] @relation("DetectedTemplatePage")
+  candidateLogs DetectionLog[] @relation("CandidateTemplatePage")
+
+  @@unique([templateId, pageNumber])
+  @@map("template_pages")
+}
+
+model TemplateField {
+  id                      String   @id @default(uuid())
+  templateId              String   @map("template_id")
+  templatePageId          String   @map("template_page_id")
+  pageNumber              Int      @map("page_number")
+  fieldName               String   @map("field_name")
+  displayLabel            String   @map("display_label")
+  roiXRatio               Float    @map("roi_x_ratio")
+  roiYRatio               Float    @map("roi_y_ratio")
+  roiWidthRatio           Float    @map("roi_width_ratio")
+  roiHeightRatio          Float    @map("roi_height_ratio")
+  dataType                String?  @map("data_type")
+  userSelectable          Boolean  @default(true) @map("user_selectable")
+  defaultSelected         Boolean  @default(false) @map("default_selected")
+  useForVerification      Boolean  @default(false) @map("use_for_verification")
+  expectedText            String?  @map("expected_text")
+  matchType               String?  @map("match_type")
+  requiredForVerification Boolean  @default(false) @map("required_for_verification")
+  extractionMethod        String   @default("fixed_roi") @map("extraction_method")
+  anchorText              String?  @map("anchor_text")
+  regexPattern            String?  @map("regex_pattern")
+  roiPadding              Float?   @map("roi_padding")
+  verificationWeight      Float?   @default(1.0) @map("verification_weight")
+  imageCategory           String?  @map("image_category")
+  sortOrder               Int      @default(0) @map("sort_order")
+  createdAt               DateTime @default(now()) @map("created_at")
+  updatedAt               DateTime @updatedAt @map("updated_at")
+
+  template          Template           @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  templatePage      TemplatePage       @relation(fields: [templatePageId], references: [id], onDelete: Cascade)
+  extractionResults ExtractionResult[]
+
+  @@index([templatePageId, pageNumber])
+  @@map("template_fields")
+}
+
+model ImageVerificationCategory {
+  value               String   @id
+  label               String
+  prompt              String
+  matchThreshold      Float    @default(0.70) @map("match_threshold")
+  marginThreshold     Float    @default(0.05) @map("margin_threshold")
+  evidenceTemperature Float    @default(1.0) @map("evidence_temperature")
+  enabled             Boolean  @default(true)
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  @@map("image_verification_categories")
+}
+
+model IgnoreRegion {
+  id             String   @id @default(uuid())
+  templateId     String   @map("template_id")
+  templatePageId String   @map("template_page_id")
+  pageNumber     Int      @map("page_number")
+  fieldName      String   @map("field_name")
+  roiXRatio      Float    @map("roi_x_ratio")
+  roiYRatio      Float    @map("roi_y_ratio")
+  roiWidthRatio  Float    @map("roi_width_ratio")
+  roiHeightRatio Float    @map("roi_height_ratio")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  template     Template     @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  templatePage TemplatePage @relation(fields: [templatePageId], references: [id], onDelete: Cascade)
+
+  @@index([templatePageId, pageNumber])
+  @@map("ignore_regions")
+}
+
+model TemplateRequest {
+  id                  String   @id @default(uuid())
+  requestedBy         String?  @map("requested_by")
+  requestTitle        String   @map("request_title")
+  documentType        String?  @map("document_type")
+  sampleFileUrl       String?  @map("sample_file_url")
+  requestMode         String   @default("image_only") @map("request_mode")
+  status              String   @default("draft")
+  userNote            String?  @map("user_note")
+  adminNote           String?  @map("admin_note")
+  convertedTemplateId String?  @map("converted_template_id")
+  pageCount           Int      @default(1) @map("page_count")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  convertedTemplate Template?             @relation("ConvertedTemplate", fields: [convertedTemplateId], references: [id], onDelete: SetNull)
+  pages             TemplateRequestPage[]
+  requestedFields   RequestedField[]
+
+  @@map("template_requests")
+}
+
+model TemplateRequestPage {
+  id                String   @id @default(uuid())
+  templateRequestId String   @map("template_request_id")
+  pageNumber        Int      @map("page_number")
+  sampleImageUrl    String?  @map("sample_image_url")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  templateRequest TemplateRequest @relation(fields: [templateRequestId], references: [id], onDelete: Cascade)
+  requestedFields RequestedField[]
+
+  @@unique([templateRequestId, pageNumber])
+  @@map("template_request_pages")
+}
+
+model RequestedField {
+  id                    String   @id @default(uuid())
+  templateRequestId     String   @map("template_request_id")
+  templateRequestPageId String   @map("template_request_page_id")
+  pageNumber            Int      @map("page_number")
+  fieldName             String   @map("field_name")
+  displayLabel          String   @map("display_label")
+  roiXRatio             Float    @map("roi_x_ratio")
+  roiYRatio             Float    @map("roi_y_ratio")
+  roiWidthRatio         Float    @map("roi_width_ratio")
+  roiHeightRatio        Float    @map("roi_height_ratio")
+  dataType              String?  @map("data_type")
+  extractionMethod      String   @default("ocr_text") @map("extraction_method")
+  userNote              String?  @map("user_note")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  templateRequest     TemplateRequest     @relation(fields: [templateRequestId], references: [id], onDelete: Cascade)
+  templateRequestPage TemplateRequestPage @relation(fields: [templateRequestPageId], references: [id], onDelete: Cascade)
+
+  @@index([templateRequestPageId, pageNumber])
+  @@map("requested_fields")
+}
+
+model Document {
+  id                 String   @id @default(uuid())
+  uploadedBy         String?  @map("uploaded_by")
+  originalFileUrl    String   @map("original_file_url")
+  status             String   @default("uploaded")
+  pageCount          Int      @default(1) @map("page_count")
+  detectedTemplateId String?  @map("detected_template_id")
+  confidenceScore    Float?   @map("confidence_score")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  detectedTemplate  Template?          @relation("DetectedTemplate", fields: [detectedTemplateId], references: [id], onDelete: SetNull)
+  pages             DocumentPage[]
+  extractionResults ExtractionResult[]
+  detectionLogs     DetectionLog[]
+
+  @@map("documents")
+}
+
+model DocumentPage {
+  id                     String   @id @default(uuid())
+  documentId             String   @map("document_id")
+  pageNumber             Int      @map("page_number")
+  originalImageUrl       String?  @map("original_image_url")
+  normalizedImageUrl     String?  @map("normalized_image_url")
+  status                 String   @default("uploaded")
+  detectedTemplateId     String?  @map("detected_template_id")
+  detectedTemplatePageId String?  @map("detected_template_page_id")
+  confidenceScore        Float?   @map("confidence_score")
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  document             Document           @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  detectedTemplate     Template?          @relation("DetectedPageTemplate", fields: [detectedTemplateId], references: [id], onDelete: SetNull)
+  detectedTemplatePage TemplatePage?      @relation("DetectedTemplatePage", fields: [detectedTemplatePageId], references: [id], onDelete: SetNull)
+  extractionResults    ExtractionResult[]
+  detectionLogs        DetectionLog[]
+
+  @@unique([documentId, pageNumber])
+  @@map("document_pages")
+}
+
+model ExtractionResult {
+  id              String   @id @default(uuid())
+  documentId      String   @map("document_id")
+  documentPageId  String   @map("document_page_id")
+  pageNumber      Int      @map("page_number")
+  templateFieldId String?  @map("template_field_id")
+  fieldName       String   @map("field_name")
+  displayLabel    String   @map("display_label")
+  ocrText         String?  @map("ocr_text")
+  ocrConfidence   Float?   @map("ocr_confidence")
+  roiPreviewUrl   String?  @map("roi_preview_url")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  document      Document       @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  documentPage  DocumentPage   @relation(fields: [documentPageId], references: [id], onDelete: Cascade)
+  templateField TemplateField? @relation(fields: [templateFieldId], references: [id], onDelete: SetNull)
+
+  @@index([documentPageId, pageNumber])
+  @@map("extraction_results")
+}
+
+model DetectionLog {
+  id                      String   @id @default(uuid())
+  documentId              String   @map("document_id")
+  documentPageId          String   @map("document_page_id")
+  pageNumber              Int      @map("page_number")
+  candidateTemplateId     String?  @map("candidate_template_id")
+  candidateTemplatePageId String?  @map("candidate_template_page_id")
+  layoutScore             Float?   @map("layout_score")
+  verificationScore       Float?   @map("verification_score")
+  finalScore              Float?   @map("final_score")
+  decision                String
+  failReason              String?  @map("fail_reason")
+  createdAt               DateTime @default(now()) @map("created_at")
+
+  document              Document      @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  documentPage          DocumentPage  @relation(fields: [documentPageId], references: [id], onDelete: Cascade)
+  candidateTemplate     Template?     @relation("CandidateTemplate", fields: [candidateTemplateId], references: [id], onDelete: SetNull)
+  candidateTemplatePage TemplatePage? @relation("CandidateTemplatePage", fields: [candidateTemplatePageId], references: [id], onDelete: SetNull)
+
+  @@index([documentPageId, pageNumber])
+  @@map("detection_logs")
+}

@@ -1,0 +1,177 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --surface: #ffffff;
+  --surface-muted: #f1f5f9;
+  --border: #e2e8f0;
+  --primary: #2563eb;
+  --primary-strong: #1d4ed8;
+  --success: #059669;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --radius-card: 16px;
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.06), 0 12px 24px rgba(15, 23, 42, 0.04);
+  --type-page-title-size: 1.5rem;
+  --type-section-title-size: 1.125rem;
+  --type-card-title-size: 0.9375rem;
+  --type-body-size: 0.875rem;
+  --type-label-size: 0.8125rem;
+  --type-caption-size: 0.75rem;
+  --type-button-size: 0.8125rem;
+  --type-table-size: 0.8125rem;
+  --type-metric-size: 1.75rem;
+  --type-leading-thai: 1.75;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-noto-thai), ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--type-body-size);
+  line-height: var(--type-leading-thai);
+  font-weight: 400;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+.ui-page-title {
+  font-size: var(--type-page-title-size);
+  line-height: 1.45;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.ui-section-title {
+  font-size: var(--type-section-title-size);
+  line-height: 1.5;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.ui-card-title {
+  font-size: var(--type-card-title-size);
+  line-height: 1.6;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.ui-body {
+  font-size: var(--type-body-size);
+  line-height: var(--type-leading-thai);
+  font-weight: 400;
+}
+
+.ui-label {
+  font-size: var(--type-label-size);
+  line-height: 1.6;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.ui-caption {
+  font-size: var(--type-caption-size);
+  line-height: 1.6;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.ui-button-text {
+  font-size: var(--type-button-size);
+  line-height: 1.5;
+  font-weight: 700;
+  letter-spacing: 0;
+  min-height: 2.5rem;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.ui-table-text {
+  font-size: var(--type-table-size);
+  line-height: 1.65;
+  font-weight: 500;
+}
+
+.ui-metric {
+  font-size: var(--type-metric-size);
+  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.ui-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  outline-color: var(--primary);
+}
+
+button,
+a {
+  font-variant-numeric: tabular-nums;
+}
+
+button svg,
+a svg {
+  flex-shrink: 0;
+}
+
+button[class*="px-"],
+a[class*="px-"] {
+  align-items: center;
+  justify-content: center;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.ui-stable-action {
+  min-inline-size: 8.5rem;
+}
+
+.ui-stable-action-sm {
+  min-inline-size: 6.5rem;
+}
+
+.ui-stable-action-lg {
+  min-inline-size: 13rem;
+}
+
+.ui-no-shift {
+  contain: layout;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+::selection {
+  background: #bfdbfe;
+  color: #172554;
+}
