@@ -17,6 +17,10 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
 
+from app.local_env import load_local_env
+
+load_local_env()
+
 from app.routes import router as blueprint_router
 from app.layout_analysis_service import (
     AUTO_ROI_EXPAND_BOTTOM_PX,

@@ -3,7 +3,7 @@ uvicorn==0.28.0
 pydantic==2.6.4
 opencv-python-headless==4.9.0.80
 pillow
-numpy
+numpy<2
 pymupdf
 psycopg2-binary>=2.9.9
 pythainlp

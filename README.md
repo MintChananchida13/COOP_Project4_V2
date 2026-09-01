@@ -497,6 +497,8 @@ http://localhost:3000
 
 ## Validation Commands
 
+For local frontend/backend testing with Kaggle model runtimes, see `LOCAL_DEVELOPMENT.md`.
+
 Frontend:
 
 ```powershell

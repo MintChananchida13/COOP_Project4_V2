@@ -33,6 +33,7 @@ from .schemas import (
     TemplateVersionFromRequestCreate,
 )
 from .detection_service import detect_template_dev
+from .model_runtime_client import configured_runtimes
 from .services import (
     AdminTemplateService,
     EmbeddingService,
@@ -74,6 +75,23 @@ def me() -> ApiResponse:
 @router.get("/health", response_model=ApiResponse)
 def health() -> ApiResponse:
     return ok({"status": "ok"})
+
+
+@router.get("/health/models", response_model=ApiResponse)
+def model_runtime_health() -> ApiResponse:
+    runtimes = configured_runtimes()
+    return ok(
+        {
+            "status": "ok" if all(runtimes.values()) else "missing_config",
+            "runtimes": {
+                key: {
+                    "configured": bool(value),
+                    "url": value,
+                }
+                for key, value in runtimes.items()
+            },
+        }
+    )
 
 
 @router.get("/health/db", response_model=ApiResponse)
