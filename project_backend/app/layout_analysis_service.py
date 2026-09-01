@@ -182,6 +182,57 @@ def _walk_layout_items(value: Any) -> List[Dict[str, Any]]:
     return found
 
 
+def _collect_dict_values(value: Any) -> List[Dict[str, Any]]:
+    found: List[Dict[str, Any]] = []
+    item_dict = _as_dict(value)
+    if item_dict is not None:
+        found.append(item_dict)
+        for child in item_dict.values():
+            found.extend(_collect_dict_values(child))
+        return found
+    if isinstance(value, (list, tuple)):
+        for child in value:
+            found.extend(_collect_dict_values(child))
+    return found
+
+
+def _text_detection_items_from_response(value: Any) -> List[Dict[str, Any]]:
+    items = _walk_layout_items(value)
+    expanded_items: List[Dict[str, Any]] = []
+
+    for value_dict in _collect_dict_values(value):
+        data = value_dict.get("res") if isinstance(value_dict.get("res"), dict) else value_dict
+        polygons = data.get("dt_polys") if isinstance(data, dict) else None
+        scores = data.get("dt_scores") if isinstance(data, dict) else None
+        if isinstance(polygons, np.ndarray):
+            polygons = polygons.tolist()
+        if isinstance(scores, np.ndarray):
+            scores = scores.tolist()
+        if not isinstance(polygons, (list, tuple)):
+            continue
+        for index, polygon in enumerate(polygons):
+            if _box_from_points(polygon) is None:
+                continue
+            score = 0.0
+            if isinstance(scores, (list, tuple)) and index < len(scores):
+                try:
+                    score = float(scores[index])
+                except (TypeError, ValueError):
+                    score = 0.0
+            expanded_items.append(
+                {
+                    "label": "text",
+                    "dt_polys": polygon,
+                    "score": score,
+                    "source": "text_detection",
+                }
+            )
+
+    if expanded_items:
+        return expanded_items
+    return items
+
+
 def _run_layout_detection(image_path: str) -> List[Dict[str, Any]]:
     pipeline = _load_layout_model()
     predict = getattr(pipeline, "predict", None)
@@ -559,7 +610,7 @@ def analyze_layout(image: np.ndarray, expand_text_rois: bool = False, auto_roi_m
         if not isinstance(text_result, dict):
             raise LayoutAnalysisUnavailableError("TextDetection runtime returned an invalid response.")
         raw_items = [
-            *_walk_layout_items(text_result.get("result", text_result)),
+            *_text_detection_items_from_response(text_result.get("result", text_result)),
             *_walk_layout_items(layout_result.get("result", layout_result)),
         ]
     finally:
@@ -678,7 +729,7 @@ def detect_text_boxes(image_path: str) -> Dict[str, Any]:
         raise LayoutAnalysisUnavailableError(str(error)) from error
     if not isinstance(remote_result, dict):
         raise LayoutAnalysisUnavailableError("TextDetection runtime returned an invalid response.")
-    raw_items = _walk_layout_items(remote_result.get("result", remote_result))
+    raw_items = _text_detection_items_from_response(remote_result.get("result", remote_result))
     parsed_items: List[Dict[str, Any]] = []
     for item in raw_items:
         box = _extract_box(item)

@@ -63,6 +63,51 @@ class LayoutAnalysisRemoteRoutingTest(unittest.TestCase):
         load_text.assert_not_called()
         run_text.assert_not_called()
 
+    def test_detect_text_boxes_expands_raw_paddle_dt_polys_response(self) -> None:
+        image = np.zeros((120, 240, 3), dtype=np.uint8)
+        raw_payload = {
+            "dt_polys": [
+                [[10, 10], [80, 10], [80, 24], [10, 24]],
+                [[12, 40], [120, 40], [120, 58], [12, 58]],
+            ],
+            "dt_scores": [0.91, 0.87],
+        }
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
+            image_path = temp_file.name
+        try:
+            cv2.imwrite(image_path, image)
+            result = self._detect_from_remote_raw(image_path, raw_payload)
+        finally:
+            Path(image_path).unlink(missing_ok=True)
+
+        self.assertEqual(len(result["regions"]), 2)
+        self.assertEqual(result["regions"][0]["bbox"], {"x": 10.0, "y": 10.0, "width": 70.0, "height": 14.0})
+        self.assertEqual(result["regions"][0]["confidence"], 0.91)
+
+    def test_analyze_layout_uses_text_detection_dt_polys_for_auto_roi_text(self) -> None:
+        image = np.zeros((120, 240, 3), dtype=np.uint8)
+        text_payload = {
+            "dt_polys": [
+                [[10, 10], [80, 10], [80, 24], [10, 24]],
+                [[12, 40], [120, 40], [120, 58], [12, 58]],
+            ],
+            "dt_scores": [0.91, 0.87],
+        }
+
+        with patch.dict(
+            "os.environ",
+            {"LAYOUT_MODEL_URL": "https://layout.example", "TEXT_DETECTION_MODEL_URL": "https://text.example"},
+            clear=False,
+        ), patch("app.layout_analysis_service.remote_analyze_layout", return_value={"items": []}), patch(
+            "app.layout_analysis_service.remote_detect_text_boxes",
+            return_value=text_payload,
+        ):
+            result = analyze_layout(image, expand_text_rois=True, auto_roi_mode="text_line")
+
+        self.assertEqual(len(result["regions"]), 2)
+        self.assertTrue(all(region["type"] == "text" for region in result["regions"]))
+
     def test_remote_text_detection_error_is_raised_without_local_fallback(self) -> None:
         image = np.zeros((20, 20, 3), dtype=np.uint8)
 
@@ -102,7 +147,7 @@ class LayoutAnalysisRemoteRoutingTest(unittest.TestCase):
         ):
             return analyze_layout(image, expand_text_rois=expand, auto_roi_mode="text_line")
 
-    def _detect_from_remote_raw(self, image_path: str, raw_items: list[dict]) -> dict:
+    def _detect_from_remote_raw(self, image_path: str, raw_items) -> dict:
         with patch.dict("os.environ", {"TEXT_DETECTION_MODEL_URL": "https://text.example"}, clear=False), patch(
             "app.layout_analysis_service.remote_detect_text_boxes",
             return_value={"items": raw_items},

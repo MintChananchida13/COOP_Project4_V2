@@ -55,6 +55,27 @@ def ok(data: dict) -> ApiResponse:
     return ApiResponse(data=data)
 
 
+def _is_database_connection_error(error: Exception) -> bool:
+    error_type = type(error)
+    module = getattr(error_type, "__module__", "")
+    name = getattr(error_type, "__name__", "")
+    return (
+        "psycopg2" in module
+        and name in {"OperationalError", "InterfaceError"}
+    )
+
+
+def _database_unavailable_error(error: Exception) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail={
+            "status": "database_unavailable",
+            "message": "PostgreSQL connection is unavailable. Check DATABASE_URL and restart the database/session.",
+            "error": str(error),
+        },
+    )
+
+
 @router.post("/auth/register", response_model=ApiResponse)
 def register(payload: AuthRegisterRequest) -> ApiResponse:
     user = create_user(payload.email, payload.password, payload.role)
@@ -198,6 +219,10 @@ async def detect_template_dev_route(request: Request) -> dict:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
+    except Exception as error:
+        if _is_database_connection_error(error):
+            raise _database_unavailable_error(error) from error
+        raise
 
 
 @router.post("/template-requests", response_model=ApiResponse)
