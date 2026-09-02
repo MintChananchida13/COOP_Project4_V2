@@ -1196,7 +1196,7 @@ export default function WorkspaceTemplateEditorV2({
                 {item.roiMode !== "flexible" && renderRoiCropPreview(item)}
                 <div className="min-w-0">
                   {isImageTestItem(item) && renderImageFieldPreview(item)}
-                  {isTableTestItem(item) && renderTablePreview(item)}
+                  {item.roiMode !== "flexible" && isTableTestItem(item) && renderTablePreview(item)}
                   {renderFlexibleTextPreview(item)}
                   {item.anchorType === "text" && renderTextVerificationPreview(item)}
                   {item.roiMode !== "flexible" && !isTableTestItem(item) && !isImageTestItem(item) && item.anchorType !== "text" && (item.ocrText || item.actualText || item.expectedText) && (

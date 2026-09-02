@@ -108,6 +108,36 @@ class LayoutAnalysisRemoteRoutingTest(unittest.TestCase):
         self.assertEqual(len(result["regions"]), 2)
         self.assertTrue(all(region["type"] == "text" for region in result["regions"]))
 
+    def test_analyze_layout_ignores_layout_text_blocks_to_avoid_text_line_overlap(self) -> None:
+        image = np.zeros((120, 240, 3), dtype=np.uint8)
+        text_payload = {
+            "dt_polys": [
+                [[10, 10], [80, 10], [80, 24], [10, 24]],
+                [[12, 40], [120, 40], [120, 58], [12, 58]],
+            ],
+            "dt_scores": [0.91, 0.87],
+        }
+        layout_payload = {
+            "items": [
+                {"bbox": [8, 8, 130, 62], "label": "text", "score": 0.95},
+                {"bbox": [150, 10, 220, 80], "label": "image", "score": 0.8},
+            ]
+        }
+
+        with patch.dict(
+            "os.environ",
+            {"LAYOUT_MODEL_URL": "https://layout.example", "TEXT_DETECTION_MODEL_URL": "https://text.example"},
+            clear=False,
+        ), patch("app.layout_analysis_service.remote_analyze_layout", return_value=layout_payload), patch(
+            "app.layout_analysis_service.remote_detect_text_boxes",
+            return_value=text_payload,
+        ):
+            result = analyze_layout(image, expand_text_rois=False, auto_roi_mode="text_line")
+
+        region_types = [region["type"] for region in result["regions"]]
+        self.assertEqual(region_types.count("text"), 2)
+        self.assertEqual(region_types.count("image"), 1)
+
     def test_remote_text_detection_error_is_raised_without_local_fallback(self) -> None:
         image = np.zeros((20, 20, 3), dtype=np.uint8)
 
@@ -137,13 +167,15 @@ class LayoutAnalysisRemoteRoutingTest(unittest.TestCase):
         load_text.assert_not_called()
 
     def _analyze_from_remote_raw(self, image: np.ndarray, raw_items: list[dict], expand: bool = True) -> dict:
+        text_items = [item for item in raw_items if str(item.get("label") or item.get("type") or "").lower() == "text"]
+        layout_items = [item for item in raw_items if item not in text_items]
         with patch.dict(
             "os.environ",
             {"LAYOUT_MODEL_URL": "https://layout.example", "TEXT_DETECTION_MODEL_URL": "https://text.example"},
             clear=False,
-        ), patch("app.layout_analysis_service.remote_analyze_layout", return_value={"items": raw_items}), patch(
+        ), patch("app.layout_analysis_service.remote_analyze_layout", return_value={"items": layout_items}), patch(
             "app.layout_analysis_service.remote_detect_text_boxes",
-            return_value={"items": []},
+            return_value={"items": text_items},
         ):
             return analyze_layout(image, expand_text_rois=expand, auto_roi_mode="text_line")
 

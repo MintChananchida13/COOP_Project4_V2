@@ -1,6 +1,4 @@
 import os
-import sys
-import types
 import unittest
 import importlib.util
 from unittest.mock import patch
@@ -34,26 +32,6 @@ from app.table_grid_analyzer import analyze_table_regions
 from app.ocr_postprocess import normalize_ocr_text, normalize_table_rows, parse_table_html_with_bs4
 
 
-class FakeTableRecognitionPipelineV2:
-    init_kwargs = None
-
-    def __init__(self, **kwargs):
-        FakeTableRecognitionPipelineV2.init_kwargs = kwargs
-
-    def predict(self, **kwargs):
-        return [{"html": "<table><tr><td>A</td><td>B</td></tr></table>"}]
-
-
-class EmptyTableRecognitionPipelineV2:
-    init_kwargs = None
-
-    def __init__(self, **kwargs):
-        EmptyTableRecognitionPipelineV2.init_kwargs = kwargs
-
-    def predict(self, **kwargs):
-        return [{}]
-
-
 class TableRecognitionV2AdapterRuntimeRoutingTest(unittest.TestCase):
     def setUp(self) -> None:
         patcher = patch.multiple(
@@ -68,7 +46,6 @@ class TableRecognitionV2AdapterRuntimeRoutingTest(unittest.TestCase):
         )
         patcher.start()
         self.addCleanup(patcher.stop)
-        FakeTableRecognitionPipelineV2.init_kwargs = None
 
     def test_remote_runtime_is_used_without_loading_local_pipeline(self) -> None:
         image = np.zeros((10, 10, 3), dtype=np.uint8)
@@ -107,27 +84,17 @@ class TableRecognitionV2AdapterRuntimeRoutingTest(unittest.TestCase):
 
         load_local.assert_not_called()
 
-    def test_empty_model_service_url_uses_local_pipeline(self) -> None:
+    def test_missing_table_model_url_does_not_fall_back_to_local_pipeline(self) -> None:
         image = np.zeros((10, 10, 3), dtype=np.uint8)
-        fake_paddleocr = types.SimpleNamespace(TableRecognitionPipelineV2=FakeTableRecognitionPipelineV2)
 
-        with patch.dict("os.environ", {"TABLE_MODEL_URL": ""}, clear=False), patch.dict(sys.modules, {"paddleocr": fake_paddleocr}), patch(
-            "app.table_recognition_v2_adapter.cv2.imwrite",
-            return_value=True,
-        ), patch("app.table_recognition_v2_adapter.Path.unlink"):
-            result = recognize_table_v2(image)
+        with patch.dict("os.environ", {"TABLE_MODEL_URL": ""}, clear=False), patch("app.table_recognition_v2_adapter._load_table_model") as load_local:
+            with self.assertRaisesRegex(TableRecognitionV2UnavailableError, "TABLE_MODEL_URL is not configured."):
+                recognize_table_v2(image)
 
-        self.assertEqual(result["engine"], "table_recognition_v2")
-        self.assertEqual(result["model"], "SLANeXt_wired/SLANeXt_wireless")
-        self.assertEqual(FakeTableRecognitionPipelineV2.init_kwargs["wired_table_structure_recognition_model_name"], "SLANeXt_wired")
-        self.assertEqual(FakeTableRecognitionPipelineV2.init_kwargs["wireless_table_structure_recognition_model_name"], "SLANeXt_wireless")
-        self.assertEqual(FakeTableRecognitionPipelineV2.init_kwargs["text_recognition_model_name"], "th_PP-OCRv5_mobile_rec")
-        self.assertEqual(FakeTableRecognitionPipelineV2.init_kwargs["device"], "cpu")
+        load_local.assert_not_called()
 
-    def test_paddle_table_device_cpu_is_used_by_pipeline_and_summary(self) -> None:
-        fake_paddleocr = types.SimpleNamespace(TableRecognitionPipelineV2=FakeTableRecognitionPipelineV2)
-
-        with patch("app.table_recognition_v2_adapter._TABLE_DEVICE", "cpu"), patch.dict(sys.modules, {"paddleocr": fake_paddleocr}):
+    def test_table_runtime_summary_requires_remote_url_and_keeps_model_metadata(self) -> None:
+        with patch.dict("os.environ", {"TABLE_MODEL_URL": "https://model.example"}, clear=False), patch("app.table_recognition_v2_adapter._TABLE_DEVICE", "cpu"):
             summary = table_recognition_runtime_summary()
 
         self.assertEqual(
@@ -141,51 +108,35 @@ class TableRecognitionV2AdapterRuntimeRoutingTest(unittest.TestCase):
                 "device": "cpu",
             },
         )
-        self.assertIsNotNone(FakeTableRecognitionPipelineV2.init_kwargs)
-        self.assertEqual(FakeTableRecognitionPipelineV2.init_kwargs["device"], "cpu")
 
-    def test_paddle_table_device_env_gpu_is_ignored_for_cpu_only_runtime(self) -> None:
-        fake_paddleocr = types.SimpleNamespace(TableRecognitionPipelineV2=FakeTableRecognitionPipelineV2)
-
-        with patch.dict("os.environ", {"PADDLE_TABLE_DEVICE": "gpu:0"}, clear=False), patch.dict(sys.modules, {"paddleocr": fake_paddleocr}):
+    def test_table_runtime_summary_reports_backend_cpu_process_metadata(self) -> None:
+        with patch.dict("os.environ", {"TABLE_MODEL_URL": "https://model.example", "PADDLE_TABLE_DEVICE": "gpu:0"}, clear=False):
             summary = table_recognition_runtime_summary()
 
         self.assertEqual(summary["device"], "cpu")
-        self.assertIsNotNone(FakeTableRecognitionPipelineV2.init_kwargs)
-        self.assertEqual(FakeTableRecognitionPipelineV2.init_kwargs["device"], "cpu")
 
-    def test_cached_pipeline_is_reused(self) -> None:
+    def test_remote_raw_table_response_is_reused_without_local_pipeline_cache(self) -> None:
         image = np.zeros((10, 10, 3), dtype=np.uint8)
-        fake_paddleocr = types.SimpleNamespace(TableRecognitionPipelineV2=FakeTableRecognitionPipelineV2)
 
-        with patch.dict(sys.modules, {"paddleocr": fake_paddleocr}), patch(
-            "app.table_recognition_v2_adapter.cv2.imwrite",
-            return_value=True,
-        ), patch("app.table_recognition_v2_adapter.Path.unlink"):
+        with patch("app.table_recognition_v2_adapter._predict_table_model", return_value=[{"html": "<table><tr><td>A</td><td>B</td></tr></table>"}]) as predict:
             first = recognize_table_v2_local(image)
             first_model = first["model"]
-            FakeTableRecognitionPipelineV2.init_kwargs = {"sentinel": "should_not_be_reinitialized"}
             second = recognize_table_v2_local(image)
 
         self.assertEqual(first_model, "SLANeXt_wired/SLANeXt_wireless")
         self.assertEqual(second["model"], "SLANeXt_wired/SLANeXt_wireless")
-        self.assertEqual(FakeTableRecognitionPipelineV2.init_kwargs, {"sentinel": "should_not_be_reinitialized"})
+        self.assertEqual(predict.call_count, 2)
 
-    def test_runtime_endpoint_can_use_warmed_local_model_function(self) -> None:
+    def test_table_process_accepts_remote_raw_slanext_output(self) -> None:
         image = np.zeros((10, 10, 3), dtype=np.uint8)
-        fake_paddleocr = types.SimpleNamespace(TableRecognitionPipelineV2=FakeTableRecognitionPipelineV2)
 
-        with patch.dict(sys.modules, {"paddleocr": fake_paddleocr}), patch(
-            "app.table_recognition_v2_adapter.cv2.imwrite",
-            return_value=True,
-        ), patch("app.table_recognition_v2_adapter.Path.unlink"):
+        with patch("app.table_recognition_v2_adapter._predict_table_model", return_value=[{"html": "<table><tr><td>A</td><td>B</td></tr></table>"}]):
             result = recognize_table_v2_local(image)
 
         self.assertEqual(result["table_rows"], [["A", "B"]])
 
     def test_forced_semi_clusters_text_boxes_when_slanet_is_empty(self) -> None:
         image = np.zeros((120, 260, 3), dtype=np.uint8)
-        fake_paddleocr = types.SimpleNamespace(TableRecognitionPipelineV2=EmptyTableRecognitionPipelineV2)
         detected_regions = [
             {"bbox": {"x": 10, "y": 10, "width": 45, "height": 15}},
             {"bbox": {"x": 120, "y": 10, "width": 45, "height": 15}},
@@ -199,10 +150,7 @@ class TableRecognitionV2AdapterRuntimeRoutingTest(unittest.TestCase):
             {"text": "100", "confidence": 0.8},
         ]
 
-        with patch.dict(sys.modules, {"paddleocr": fake_paddleocr}), patch(
-            "app.table_recognition_v2_adapter.cv2.imwrite",
-            return_value=True,
-        ), patch("app.table_recognition_v2_adapter.Path.unlink"), patch(
+        with patch("app.table_recognition_v2_adapter._predict_table_model", return_value=[{}]), patch(
             "app.table_recognition_v2_adapter.detect_text_boxes",
             return_value={"regions": detected_regions},
         ) as detect, patch(
@@ -360,8 +308,7 @@ class TableRecognitionV2AdapterRuntimeRoutingTest(unittest.TestCase):
             "reason": "structure_collapse_not_supported",
         }
 
-        with patch("app.table_recognition_v2_adapter._load_table_model", return_value=object()), \
-            patch("app.table_recognition_v2_adapter._predict_table_model", return_value=output), \
+        with patch("app.table_recognition_v2_adapter._predict_table_model", return_value=output), \
             patch("app.table_recognition_v2_adapter._recover_slanext_structure_collapse", side_effect=lambda candidate, img: (candidate, recovery_debug)) as recover:
             result = recognize_table_v2_local(image)
 
@@ -481,12 +428,8 @@ class TableRecognitionV2AdapterRuntimeRoutingTest(unittest.TestCase):
 
     def test_borderless_error_returns_slanext_candidate(self) -> None:
         image = np.zeros((120, 260, 3), dtype=np.uint8)
-        fake_paddleocr = types.SimpleNamespace(TableRecognitionPipelineV2=FakeTableRecognitionPipelineV2)
 
-        with patch.dict(sys.modules, {"paddleocr": fake_paddleocr}), patch(
-            "app.table_recognition_v2_adapter.cv2.imwrite",
-            return_value=True,
-        ), patch("app.table_recognition_v2_adapter.Path.unlink"), patch(
+        with patch("app.table_recognition_v2_adapter._predict_table_model", return_value=[{"html": "<table><tr><td>A</td><td>B</td></tr></table>"}]), patch(
             "app.table_recognition_v2_adapter._recognize_borderless_table",
             side_effect=RuntimeError("borderless boom"),
         ):
@@ -497,13 +440,10 @@ class TableRecognitionV2AdapterRuntimeRoutingTest(unittest.TestCase):
 
     def test_table_debug_trace_captures_slanext_stages_without_changing_selection(self) -> None:
         image = np.zeros((120, 260, 3), dtype=np.uint8)
-        fake_paddleocr = types.SimpleNamespace(TableRecognitionPipelineV2=FakeTableRecognitionPipelineV2)
 
-        with patch.dict(os.environ, {"TABLE_DEBUG_TRACE": "1", "TABLE_DEBUG_TRACE_DIR": ""}, clear=False), patch.dict(
-            sys.modules,
-            {"paddleocr": fake_paddleocr},
-        ), patch("app.table_recognition_v2_adapter.cv2.imwrite", return_value=True), patch(
-            "app.table_recognition_v2_adapter.Path.unlink"
+        with patch.dict(os.environ, {"TABLE_DEBUG_TRACE": "1", "TABLE_DEBUG_TRACE_DIR": ""}, clear=False), patch(
+            "app.table_recognition_v2_adapter._predict_table_model",
+            return_value=[{"html": "<table><tr><td>A</td><td>B</td></tr></table>"}],
         ):
             result = recognize_table_v2_local(image)
 
@@ -674,28 +614,21 @@ class TableRecognitionV2AdapterRuntimeRoutingTest(unittest.TestCase):
             ],
         }
 
-        class SyntheticGridModel:
-            calls = 0
-
-            def predict(self, **kwargs):
-                SyntheticGridModel.calls += 1
-                input_path = kwargs.get("input")
-                if not isinstance(input_path, str):
-                    raise AssertionError("Synthetic grid should be passed to SLANeXt as an image path.")
-                return [{"html": "<table><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></table>"}]
-
         with patch("app.table_recognition_v2_adapter.analyze_table_regions", return_value=fake_analysis), patch(
             "app.table_recognition_v2_adapter.detect_text_boxes",
             return_value={"regions": detected_regions},
         ), patch(
             "app.table_recognition_v2_adapter.run_paddle_thai_ocr_batch",
             return_value=recognitions,
-        ), patch("app.table_recognition_v2_adapter._recognize_coordinate_based_semi_table") as coordinate:
-            result = _try_semi_structured_table(image, SyntheticGridModel(), 0.0)
+        ), patch(
+            "app.table_recognition_v2_adapter._predict_table_model",
+            return_value=[{"html": "<table><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></table>"}],
+        ) as predict, patch("app.table_recognition_v2_adapter._recognize_coordinate_based_semi_table") as coordinate:
+            result = _try_semi_structured_table(image, None, 0.0)
 
         self.assertIsNotNone(result)
         assert result is not None
-        self.assertEqual(SyntheticGridModel.calls, 1)
+        predict.assert_called_once()
         coordinate.assert_not_called()
         self.assertEqual(result["table_selected_method"], "grid_normalized_slanext")
         self.assertEqual(result["table_debug"]["status"], "grid_normalized_slanext")
@@ -721,11 +654,10 @@ class TableRecognitionV2AdapterRuntimeRoutingTest(unittest.TestCase):
         ]
         recognitions = [{"text": value, "confidence": 0.9} for value in ["A", "B", "C", "D"]]
 
-        class SyntheticGridModel:
-            def predict(self, **kwargs):
-                return [{"html": "<table><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></table>"}]
-
-        with patch("app.table_recognition_v2_adapter._load_table_model", return_value=SyntheticGridModel()), patch(
+        with patch(
+            "app.table_recognition_v2_adapter._predict_table_model",
+            return_value=[{"html": "<table><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></table>"}],
+        ), patch(
             "app.table_recognition_v2_adapter.detect_text_boxes",
             return_value={"regions": detected_regions},
         ), patch(
@@ -1165,16 +1097,12 @@ class TableRecognitionV2AdapterRuntimeRoutingTest(unittest.TestCase):
         image = np.full((120, 160, 3), 255, dtype=np.uint8)
         slanext_output = [{"html": "<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr></table>"}]
 
-        with patch("app.table_recognition_v2_adapter._load_table_model", return_value=object()), patch(
-            "app.table_recognition_v2_adapter._predict_table_model",
+        with patch("app.table_recognition_v2_adapter._predict_table_model",
             return_value=slanext_output,
         ), patch(
             "app.table_recognition_v2_adapter.analyze_table_regions",
             side_effect=AssertionError("Semi analyzer should not run when SLANeXt is confident."),
-        ), patch("app.table_recognition_v2_adapter._try_semi_structured_table") as semi, patch(
-            "app.table_recognition_v2_adapter.cv2.imwrite",
-            return_value=True,
-        ), patch("app.table_recognition_v2_adapter.Path.unlink"):
+        ), patch("app.table_recognition_v2_adapter._try_semi_structured_table") as semi:
             result = recognize_table_v2_local(image)
 
         semi.assert_not_called()
@@ -1226,8 +1154,7 @@ class TableRecognitionV2AdapterRuntimeRoutingTest(unittest.TestCase):
         with patch("app.table_recognition_v2_adapter.analyze_table_regions", return_value=fake_analysis), patch(
             "app.table_recognition_v2_adapter._recognize_coordinate_based_semi_table",
             return_value=weak_semi,
-        ), patch("app.table_recognition_v2_adapter._load_table_model", return_value=object()), patch(
-            "app.table_recognition_v2_adapter._predict_table_model",
+        ), patch("app.table_recognition_v2_adapter._predict_table_model",
             return_value=object(),
         ), patch(
             "app.table_recognition_v2_adapter._slanext_result_from_output",
@@ -1435,13 +1362,10 @@ class TableRecognitionV2AdapterRuntimeRoutingTest(unittest.TestCase):
 
     def test_grid_analyzer_error_falls_back_to_whole_roi(self) -> None:
         image = np.zeros((120, 260, 3), dtype=np.uint8)
-        fake_paddleocr = types.SimpleNamespace(TableRecognitionPipelineV2=FakeTableRecognitionPipelineV2)
 
-        with patch.dict(sys.modules, {"paddleocr": fake_paddleocr}), patch(
+        with patch("app.table_recognition_v2_adapter._predict_table_model", return_value=[{"html": "<table><tr><td>A</td><td>B</td></tr></table>"}]), patch(
             "app.table_recognition_v2_adapter.analyze_table_regions",
             side_effect=RuntimeError("grid analyzer boom"),
-        ), patch("app.table_recognition_v2_adapter.cv2.imwrite", return_value=True), patch(
-            "app.table_recognition_v2_adapter.Path.unlink"
         ):
             result = recognize_table_v2_local(image)
 
@@ -1451,7 +1375,6 @@ class TableRecognitionV2AdapterRuntimeRoutingTest(unittest.TestCase):
 
     def test_forced_semi_runs_when_slanext_has_no_usable_table(self) -> None:
         image = np.zeros((120, 260, 3), dtype=np.uint8)
-        fake_paddleocr = types.SimpleNamespace(TableRecognitionPipelineV2=EmptyTableRecognitionPipelineV2)
         forced_result = {
             "text": "| A | B |\n| --- | --- |\n| 1 | 2 |",
             "confidence": 0.86,
@@ -1485,11 +1408,9 @@ class TableRecognitionV2AdapterRuntimeRoutingTest(unittest.TestCase):
             "table_semi_analysis": {"detected": True, "confidence": 0.72, "regions": [], "forced": True},
         }
 
-        with patch.dict(sys.modules, {"paddleocr": fake_paddleocr}), patch(
+        with patch("app.table_recognition_v2_adapter._predict_table_model", return_value=[{}]), patch(
             "app.table_recognition_v2_adapter.analyze_table_regions",
             return_value={"detected": False, "confidence": 0.0, "regions": [], "reason": "normal"},
-        ), patch("app.table_recognition_v2_adapter.cv2.imwrite", return_value=True), patch(
-            "app.table_recognition_v2_adapter.Path.unlink"
         ), patch("app.table_recognition_v2_adapter._recognize_coordinate_based_semi_table", return_value=forced_result), patch(
             "app.table_recognition_v2_adapter._recognize_ocr_table_fallback"
         ) as fallback:
@@ -1503,7 +1424,6 @@ class TableRecognitionV2AdapterRuntimeRoutingTest(unittest.TestCase):
 
     def test_ocr_table_fallback_is_selected_when_slanext_has_no_usable_table(self) -> None:
         image = np.zeros((120, 260, 3), dtype=np.uint8)
-        fake_paddleocr = types.SimpleNamespace(TableRecognitionPipelineV2=EmptyTableRecognitionPipelineV2)
         fallback_result = {
             "text": "| A | B |\n| --- | --- |\n| 1 | 2 |",
             "confidence": 0.82,
@@ -1526,11 +1446,9 @@ class TableRecognitionV2AdapterRuntimeRoutingTest(unittest.TestCase):
             "table_debug": {"status": "ocr_table_fallback"},
         }
 
-        with patch.dict(sys.modules, {"paddleocr": fake_paddleocr}), patch(
+        with patch("app.table_recognition_v2_adapter._predict_table_model", return_value=[{}]), patch(
             "app.table_recognition_v2_adapter.analyze_table_regions",
             return_value={"detected": False, "confidence": 0.0, "regions": [], "reason": "normal"},
-        ), patch("app.table_recognition_v2_adapter.cv2.imwrite", return_value=True), patch(
-            "app.table_recognition_v2_adapter.Path.unlink"
         ), patch("app.table_recognition_v2_adapter._recognize_ocr_table_fallback", return_value=fallback_result):
             result = recognize_table_v2_local(image)
 

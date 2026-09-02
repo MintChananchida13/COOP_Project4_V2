@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
+from .ocr_postprocess import normalize_ocr_text
 from .model_runtime_client import (
     ModelRuntimeKind,
     ModelRuntimeUnavailableError,
@@ -134,11 +135,17 @@ def _json_safe(value: Any) -> Any:
 
 def _result_from_output(output: Any) -> Dict[str, Any]:
     text, confidence = _extract_text_confidence(output)
+    normalized_text = normalize_ocr_text(text)
+    output_dict = _as_dict(output) or {}
+    runtime_model = output_dict.get("model") or PADDLE_THAI_OCR_MODEL_NAME
     result = {
-        "text": text,
+        "text": normalized_text,
         "confidence": float(confidence),
         "engine": "paddle_thai_ocr",
-        "model": PADDLE_THAI_OCR_MODEL_NAME,
+        "model": runtime_model,
+        "configured_model": PADDLE_THAI_OCR_MODEL_NAME,
+        "raw_text": text,
+        "normalized_text": normalized_text,
         "segments": [],
         "attempts": [],
         "preprocessing": "paddle_text_recognition",

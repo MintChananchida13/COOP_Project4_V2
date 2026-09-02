@@ -126,6 +126,8 @@ def _post_predict(kind: ModelRuntimeKind, payload: Dict[str, Any], timeout: floa
     result = parsed.get("result")
     if result is None and "data" in parsed:
         result = parsed.get("data")
+    if kind == ModelRuntimeKind.TEXT_RECOGNITION and isinstance(result, dict) and parsed.get("model") and "model" not in result:
+        result = {**result, "model": parsed.get("model")}
     return result if isinstance(result, dict) else parsed
 
 

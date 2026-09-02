@@ -5,7 +5,7 @@
 ## Current Snapshot
 
 - Frontend: `project_frontend` ใช้ Next.js + TypeScript
-- Backend: `project_backend` ใช้ FastAPI + PostgreSQL + PaddleOCR/OpenCV
+- Backend: `project_backend` ใช้ FastAPI + PostgreSQL + OpenCV/process logic; model inference เรียกผ่าน external Model Runtime URLs
 - Database: PostgreSQL ผ่าน `DATABASE_URL` และใช้ Schema V2 เป็น source of truth
 - Model Runtime: backend เรียก Model API แยกตามชนิดผ่าน `LAYOUT_MODEL_URL`, `TEXT_DETECTION_MODEL_URL`, `TEXT_RECOGNITION_MODEL_URL`, `TABLE_MODEL_URL`, และ `IMAGE_VERIFICATION_MODEL_URL`
 - Auth ปัจจุบัน: Mock Login ชั่วคราว ใช้ role เพื่อ redirect/แสดงหน้า User หรือ Admin เท่านั้น ยังไม่บังคับ Bearer token
@@ -28,7 +28,6 @@ COOP_Project4/
       types/ocr.ts
   project_backend/
     main.py
-    model_server.py
     app/
       db.py
       routes.py
@@ -218,9 +217,9 @@ Flow หลัก:
 
 ```text
 Table ROI
--> TableRecognitionPipelineV2
--> SLANeXt_wired / SLANeXt_wireless
--> SLANeXt structure
+-> TABLE_MODEL_URL /predict
+-> raw SLANeXt_wired / SLANeXt_wireless output
+-> Backend parses SLANeXt structure
 -> Structure Collapse Detection/Recovery
 -> Quality Gate
 -> Semi/Fallback ถ้าจำเป็น
@@ -228,7 +227,7 @@ Table ROI
 
 Fallback order:
 
-1. SLANeXt / TableRecognitionPipelineV2
+1. Remote SLANeXt raw inference result
 2. Structure Collapse Recovery
 3. Semi Table / geometry path เมื่อ SLANeXt ไม่มั่นใจ
 4. OCR-to-Table
@@ -282,17 +281,11 @@ Backend เป็นเจ้าของ process logic ทั้งหมด �
 - `PP-DocLayoutV3`: Layout, Auto ROI, Layout Signature
 - `PP-OCRv5_server_det`: Text Detection
 - `th_PP-OCRv5_mobile_rec`: Thai OCR
-- `TableRecognitionPipelineV2`
+- `TableRecognitionPipelineV2` / SLANeXt in external Table Model Runtime only
   - `SLANeXt_wired`
   - `SLANeXt_wireless`
 - `SigLIP`: Image Verification
 - `OpenCV`: geometry, line detection, table utilities
-
-Table Runtime device:
-
-```powershell
-$env:PADDLE_TABLE_DEVICE="cpu"
-```
 
 ## Export
 
@@ -447,17 +440,23 @@ docker run --name ocr-postgres `
 
 ### Model Runtime
 
-```powershell
-cd project_backend
-.\venv\Scripts\activate
-$env:PADDLE_TABLE_DEVICE="cpu"
-uvicorn model_server:app --host 127.0.0.1 --port 8010
-```
+Model Runtime runs outside this backend, for example on Kaggle demo URLs now or permanent model services later. This backend does not load Paddle/Torch models.
 
-Warmup:
+Each model runtime should expose the same contract:
 
 ```text
-POST /runtime/warmup
+GET /health
+POST /predict
+```
+
+Response wrapper:
+
+```json
+{
+  "success": true,
+  "model": "model-name",
+  "result": {}
+}
 ```
 
 ### Backend
@@ -511,7 +510,7 @@ Backend syntax:
 
 ```powershell
 cd project_backend
-python -m py_compile main.py model_server.py app/db.py app/schemas.py app/services.py app/routes.py app/detection_service.py app/layout_analysis_service.py app/ocr_adapter.py app/paddle_thai_ocr_adapter.py app/table_recognition_v2_adapter.py
+python -m py_compile main.py app/db.py app/schemas.py app/services.py app/routes.py app/detection_service.py app/layout_analysis_service.py app/ocr_adapter.py app/paddle_thai_ocr_adapter.py app/table_recognition_v2_adapter.py app/model_runtime_client.py app/siglip_image_verification_adapter.py
 python -c "import main; print('import main ok')"
 ```
 
@@ -546,7 +545,6 @@ Frontend:
 Backend:
 
 - `project_backend/main.py`: FastAPI app และ OCR API
-- `project_backend/model_server.py`: remote model runtime
 - `project_backend/app/db.py`: Schema V2 bootstrap
 - `project_backend/app/schemas.py`: API schemas
 - `project_backend/app/routes.py`: HTTP routes

@@ -10,12 +10,7 @@ from typing import Any, Dict, List, Optional
 import cv2
 import numpy as np
 
-from .model_runtime_client import (
-    ModelRuntimeKind,
-    ModelRuntimeUnavailableError,
-    is_runtime_configured,
-    remote_recognize_table_raw,
-)
+from .model_runtime_client import ModelRuntimeUnavailableError, remote_recognize_table
 from .ocr_postprocess import normalize_ocr_text, normalize_table_rows, parse_table_html_with_bs4
 from .layout_analysis_service import LayoutAnalysisUnavailableError, detect_text_boxes
 from .table_grid_analyzer import analyze_table_regions
@@ -70,9 +65,12 @@ _TABLE_DEBUG_RAW_MODEL_FIELDS = (
 )
 
 
-def _require_table_runtime() -> None:
-    if not is_runtime_configured(ModelRuntimeKind.TABLE):
-        raise TableRecognitionV2UnavailableError("TABLE_MODEL_URL is not configured.")
+def _model_service_url() -> str:
+    return os.getenv("MODEL_SERVICE_URL", "").strip()
+
+
+def _use_remote_runtime() -> bool:
+    return bool(_model_service_url())
 
 
 def _table_debug_trace_enabled() -> bool:
@@ -220,11 +218,40 @@ def _common_model_kwargs() -> Dict[str, Any]:
 
 
 def _load_table_model() -> Any:
-    raise TableRecognitionV2UnavailableError("Backend no longer loads table models. Set TABLE_MODEL_URL.")
+    global _TABLE_MODEL, _TABLE_MODEL_KIND
+    if _TABLE_MODEL is not None:
+        logger.info("Reusing cached TableRecognitionPipelineV2 (device=%s)", _TABLE_DEVICE)
+        return _TABLE_MODEL
+
+    try:
+        from paddleocr import TableRecognitionPipelineV2  # type: ignore
+    except ImportError as import_error:
+        raise TableRecognitionV2UnavailableError(
+            "table_recognition_v2 requires paddleocr 3.x with TableRecognitionPipelineV2 installed."
+        ) from import_error
+
+    try:
+        logger.info("Loading TableRecognitionPipelineV2 (device=%s)", _TABLE_DEVICE)
+        _TABLE_MODEL = TableRecognitionPipelineV2(
+            wired_table_structure_recognition_model_name=_TABLE_WIRED_MODEL_NAME,
+            wireless_table_structure_recognition_model_name=_TABLE_WIRELESS_MODEL_NAME,
+            text_recognition_model_name=_TABLE_TEXT_RECOGNITION_MODEL_NAME,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_layout_detection=False,
+            use_ocr_model=True,
+            **_common_model_kwargs(),
+        )
+        _TABLE_MODEL_KIND = "pipeline_v2"
+        return _TABLE_MODEL
+    except Exception as init_error:
+        raise TableRecognitionV2UnavailableError(
+            f"Failed to initialize PaddleOCR table_recognition_v2 model {_TABLE_MODEL_NAME}: {init_error}"
+        ) from init_error
 
 
 def table_recognition_runtime_summary() -> Dict[str, Any]:
-    _require_table_runtime()
+    _load_table_model()
     return {
         "enabled": True,
         "structure_model": _TABLE_MODEL_NAME,
@@ -2594,37 +2621,25 @@ def _attach_candidate_competition(selected: Dict[str, Any], candidates: List[Dic
     return selected
 
 
-def _unwrap_remote_table_output(value: Any) -> Any:
-    if not isinstance(value, dict):
-        return value
-    for key in ("raw_output", "output"):
-        if key in value:
-            return value.get(key)
-    for wrapper_key in ("result", "data"):
-        nested = value.get(wrapper_key)
-        if isinstance(nested, dict):
-            unwrapped = _unwrap_remote_table_output(nested)
-            if unwrapped is not nested:
-                return unwrapped
-        elif isinstance(nested, list):
-            return nested
-    return value
-
-
 def _predict_table_model(model: Any, image: np.ndarray) -> Any:
     started = time.perf_counter()
+    temp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+    temp.close()
     try:
-        _require_table_runtime()
-        remote_result = remote_recognize_table_raw(image)
-        if not isinstance(remote_result, dict):
-            if remote_result is None:
-                raise TableRecognitionV2UnavailableError("Remote Table Recognition runtime returned no result.")
-            raise TableRecognitionV2UnavailableError("Remote Table runtime returned an invalid response.")
-        return _unwrap_remote_table_output(remote_result)
-    except ModelRuntimeUnavailableError as error:
-        raise TableRecognitionV2UnavailableError(str(error)) from error
+        if not cv2.imwrite(temp.name, image):
+            raise TableRecognitionV2UnavailableError("Unable to prepare table image for table_recognition_v2.")
+        if _TABLE_MODEL_KIND == "pipeline_v2":
+            return model.predict(
+                input=temp.name,
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_layout_detection=False,
+                use_ocr_model=True,
+            )
+        return model.predict(input=temp.name, batch_size=1)
     finally:
         logger.info("Table Recognition phase timing: phase=SLANeXt inference elapsed=%.3fs", time.perf_counter() - started)
+        Path(temp.name).unlink(missing_ok=True)
 
 
 def _slanext_result_from_output(output: Any, image: np.ndarray, started: float, region_debug: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -3223,96 +3238,6 @@ def _reassign_ocr_text_to_slanext_cells(candidate: Dict[str, Any]) -> tuple[Dict
     }
     reassigned["table_debug"]["ocr_cell_assignment"] = reassignment_debug
     return reassigned, reassignment_debug
-
-
-def _apply_backend_ocr_core_to_structured_cells(image: np.ndarray, candidate: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    structured = candidate.get("table_structured") if isinstance(candidate.get("table_structured"), dict) else None
-    source_cells = [cell for cell in (structured or {}).get("cells", []) if isinstance(cell, dict)]
-    if not structured or not source_cells:
-        return candidate, {"attempted": False, "selected": False, "reason": "missing_structured_cells"}
-
-    image_height, image_width = image.shape[:2]
-    crops: List[np.ndarray] = []
-    crop_keys: List[tuple[int, int]] = []
-    for index, cell in enumerate(source_cells):
-        if cell.get("hidden"):
-            continue
-        edges = _bbox_edges(cell)
-        if edges is None:
-            continue
-        left = max(0, min(image_width - 1, int(round(edges[0]))))
-        top = max(0, min(image_height - 1, int(round(edges[1]))))
-        right = max(0, min(image_width, int(round(edges[2]))))
-        bottom = max(0, min(image_height, int(round(edges[3]))))
-        if right <= left or bottom <= top:
-            continue
-        crop = image[top:bottom, left:right]
-        if crop.size == 0:
-            continue
-        crops.append(crop)
-        try:
-            crop_keys.append((int(cell.get("row") or 0), int(cell.get("col") or 0)))
-        except (TypeError, ValueError):
-            crop_keys.append((index, -1))
-
-    if not crops:
-        return candidate, {"attempted": False, "selected": False, "reason": "no_cell_bboxes", "cell_count": len(source_cells)}
-
-    try:
-        recognitions, ocr_debug = _recognize_text_crops_with_core(crops, "table_backend_ocr_core")
-    except Exception as error:
-        return candidate, {"attempted": True, "selected": False, "reason": "ocr_core_failed", "error": str(error)}
-
-    recognized_by_key = {
-        key: recognition
-        for key, recognition in zip(crop_keys, recognitions)
-        if isinstance(recognition, dict) and normalize_ocr_text(recognition.get("text"))
-    }
-    if not recognized_by_key:
-        return candidate, {"attempted": True, "selected": False, "reason": "ocr_core_empty", "cell_crop_count": len(crops), "ocr_core": ocr_debug}
-
-    next_cells: List[Dict[str, Any]] = []
-    changed = 0
-    for index, cell in enumerate(source_cells):
-        next_cell = dict(cell)
-        try:
-            key = (int(next_cell.get("row") or 0), int(next_cell.get("col") or 0))
-        except (TypeError, ValueError):
-            key = (index, -1)
-        recognition = recognized_by_key.get(key)
-        if recognition is not None:
-            text = normalize_ocr_text(recognition.get("text"))
-            confidence = float(recognition.get("confidence") or 0.0)
-            previous_text = normalize_ocr_text(next_cell.get("text") or next_cell.get("ocrText") or next_cell.get("groundTruth") or "")
-            next_cell["text"] = text
-            next_cell["ocrText"] = text
-            next_cell["groundTruth"] = text
-            next_cell["confidence"] = confidence
-            next_cell["assignmentSource"] = "backend_ocr_core"
-            next_cell["previousModelText"] = previous_text
-            changed += 1
-        next_cells.append(next_cell)
-
-    next_structured = dict(structured)
-    next_structured["cells"] = next_cells
-    next_rows = _rows_from_structured_cells_preserve_grid(next_cells)
-    next_structured["rows"] = next_rows
-    next_candidate = dict(candidate)
-    next_candidate["table_structured"] = next_structured
-    next_candidate["table_rows"] = next_rows
-    next_candidate["text"] = _markdown_table(next_rows)
-    debug = {
-        "attempted": True,
-        "selected": True,
-        "cell_crop_count": len(crops),
-        "changed_cell_count": changed,
-        "mapping_method": "slanext_cell_bbox_to_backend_ocr_core",
-        "ocr_core": ocr_debug,
-    }
-    next_candidate.setdefault("table_debug", {})
-    if isinstance(next_candidate["table_debug"], dict):
-        next_candidate["table_debug"]["backend_ocr_core"] = debug
-    return next_candidate, debug
 
 
 def _structured_row_count(structured: Dict[str, Any]) -> int:
@@ -3977,6 +3902,7 @@ def _try_semi_structured_table(
         normalized_image = normalizer["image"]
         normalizer_debug = normalizer.get("debug") if isinstance(normalizer.get("debug"), dict) else {}
         try:
+            model = model or _load_table_model()
             output = _predict_table_model(model, normalized_image)
             result = _slanext_result_from_output(
                 output,
@@ -4113,11 +4039,11 @@ def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
             "table_debug": {"status": "empty_image", "runtime_called": True},
         }
 
-    logger.info("Using backend Table Recognition process with remote SLANeXt runtime")
+    logger.info("Using local Table Recognition runtime")
     semi_analysis: Optional[Dict[str, Any]] = None
 
     whole_started = time.perf_counter()
-    model = None
+    model = _load_table_model()
     model_inference_count += 1
     input_trace = _debug_input_trace(image) if _table_debug_trace_enabled() else None
     output = _predict_table_model(model, image)
@@ -4134,12 +4060,10 @@ def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
     recovered_candidate, structure_collapse_debug = _recover_slanext_structure_collapse(slanext_candidate, image)
     if bool(structure_collapse_debug.get("selected")):
         slanext_candidate = _build_table_candidate(recovered_candidate, "slanext")
-    slanext_candidate, backend_ocr_debug = _apply_backend_ocr_core_to_structured_cells(image, slanext_candidate)
     slanext_candidate.setdefault("table_debug", {})
     if isinstance(slanext_candidate["table_debug"], dict):
         slanext_candidate["table_debug"]["structure_collapse_recovery"] = structure_collapse_debug
         slanext_candidate["table_debug"]["row_collapse_recovery"] = structure_collapse_debug
-        slanext_candidate["table_debug"].setdefault("backend_ocr_core", backend_ocr_debug)
     slanext_assignment_quality = _structured_assignment_quality(
         slanext_candidate.get("table_structured") if isinstance(slanext_candidate.get("table_structured"), dict) else None
     )
@@ -4372,4 +4296,30 @@ def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
 
 
 def recognize_table_v2(image: np.ndarray) -> Dict[str, Any]:
+    if _use_remote_runtime():
+        logger.info("Using remote Table Recognition runtime")
+        try:
+            remote_result = remote_recognize_table(image)
+        except ModelRuntimeUnavailableError as error:
+            raise TableRecognitionV2UnavailableError(str(error)) from error
+        except Exception as error:
+            raise TableRecognitionV2UnavailableError(str(error)) from error
+
+        if remote_result is None:
+            raise TableRecognitionV2UnavailableError("Remote Table Recognition runtime returned no result.")
+        if not isinstance(remote_result, dict):
+            raise TableRecognitionV2UnavailableError("Remote Table Recognition runtime returned an invalid response.")
+        remote_debug = remote_result.get("table_debug")
+        if isinstance(remote_debug, dict):
+            remote_debug.setdefault("remote_runtime_called", True)
+        else:
+            remote_result["table_debug"] = {"remote_runtime_called": True}
+        if isinstance(remote_result.get("table_debug"), dict) and isinstance(
+            remote_result["table_debug"].get("candidate_competition"),
+            dict,
+        ):
+            return _postprocess_table_result(remote_result)
+        remote_method = str(remote_result.get("table_selected_method") or remote_result["table_debug"].get("candidate_method") or "remote_runtime")
+        return _build_table_candidate(remote_result, remote_method)
+
     return recognize_table_v2_local(image)

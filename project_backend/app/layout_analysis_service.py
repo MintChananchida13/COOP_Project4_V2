@@ -233,6 +233,14 @@ def _text_detection_items_from_response(value: Any) -> List[Dict[str, Any]]:
     return items
 
 
+def _layout_detection_items_from_response(value: Any) -> List[Dict[str, Any]]:
+    return [
+        item
+        for item in _walk_layout_items(value)
+        if _normalize_region_type(_extract_label(item)) in {"table", "image"}
+    ]
+
+
 def _run_layout_detection(image_path: str) -> List[Dict[str, Any]]:
     pipeline = _load_layout_model()
     predict = getattr(pipeline, "predict", None)
@@ -611,7 +619,7 @@ def analyze_layout(image: np.ndarray, expand_text_rois: bool = False, auto_roi_m
             raise LayoutAnalysisUnavailableError("TextDetection runtime returned an invalid response.")
         raw_items = [
             *_text_detection_items_from_response(text_result.get("result", text_result)),
-            *_walk_layout_items(layout_result.get("result", layout_result)),
+            *_layout_detection_items_from_response(layout_result.get("result", layout_result)),
         ]
     finally:
         Path(temp_path).unlink(missing_ok=True)
