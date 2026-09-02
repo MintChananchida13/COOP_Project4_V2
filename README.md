@@ -5,9 +5,9 @@
 ## Current Snapshot
 
 - Frontend: `project_frontend` ใช้ Next.js + TypeScript
-- Backend: `project_backend` ใช้ FastAPI + PostgreSQL + OpenCV/process logic; model inference เรียกผ่าน external Model Runtime URLs
+- Backend: `project_backend` ใช้ FastAPI + PostgreSQL + OpenCV/process logic; model inference เรียกผ่าน external Model Runtime URLs เท่านั้น
 - Database: PostgreSQL ผ่าน `DATABASE_URL` และใช้ Schema V2 เป็น source of truth
-- Model Runtime: backend เรียก Model API แยกตามชนิดผ่าน `LAYOUT_MODEL_URL`, `TEXT_DETECTION_MODEL_URL`, `TEXT_RECOGNITION_MODEL_URL`, `TABLE_MODEL_URL`, และ `IMAGE_VERIFICATION_MODEL_URL`
+- Model Runtime: backend เรียก Model API แยกตามชนิดผ่าน `LAYOUT_MODEL_URL`, `TEXT_DETECTION_MODEL_URL`, `TEXT_RECOGNITION_MODEL_URL`, `TABLE_MODEL_URL`, และ `IMAGE_VERIFICATION_MODEL_URL`; runtime ทำเฉพาะ raw inference ส่วน business/process logic อยู่ใน backend
 - Auth ปัจจุบัน: Mock Login ชั่วคราว ใช้ role เพื่อ redirect/แสดงหน้า User หรือ Admin เท่านั้น ยังไม่บังคับ Bearer token
 - User flow: Upload -> Adjust -> Detect Template -> ROI/OCR -> Ground Truth -> Export
 - Admin flow: Template Request/Manual Create -> Adjust -> Extraction ROI -> Verification ROI -> Pre-Publish/Test/Publish หรือ Update
@@ -211,6 +211,15 @@ Post-process ใช้ `ocr_postprocess.py` เพื่อลด noise เช�
 
 ## Table Recognition
 
+Current architecture:
+
+- Kaggle/Table Model Runtime runs `TableRecognitionPipelineV2.predict()` only.
+- Backend sends the table ROI image to `TABLE_MODEL_URL /predict`.
+- Runtime returns raw SLANeXt/TableRecognitionPipelineV2 output under `result.raw_output`, `result.output`, or `result`.
+- Backend keeps the existing table process after raw output: parsing, normalization, structure collapse recovery, quality gates, semi-table geometry fallback, OCR-to-table fallback, raw OCR geometry fallback, candidate selection, and final post-process.
+- Do not move table post-processing or fallback logic into Kaggle runtime.
+- Do not rewrite the table algorithm when changing runtime routing.
+
 สำหรับ field type `table` ระบบต้องพยายามคืนข้อมูลตารางเสมอถ้ามี OCR text
 
 Flow หลัก:
@@ -275,6 +284,55 @@ Backend เรียก Model Runtime แยกตามชนิดผ่าน
 Backend เป็นเจ้าของ process logic ทั้งหมด และ Model Runtime ทำเฉพาะ model loading + inference ผ่าน `POST /predict` และ `GET /health`.
 
 ถ้า URL ของ model ที่จำเป็นว่าง backend จะไม่ fallback ไป local PaddleOCR/SigLIP และจะ error ชัดเจน.
+
+Runtime ownership:
+
+- Layout runtime returns raw PP-DocLayoutV3 detections; backend normalizes labels, boxes, ROI ratios, filtering, and layout matching.
+- Text detection runtime returns raw text boxes/polygons; backend owns grouping, reading order, and ROI logic.
+- Text recognition runtime returns raw OCR text and confidence; backend owns normalization, cleanup, merge, and export data shaping.
+- Table runtime returns raw TableRecognitionPipelineV2/SLANeXt output; backend owns all table processing after inference.
+- Image verification runtime returns raw SigLIP logits in the same order as the category prompts sent by backend; backend owns ranking, binary evidence score, `passed`, status, failure reason, thresholds, and UI percentages.
+
+Standard runtime response wrapper:
+
+```json
+{
+  "success": true,
+  "model": "model-name",
+  "result": {}
+}
+```
+
+Table runtime example:
+
+```json
+{
+  "success": true,
+  "model": "SLANeXt_wired/SLANeXt_wireless",
+  "result": {
+    "raw_output": [
+      {
+        "html": "<table><tr><td>A</td><td>B</td></tr></table>",
+        "structure_model": "SLANeXt_wired",
+        "score": 0.88
+      }
+    ]
+  }
+}
+```
+
+SigLIP runtime example:
+
+```json
+{
+  "success": true,
+  "model": "google/siglip-so400m-patch14-384",
+  "result": {
+    "logits": [2.0, 0.0, -1.0],
+    "device": "cuda:0"
+  }
+}
+```
 
 โมเดล/เครื่องมือหลัก:
 
@@ -521,7 +579,20 @@ cd project_backend
 python -m unittest tests.test_layout_template_matcher
 python -m unittest tests.test_prepublish_multi_page_matching
 python -m unittest tests.test_detection_include_draft_candidate
+python -m unittest tests.test_model_runtime_client_contract
 python -m unittest tests.test_table_recognition_v2_adapter
+python -m unittest tests.test_siglip_image_verification
+python -m unittest tests.test_verification_scoring
+```
+
+Backend smoke checks with configured runtime URLs:
+
+```powershell
+cd project_backend
+python -m py_compile app/table_recognition_v2_adapter.py app/model_runtime_client.py app/siglip_image_verification_adapter.py app/services.py
+Invoke-WebRequest http://localhost:8000/health -UseBasicParsing
+Invoke-WebRequest http://localhost:8000/health/db -UseBasicParsing
+Invoke-WebRequest http://localhost:8000/health/models -UseBasicParsing
 ```
 
 ## Key Files
@@ -559,9 +630,13 @@ Backend:
 - `project_backend/app/table_grid_analyzer.py`: Table geometry utilities
 - `project_backend/app/ocr_postprocess.py`: OCR text cleanup
 - `project_backend/app/model_runtime_client.py`: Remote runtime client
+- `project_backend/app/siglip_image_verification_adapter.py`: SigLIP logits scoring adapter
+- `project_backend/app/image_verification_category_service.py`: Image verification category CRUD/defaults
+- `project_backend/docs/model_runtime_architecture.md`: Model runtime ownership and response contracts
 
 ## Known Risks / TODO
 
+- ต้อง smoke test กับ Kaggle/permanent runtime URLs จริงทุกตัวก่อน production โดยเฉพาะ `TABLE_MODEL_URL` และ `IMAGE_VERIFICATION_MODEL_URL`
 - Full Auth ยังปิดไว้ชั่วคราว ต้องกลับมาเปิดและทดสอบ role/FK ก่อน production จริง
 - `detect-dev` endpoint name ยังเป็น legacy แม้ถูกใช้ใน real flow
 - Table OCR ยังขึ้นกับคุณภาพ ROI, เส้นตาราง, SLANeXt output และ OCR geometry
