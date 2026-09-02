@@ -162,8 +162,12 @@ def remote_recognize_images(images: List[np.ndarray]) -> Optional[Dict[str, Any]
 def remote_recognize_table_raw(image: np.ndarray) -> Optional[Dict[str, Any]]:
     if not is_runtime_configured(ModelRuntimeKind.TABLE):
         return None
-    return _post_predict(ModelRuntimeKind.TABLE, {"image": _image_to_data_url(image)}, timeout=240.0)
 
+    return _post_predict(
+        ModelRuntimeKind.TABLE,
+        {"image": _image_to_data_url(image)},
+        timeout=240.0,
+    )
 
 def remote_verify_image_logits(
     image_path: str,
