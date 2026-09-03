@@ -1,45 +1,34 @@
-﻿This is a Next.js project bootstrapped with create-next-app.
+# OCR Template Management Frontend
 
-Getting Started
-First, run the development server:
+Next.js + TypeScript frontend for the OCR Template Management system.
 
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-Open http://localhost:3000 with your browser to see the result.
+## Environment
 
-You can start editing the page by modifying app/page.tsx. The page auto-updates as you edit the file.
+Create `project_frontend/.env.local`:
 
-This project uses next/font to automatically optimize and load Geist, a new font family for Vercel.
-
-Learn More
-To learn more about Next.js, take a look at the following resources:
-
-Next.js Documentation - learn about Next.js features and API.
-Learn Next.js - an interactive Next.js tutorial.
-You can check out the Next.js GitHub repository - your feedback and contributions are welcome!
-
-Deploy on Vercel
-The easiest way to deploy your Next.js app is to use the Vercel Platform from the creators of Next.js.
-
-Check out our Next.js deployment documentation for more details.
-
-Local Backend + Kaggle Models
-For local testing, run the frontend on `http://localhost:3000` and the backend
-on `http://localhost:8000`. The backend calls Kaggle model runtimes through the
-five model URL environment variables.
-
-Use the root guide:
-
-```powershell
-cd ..
-.\run-local-backend.ps1
-.\run-local-frontend.ps1
+```env
+NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
-Set `NEXT_PUBLIC_API_URL=http://localhost:8000` in `project_frontend/.env.local`.
+## Run Locally
 
+```powershell
+cd project_frontend
+npm install
+npm run dev
+```
+
+Open:
+
+```text
+http://localhost:3000
+```
+
+The frontend talks to the backend through `NEXT_PUBLIC_API_URL`. Model inference is not called from the frontend directly; backend sends model requests to Gateway.
+
+## Checks
+
+```powershell
+npx tsc --noEmit --pretty false
+npm run build
+```

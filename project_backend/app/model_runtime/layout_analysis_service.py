@@ -389,37 +389,163 @@ def _text_box_belongs_to_table(text_box: List[float], table_boxes: List[List[flo
     return False
 
 
-def _is_tiny_text_fragment(box: List[float], median_height: float, median_area: float) -> bool:
-    if median_height <= 0 or median_area <= 0:
-        return False
+def _is_tiny_text_fragment(
+    box: List[float],
+    median_height: float,
+    median_area: float,
+    image_width: int,
+    image_height: int,
+) -> bool:
     height = _box_height(box)
     area = _box_area(box)
     width = _box_width(box)
-    return (
-        height <= median_height * 0.42
-        and area <= median_area * 0.28
-        and width <= median_height * 2.5
+    image_area = max(1.0, float(image_width) * float(image_height))
+    small_against_page = (
+        area <= image_area * 0.00008
+        and height <= max(3.0, float(image_height) * 0.018)
+        and width <= max(3.0, float(image_width) * 0.08)
+    )
+    small_against_text = (
+        median_height > 0
+        and median_area > 0
+        and height <= median_height * 0.48
+        and area <= median_area * 0.32
+        and width <= max(median_height * 2.8, float(image_width) * 0.015)
+    )
+    return small_against_page or small_against_text
+
+
+def _merge_box_list(boxes: List[List[float]], image_width: int, image_height: int) -> List[float]:
+    return _clip_box_to_image(
+        [
+            min(min(box[0], box[2]) for box in boxes),
+            min(min(box[1], box[3]) for box in boxes),
+            max(max(box[0], box[2]) for box in boxes),
+            max(max(box[1], box[3]) for box in boxes),
+        ],
+        image_width,
+        image_height,
     )
 
 
-def _filter_tiny_text_fragments(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    text_boxes = [item["box"] for item in items if item.get("type") == "text"]
-    if len(text_boxes) < 2:
+def _box_gap_distance(box_a: List[float], box_b: List[float]) -> float:
+    left_a, top_a, right_a, bottom_a = _clip_box_to_image(box_a, 10**9, 10**9)
+    left_b, top_b, right_b, bottom_b = _clip_box_to_image(box_b, 10**9, 10**9)
+    dx = max(left_a - right_b, left_b - right_a, 0.0)
+    dy = max(top_a - bottom_b, top_b - bottom_a, 0.0)
+    return (dx * dx + dy * dy) ** 0.5
+
+
+def _text_fragment_attach_score(
+    fragment_box: List[float],
+    line_box: List[float],
+    median_height: float,
+) -> Optional[float]:
+    line_height = max(_box_height(line_box), median_height, 1.0)
+    fragment_center_y = (fragment_box[1] + fragment_box[3]) / 2.0
+    line_center_y = (line_box[1] + line_box[3]) / 2.0
+    vertical_delta = abs(fragment_center_y - line_center_y)
+    vertical_tolerance = max(8.0, line_height * 0.9)
+    expanded_line = [
+        line_box[0] - line_height * 1.2,
+        line_box[1] - line_height * 0.75,
+        line_box[2] + line_height * 1.2,
+        line_box[3] + line_height * 0.75,
+    ]
+    overlap = _intersection_area(fragment_box, line_box)
+    expanded_overlap = _intersection_area(fragment_box, expanded_line)
+    if overlap <= 0 and expanded_overlap <= 0 and vertical_delta > vertical_tolerance:
+        return None
+
+    fragment_area = max(_box_area(fragment_box), 1.0)
+    overlap_score = overlap / fragment_area
+    expanded_overlap_score = expanded_overlap / fragment_area
+    gap = _box_gap_distance(fragment_box, line_box)
+    if overlap <= 0 and expanded_overlap <= 0 and gap > line_height * 1.8:
+        return None
+    return (expanded_overlap_score * 3.0) + overlap_score - (vertical_delta / vertical_tolerance) - (gap / max(line_height * 2.0, 1.0))
+
+
+def _merge_tiny_text_fragments(
+    items: List[Dict[str, Any]],
+    image_width: int,
+    image_height: int,
+) -> List[Dict[str, Any]]:
+    text_items = [item for item in items if item.get("type") == "text"]
+    if len(text_items) < 2:
         return items
+    text_boxes = [item["box"] for item in text_items]
     median_height = _median([_box_height(box) for box in text_boxes], 0.0)
     median_area = _median([_box_area(box) for box in text_boxes], 0.0)
-    filtered: List[Dict[str, Any]] = []
+    tiny_items: List[Dict[str, Any]] = []
+    main_items: List[Dict[str, Any]] = []
     for item in items:
-        if item.get("type") == "text" and _is_tiny_text_fragment(item["box"], median_height, median_area):
+        if item.get("type") != "text":
+            continue
+        if _is_tiny_text_fragment(item["box"], median_height, median_area, image_width, image_height):
+            tiny_items.append(item)
+        else:
+            main_items.append(item)
+
+    if not tiny_items:
+        return items
+
+    non_text_items = [item for item in items if item.get("type") != "text"]
+    if not main_items:
+        for item in tiny_items:
             logger.debug(
-                "Auto ROI dropped tiny text fragment box=%s median_height=%.2f median_area=%.2f",
+                "Auto ROI dropped isolated tiny text fragment box=%s median_height=%.2f median_area=%.2f",
                 item["box"],
                 median_height,
                 median_area,
             )
+        return non_text_items
+
+    merge_groups: Dict[int, List[Dict[str, Any]]] = {index: [] for index in range(len(main_items))}
+    for tiny_item in tiny_items:
+        ranked_targets: List[tuple[float, int]] = []
+        for index, main_item in enumerate(main_items):
+            score = _text_fragment_attach_score(tiny_item["box"], main_item["box"], median_height)
+            if score is not None:
+                ranked_targets.append((score, index))
+        if not ranked_targets:
+            logger.debug(
+                "Auto ROI dropped isolated tiny text fragment box=%s median_height=%.2f median_area=%.2f",
+                tiny_item["box"],
+                median_height,
+                median_area,
+            )
             continue
-        filtered.append(item)
-    return filtered
+        _, target_index = max(ranked_targets, key=lambda value: value[0])
+        merge_groups[target_index].append(tiny_item)
+
+    merged_text_items: List[Dict[str, Any]] = []
+    for index, item in enumerate(main_items):
+        fragments = merge_groups.get(index) or []
+        if not fragments:
+            merged_text_items.append(item)
+            continue
+        merged_box = _merge_box_list([item["box"], *[fragment["box"] for fragment in fragments]], image_width, image_height)
+        confidences = [float(item.get("confidence") or 0.0), *[float(fragment.get("confidence") or 0.0) for fragment in fragments]]
+        merged_text_items.append(
+            {
+                **item,
+                "box": merged_box,
+                "confidence": max(confidences),
+                "auto_roi_group": {
+                    "type": "merged_tiny_text_fragments",
+                    "fragment_count": len(fragments),
+                },
+            }
+        )
+        logger.debug(
+            "Auto ROI merged %s tiny text fragments into line original=%s merged=%s",
+            len(fragments),
+            item["box"],
+            merged_box,
+        )
+
+    return [*non_text_items, *merged_text_items]
 
 
 def _filter_nested_same_type_regions(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -454,8 +580,8 @@ def _filter_nested_same_type_regions(items: List[Dict[str, Any]]) -> List[Dict[s
     return kept
 
 
-def _filter_auto_roi_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return _filter_nested_same_type_regions(_filter_tiny_text_fragments(items))
+def _filter_auto_roi_items(items: List[Dict[str, Any]], image_width: int, image_height: int) -> List[Dict[str, Any]]:
+    return _filter_nested_same_type_regions(_merge_tiny_text_fragments(items, image_width, image_height))
 
 
 def _response_region_to_item(region: Dict[str, Any], image_width: int, image_height: int) -> Optional[Dict[str, Any]]:
@@ -493,7 +619,7 @@ def _filter_response_regions(regions: List[Dict[str, Any]], image_width: int, im
             items.append(item)
         else:
             passthrough.append(region)
-    filtered_items = _filter_auto_roi_items(items)
+    filtered_items = _filter_auto_roi_items(items, image_width, image_height)
     kept_regions = [item["region"] for item in filtered_items]
     kept_regions.extend(passthrough)
     kept_regions.sort(key=lambda region: (
@@ -572,7 +698,7 @@ def analyze_layout(image: np.ndarray, expand_text_rois: bool = False, auto_roi_m
 
         filtered_items.append(item)
 
-    filtered_items = _filter_auto_roi_items(filtered_items)
+    filtered_items = _filter_auto_roi_items(filtered_items, width, height)
 
     layout_blocker_boxes = [item["box"] for item in filtered_items if item["type"] in {"table", "image"}]
     original_boxes = [_clip_box_to_image(item["box"], width, height) for item in filtered_items]
@@ -664,7 +790,7 @@ def detect_text_boxes(image_path: str) -> Dict[str, Any]:
         if not box:
             continue
         parsed_items.append({"box": _clip_box_to_image(box, width, height), "type": "text", "confidence": _extract_score(item)})
-    parsed_items = _filter_auto_roi_items(parsed_items)
+    parsed_items = _filter_auto_roi_items(parsed_items, width, height)
     regions: List[Dict[str, Any]] = []
     for item in parsed_items:
         box = item["box"]

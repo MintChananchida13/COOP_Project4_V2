@@ -1,25 +1,36 @@
 # Local Development
 
-Use local frontend and backend, with model inference hosted on Kaggle.
+## Backend Environment
 
-## Backend
-
-Create `project_backend/.env.local` from `project_backend/env.local.example`
-and set the internal model service URLs:
+Create `project_backend/.env.local` from `project_backend/env.local.example`:
 
 ```env
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ocr_studio
-LAYOUT_MODEL_URL=http://127.0.0.1:8101
-TEXT_DETECTION_MODEL_URL=http://127.0.0.1:8102
-TEXT_RECOGNITION_MODEL_URL=http://127.0.0.1:8103
-TABLE_MODEL_URL=http://127.0.0.1:8104
-IMAGE_VERIFICATION_MODEL_URL=http://127.0.0.1:8105
+GATEWAY_URL=http://127.0.0.1:8080
+MODEL_GATEWAY_API_KEY=replace-with-model-gateway-api-key
 ```
 
-Run:
+The backend calls model inference through Gateway only.
+
+## PostgreSQL
 
 ```powershell
-.\run-local-backend.ps1
+docker run --name ocr-postgres `
+  -e POSTGRES_DB=ocr_studio `
+  -e POSTGRES_USER=postgres `
+  -e POSTGRES_PASSWORD=postgres `
+  -p 5432:5432 `
+  -d postgres:16
+```
+
+## Backend
+
+```powershell
+cd project_backend
+python -m venv venv
+.\venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 Backend URL:
@@ -28,7 +39,7 @@ Backend URL:
 http://localhost:8000
 ```
 
-Local checks:
+Health checks:
 
 ```powershell
 Invoke-WebRequest http://localhost:8000/health -UseBasicParsing
@@ -38,8 +49,7 @@ Invoke-WebRequest http://localhost:8000/health/models -UseBasicParsing
 
 ## Frontend
 
-Create `project_frontend/.env.local` from
-`project_frontend/env.local.example`:
+Create `project_frontend/.env.local` from `project_frontend/env.local.example`:
 
 ```env
 NEXT_PUBLIC_API_URL=http://localhost:8000
@@ -48,7 +58,9 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 Run:
 
 ```powershell
-.\run-local-frontend.ps1
+cd project_frontend
+npm install
+npm run dev
 ```
 
 Frontend URL:
@@ -57,5 +69,18 @@ Frontend URL:
 http://localhost:3000
 ```
 
-The frontend talks to the local backend. The local backend talks to Kaggle model
-runtimes through the five model URL environment variables.
+## Gateway
+
+For local server testing, run Gateway on:
+
+```text
+http://127.0.0.1:8080
+```
+
+Gateway forwards to the leaf model services:
+
+- Layout: `127.0.0.1:8001`
+- Text Detection: `127.0.0.1:8002`
+- Text Recognition: `127.0.0.1:8004`
+- Table: `127.0.0.1:8013`
+- Image Verification: `127.0.0.1:8009`
