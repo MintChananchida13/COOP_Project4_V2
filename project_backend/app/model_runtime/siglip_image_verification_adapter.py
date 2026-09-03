@@ -288,7 +288,7 @@ def verify_image_category(
 
     runtime_configured = is_runtime_configured(ModelRuntimeKind.IMAGE_VERIFICATION)
     if not runtime_configured:
-        raise RuntimeError("IMAGE_VERIFICATION_MODEL_URL is not configured.")
+        raise RuntimeError("GATEWAY_URL is not configured.")
 
     try:
         remote_result = remote_verify_image_logits(image_path, [item.to_dict() for item in active_categories])

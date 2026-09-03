@@ -10,7 +10,13 @@ from typing import Any, Dict, List, Optional
 import cv2
 import numpy as np
 
-from app.core.model_runtime_client import ModelRuntimeUnavailableError, remote_recognize_table_raw
+from app.core.model_runtime_client import (
+    ModelRuntimeKind,
+    ModelRuntimeUnavailableError,
+    is_runtime_configured,
+    remote_recognize_table_raw,
+    runtime_url,
+)
 from app.processing.ocr_postprocess import normalize_ocr_text, normalize_table_rows, parse_table_html_with_bs4
 from app.model_runtime.layout_analysis_service import LayoutAnalysisUnavailableError, detect_text_boxes
 from app.processing.table_grid_analyzer import analyze_table_regions
@@ -49,12 +55,8 @@ _TABLE_DEBUG_RAW_MODEL_FIELDS = (
 )
 
 
-def _model_service_url() -> str:
-    return os.getenv("TABLE_MODEL_URL", "").strip()
-
-
 def _use_remote_runtime() -> bool:
-    return bool(_model_service_url())
+    return is_runtime_configured(ModelRuntimeKind.TABLE)
 
 
 def _table_debug_trace_enabled() -> bool:
@@ -198,7 +200,7 @@ def table_recognition_runtime_summary() -> Dict[str, Any]:
         "structure_model": _TABLE_MODEL_NAME,
         "runtime": "model_service",
         "configured": _use_remote_runtime(),
-        "url": _model_service_url() or None,
+        "url": runtime_url(ModelRuntimeKind.TABLE),
     }
 
 
@@ -2564,7 +2566,7 @@ def _attach_candidate_competition(selected: Dict[str, Any], candidates: List[Dic
 def _predict_table_model(image: np.ndarray) -> Any:
     started = time.perf_counter()
     if not _use_remote_runtime():
-        raise TableRecognitionV2UnavailableError("TABLE_MODEL_URL is not configured.")
+        raise TableRecognitionV2UnavailableError("GATEWAY_URL is not configured.")
 
     try:
         remote_result = remote_recognize_table_raw(image)
@@ -4108,7 +4110,7 @@ def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
         }
 
     if not _use_remote_runtime():
-        raise TableRecognitionV2UnavailableError("TABLE_MODEL_URL is not configured.")
+        raise TableRecognitionV2UnavailableError("GATEWAY_URL is not configured.")
 
     logger.info("Using remote Table Recognition inference with backend table processing")
     semi_analysis: Optional[Dict[str, Any]] = None
@@ -4371,4 +4373,4 @@ def recognize_table_v2(image: np.ndarray) -> Dict[str, Any]:
         logger.info("Using remote Table Recognition inference with backend table processing")
         return recognize_table_v2_local(image)
 
-    raise TableRecognitionV2UnavailableError("TABLE_MODEL_URL is not configured.")
+    raise TableRecognitionV2UnavailableError("GATEWAY_URL is not configured.")

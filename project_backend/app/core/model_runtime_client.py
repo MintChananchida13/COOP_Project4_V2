@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional
 import cv2
 import numpy as np
 
+from app.core.config import GATEWAY_URL
+
 
 logger = logging.getLogger(__name__)
 
@@ -28,20 +30,20 @@ class ModelRuntimeKind(str, Enum):
     IMAGE_VERIFICATION = "image_verification"
 
 
-MODEL_RUNTIME_ENV: Dict[ModelRuntimeKind, str] = {
-    ModelRuntimeKind.LAYOUT: "LAYOUT_MODEL_URL",
-    ModelRuntimeKind.TEXT_DETECTION: "TEXT_DETECTION_MODEL_URL",
-    ModelRuntimeKind.TEXT_RECOGNITION: "TEXT_RECOGNITION_MODEL_URL",
-    ModelRuntimeKind.TABLE: "TABLE_MODEL_URL",
-    ModelRuntimeKind.IMAGE_VERIFICATION: "IMAGE_VERIFICATION_MODEL_URL",
+MODEL_RUNTIME_GATEWAY_PATH: Dict[ModelRuntimeKind, str] = {
+    ModelRuntimeKind.LAYOUT: "/api/v1/document-layouts",
+    ModelRuntimeKind.TEXT_DETECTION: "/api/v1/text-detections?version=v5",
+    ModelRuntimeKind.TEXT_RECOGNITION: "/api/v1/text-recognitions",
+    ModelRuntimeKind.TABLE: "/api/v1/table-model-results",
+    ModelRuntimeKind.IMAGE_VERIFICATION: "/api/v1/image-verifications",
 }
 
 
 def runtime_url(kind: ModelRuntimeKind) -> Optional[str]:
     if os.getenv("MODEL_RUNTIME_ROLE", "").strip().lower() == "service":
         return None
-    value = os.getenv(MODEL_RUNTIME_ENV[kind], "").strip().rstrip("/")
-    return value or None
+    gateway_url = GATEWAY_URL.strip().rstrip("/")
+    return f"{gateway_url}{MODEL_RUNTIME_GATEWAY_PATH[kind]}" if gateway_url else None
 
 
 def is_runtime_configured(kind: ModelRuntimeKind) -> bool:
@@ -50,6 +52,14 @@ def is_runtime_configured(kind: ModelRuntimeKind) -> bool:
 
 def configured_runtimes() -> Dict[str, Optional[str]]:
     return {kind.value: runtime_url(kind) for kind in ModelRuntimeKind}
+
+
+def _gateway_headers() -> Dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    api_key = os.getenv("MODEL_GATEWAY_API_KEY", "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
 
 
 def _image_to_data_url(image: np.ndarray) -> str:
@@ -71,16 +81,16 @@ def _path_to_data_url(image_path: str) -> str:
 
 
 def _post_predict(kind: ModelRuntimeKind, payload: Dict[str, Any], timeout: float = 120.0) -> Dict[str, Any]:
-    base_url = runtime_url(kind)
-    if not base_url:
-        raise ModelRuntimeUnavailableError(f"{MODEL_RUNTIME_ENV[kind]} is not configured.")
+    endpoint_url = runtime_url(kind)
+    if not endpoint_url:
+        raise ModelRuntimeUnavailableError("GATEWAY_URL is not configured.")
 
     started = time.perf_counter()
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
-        f"{base_url}/predict",
+        endpoint_url,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers=_gateway_headers(),
         method="POST",
     )
     try:

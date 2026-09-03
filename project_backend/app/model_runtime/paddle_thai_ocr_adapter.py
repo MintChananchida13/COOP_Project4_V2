@@ -26,7 +26,7 @@ TEXT_RECOGNITION_MODEL_NAME = "th_PP-OCRv5_mobile_rec"
 
 def _require_text_recognition_runtime() -> None:
     if not is_runtime_configured(ModelRuntimeKind.TEXT_RECOGNITION):
-        raise PaddleThaiOcrUnavailableError("TEXT_RECOGNITION_MODEL_URL is not configured.")
+        raise PaddleThaiOcrUnavailableError("GATEWAY_URL is not configured.")
 
 
 def _env_flag(name: str, default: str = "false") -> bool:

@@ -1,6 +1,8 @@
-import os
 from dataclasses import asdict, dataclass
 from typing import Any, Dict
+
+from app.core.config import GATEWAY_URL
+from app.core.model_runtime_client import ModelRuntimeKind, runtime_url
 
 
 @dataclass(frozen=True)
@@ -20,6 +22,7 @@ class PipelineCoreConfig:
     text_recognition_model_url: str = ""
     table_model_url: str = ""
     image_verification_model_url: str = ""
+    gateway_url: str = ""
 
     def to_debug_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -28,10 +31,11 @@ class PipelineCoreConfig:
 def get_pipeline_core_config() -> PipelineCoreConfig:
     return PipelineCoreConfig(
         model_runtime="model_api_clients",
-        layout_model_url=os.getenv("LAYOUT_MODEL_URL", "").strip(),
-        text_detection_model_url=os.getenv("TEXT_DETECTION_MODEL_URL", "").strip(),
-        text_recognition_model_url=os.getenv("TEXT_RECOGNITION_MODEL_URL", "").strip(),
-        table_model_url=os.getenv("TABLE_MODEL_URL", "").strip(),
-        image_verification_model_url=os.getenv("IMAGE_VERIFICATION_MODEL_URL", "").strip(),
+        layout_model_url=runtime_url(ModelRuntimeKind.LAYOUT) or "",
+        text_detection_model_url=runtime_url(ModelRuntimeKind.TEXT_DETECTION) or "",
+        text_recognition_model_url=runtime_url(ModelRuntimeKind.TEXT_RECOGNITION) or "",
+        table_model_url=runtime_url(ModelRuntimeKind.TABLE) or "",
+        image_verification_model_url=runtime_url(ModelRuntimeKind.IMAGE_VERIFICATION) or "",
+        gateway_url=GATEWAY_URL.strip(),
         ocr_model="th_PP-OCRv5_mobile_rec",
     )

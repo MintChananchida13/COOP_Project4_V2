@@ -44,8 +44,12 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 OUTPUT_DIR = "cropped_rois"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
 logger = logging.getLogger(__name__)
+
+
+def _cropped_roi_path(filename: str) -> str:
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    return os.path.join(OUTPUT_DIR, filename)
 
 
 def _expand_roi_ratio_by_auto_padding(roi: Dict[str, float], image_width: int, image_height: int) -> Dict[str, float]:
@@ -97,7 +101,6 @@ class LayoutAnalysisPayload(BaseModel):
 
 app = FastAPI(title="OCR AI Engine")
 DETECTION_DEBUG_DIR = Path(__file__).resolve().parent / "storage" / "detection_queries"
-DETECTION_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
 app.add_middleware(
     CORSMiddleware,
@@ -109,7 +112,7 @@ app.add_middleware(
 
 app.mount(
     "/debug/detection-queries",
-    StaticFiles(directory=str(DETECTION_DEBUG_DIR)),
+    StaticFiles(directory=str(DETECTION_DEBUG_DIR), check_dir=False),
     name="detection_debug",
 )
 
@@ -1026,7 +1029,7 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
             filepath = ""
             if crop_img.size > 0:
                 filename = f"line_{idx + 1}_{uuid.uuid4().hex[:6]}.png"
-                filepath = os.path.join(OUTPUT_DIR, filename)
+                filepath = _cropped_roi_path(filename)
                 cv2.imwrite(filepath, crop_img)
 
             results.append(
@@ -1065,7 +1068,7 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
                 continue
 
             filename = f"{roi.fieldName}_{idx}_{uuid.uuid4().hex[:6]}.png"
-            filepath = os.path.join(OUTPUT_DIR, filename)
+            filepath = _cropped_roi_path(filename)
             cv2.imwrite(filepath, crop_img)
 
             roi_mode = (roi.roiMode or "fix").lower()

@@ -16,31 +16,40 @@ The local backend owns system and process logic:
 - Result merge and post-process
 - Database access
 
-Kaggle or any future model host owns model loading and raw inference only.
+The Gateway routes backend requests to leaf model services. Leaf model services
+own model loading and raw inference only.
 
 ## Environment Variables
 
-Set one URL per model runtime:
+Set the Gateway URL and API key:
 
 ```powershell
-$env:LAYOUT_MODEL_URL="http://127.0.0.1:8101"
-$env:TEXT_DETECTION_MODEL_URL="http://127.0.0.1:8102"
-$env:TEXT_RECOGNITION_MODEL_URL="http://127.0.0.1:8103"
-$env:TABLE_MODEL_URL="http://127.0.0.1:8104"
-$env:IMAGE_VERIFICATION_MODEL_URL="http://127.0.0.1:8105"
+$env:GATEWAY_URL="http://127.0.0.1:8080"
+$env:MODEL_GATEWAY_API_KEY="replace-with-model-gateway-api-key"
 ```
 
 Local server, staging, and future permanent URLs must be swapped by changing
-these environment variables only. Do not hard-code runtime URLs in process or
-service code.
+this environment variable only. The backend calls the Gateway endpoints below;
+the Gateway forwards to the leaf services. Do not hard-code leaf service URLs in
+process or service code.
+
+Every backend request to the Gateway includes:
+
+```text
+Authorization: Bearer <MODEL_GATEWAY_API_KEY>
+```
 
 ## Runtime API Contract
 
-Each model runtime should expose:
+The Gateway should expose:
 
 ```text
 GET /health
-POST /predict
+POST /api/v1/layout-predictions
+POST /api/v1/text-detections
+POST /api/v1/text-recognitions
+POST /api/v1/table-model-results
+POST /api/v1/image-classifications
 ```
 
 Standard response:
@@ -71,7 +80,8 @@ runtimes are being migrated.
 
 ### Layout
 
-`LAYOUT_MODEL_URL /predict` returns raw layout items. The backend accepts nested
+`GATEWAY_URL /api/v1/layout-predictions` forwards to PP-DocLayoutV3 on the
+Layout leaf service. It returns raw layout items. The backend accepts nested
 objects/lists, but each detected item must contain one box and one label.
 
 ```json
@@ -101,8 +111,9 @@ Accepted confidence keys: `score`, `confidence`, or `prob`.
 
 ### Text Detection
 
-`TEXT_DETECTION_MODEL_URL /predict` returns raw text detection polygons or
-boxes. Do not group paragraphs or apply reading order in the runtime.
+`GATEWAY_URL /api/v1/text-detections` forwards to PP-OCRv5 on the Text Detection
+leaf service. It returns raw text detection polygons or boxes. Do not group
+paragraphs or apply reading order in the runtime.
 
 ```json
 {
@@ -125,7 +136,8 @@ converts polygons to boxes, filters noisy fragments, and computes ROI ratios.
 
 ### Text Recognition
 
-`TEXT_RECOGNITION_MODEL_URL /predict` supports single and batch input.
+`GATEWAY_URL /api/v1/text-recognitions` forwards to the Thai Recognition leaf
+service. It supports single and batch input.
 
 Single response:
 
@@ -163,8 +175,9 @@ Backend keeps crop ownership, reading order, merge, normalize, and cleanup.
 
 ### Table Recognition
 
-`TABLE_MODEL_URL /predict` must only run Table Recognition / SLANeXt inference
-and JSON serialization.
+`GATEWAY_URL /api/v1/table-model-results` forwards to TableRecognitionPipelineV2
+on the Table leaf service. It must only run Table Recognition / SLANeXt
+inference and JSON serialization.
 
 ```json
 {
@@ -196,8 +209,9 @@ recovery, OCR assignment, or final table post-processing.
 
 ### Image Verification / SigLIP
 
-`IMAGE_VERIFICATION_MODEL_URL /predict` receives categories in the exact prompt
-order that backend expects. The runtime must return logits in the same order.
+`GATEWAY_URL /api/v1/image-classifications` forwards to SigLIP on the Image
+Verification leaf service. It receives categories in the exact prompt order that
+backend expects. The runtime must return logits in the same order.
 
 ```json
 {
