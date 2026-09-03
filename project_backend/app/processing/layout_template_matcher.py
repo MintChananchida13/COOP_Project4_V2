@@ -2,8 +2,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .db import connect as connect_db
-from .layout_signature_service import compare_layout_signatures, signature_from_json
+from app.core.db import connect as connect_db
+from app.processing.layout_signature_service import compare_layout_signatures, signature_from_json
 
 
 def _connect() -> Any:

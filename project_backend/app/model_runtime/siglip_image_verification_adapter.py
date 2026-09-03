@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from .model_runtime_client import (
+from app.core.model_runtime_client import (
     ModelRuntimeKind,
     ModelRuntimeUnavailableError,
     is_runtime_configured,

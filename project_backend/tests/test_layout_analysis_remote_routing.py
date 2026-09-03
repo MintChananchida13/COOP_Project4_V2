@@ -6,8 +6,8 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from app.layout_analysis_service import LayoutAnalysisUnavailableError, analyze_layout, detect_text_boxes
-from app.model_runtime_client import ModelRuntimeUnavailableError
+from app.model_runtime.layout_analysis_service import LayoutAnalysisUnavailableError, analyze_layout, detect_text_boxes
+from app.core.model_runtime_client import ModelRuntimeUnavailableError
 
 
 class LayoutAnalysisRemoteRoutingTest(unittest.TestCase):

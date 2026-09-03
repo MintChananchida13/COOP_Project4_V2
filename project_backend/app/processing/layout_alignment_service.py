@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from .layout_analysis_service import analyze_layout
-from .layout_signature_service import build_layout_signature, compare_layout_signatures
+from app.model_runtime.layout_analysis_service import analyze_layout
+from app.processing.layout_signature_service import build_layout_signature, compare_layout_signatures
 
 
 class LayoutAlignmentService:

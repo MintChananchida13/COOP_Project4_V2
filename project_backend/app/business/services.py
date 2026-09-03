@@ -15,17 +15,17 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from .alignment_service import AlignmentService
-from .db import connect as connect_db
-from .image_normalization import ImageNormalizationService
-from .image_verification_category_service import (
+from app.processing.alignment_service import AlignmentService
+from app.core.db import connect as connect_db
+from app.processing.image_normalization import ImageNormalizationService
+from app.business.image_verification_category_service import (
     ImageVerificationCategoryService,
     categories_to_runtime_payload,
     ensure_image_verification_categories_table,
     get_image_verification_category,
     list_image_verification_categories,
 )
-from .layout_analysis_service import (
+from app.model_runtime.layout_analysis_service import (
     AUTO_ROI_EXPAND_BOTTOM_PX,
     AUTO_ROI_EXPAND_LEFT_PX,
     AUTO_ROI_EXPAND_RIGHT_PX,
@@ -33,15 +33,15 @@ from .layout_analysis_service import (
     analyze_layout,
     detect_text_boxes,
 )
-from .layout_signature_service import build_layout_signature, compare_layout_signatures, signature_from_json, signature_to_json
-from .layout_template_matcher import search_layout_candidates
-from .ocr_adapter import OcrUnavailableError, ocr_roi, ocr_rois, recognize_text_roi
-from .ocr_postprocess import normalize_ocr_text
-from .siglip_image_verification_adapter import (
+from app.processing.layout_signature_service import build_layout_signature, compare_layout_signatures, signature_from_json, signature_to_json
+from app.processing.layout_template_matcher import search_layout_candidates
+from app.processing.ocr_adapter import OcrUnavailableError, ocr_roi, ocr_rois, recognize_text_roi
+from app.processing.ocr_postprocess import normalize_ocr_text
+from app.model_runtime.siglip_image_verification_adapter import (
     verify_image_category,
 )
-from .table_recognition_v2_adapter import TableRecognitionV2UnavailableError, recognize_table_v2
-from .schemas import (
+from app.model_runtime.table_recognition_v2_adapter import TableRecognitionV2UnavailableError, recognize_table_v2
+from app.api.schemas import (
     CustomOcrRequest,
     DocumentUploadRequest,
     ExtractionRequest,
@@ -64,7 +64,7 @@ from .schemas import (
     TemplateVersionCreate,
     TemplateVersionFromRequestCreate,
 )
-from .json_utils import jsonb_dump, jsonb_load
+from app.core.json_utils import jsonb_dump, jsonb_load
 
 
 logger = logging.getLogger(__name__)
@@ -3409,7 +3409,7 @@ class AdminTemplateService:
         draft = self.get_template(template_id)
         if draft.get("status") == "not_found":
             raise HTTPException(status_code=404, detail="Template not found")
-        from .detection_service import detect_template_dev
+        from app.processing.detection_service import detect_template_dev
 
         detection = detect_template_dev(file_bytes, include_template_id=template_id)
         candidates = [

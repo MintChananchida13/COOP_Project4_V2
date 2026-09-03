@@ -5,12 +5,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.image_verification_category_service import (
+from app.business.image_verification_category_service import (
     ImageVerificationCategoryService,
     list_image_verification_categories,
 )
-from app.services import DecisionService, VerificationService
-from app.siglip_image_verification_adapter import (
+from app.business.services import DecisionService, VerificationService
+from app.model_runtime.siglip_image_verification_adapter import (
     SIGLIP_SCORING_VERSION,
     verify_image_category,
     verify_image_category_from_logits,

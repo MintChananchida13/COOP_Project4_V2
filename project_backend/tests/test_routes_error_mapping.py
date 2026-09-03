@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from app.routes import detect_template_dev_route
+from app.api.routes import detect_template_dev_route
 
 
 class FakeRequest:

@@ -3,7 +3,7 @@ import re
 from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional, Sequence
 
-from .auth_password import hash_password
+from app.auth.auth_password import hash_password
 
 
 _POSTGRES_READY = False

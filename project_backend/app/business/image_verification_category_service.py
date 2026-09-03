@@ -6,7 +6,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from fastapi import HTTPException
 
-from .db import connect as connect_db
+from app.core.db import connect as connect_db
 
 
 DEFAULT_IMAGE_VERIFICATION_CATEGORIES: List[Dict[str, Any]] = [

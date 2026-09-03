@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from app.model_runtime_client import ModelRuntimeUnavailableError
-from app.table_recognition_v2_adapter import (
+from app.core.model_runtime_client import ModelRuntimeUnavailableError
+from app.model_runtime.table_recognition_v2_adapter import (
     TableRecognitionV2UnavailableError,
     _build_table_candidate,
     _calculate_ocr_confidence,
@@ -28,8 +28,8 @@ from app.table_recognition_v2_adapter import (
     recognize_table_v2_local,
     table_recognition_runtime_summary,
 )
-from app.table_grid_analyzer import analyze_table_regions
-from app.ocr_postprocess import normalize_ocr_text, normalize_table_rows, parse_table_html_with_bs4
+from app.processing.table_grid_analyzer import analyze_table_regions
+from app.processing.ocr_postprocess import normalize_ocr_text, normalize_table_rows, parse_table_html_with_bs4
 
 
 class TableRecognitionV2AdapterRuntimeRoutingTest(unittest.TestCase):

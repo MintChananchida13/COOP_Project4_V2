@@ -1,6 +1,6 @@
 import unittest
 
-from app.services import VerificationService
+from app.business.services import VerificationService
 
 
 class VerificationScoringTest(unittest.TestCase):

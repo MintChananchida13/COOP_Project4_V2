@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.detection_service import _normalize_query_pages
+from app.processing.detection_service import _normalize_query_pages
 
 
 class DetectionPdfNormalizationTest(unittest.TestCase):

@@ -4,9 +4,9 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException, Request
 
-from .auth_service import authenticate_user, create_access_token, create_user
-from .db import connect as connect_db
-from .schemas import (
+from app.auth.auth_service import authenticate_user, create_access_token, create_user
+from app.core.db import connect as connect_db
+from app.api.schemas import (
     ApiResponse,
     AuthLoginRequest,
     AuthRegisterRequest,
@@ -32,9 +32,9 @@ from .schemas import (
     TemplateVersionCreate,
     TemplateVersionFromRequestCreate,
 )
-from .detection_service import detect_template_dev
-from .model_runtime_client import configured_runtimes
-from .services import (
+from app.processing.detection_service import detect_template_dev
+from app.core.model_runtime_client import configured_runtimes
+from app.business.services import (
     AdminTemplateService,
     EmbeddingService,
     StorageMaintenanceService,

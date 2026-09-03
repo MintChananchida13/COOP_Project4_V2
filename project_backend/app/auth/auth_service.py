@@ -6,8 +6,8 @@ from uuid import uuid4
 
 from fastapi import Depends, Header, HTTPException
 
-from .auth_password import hash_password, verify_password
-from .db import connect as connect_db
+from app.auth.auth_password import hash_password, verify_password
+from app.core.db import connect as connect_db
 
 
 _TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60

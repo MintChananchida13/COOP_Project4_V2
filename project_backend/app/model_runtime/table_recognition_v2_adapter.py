@@ -10,10 +10,10 @@ from typing import Any, Dict, List, Optional
 import cv2
 import numpy as np
 
-from .model_runtime_client import ModelRuntimeUnavailableError, remote_recognize_table_raw
-from .ocr_postprocess import normalize_ocr_text, normalize_table_rows, parse_table_html_with_bs4
-from .layout_analysis_service import LayoutAnalysisUnavailableError, detect_text_boxes
-from .table_grid_analyzer import analyze_table_regions
+from app.core.model_runtime_client import ModelRuntimeUnavailableError, remote_recognize_table_raw
+from app.processing.ocr_postprocess import normalize_ocr_text, normalize_table_rows, parse_table_html_with_bs4
+from app.model_runtime.layout_analysis_service import LayoutAnalysisUnavailableError, detect_text_boxes
+from app.processing.table_grid_analyzer import analyze_table_regions
 
 
 class TableRecognitionV2UnavailableError(RuntimeError):
@@ -508,7 +508,7 @@ def _recognize_text_crops_with_core(crops: List[np.ndarray], status_prefix: str)
 def run_paddle_thai_ocr_batch(crops: List[np.ndarray]) -> List[Dict[str, Any]]:
     """Compatibility seam for tests; production routes table text crops through the shared OCR core."""
     try:
-        from .ocr_adapter import recognize_text_roi
+        from app.processing.ocr_adapter import recognize_text_roi
     except Exception as error:
         return [{"text": "", "confidence": 0.0, "error": str(error)} for _ in crops]
 

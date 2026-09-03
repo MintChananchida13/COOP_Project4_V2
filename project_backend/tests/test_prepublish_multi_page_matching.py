@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from app.services import AdminTemplateService
+from app.business.services import AdminTemplateService
 
 
 class PrepublishMultiPageMatchingTest(unittest.TestCase):

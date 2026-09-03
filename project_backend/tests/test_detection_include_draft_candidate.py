@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from app.detection_service import _lightweight_candidate_from_result
+from app.processing.detection_service import _lightweight_candidate_from_result
 
 
 class DetectionIncludeDraftCandidateTest(unittest.TestCase):

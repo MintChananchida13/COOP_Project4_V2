@@ -5,10 +5,10 @@ from typing import Any, Dict, List, Tuple
 
 import cv2
 
-from .layout_analysis_service import LayoutAnalysisUnavailableError, detect_text_boxes
-from .ocr_postprocess import normalize_ocr_text
-from .paddle_thai_ocr_adapter import PaddleThaiOcrUnavailableError, run_paddle_thai_ocr, run_paddle_thai_ocr_batch
-from .table_recognition_v2_adapter import TableRecognitionV2UnavailableError, recognize_table_v2
+from app.model_runtime.layout_analysis_service import LayoutAnalysisUnavailableError, detect_text_boxes
+from app.processing.ocr_postprocess import normalize_ocr_text
+from app.model_runtime.paddle_thai_ocr_adapter import PaddleThaiOcrUnavailableError, run_paddle_thai_ocr, run_paddle_thai_ocr_batch
+from app.model_runtime.table_recognition_v2_adapter import TableRecognitionV2UnavailableError, recognize_table_v2
 
 
 class OcrUnavailableError(RuntimeError):

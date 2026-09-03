@@ -9,17 +9,17 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from .alignment_service import AlignmentService
-from .anchor_projection_service import AnchorProjectionService
-from .db import connect as connect_db
-from .image_normalization import ImageNormalizationService
-from .layout_analysis_service import analyze_layout
-from .layout_alignment_service import LayoutAlignmentService
-from .layout_signature_service import build_layout_signature
-from .layout_template_matcher import search_layout_candidates
-from .ocr_adapter import OcrUnavailableError, ocr_rois
-from .pipeline_core import get_pipeline_core_config
-from .services import DecisionService, VerificationService
+from app.processing.alignment_service import AlignmentService
+from app.processing.anchor_projection_service import AnchorProjectionService
+from app.core.db import connect as connect_db
+from app.processing.image_normalization import ImageNormalizationService
+from app.model_runtime.layout_analysis_service import analyze_layout
+from app.processing.layout_alignment_service import LayoutAlignmentService
+from app.processing.layout_signature_service import build_layout_signature
+from app.processing.layout_template_matcher import search_layout_candidates
+from app.processing.ocr_adapter import OcrUnavailableError, ocr_rois
+from app.core.pipeline_core import get_pipeline_core_config
+from app.business.services import DecisionService, VerificationService
 
 
 DETECTION_THRESHOLD = 0.75

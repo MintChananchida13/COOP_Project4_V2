@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from app.paddle_thai_ocr_adapter import (
+from app.model_runtime.paddle_thai_ocr_adapter import (
     PaddleThaiOcrUnavailableError,
     run_paddle_thai_ocr,
     run_paddle_thai_ocr_batch,

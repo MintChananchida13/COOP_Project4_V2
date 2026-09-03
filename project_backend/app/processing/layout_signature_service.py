@@ -3,7 +3,7 @@ import math
 from collections import Counter, defaultdict
 from typing import Any, Dict, List, Sequence
 
-from .json_utils import jsonb_load
+from app.core.json_utils import jsonb_load
 
 
 LABELS = ("text", "table", "image")

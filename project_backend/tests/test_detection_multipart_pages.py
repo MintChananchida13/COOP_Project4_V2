@@ -3,7 +3,7 @@ import unittest
 
 from PIL import Image
 
-from app.routes import _extract_multipart_file
+from app.api.routes import _extract_multipart_file
 
 
 def _png_bytes(color: str) -> bytes:

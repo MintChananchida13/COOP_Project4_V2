@@ -500,7 +500,7 @@ class ImageNormalizationService:
         }
 
         try:
-            from .layout_analysis_service import analyze_layout
+            from app.model_runtime.layout_analysis_service import analyze_layout
 
             analysis = analyze_layout(image, expand_text_rois=False)
         except Exception as error:

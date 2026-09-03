@@ -5,8 +5,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from .ocr_postprocess import normalize_ocr_text
-from .model_runtime_client import (
+from app.processing.ocr_postprocess import normalize_ocr_text
+from app.core.model_runtime_client import (
     ModelRuntimeKind,
     ModelRuntimeUnavailableError,
     is_runtime_configured,

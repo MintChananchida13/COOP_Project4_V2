@@ -3,8 +3,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from app.ocr_adapter import _recognize_text_crops_with_detection
-from app.ocr_postprocess import normalize_ocr_text
+from app.processing.ocr_adapter import _recognize_text_crops_with_detection
+from app.processing.ocr_postprocess import normalize_ocr_text
 
 
 class OcrAdapterTextDetectionTest(unittest.TestCase):

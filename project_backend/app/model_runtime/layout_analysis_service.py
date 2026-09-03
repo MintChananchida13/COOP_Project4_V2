@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Literal
 import cv2
 import numpy as np
 
-from .model_runtime_client import (
+from app.core.model_runtime_client import (
     ModelRuntimeKind,
     ModelRuntimeUnavailableError,
     is_runtime_configured,

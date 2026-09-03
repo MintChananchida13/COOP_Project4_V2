@@ -1,6 +1,6 @@
 import unittest
 
-from app.adaptive_roi_service import AdaptiveRoiService
+from app.processing.adaptive_roi_service import AdaptiveRoiService
 
 
 class AdaptiveRoiServiceTest(unittest.TestCase):

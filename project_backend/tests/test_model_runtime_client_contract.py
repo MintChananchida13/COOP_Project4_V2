@@ -4,12 +4,12 @@ from unittest.mock import patch
 
 import numpy as np
 
-from app.model_runtime_client import (
+from app.core.model_runtime_client import (
     ModelRuntimeKind,
     _post_predict,
     remote_recognize_image,
 )
-from app.table_recognition_v2_adapter import recognize_table_v2
+from app.model_runtime.table_recognition_v2_adapter import recognize_table_v2
 
 
 class _FakeHttpResponse:

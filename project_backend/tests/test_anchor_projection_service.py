@@ -1,7 +1,7 @@
 import unittest
 
 try:
-    from app.anchor_projection_service import AnchorProjectionService
+    from app.processing.anchor_projection_service import AnchorProjectionService
 except ModuleNotFoundError as error:
     if error.name == "cv2":
         AnchorProjectionService = None

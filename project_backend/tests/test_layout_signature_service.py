@@ -1,7 +1,7 @@
 import unittest
 
-from app.layout_signature_service import build_layout_signature, compare_layout_signatures
-from app.services import DecisionService
+from app.processing.layout_signature_service import build_layout_signature, compare_layout_signatures
+from app.business.services import DecisionService
 
 
 def _layout(regions, width=1000, height=500):

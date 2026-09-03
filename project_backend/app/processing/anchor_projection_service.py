@@ -7,9 +7,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from .adaptive_roi_service import AdaptiveRoiService
-from .layout_analysis_service import LayoutAnalysisUnavailableError, detect_text_boxes
-from .paddle_thai_ocr_adapter import PaddleThaiOcrUnavailableError, run_paddle_thai_ocr
+from app.processing.adaptive_roi_service import AdaptiveRoiService
+from app.model_runtime.layout_analysis_service import LayoutAnalysisUnavailableError, detect_text_boxes
+from app.model_runtime.paddle_thai_ocr_adapter import PaddleThaiOcrUnavailableError, run_paddle_thai_ocr
 
 
 Point = Tuple[float, float]

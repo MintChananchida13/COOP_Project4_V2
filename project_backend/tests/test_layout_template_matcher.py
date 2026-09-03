@@ -2,8 +2,8 @@ import json
 import unittest
 from unittest.mock import patch
 
-from app.layout_signature_service import build_layout_signature
-from app.layout_template_matcher import search_layout_candidates
+from app.processing.layout_signature_service import build_layout_signature
+from app.processing.layout_template_matcher import search_layout_candidates
 
 
 def _layout(regions):

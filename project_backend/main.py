@@ -17,12 +17,12 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
 
-from app.local_env import load_local_env
+from app.core.local_env import load_local_env
 
 load_local_env()
 
-from app.routes import router as blueprint_router
-from app.layout_analysis_service import (
+from app.api.routes import router as blueprint_router
+from app.model_runtime.layout_analysis_service import (
     AUTO_ROI_EXPAND_BOTTOM_PX,
     AUTO_ROI_EXPAND_LEFT_PX,
     AUTO_ROI_EXPAND_RIGHT_PX,
@@ -31,13 +31,13 @@ from app.layout_analysis_service import (
     analyze_layout,
     detect_text_boxes,
 )
-from app.ocr_adapter import recognize_text_roi
-from app.ocr_postprocess import normalize_ocr_text, normalize_table_rows
-from app.paddle_thai_ocr_adapter import PaddleThaiOcrUnavailableError, run_paddle_thai_ocr, run_paddle_thai_ocr_batch
-from app.table_recognition_v2_adapter import TableRecognitionV2UnavailableError, recognize_table_v2
-from app.db import connect as db_connect
-from app.json_utils import jsonb_dump, jsonb_load
-from app.model_runtime_client import configured_runtimes
+from app.processing.ocr_adapter import recognize_text_roi
+from app.processing.ocr_postprocess import normalize_ocr_text, normalize_table_rows
+from app.model_runtime.paddle_thai_ocr_adapter import PaddleThaiOcrUnavailableError, run_paddle_thai_ocr, run_paddle_thai_ocr_batch
+from app.model_runtime.table_recognition_v2_adapter import TableRecognitionV2UnavailableError, recognize_table_v2
+from app.core.db import connect as db_connect
+from app.core.json_utils import jsonb_dump, jsonb_load
+from app.core.model_runtime_client import configured_runtimes
 
 # Force UTF-8 console output on Windows.
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")

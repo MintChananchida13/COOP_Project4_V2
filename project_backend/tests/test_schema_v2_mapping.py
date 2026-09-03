@@ -2,7 +2,7 @@ import unittest
 
 from fastapi import HTTPException
 
-from app.services import _resolve_image_category_id
+from app.business.services import _resolve_image_category_id
 
 
 class FakeCursor:
