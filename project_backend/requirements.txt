@@ -3,11 +3,11 @@ uvicorn==0.28.0
 pydantic==2.6.4
 opencv-python-headless==4.9.0.80
 pillow
-numpy<2
+numpy==1.26.4
 pymupdf
 psycopg2-binary>=2.9.9
+python-multipart
+requests
 pythainlp
 beautifulsoup4
 lxml
-python-multipart
-requests
