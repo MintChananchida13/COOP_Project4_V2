@@ -22,23 +22,7 @@ class TableRecognitionV2UnavailableError(RuntimeError):
 
 logger = logging.getLogger(__name__)
 
-_TABLE_MODEL: Any = None
-_TABLE_MODEL_KIND = ""
-_TABLE_WIRED_MODEL_NAME = (
-    os.getenv("PADDLE_TABLE_WIRED_MODEL_NAME")
-    or os.getenv("PADDLE_TABLE_MODEL_NAME")
-    or os.getenv("PADDLE_TABLE_RECOGNITION_MODEL_NAME")
-    or "SLANeXt_wired"
-)
-_TABLE_WIRELESS_MODEL_NAME = (
-    os.getenv("PADDLE_TABLE_WIRELESS_MODEL_NAME")
-    or os.getenv("PADDLE_TABLE_MODEL_NAME")
-    or os.getenv("PADDLE_TABLE_RECOGNITION_MODEL_NAME")
-    or "SLANeXt_wireless"
-)
-_TABLE_MODEL_NAME = f"{_TABLE_WIRED_MODEL_NAME}/{_TABLE_WIRELESS_MODEL_NAME}"
-_TABLE_TEXT_RECOGNITION_MODEL_NAME = os.getenv("PADDLE_TABLE_TEXT_RECOGNITION_MODEL_NAME", "th_PP-OCRv5_mobile_rec")
-_TABLE_DEVICE = "cpu"
+_TABLE_MODEL_NAME = "remote_table_runtime"
 _BORDERLESS_MIN_COLUMNS = 2
 _BORDERLESS_MIN_ROWS = 2
 _TABLE_BORDERLESS_FINAL_CONFIDENCE_THRESHOLD = 0.72
@@ -208,56 +192,13 @@ def _set_final_table_trace(result: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-def _common_model_kwargs() -> Dict[str, Any]:
-    return {
-        "device": _TABLE_DEVICE,
-        "enable_mkldnn": False,
-        "enable_cinn": False,
-        "use_tensorrt": False,
-    }
-
-
-def _load_table_model() -> Any:
-    global _TABLE_MODEL, _TABLE_MODEL_KIND
-    if _TABLE_MODEL is not None:
-        logger.info("Reusing cached TableRecognitionPipelineV2 (device=%s)", _TABLE_DEVICE)
-        return _TABLE_MODEL
-
-    try:
-        from paddleocr import TableRecognitionPipelineV2  # type: ignore
-    except ImportError as import_error:
-        raise TableRecognitionV2UnavailableError(
-            "table_recognition_v2 requires paddleocr 3.x with TableRecognitionPipelineV2 installed."
-        ) from import_error
-
-    try:
-        logger.info("Loading TableRecognitionPipelineV2 (device=%s)", _TABLE_DEVICE)
-        _TABLE_MODEL = TableRecognitionPipelineV2(
-            wired_table_structure_recognition_model_name=_TABLE_WIRED_MODEL_NAME,
-            wireless_table_structure_recognition_model_name=_TABLE_WIRELESS_MODEL_NAME,
-            text_recognition_model_name=_TABLE_TEXT_RECOGNITION_MODEL_NAME,
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_layout_detection=False,
-            use_ocr_model=True,
-            **_common_model_kwargs(),
-        )
-        _TABLE_MODEL_KIND = "pipeline_v2"
-        return _TABLE_MODEL
-    except Exception as init_error:
-        raise TableRecognitionV2UnavailableError(
-            f"Failed to initialize PaddleOCR table_recognition_v2 model {_TABLE_MODEL_NAME}: {init_error}"
-        ) from init_error
-
-
 def table_recognition_runtime_summary() -> Dict[str, Any]:
     return {
         "enabled": True,
         "structure_model": _TABLE_MODEL_NAME,
-        "wired_structure_model": _TABLE_WIRED_MODEL_NAME,
-        "wireless_structure_model": _TABLE_WIRELESS_MODEL_NAME,
-        "text_recognition_model": _TABLE_TEXT_RECOGNITION_MODEL_NAME,
-        "device": _TABLE_DEVICE,
+        "runtime": "model_service",
+        "configured": _use_remote_runtime(),
+        "url": _model_service_url() or None,
     }
 
 
@@ -2620,64 +2561,45 @@ def _attach_candidate_competition(selected: Dict[str, Any], candidates: List[Dic
     return selected
 
 
-def _predict_table_model(model: Any, image: np.ndarray) -> Any:
+def _predict_table_model(image: np.ndarray) -> Any:
     started = time.perf_counter()
-    if _use_remote_runtime():
-        try:
-            remote_result = remote_recognize_table_raw(image)
-        except ModelRuntimeUnavailableError as error:
-            raise TableRecognitionV2UnavailableError(str(error)) from error
-        except Exception as error:
-            raise TableRecognitionV2UnavailableError(str(error)) from error
-        finally:
-            logger.info("Table Recognition phase timing: phase=SLANeXt remote inference elapsed=%.3fs", time.perf_counter() - started)
-
-        if remote_result is None:
-            raise TableRecognitionV2UnavailableError("Remote Table Recognition runtime returned no result.")
-        if not isinstance(remote_result, dict):
-            raise TableRecognitionV2UnavailableError("Remote Table Recognition runtime returned an invalid response.")
-        if "raw_output" in remote_result:
-            raw_output = remote_result.get("raw_output")
-            if isinstance(raw_output, list) and isinstance(remote_result.get("cell_bbox"), list):
-                geometry_sources = remote_result.get("geometry_sources")
-                merged = []
-                for index, item in enumerate(raw_output):
-                    if isinstance(item, dict):
-                        next_item = dict(item)
-                        next_item.setdefault("cell_bbox", remote_result.get("cell_bbox"))
-                        if geometry_sources is not None:
-                            next_item.setdefault("geometry_sources", geometry_sources)
-                        merged.append(next_item)
-                    else:
-                        merged.append(item)
-                return merged
-            return raw_output
-        if "output" in remote_result:
-            return remote_result.get("output")
-        if "result" in remote_result:
-            return remote_result.get("result")
-        return remote_result
-
-    if model is None:
+    if not _use_remote_runtime():
         raise TableRecognitionV2UnavailableError("TABLE_MODEL_URL is not configured.")
 
-    temp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-    temp.close()
     try:
-        if not cv2.imwrite(temp.name, image):
-            raise TableRecognitionV2UnavailableError("Unable to prepare table image for table_recognition_v2.")
-        if _TABLE_MODEL_KIND == "pipeline_v2":
-            return model.predict(
-                input=temp.name,
-                use_doc_orientation_classify=False,
-                use_doc_unwarping=False,
-                use_layout_detection=False,
-                use_ocr_model=True,
-            )
-        return model.predict(input=temp.name, batch_size=1)
+        remote_result = remote_recognize_table_raw(image)
+    except ModelRuntimeUnavailableError as error:
+        raise TableRecognitionV2UnavailableError(str(error)) from error
+    except Exception as error:
+        raise TableRecognitionV2UnavailableError(str(error)) from error
     finally:
-        logger.info("Table Recognition phase timing: phase=SLANeXt inference elapsed=%.3fs", time.perf_counter() - started)
-        Path(temp.name).unlink(missing_ok=True)
+        logger.info("Table Recognition phase timing: phase=SLANeXt remote inference elapsed=%.3fs", time.perf_counter() - started)
+
+    if remote_result is None:
+        raise TableRecognitionV2UnavailableError("Remote Table Recognition runtime returned no result.")
+    if not isinstance(remote_result, dict):
+        raise TableRecognitionV2UnavailableError("Remote Table Recognition runtime returned an invalid response.")
+    if "raw_output" in remote_result:
+        raw_output = remote_result.get("raw_output")
+        if isinstance(raw_output, list) and isinstance(remote_result.get("cell_bbox"), list):
+            geometry_sources = remote_result.get("geometry_sources")
+            merged = []
+            for item in raw_output:
+                if isinstance(item, dict):
+                    next_item = dict(item)
+                    next_item.setdefault("cell_bbox", remote_result.get("cell_bbox"))
+                    if geometry_sources is not None:
+                        next_item.setdefault("geometry_sources", geometry_sources)
+                    merged.append(next_item)
+                else:
+                    merged.append(item)
+            return merged
+        return raw_output
+    if "output" in remote_result:
+        return remote_result.get("output")
+    if "result" in remote_result:
+        return remote_result.get("result")
+    return remote_result
 
 
 def _slanext_result_from_output(output: Any, image: np.ndarray, started: float, region_debug: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -2706,9 +2628,8 @@ def _slanext_result_from_output(output: Any, image: np.ndarray, started: float, 
         "row_count": len(rows),
         "column_count": max((len(row) for row in rows), default=0),
         "raw_result_count": len(dicts),
-        "model_kind": _TABLE_MODEL_KIND,
+        "model_kind": "remote",
         "source_structure_model": source_structure_model,
-        "text_recognition_model": _TABLE_TEXT_RECOGNITION_MODEL_NAME,
         "runtime_called": True,
         "input_size": [int(input_width), int(input_height)],
         "elapsed_seconds": round(time.perf_counter() - started, 3),
@@ -4011,7 +3932,6 @@ def _merge_region_candidates(region_candidates: List[Dict[str, Any]], semi_analy
 
 def _try_semi_structured_table(
     image: np.ndarray,
-    model: Any,
     started: float,
     analysis: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
@@ -4051,7 +3971,7 @@ def _try_semi_structured_table(
         normalized_image = normalizer["image"]
         normalizer_debug = normalizer.get("debug") if isinstance(normalizer.get("debug"), dict) else {}
         try:
-            output = _predict_table_model(model, normalized_image)
+            output = _predict_table_model(normalized_image)
             result = _slanext_result_from_output(
                 output,
                 normalized_image,
@@ -4149,7 +4069,7 @@ def _try_forced_semi_after_empty_slanext(
 ) -> Optional[Dict[str, Any]]:
     forced_analysis = _forced_whole_roi_semi_analysis(image, previous_analysis)
     try:
-        result = _try_semi_structured_table(image, None, time.perf_counter(), forced_analysis)
+        result = _try_semi_structured_table(image, time.perf_counter(), forced_analysis)
     except Exception as error:
         logger.info("Forced grid-normalized semi failed before coordinate fallback: %s", error)
         result = None
@@ -4187,23 +4107,16 @@ def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
             "table_debug": {"status": "empty_image", "runtime_called": True},
         }
 
-    logger.info(
-        "Using remote Table Recognition inference with backend table processing"
-        if _use_remote_runtime()
-        else "Using local Table Recognition runtime"
-    )
+    if not _use_remote_runtime():
+        raise TableRecognitionV2UnavailableError("TABLE_MODEL_URL is not configured.")
+
+    logger.info("Using remote Table Recognition inference with backend table processing")
     semi_analysis: Optional[Dict[str, Any]] = None
 
     whole_started = time.perf_counter()
-    model = None
-    if not _use_remote_runtime():
-        try:
-            model = _load_table_model()
-        except TableRecognitionV2UnavailableError:
-            logger.info("Local TableRecognitionPipelineV2 is unavailable; deferring to inference call.")
     model_inference_count += 1
     input_trace = _debug_input_trace(image) if _table_debug_trace_enabled() else None
-    output = _predict_table_model(model, image)
+    output = _predict_table_model(image)
     logger.info(
         "Table Recognition phase timing: phase=Whole ROI SLANeXt elapsed=%.3fs",
         time.perf_counter() - whole_started,
@@ -4316,7 +4229,7 @@ def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
             len(semi_analysis.get("regions") or []) if isinstance(semi_analysis, dict) else 0,
             time.perf_counter() - grid_started,
         )
-        semi_result = _try_semi_structured_table(image, model, started, semi_analysis)
+        semi_result = _try_semi_structured_table(image, started, semi_analysis)
         if semi_result:
             semi_candidate = _build_table_candidate(semi_result, "coordinate_based_semi")
             reliability = _semi_result_reliability(semi_candidate, semi_analysis if isinstance(semi_analysis, dict) else {})

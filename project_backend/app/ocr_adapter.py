@@ -481,7 +481,7 @@ def ocr_text_regions(image_path: str) -> Dict[str, Any]:
         )
 
     return {
-        "engine": "paddleocr",
+        "engine": "text_detection_model_runtime",
         "model": detection.get("model"),
         "image_width": image_width,
         "image_height": image_height,

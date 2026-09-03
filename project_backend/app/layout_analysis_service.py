@@ -2,7 +2,6 @@ import logging
 import tempfile
 from dataclasses import dataclass
 import os
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Literal
 
 import cv2
@@ -18,16 +17,6 @@ from .model_runtime_client import (
 
 logger = logging.getLogger(__name__)
 
-_BACKEND_ROOT = Path(__file__).resolve().parents[1]
-_PADDLEX_CACHE_HOME = _BACKEND_ROOT / "storage" / "paddlex_cache"
-os.environ.setdefault("PADDLE_PDX_CACHE_HOME", str(_PADDLEX_CACHE_HOME))
-os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
-os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "False")
-os.environ.setdefault("PADDLE_PDX_USE_PIR_TRT", "False")
-os.environ.setdefault("FLAGS_use_mkldnn", "0")
-os.environ.setdefault("FLAGS_json_format_model", "False")
-
-
 class LayoutAnalysisUnavailableError(RuntimeError):
     pass
 
@@ -42,8 +31,6 @@ class LayoutRegion:
     confidence: float = 0.0
 
 
-_LAYOUT_MODEL: Any = None
-_TEXT_DETECTOR: Any = None
 _LAYOUT_MODEL_NAME = "PP-DocLayoutV3"
 _TEXT_DETECTION_MODEL_NAME = "PP-OCRv5_server_det"
 AUTO_ROI_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_EXPAND_TOP_PX", "8"))
@@ -62,23 +49,6 @@ AutoRoiMode = Literal["text_line"]
 def _require_runtime(kind: ModelRuntimeKind) -> None:
     if not is_runtime_configured(kind):
         raise LayoutAnalysisUnavailableError(f"{kind.value} model runtime URL is not configured.")
-
-
-def _common_model_kwargs() -> Dict[str, Any]:
-    return {
-        "device": "cpu",
-        "enable_mkldnn": False,
-        "enable_cinn": False,
-        "use_tensorrt": False,
-    }
-
-
-def _load_layout_model() -> Any:
-    raise LayoutAnalysisUnavailableError("Backend no longer loads layout models. Set LAYOUT_MODEL_URL.")
-
-
-def _load_text_detector() -> Any:
-    raise LayoutAnalysisUnavailableError("Backend no longer loads text detection models. Set TEXT_DETECTION_MODEL_URL.")
 
 
 def _clamp_ratio(value: float) -> float:
@@ -239,56 +209,6 @@ def _layout_detection_items_from_response(value: Any) -> List[Dict[str, Any]]:
         for item in _walk_layout_items(value)
         if _normalize_region_type(_extract_label(item)) in {"table", "image"}
     ]
-
-
-def _run_layout_detection(image_path: str) -> List[Dict[str, Any]]:
-    pipeline = _load_layout_model()
-    predict = getattr(pipeline, "predict", None)
-    result = predict(input=image_path, batch_size=1) if callable(predict) else pipeline(image_path)
-    items = _walk_layout_items(result)
-    return [
-        item
-        for item in items
-        if _normalize_region_type(_extract_label(item)) in {"table", "image"}
-    ]
-
-
-def _run_text_detection(image_path: str) -> List[Dict[str, Any]]:
-    detector = _load_text_detector()
-    predict = getattr(detector, "predict", None)
-    result = predict(input=image_path, batch_size=1) if callable(predict) else detector(image_path)
-    text_items: List[Dict[str, Any]] = []
-    for item in result if isinstance(result, (list, tuple)) else [result]:
-        item_dict = _as_dict(item) or {}
-        data = item_dict.get("res") if isinstance(item_dict.get("res"), dict) else item_dict
-        polygons = data.get("dt_polys") if isinstance(data, dict) else None
-        scores = data.get("dt_scores") if isinstance(data, dict) else None
-        if isinstance(polygons, np.ndarray):
-            polygons = polygons.tolist()
-        if isinstance(scores, np.ndarray):
-            scores = scores.tolist()
-        if not isinstance(polygons, (list, tuple)):
-            continue
-        for index, polygon in enumerate(polygons):
-            score = 0.0
-            if isinstance(scores, (list, tuple)) and index < len(scores):
-                try:
-                    score = float(scores[index])
-                except (TypeError, ValueError):
-                    score = 0.0
-            text_items.append(
-                {
-                    "label": "text",
-                    "dt_polys": polygon,
-                    "score": score,
-                    "source": "text_detection",
-                }
-            )
-    return text_items
-
-
-def _run_pipeline(image: np.ndarray, image_path: str) -> List[Dict[str, Any]]:
-    return [*_run_text_detection(image_path), *_run_layout_detection(image_path)]
 
 
 def _intersection_area(box_a: List[float], box_b: List[float]) -> float:
@@ -703,7 +623,7 @@ def analyze_layout(image: np.ndarray, expand_text_rois: bool = False, auto_roi_m
     regions.sort(key=lambda region: (region["roi"]["y_ratio"], region["roi"]["x_ratio"], -region["roi"]["width_ratio"] * region["roi"]["height_ratio"]))
 
     return {
-        "engine": "paddleocr",
+        "engine": "layout_model_runtime",
         "model": f"{_LAYOUT_MODEL_NAME}+{_TEXT_DETECTION_MODEL_NAME}",
         "image_width": width,
         "image_height": height,
@@ -777,7 +697,7 @@ def detect_text_boxes(image_path: str) -> Dict[str, Any]:
         )
 
     return {
-        "engine": "paddleocr",
+        "engine": "text_detection_model_runtime",
         "model": _TEXT_DETECTION_MODEL_NAME,
         "image_width": width,
         "image_height": height,

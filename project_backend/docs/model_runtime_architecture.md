@@ -23,16 +23,16 @@ Kaggle or any future model host owns model loading and raw inference only.
 Set one URL per model runtime:
 
 ```powershell
-$env:LAYOUT_MODEL_URL="https://.../layout"
-$env:TEXT_DETECTION_MODEL_URL="https://.../text-detection"
-$env:TEXT_RECOGNITION_MODEL_URL="https://.../text-recognition"
-$env:TABLE_MODEL_URL="https://.../table"
-$env:IMAGE_VERIFICATION_MODEL_URL="https://.../image-verification"
+$env:LAYOUT_MODEL_URL="http://127.0.0.1:8101"
+$env:TEXT_DETECTION_MODEL_URL="http://127.0.0.1:8102"
+$env:TEXT_RECOGNITION_MODEL_URL="http://127.0.0.1:8103"
+$env:TABLE_MODEL_URL="http://127.0.0.1:8104"
+$env:IMAGE_VERIFICATION_MODEL_URL="http://127.0.0.1:8105"
 ```
 
-Demo Kaggle URLs and future permanent URLs must be swapped by changing these
-environment variables only. Do not hard-code runtime URLs in process or service
-code.
+Local server, staging, and future permanent URLs must be swapped by changing
+these environment variables only. Do not hard-code runtime URLs in process or
+service code.
 
 ## Runtime API Contract
 

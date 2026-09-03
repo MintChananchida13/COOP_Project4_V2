@@ -2222,8 +2222,7 @@ class VerificationService:
             field.get("error")
             and (
                 "OCR verification requires" in field["error"]
-                or "Paddle" in field["error"]
-                or "paddleocr" in field["error"].lower()
+                or "model runtime" in field["error"].lower()
             )
             for field in checked_fields
         )

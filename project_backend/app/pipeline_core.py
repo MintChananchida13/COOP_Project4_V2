@@ -33,5 +33,5 @@ def get_pipeline_core_config() -> PipelineCoreConfig:
         text_recognition_model_url=os.getenv("TEXT_RECOGNITION_MODEL_URL", "").strip(),
         table_model_url=os.getenv("TABLE_MODEL_URL", "").strip(),
         image_verification_model_url=os.getenv("IMAGE_VERIFICATION_MODEL_URL", "").strip(),
-        ocr_model=os.getenv("PADDLE_THAI_OCR_MODEL_NAME", "th_PP-OCRv5_mobile_rec"),
+        ocr_model="th_PP-OCRv5_mobile_rec",
     )

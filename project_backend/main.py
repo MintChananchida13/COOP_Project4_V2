@@ -120,35 +120,6 @@ def _env_flag(name: str, default: str = "true") -> bool:
     return os.getenv(name, default).strip().lower() not in {"0", "false", "no", "off"}
 
 
-def warmup_paddle_models() -> Dict[str, Any]:
-    started = time.perf_counter()
-    sample = np.full((420, 720, 3), 255, dtype=np.uint8)
-    cv2.putText(sample, "Thai National ID Card", (40, 90), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2, cv2.LINE_AA)
-    cv2.putText(sample, "Name 1234567890", (40, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 0, 0), 2, cv2.LINE_AA)
-    cv2.rectangle(sample, (40, 210), (680, 350), (0, 0, 0), 2)
-    for x in (200, 360, 520):
-        cv2.line(sample, (x, 210), (x, 350), (0, 0, 0), 1)
-    for y in (255, 300):
-        cv2.line(sample, (40, y), (680, y), (0, 0, 0), 1)
-
-    layout = analyze_layout(sample)
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
-        temp_path = temp_file.name
-    try:
-        cv2.imwrite(temp_path, sample)
-        text_boxes = detect_text_boxes(temp_path)
-    finally:
-        Path(temp_path).unlink(missing_ok=True)
-    recognition = run_paddle_thai_ocr(sample[45:170, 30:500])
-    elapsed = round(time.perf_counter() - started, 2)
-    return {
-        "layout_regions": len(layout.get("regions") or []),
-        "text_boxes": len(text_boxes.get("regions") or []),
-        "ocr_model": recognition.get("model"),
-        "elapsed_seconds": elapsed,
-    }
-
-
 @app.on_event("startup")
 async def startup_warmup() -> None:
     print(f"Using external model runtimes: {configured_runtimes()}")
@@ -1251,7 +1222,7 @@ async def analyze_document_layout(payload: LayoutAnalysisPayload):
 
         return {
             "success": True,
-            "engine": "paddleocr",
+            "engine": "layout_model_runtime",
             "model": "PP-DocLayoutV3+PP-OCRv5",
             "auto_roi_mode": "text_line",
             "pages": pages,

@@ -138,7 +138,7 @@ def build_layout_signature(layout_analysis: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "version": "layout-signature-v1",
-        "engine": layout_analysis.get("engine") or "paddleocr",
+        "engine": layout_analysis.get("engine") or "layout_model_runtime",
         "model": layout_analysis.get("model") or "PP-DocLayoutV3",
         "page_aspect_ratio": round(width / height, 6),
         "image_width": int(width),

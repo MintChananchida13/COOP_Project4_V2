@@ -524,11 +524,11 @@ cd project_backend
 .\venv\Scripts\activate
 pip install -r requirements.txt
 $env:DATABASE_URL="postgresql://postgres:postgres@localhost:5432/ocr_studio"
-$env:LAYOUT_MODEL_URL="https://kaggle-demo-layout.example"
-$env:TEXT_DETECTION_MODEL_URL="https://kaggle-demo-text-detection.example"
-$env:TEXT_RECOGNITION_MODEL_URL="https://kaggle-demo-text-recognition.example"
-$env:TABLE_MODEL_URL="https://kaggle-demo-table.example"
-$env:IMAGE_VERIFICATION_MODEL_URL="https://kaggle-demo-image-verification.example"
+$env:LAYOUT_MODEL_URL="http://127.0.0.1:8101"
+$env:TEXT_DETECTION_MODEL_URL="http://127.0.0.1:8102"
+$env:TEXT_RECOGNITION_MODEL_URL="http://127.0.0.1:8103"
+$env:TABLE_MODEL_URL="http://127.0.0.1:8104"
+$env:IMAGE_VERIFICATION_MODEL_URL="http://127.0.0.1:8105"
 uvicorn main:app --reload
 ```
 
@@ -636,7 +636,7 @@ Backend:
 
 ## Known Risks / TODO
 
-- ต้อง smoke test กับ Kaggle/permanent runtime URLs จริงทุกตัวก่อน production โดยเฉพาะ `TABLE_MODEL_URL` และ `IMAGE_VERIFICATION_MODEL_URL`
+- ต้อง smoke test กับ internal/permanent runtime URLs จริงทุกตัวก่อน production โดยเฉพาะ `TABLE_MODEL_URL` และ `IMAGE_VERIFICATION_MODEL_URL`
 - Full Auth ยังปิดไว้ชั่วคราว ต้องกลับมาเปิดและทดสอบ role/FK ก่อน production จริง
 - `detect-dev` endpoint name ยังเป็น legacy แม้ถูกใช้ใน real flow
 - Table OCR ยังขึ้นกับคุณภาพ ROI, เส้นตาราง, SLANeXt output และ OCR geometry

@@ -5,15 +5,15 @@ Use local frontend and backend, with model inference hosted on Kaggle.
 ## Backend
 
 Create `project_backend/.env.local` from `project_backend/env.local.example`
-and replace the Kaggle URLs:
+and set the internal model service URLs:
 
 ```env
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ocr_studio
-LAYOUT_MODEL_URL=https://your-kaggle-layout-runtime.example
-TEXT_DETECTION_MODEL_URL=https://your-kaggle-text-detection-runtime.example
-TEXT_RECOGNITION_MODEL_URL=https://your-kaggle-text-recognition-runtime.example
-TABLE_MODEL_URL=https://your-kaggle-table-runtime.example
-IMAGE_VERIFICATION_MODEL_URL=https://your-kaggle-image-verification-runtime.example
+LAYOUT_MODEL_URL=http://127.0.0.1:8101
+TEXT_DETECTION_MODEL_URL=http://127.0.0.1:8102
+TEXT_RECOGNITION_MODEL_URL=http://127.0.0.1:8103
+TABLE_MODEL_URL=http://127.0.0.1:8104
+IMAGE_VERIFICATION_MODEL_URL=http://127.0.0.1:8105
 ```
 
 Run:

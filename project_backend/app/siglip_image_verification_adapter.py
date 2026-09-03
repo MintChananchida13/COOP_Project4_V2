@@ -17,11 +17,6 @@ SIGLIP_MODEL_NAME = "google/siglip-so400m-patch14-384"
 SIGLIP_MODEL_VERSION = "google/siglip-so400m-patch14-384"
 SIGLIP_SCORING_VERSION = "siglip-image-category-binary-v3"
 
-_SIGLIP_PROCESSOR = None
-_SIGLIP_MODEL = None
-_SIGLIP_DEVICE: Optional[str] = None
-
-
 @dataclass(frozen=True)
 class SiglipCategoryConfig:
     value: str
@@ -346,18 +341,6 @@ def _result_from_remote(
         ui_percentages=ui_percentages,
         error=remote_result.get("error"),
     )
-
-
-def _load_siglip_runtime():
-    raise RuntimeError("Backend no longer loads SigLIP models. Set IMAGE_VERIFICATION_MODEL_URL.")
-
-
-def _verify_image_category_local(
-    image_path: str,
-    image_category: str,
-    categories: List[SiglipCategoryConfig],
-) -> SiglipImageVerificationResult:
-    raise RuntimeError("Backend no longer runs local SigLIP inference. Set IMAGE_VERIFICATION_MODEL_URL.")
 
 
 def verify_image_category_from_logits(

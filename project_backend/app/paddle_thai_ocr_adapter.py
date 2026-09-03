@@ -1,6 +1,5 @@
 import logging
 import os
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
@@ -22,24 +21,7 @@ class PaddleThaiOcrUnavailableError(RuntimeError):
 
 logger = logging.getLogger(__name__)
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
-PADDLE_CACHE_DIR = BACKEND_ROOT / "storage" / "paddlex_cache"
-PADDLE_TEMP_DIR = BACKEND_ROOT / "storage" / "paddle_tmp"
-PADDLE_THAI_OCR_MODEL_NAME = os.environ.get("PADDLE_THAI_OCR_MODEL_NAME", "th_PP-OCRv5_mobile_rec")
-PADDLE_THAI_OCR_MODEL_DIR = os.environ.get("PADDLE_THAI_OCR_MODEL_DIR")
-
-PADDLE_TEMP_DIR.mkdir(parents=True, exist_ok=True)
-os.environ.setdefault("PADDLE_PDX_CACHE_HOME", str(PADDLE_CACHE_DIR))
-os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
-os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "False")
-os.environ.setdefault("PADDLE_PDX_USE_PIR_TRT", "False")
-os.environ.setdefault("FLAGS_use_mkldnn", "0")
-os.environ.setdefault("FLAGS_json_format_model", "False")
-os.environ.setdefault("TMP", str(PADDLE_TEMP_DIR))
-os.environ.setdefault("TEMP", str(PADDLE_TEMP_DIR))
-
-
-_TEXT_RECOGNIZER: Any = None
+TEXT_RECOGNITION_MODEL_NAME = "th_PP-OCRv5_mobile_rec"
 
 
 def _require_text_recognition_runtime() -> None:
@@ -49,19 +31,6 @@ def _require_text_recognition_runtime() -> None:
 
 def _env_flag(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _common_model_kwargs() -> Dict[str, Any]:
-    return {
-        "device": "cpu",
-        "enable_mkldnn": False,
-        "enable_cinn": False,
-        "use_tensorrt": False,
-    }
-
-
-def _load_text_recognizer() -> Any:
-    raise PaddleThaiOcrUnavailableError("Backend no longer loads text recognition models. Set TEXT_RECOGNITION_MODEL_URL.")
 
 
 def _as_dict(value: Any) -> Optional[Dict[str, Any]]:
@@ -137,20 +106,20 @@ def _result_from_output(output: Any) -> Dict[str, Any]:
     text, confidence = _extract_text_confidence(output)
     normalized_text = normalize_ocr_text(text)
     output_dict = _as_dict(output) or {}
-    runtime_model = output_dict.get("model") or PADDLE_THAI_OCR_MODEL_NAME
+    runtime_model = output_dict.get("model") or TEXT_RECOGNITION_MODEL_NAME
     result = {
         "text": normalized_text,
         "confidence": float(confidence),
         "engine": "paddle_thai_ocr",
         "model": runtime_model,
-        "configured_model": PADDLE_THAI_OCR_MODEL_NAME,
+        "configured_model": TEXT_RECOGNITION_MODEL_NAME,
         "raw_text": text,
         "normalized_text": normalized_text,
         "segments": [],
         "attempts": [],
         "preprocessing": "paddle_text_recognition",
     }
-    if _env_flag("PADDLE_OCR_INCLUDE_RAW_OUTPUT", "false"):
+    if _env_flag("BACKEND_OCR_INCLUDE_RAW_OUTPUT", "false"):
         result["raw_output"] = _json_safe([_as_dict(output) or str(output)])
     return result
 
@@ -161,7 +130,7 @@ def run_paddle_thai_ocr(opencv_img: np.ndarray) -> Dict[str, Any]:
             "text": "",
             "confidence": 0.0,
             "engine": "paddle_thai_ocr",
-            "model": PADDLE_THAI_OCR_MODEL_NAME,
+            "model": TEXT_RECOGNITION_MODEL_NAME,
             "error": "empty_image",
         }
 
