@@ -35,7 +35,7 @@ MODEL_RUNTIME_GATEWAY_PATH: Dict[ModelRuntimeKind, str] = {
     ModelRuntimeKind.TEXT_DETECTION: "/api/v1/text-detections?version=v5",
     ModelRuntimeKind.TEXT_RECOGNITION: "/api/v1/text-recognitions",
     ModelRuntimeKind.TABLE: "/api/v1/table-model-results",
-    ModelRuntimeKind.IMAGE_VERIFICATION: "/api/v1/image-verifications",
+    ModelRuntimeKind.IMAGE_VERIFICATION: "/api/v1/image-classifications",
 }
 
 
@@ -80,8 +80,17 @@ def _path_to_data_url(image_path: str) -> str:
     return f"data:image/{mime};base64," + base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-def _post_predict(kind: ModelRuntimeKind, payload: Dict[str, Any], timeout: float = 120.0) -> Dict[str, Any]:
-    endpoint_url = runtime_url(kind)
+def _post_predict(
+    kind: ModelRuntimeKind,
+    payload: Dict[str, Any],
+    timeout: float = 120.0,
+    path_override: Optional[str] = None,
+) -> Dict[str, Any]:
+    if path_override:
+        gateway_url = GATEWAY_URL.strip().rstrip("/")
+        endpoint_url = f"{gateway_url}{path_override}" if gateway_url else None
+    else:
+        endpoint_url = runtime_url(kind)
     if not endpoint_url:
         raise ModelRuntimeUnavailableError("GATEWAY_URL is not configured.")
 
@@ -166,6 +175,7 @@ def remote_recognize_images(images: List[np.ndarray]) -> Optional[Dict[str, Any]
         ModelRuntimeKind.TEXT_RECOGNITION,
         {"images": [_image_to_data_url(image) for image in images]},
         timeout=240.0,
+        path_override="/api/v1/text-recognition-batches",
     )
 
 
