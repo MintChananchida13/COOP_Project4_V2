@@ -1,604 +1,494 @@
-﻿# PROJECT_MEMORY.md
+# Project Memory
 
 # Intelligent Document Template Management System
 
-> Production-ready Document Intelligence Platform
+เอกสารนี้เป็น memory ระดับโปรเจกต์ ใช้เตือนหลักคิด สถาปัตยกรรม และขอบเขตที่ไม่ควรเปลี่ยนโดยไม่ตั้งใจ
 
 ---
 
-# 1. Project Vision
+## 1. Project Vision
 
-Build a production-ready Document Intelligence Platform capable of:
+สร้างระบบ Document Intelligence Platform ที่พร้อมต่อ production โดยรองรับ:
 
-- Detecting document templates by layout
-- Verifying document identity using OCR
-- Extracting only user-selected information
-- Supporting any structured document without hardcoding document types
-- Allowing continuous template expansion through an admin workflow
+- ตรวจจับเอกสารว่าเข้ากับ Template ใด
+- จัดการ Template และ ROI ผ่าน User/Admin workflow
+- Extract เฉพาะข้อมูลที่ผู้ใช้เลือก
+- รองรับเอกสารหลายหน้า
+- ตรวจสอบข้อมูลด้วยหลาย evidence ไม่พึ่งคะแนนเดียว
+- เพิ่ม Template และ Model Services ได้ในอนาคตโดยไม่ redesign ระบบหลัก
 
-The system should evolve by improving independent modules rather than redesigning the whole architecture.
-
----
-
-# 2. Design Philosophy
-
-## Layout First
-
-Document templates are identified primarily by layout rather than OCR text.
+ระบบนี้ไม่ใช่ OCR app อย่างเดียว แต่เป็น platform สำหรับจัดการความรู้ของเอกสารผ่าน Template, ROI, Verification และ Extraction pipeline
 
 ---
 
-## OCR Second
+## 2. Target Architecture
 
-OCR is used only after candidate retrieval for:
+```text
+Frontend
+  -> Backend / Process Service
+      -> Gateway :8080
+          -> Leaf Model Services
+```
 
+Backend ต้องเป็น Process Service เท่านั้น:
+
+- ไม่ load local model
+- ไม่ใช้ PaddleOCR/Paddle/Torch/Transformers ใน backend
+- ไม่เรียก `model.predict()` ใน backend
+- ไม่ fallback ไป local inference
+- เรียก model inference ผ่าน Gateway เท่านั้น
+
+Leaf Model Services เป็นเจ้าของ model loading และ raw inference:
+
+| Model | Leaf Service | Gateway Endpoint |
+| --- | --- | --- |
+| Layout | PP-DocLayoutV3 `:8001` | `/api/v1/document-layouts` |
+| Text Detection | PP-OCRv5 `:8002` | `/api/v1/text-detections?version=v5` |
+| Text Recognition | Thai Recognition `:8004` | `/api/v1/text-recognitions` |
+| Text Recognition Batch | Thai Recognition `:8004` | `/api/v1/text-recognition-batches` |
+| Table | TableRecognitionPipelineV2 `:8013` | `/api/v1/table-model-results` |
+| Image Verification | SigLIP `:8009` | `/api/v1/image-verifications` |
+
+---
+
+## 3. Ownership Boundary
+
+Backend owns:
+
+- Template detection workflow
+- Database access
+- ROI definition and ROI ratios
+- Crop orchestration
+- Auto ROI post-processing
+- Reading order
+- OCR text merge, normalize, and cleanup
+- Table parsing, normalization, quality gates, fallback, and final shaping
+- Image verification decision logic after raw SigLIP logits
 - Template verification
-- User-selected field extraction
-- Custom OCR
+- Export shaping
 
-The system should never OCR the entire document unless required.
+Gateway owns:
 
----
+- Authentication boundary between Backend and Model Services
+- Routing requests to leaf model services
+- Keeping leaf endpoints hidden from Backend callers
 
-## Candidate Retrieval, not Classification
+Leaf Model Services own:
 
-Visual embedding models (such as SigLIP) retrieve candidate templates.
+- Model loading
+- GPU/CPU runtime setup
+- Raw inference
+- JSON-serializable inference response
 
-They are not responsible for final document classification.
-
-Final confirmation must combine multiple evidence sources.
-
----
-
-## Modular AI
-
-Every AI component must be replaceable.
-
-Business logic must never depend on one specific AI model.
+Do not move project/business logic into Model Services.
 
 ---
 
-## Service-Oriented Architecture
+## 4. Core Principles
 
-AI logic belongs inside services.
+### Relative ROI
 
-Frontend and business logic should never directly depend on AI implementations.
+Store persistent ROI as ratios, not pixels.
 
----
+Every ROI should keep:
 
-# 3. Core Principles
+- `page_number`
+- `x_ratio`
+- `y_ratio`
+- `width_ratio`
+- `height_ratio`
 
-The following principles must never change.
+Pixel coordinates are allowed only as temporary runtime geometry.
 
-## Relative ROI
-
-Store ROI as ratios.
-
-Never persist pixel coordinates.
-
-Every ROI contains:
-
-- page_number
-- x_ratio
-- y_ratio
-- width_ratio
-- height_ratio
-
----
-
-## Multi-page Native
+### Multi-page Native
 
 Every pipeline must preserve page context.
 
 Supported inputs:
 
-- Image
-- Multiple Images
+- image
+- multiple images
 - PDF
 
----
+Do not assume user page order always equals template page order.
 
-## Ignore Regions
+### Template First
 
-Ignore dynamic regions before generating layout embeddings.
+Templates are the source of document knowledge.
 
-Examples:
+A template may include:
 
-- Names
-- Numbers
-- QR Codes
-- Signatures
+- pages
+- extraction fields
+- verification anchors
+- ignore regions
+- layout signature
+- detection mode
+- confidence thresholds
+- version metadata
 
-Ignore Regions preserve layout consistency.
+### Confidence-driven Workflow
 
----
+Important stages should expose confidence/evidence. Final decisions should combine multiple signals rather than relying on one model score.
 
-## Template Fields
+### Replaceable AI
 
-Use only one Template Field model.
-
-Verification Fields are Template Fields where
-
-use_for_verification = true
-
-Do not create separate verification field tables.
+Models must be replaceable behind Gateway without changing backend business logic.
 
 ---
 
-## Confidence-driven Workflow
+## 5. Detection Pipeline
 
-Every important stage returns confidence.
-
-The final decision must never rely on one score only.
-
----
-
-# 4. High-Level Architecture
-
-```
-Upload Document
-        â”‚
-        â–¼
-Split into Pages
-        â”‚
-        â–¼
-Image Preprocessing
-        â”‚
-        â–¼
-Generate Layout Embedding
-        â”‚
-        â–¼
-Candidate Retrieval (Top-K)
-        â”‚
-        â–¼
-Multi-stage Verification
-        â”‚
-        â–¼
-Page Matching
-        â”‚
-        â–¼
-Document Alignment
-        â”‚
-        â–¼
-ROI Projection
-        â”‚
-        â–¼
-OCR Extraction
-        â”‚
-        â–¼
-Field Validation
-        â”‚
-        â–¼
-Confidence Engine
-        â”‚
-        â–¼
-Result
+```text
+Upload document
+-> Split into pages
+-> Normalize image
+-> Generate layout signature
+-> Retrieve candidate templates
+-> Verify candidates
+-> Match pages
+-> Align document
+-> Project ROI
+-> Extract fields
+-> Validate and score
+-> Return result
 ```
 
----
-
-# 5. Detection Pipeline
-
-The detection pipeline consists of:
-
-1. Generate layout embedding.
-2. Retrieve Top-K candidate templates.
-3. Verify each candidate.
-4. Match document pages.
-5. Calculate confidence.
-6. Confirm template.
-
-Candidate retrieval is never the final decision.
+Candidate retrieval is not the final decision. Final confirmation must use multiple evidence sources.
 
 ---
 
-# 6. Extraction Pipeline
+## 6. Extraction Pipeline
 
-Extraction begins only after template confirmation.
+Extraction begins after template confirmation.
 
-Workflow:
-
+```text
 Template
-
-â†“
-
-Page Matching
-
-â†“
-
-Alignment
-
-â†“
-
-ROI Projection
-
-â†“
-
-OCR
-
-â†“
-
-Validation
-
-â†“
-
-Result
+-> Page matching
+-> Alignment
+-> ROI projection
+-> Crop final ROI
+-> Model inference through Gateway
+-> Backend post-processing
+-> Validation
+-> Result
+```
 
 ---
 
-# 7. User Workflow
+## 7. User Workflow
 
-User uploads document.
+```text
+Upload
+-> Adjust
+-> Detect Template
+-> Select fields
+-> OCR / Table / Image processing
+-> Review Ground Truth
+-> Export
+```
 
-â†“
-
-System detects template.
-
-â†“
-
-If confirmed:
-
-- Display selectable fields.
-- User selects desired fields.
-- OCR selected fields only.
-- Return structured result.
-
-If no template is confirmed:
-
-â†“
-
-Open Custom OCR Studio.
-
-â†“
-
-User draws ROI.
-
-â†“
-
-OCR selected ROI.
-
-â†“
-
-Optional Template Request.
+If no template is confirmed, user can still use Custom OCR / ROI workflow and optionally send a Template Request.
 
 ---
 
-# 8. Admin Workflow
+## 8. Admin Workflow
 
-Template Request
+```text
+Template Request or Manual Create
+-> Adjust sample pages
+-> Define Extraction ROI
+-> Define Verification ROI
+-> Configure thresholds and weights
+-> Pre-Publish validation
+-> Test with new document
+-> Publish
+```
 
-â†“
-
-Review Request
-
-â†“
-
-Convert to Template
-
-â†“
-
-Adjust Sample Pages
-
-â†“
-
-Create Template Fields
-
-â†“
-
-Mark Verification Fields
-
-â†“
-
-Create Ignore Regions
-
-â†“
-
-Validate Template
-
-â†“
-
-Generate Embedding
-
-â†“
-
-Activate Template
+Admin flow must preserve draft/published version behavior.
 
 ---
 
-# 9. Template Lifecycle
+## 9. ROI Types
 
-Draft
+### Fix ROI
 
-â†“
+ใช้กับข้อมูลตำแหน่งคงที่
 
-Validated
+```text
+Template ROI
+-> Align / map document
+-> Crop ROI
+-> OCR / Table / Image pipeline
+-> Field result
+```
 
-â†“
+### Flexible ROI
 
-Embedding Pending
+Flexible ROI คือ search boundary ไม่ใช่กรอบ OCR สุดท้ายโดยตรง
 
-â†“
+```text
+Search boundary
+-> Layout/Text Detection inside boundary
+-> Split into Text/Table/Image child ROI
+-> Crop final child ROI
+-> Process by type
+-> Field result
+```
 
-Active
+หลักสำคัญ:
 
-â†“
-
-Deprecated
-
-â†“
-
-Archived
-
-Only Active templates participate in candidate retrieval.
-
----
-
-# 10. Template Knowledge Model
-
-A template represents document knowledge.
-
-Each template may contain:
-
-- Pages
-- Fields
-- Verification Fields
-- Ignore Regions
-- Detection Rules
-- Validation Rules
-- Embeddings
-- Version Information
-
-Future metadata may be added without redesigning the architecture.
+- ซ่อนกรอบแม่ใน user flow ถ้ามี ROI ย่อยที่ตรวจพบจริง
+- Text paragraph grouping ใช้ geometry เป็นหลัก
+- Reading order อยู่ฝั่ง Backend
+- Table/Image ROI behavior ต้องไม่ถูกเปลี่ยนจาก text-line cleanup
 
 ---
 
-# 11. Service Overview
+## 10. Auto ROI
 
-Core services include:
+Auto ROI ใช้ผลจาก Layout และ Text Detection ผ่าน Gateway
 
-- PageSplitService
-- ImageProcessingService
-- ImageEncoderService
-- EmbeddingService
-- VectorStoreService
-- OCRService
-- VerificationService
-- TemplateDetectionService
-- AlignmentService
-- ProjectionService
-- ExtractionService
-- ValidationService
-- ConfidenceService
-- AdminTemplateService
+Backend post-processing ต้อง:
 
-Each service has a single responsibility.
+- normalize box เป็น ROI ratio
+- filter text ที่อยู่ใน table region
+- filter image region ที่มี text ภายใน
+- merge tiny `text_line` fragments เช่น วรรณยุกต์ จุด และเศษตัวอักษร เข้า text line หลักเมื่อ overlap หรืออยู่ใกล้
+- discard tiny fragment เฉพาะกรณี isolated และไม่มี text line ใกล้
+- ใช้ proximity/overlap เป็นหลัก ไม่ตัดจาก height อย่างเดียว
+- sort ตาม reading order logic เดิม
+- ไม่เปลี่ยน table/image ROI behavior
 
 ---
 
-# 12. Confidence Strategy
+## 11. OCR Pipeline
 
-Confidence should combine multiple stages.
+```text
+Final ROI
+-> Text Detection via Gateway
+-> Text line crop/rectify
+-> Text Recognition via Gateway
+-> Reading order
+-> Merge segments
+-> normalize_ocr_text()
+-> cleanup_ocr_noise()
+-> Final text result
+```
 
-Possible evidence:
-
-- Retrieval Confidence
-- Verification Confidence
-- Page Matching Confidence
-- Alignment Confidence
-- OCR Confidence
-- Validation Confidence
-
-The confidence formula may evolve.
-
-The architecture should not depend on one fixed formula.
-
----
-
-# 13. Failure Strategy
-
-Candidate Retrieval Failed
-
-â†“
-
-Open Custom OCR
+Backend owns all OCR post-processing. Model Services return raw detection/recognition output only.
 
 ---
 
-Verification Failed
+## 12. Table Recognition
 
-â†“
+```text
+Table ROI
+-> TableRecognitionPipelineV2 via Gateway
+-> Raw SLANeXt/Table output
+-> Backend parse and normalize
+-> Structure collapse recovery
+-> Quality gate
+-> Semi-table fallback if needed
+-> OCR-to-table fallback if needed
+-> Final structured table
+```
 
-Try Next Candidate
+Table Model Service must not own:
 
----
+- table quality gates
+- semi-table reconstruction
+- OCR assignment
+- final table post-processing
+- export shaping
 
-Alignment Failed
+Backend table result should preserve:
 
-â†“
-
-Retry
-
-â†“
-
-Fallback
-
----
-
-OCR Confidence Low
-
-â†“
-
-Require Review
-
----
-
-Validation Failed
-
-â†“
-
-Return Warning
-
----
-
-System Failure
-
-â†“
-
-Return Clear Error
+- `row`
+- `col`
+- `rowSpan`
+- `colSpan`
+- `hidden`
+- `bbox`
+- `text`
+- `ocrText`
+- `groundTruth`
 
 ---
 
-# 14. AI Extensibility
+## 13. Image Verification
 
-The architecture must support replacing AI modules.
+Image Verification uses SigLIP through Gateway.
 
-Image Verification
+Request shape:
 
-- SigLIP
-- CLIP
-- Future models
+```json
+{
+  "image": "data:image/png;base64,...",
+  "categories": [
+    {
+      "value": "signature",
+      "label": "ลายเซ็น",
+      "prompt": "This is a photo of a handwritten signature.",
+      "match_threshold": 0.45,
+      "margin_threshold": 0.04,
+      "evidence_temperature": 1.0,
+      "enabled": true
+    }
+  ]
+}
+```
 
-Layout Matching
+Model Service returns raw logits in the same order as categories.
 
-- PP-DocLayoutV3 Layout Signature
-- SQLite/PostgreSQL candidate scoring
-- Future indexing layer
+Backend owns:
 
-OCR
-
-- PaddleOCR
-- Tesseract
-- EasyOCR
-- Cloud OCR
-
-Alignment
-
-- ORB
-- SIFT
-- LoFTR
-- Future methods
-
-Replacing an AI module must not require changing business logic.
+- ranking
+- predicted category
+- target rank
+- score margin
+- `passed`
+- status
+- failure reason
+- UI percentages
 
 ---
 
-# 15. Coding Rules
+## 14. Environment Rules
+
+Backend runtime config:
+
+```env
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ocr_studio
+GATEWAY_URL=http://127.0.0.1:8080
+MODEL_GATEWAY_API_KEY=replace-with-model-gateway-api-key
+```
+
+Frontend runtime config:
+
+```env
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
+
+Do not hardcode:
+
+- Kaggle URL
+- trycloudflare URL
+- leaf model service URL inside Backend
+- API tokens
+- local model paths for Backend inference
+
+Do not use `INTERNAL_API_TOKEN` in Backend-to-Gateway requests. Backend must use `MODEL_GATEWAY_API_KEY`.
+
+---
+
+## 15. Failure Strategy
+
+```text
+Candidate retrieval failed
+-> Open Custom OCR / no-template flow
+
+Verification failed
+-> Try next candidate or return reviewable failure
+
+Alignment failed
+-> Fallback or require review
+
+OCR confidence low
+-> Return warning and allow user correction
+
+Table confidence low
+-> Try backend fallback path and expose debug metadata
+
+Model runtime unavailable
+-> Return clear runtime error
+
+System failure
+-> Return clear API error
+```
+
+---
+
+## 16. Coding Rules
 
 Always:
 
-- Preserve page context.
-- Store ROI as ratios.
-- Keep AI inside services.
-- Prefer refactoring over rewriting.
-- Avoid hardcoded document types.
-- Design modules to be replaceable.
-- Keep template metadata extensible.
+- preserve page context
+- store persistent ROI as ratios
+- keep model inference in Model Services
+- keep process/business logic in Backend
+- keep request/response contracts stable when changing routing
+- prefer scoped changes over rewrites
+- avoid hardcoded document types
+- keep template metadata extensible
 
 Never:
 
-- Store ROI as persistent pixels.
-- Couple business logic with AI models.
-- Assume page order equals template page order.
-- Depend on a single confidence score.
+- store persistent ROI as pixels
+- couple Backend business logic to local model implementations
+- add local Paddle/Torch/Transformers fallback in Backend
+- redesign architecture while fixing runtime routing
+- change ROI/crop/reading order/table post-processing casually
+- depend on a single confidence score
 
 ---
 
-# 16. Future Roadmap
+## 17. Current Production Direction
 
-Phase 1
+Target server layout:
 
-Template Management
+```text
+Backend :8000
+Gateway :8080
+Layout Service :8001
+Text Detection Service :8002
+Text Recognition Service :8004
+Image Verification Service :8009
+Table Service :8013
+Frontend :3000 or deployed static/Next runtime
+```
 
-âœ“ Completed
+Backend should only need:
 
-Phase 2
+- database connection
+- Gateway URL
+- Gateway API key
+- normal process dependencies from `requirements.txt`
 
-Embedding Pipeline
-
-âœ“ Completed
-
-Phase 3
-
-Candidate Retrieval
-
-âœ“ Completed
-
-Phase 4
-
-Multi-stage Verification
-
-In Progress
-
-Phase 5
-
-Page Matching
-
-Planned
-
-Phase 6
-
-Document Alignment
-
-Planned
-
-Phase 7
-
-ROI Projection
-
-Planned
-
-Phase 8
-
-Template-based Extraction
-
-Planned
-
-Phase 9
-
-Validation Engine
-
-Planned
-
-Phase 10
-
-Production User Flow
-
-Planned
+Backend should not need model-only dependencies.
 
 ---
 
-# 17. Never Remove
+## 18. Never Remove Without Care
 
-The following concepts are fundamental.
+The following concepts are fundamental:
 
 - Relative ROI
-- Multi-page Support
-- Ignore Regions
-- OCR Verification
-- Candidate Retrieval
-- Confidence Engine
-- Template Lifecycle
-- Template Test Mode
-- Page Matching
-- Document Alignment
-- ROI Projection
+- Multi-page support
+- Ignore regions
+- Template lifecycle
+- Template versioning
+- Detection mode
+- Layout signature
+- Template matching
+- Verification anchors
+- Image verification categories
+- Page matching
+- Document alignment
+- ROI projection
 - Custom OCR
-- Template Request
-- Admin Approval
-- Selectable Extraction Fields
-- AI Abstraction
-- Service-oriented Architecture
+- Template request
+- Admin approval
+- Selectable extraction fields
+- Confidence engine
+- Backend/Model Service separation
 
 ---
 
-# 18. Long-term Vision
+## 19. Long-term Vision
 
-This project is not an OCR application.
+The project should evolve by improving independent modules while preserving architecture boundaries.
 
-It is a Document Intelligence Platform.
+Models can change. Gateway routes can change. Template metadata can grow.
 
-OCR is only one component.
-
-The platform should continue evolving by improving independent modules while preserving the overall architecture.
-
-Every module should be replaceable, testable, and maintainable without redesigning the entire system.
+The Backend must remain the stable owner of document process logic.
