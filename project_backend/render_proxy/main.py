@@ -28,7 +28,7 @@ async def proxy(path: str, request: Request):
         if key.lower() not in {"host", "content-length"}
     }
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=600.0) as client:
         upstream = await client.request(
             method=request.method,
             url=url,
