@@ -102,9 +102,18 @@ class LayoutAnalysisPayload(BaseModel):
 app = FastAPI(title="OCR AI Engine")
 DETECTION_DEBUG_DIR = Path(__file__).resolve().parent / "storage" / "detection_queries"
 
+FRONTEND_URL = os.getenv("FRONTEND_URL", "").strip().rstrip("/")
+
+allowed_origins = [
+    "http://localhost:3000",
+]
+
+if FRONTEND_URL:
+    allowed_origins.append(FRONTEND_URL)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
