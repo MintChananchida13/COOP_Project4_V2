@@ -43,7 +43,7 @@ def _connect() -> Any:
 
 
 def _storage_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "storage" / "detection_queries"
+    return Path(__file__).resolve().parents[2] / "storage" / "detection_queries"
 
 
 def _load_pillow():

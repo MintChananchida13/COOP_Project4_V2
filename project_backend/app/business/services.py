@@ -2350,7 +2350,7 @@ class DocumentService:
 class StorageMaintenanceService:
     GENERATED_DIRS = [
         Path(__file__).resolve().parents[1] / "cropped_rois",
-        Path(__file__).resolve().parents[1] / "storage" / "detection_queries",
+        Path(__file__).resolve().parents[2] / "storage" / "detection_queries",
         _storage_root() / "prepublish_detection_tests",
         _storage_root() / "template_extraction_test_crops",
         _storage_root() / "verification_query_anchor_crops",

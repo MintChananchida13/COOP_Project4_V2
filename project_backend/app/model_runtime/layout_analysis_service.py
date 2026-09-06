@@ -42,6 +42,8 @@ AUTO_ROI_TABLE_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_BOTTOM_
 AUTO_ROI_TABLE_EXPAND_LEFT_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_LEFT_PX", "2"))
 AUTO_ROI_TABLE_EXPAND_RIGHT_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_RIGHT_PX", "2"))
 AUTO_ROI_MAX_NEIGHBOR_OVERLAP_RATIO = float(os.getenv("AUTO_ROI_MAX_NEIGHBOR_OVERLAP_RATIO", "0.15"))
+AUTO_ROI_TABLE_NESTED_OVERLAP_RATIO = float(os.getenv("AUTO_ROI_TABLE_NESTED_OVERLAP_RATIO", "0.92"))
+AUTO_ROI_TABLE_NESTED_AREA_RATIO = float(os.getenv("AUTO_ROI_TABLE_NESTED_AREA_RATIO", "1.02"))
 
 AutoRoiMode = Literal["text_line"]
 
@@ -563,7 +565,13 @@ def _filter_nested_same_type_regions(items: List[Dict[str, Any]]) -> List[Dict[s
             existing_area = max(_box_area(existing_box), 1.0)
             overlap_ratio = _intersection_area(box, existing_box) / area
             area_ratio = area / existing_area
-            if overlap_ratio >= 0.88 and area_ratio <= 0.72:
+            nested_same_type = overlap_ratio >= 0.88 and area_ratio <= 0.72
+            nested_table_shell = (
+                region_type == "table"
+                and overlap_ratio >= AUTO_ROI_TABLE_NESTED_OVERLAP_RATIO
+                and area_ratio <= AUTO_ROI_TABLE_NESTED_AREA_RATIO
+            )
+            if nested_same_type or nested_table_shell:
                 nested = True
                 logger.debug(
                     "Auto ROI dropped nested %s box=%s inside=%s overlap=%.3f area_ratio=%.3f",
