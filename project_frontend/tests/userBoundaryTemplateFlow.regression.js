@@ -19,6 +19,8 @@ const compiled =
   `
 module.exports.__flowTest = {
   dataUrlToFile,
+  buildFlexibleResolvedDisplayRois,
+  buildWholePageAutoRois,
   buildTemplateCanvasImages,
   templateFieldsToWorkspaceRois,
   parseHtmlTableStructured,
@@ -153,6 +155,33 @@ class TestImage {
 }
 
 global.Image = TestImage;
+global.document = {
+  createElement(tag) {
+    if (tag !== "canvas") throw new Error(`Unexpected element in regression test: ${tag}`);
+    return {
+      width: 0,
+      height: 0,
+      getContext(type) {
+        if (type !== "2d") return null;
+        return {
+          fillStyle: "",
+          fillRect() {},
+          save() {},
+          restore() {},
+          beginPath() {},
+          moveTo() {},
+          lineTo() {},
+          closePath() {},
+          clip() {},
+          drawImage() {},
+        };
+      },
+      toDataURL(type) {
+        return `data:${type || "image/png"};base64,Y3JvcA==`;
+      },
+    };
+  },
+};
 global.DOMParser = class DOMParser {
   parseFromString(html) {
     const rowMatches = [...String(html).matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)];
@@ -187,6 +216,31 @@ global.fetch = async (url) => {
       blob: async () => new Blob(["image"], { type: "image/jpeg" }),
     };
   }
+  if (String(url).endsWith("/api/layout/analyze")) {
+    return {
+      ok: true,
+      json: async () => ({
+        success: true,
+        pages: [
+          {
+            page_index: 0,
+            regions: [
+              {
+                type: "text",
+                data_type: "text",
+                roi: { x_ratio: 0.2, y_ratio: 0.3, width_ratio: 0.4, height_ratio: 0.1 },
+              },
+              {
+                type: "table",
+                data_type: "table",
+                roi: { x_ratio: 0.1, y_ratio: 0.5, width_ratio: 0.8, height_ratio: 0.2 },
+              },
+            ],
+          },
+        ],
+      }),
+    };
+  }
   throw new Error(`Unexpected fetch in regression test: ${url}`);
 };
 
@@ -201,7 +255,7 @@ testModule.require = (request) => {
   if (request.includes("../user/components/")) return function MockComponent() {};
   if (request === "../shared/ui") return { InlineState: function InlineState() {} };
   if (request === "../auth/AuthGate") return function AuthGate(props) { return props.children; };
-  if (request === "../auth/session") return { clearAuthSession() {}, readAuthSession: () => ({ role: "user", email: "user@ocr.com" }) };
+  if (request === "../auth/session") return { authHeaders: (headers = {}) => headers, clearAuthSession() {}, readAuthSession: () => ({ role: "user", email: "user@ocr.com" }) };
   if (request === "../types/ocr") return {};
   if (request === "../admin/adminApi") {
     return {
@@ -215,7 +269,14 @@ testModule.require = (request) => {
 testModule._compile(compiled, sourcePath);
 
 (async () => {
-  const { dataUrlToFile, buildTemplateCanvasImages, templateFieldsToWorkspaceRois, parseHtmlTableStructured } = testModule.exports.__flowTest;
+  const {
+    dataUrlToFile,
+    buildFlexibleResolvedDisplayRois,
+    buildWholePageAutoRois,
+    buildTemplateCanvasImages,
+    templateFieldsToWorkspaceRois,
+    parseHtmlTableStructured,
+  } = testModule.exports.__flowTest;
   const sourceImages = ["data:image/jpeg;base64,c291cmNl"];
 
   const file = await dataUrlToFile(sourceImages[0], "confirmed-document.jpg");
@@ -254,6 +315,66 @@ testModule._compile(compiled, sourcePath);
     ["A", "B", ""],
     ["", "C", "D"],
   ]);
+
+  const mainPageBundle = {
+    template: { id: "template-1", name: "Invoice", detectionMode: "main_page" },
+    pages: [{ id: "page-1", pageNumber: 1 }],
+    fields: [
+      {
+        id: "flex-field",
+        pageNumber: 1,
+        fieldName: "details_area",
+        displayLabel: "Details Area",
+        defaultSelected: true,
+        useForVerification: false,
+        dataType: "text",
+        extractionMethod: "paddle_thai_ocr",
+        roiMode: "flexible",
+        sortOrder: 1,
+        roi: { pageNumber: 1, xRatio: 0.1, yRatio: 0.1, widthRatio: 0.6, heightRatio: 0.4 },
+      },
+    ],
+  };
+  const multiPageDetection = {
+    ...detectionResponse,
+    pages: [
+      { pageIndex: 1, matched: false, bestCandidate: null, candidates: [] },
+      {
+        pageIndex: 2,
+        matched: true,
+        bestCandidate: { templateId: "template-1", alignedImagePreviewUrl: "data:image/png;base64,YWxpZ25lZC0y" },
+        candidates: [{ templateId: "template-1", alignedImagePreviewUrl: "data:image/png;base64,YWxpZ25lZC0y" }],
+      },
+    ],
+  };
+  const multiPageImages = ["data:image/jpeg;base64,cGFnZS0x", "data:image/jpeg;base64,cGFnZS0y"];
+  const mainPageIndex = 1;
+  const mainPageRois = await templateFieldsToWorkspaceRois(
+    mainPageBundle.fields,
+    multiPageImages,
+    multiPageDetection,
+    "template-1",
+    { templatePageToImageIndex: { 1: mainPageIndex } }
+  );
+  const flexibleResolvedRois = await buildFlexibleResolvedDisplayRois(multiPageImages, mainPageRois);
+  const resolvedParentIds = new Set(flexibleResolvedRois.map((roi) => roi.parentRoiId).filter((id) => typeof id === "number"));
+  const roisAfterFlexible = [
+    ...mainPageRois.map((roi) => resolvedParentIds.has(roi.id) ? { ...roi, enabled: false } : roi),
+    ...flexibleResolvedRois,
+  ];
+  const extraPageAutoRois = await buildWholePageAutoRois(multiPageImages, roisAfterFlexible, new Set([mainPageIndex]));
+  const finalRois = [...roisAfterFlexible, ...extraPageAutoRois];
+
+  assert.equal(mainPageRois.length, 1);
+  assert.equal(mainPageRois[0].pageIndex, 1);
+  assert.equal(roisAfterFlexible[0].enabled, false);
+  assert.equal(flexibleResolvedRois.length, 2);
+  assert(flexibleResolvedRois.every((roi) => roi.pageIndex === 1));
+  assert.equal(extraPageAutoRois.length, 2);
+  assert(extraPageAutoRois.every((roi) => roi.pageIndex === 0));
+  assert(extraPageAutoRois.every((roi) => roi.roiCoordinateSource === "whole_page_auto_roi"));
+  assert.equal(finalRois.filter((roi) => roi.pageIndex === 0).length, 2);
+  assert.equal(finalRois.filter((roi) => roi.pageIndex === 1 && roi.isResolvedBlock).length, 2);
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;
