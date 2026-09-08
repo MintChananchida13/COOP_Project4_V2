@@ -1238,6 +1238,8 @@ def _lightweight_candidate_from_result(result: Dict[str, Any], include_template_
         "model_name": metadata.get("model_name") or metadata.get("layout_signature_version"),
         "vector_store_engine": metadata.get("vector_store_engine") or "layout-signature",
         "retrieval_engine": metadata.get("retrieval_engine") or "layout_signature",
+        "query_page_index": metadata.get("query_page_index"),
+        "template_page_number": metadata.get("matched_layout_reference_page_number") or metadata.get("page_number"),
         "alignment_status": "not_evaluated",
         "alignment": _alignment_result("skipped", "candidate_not_fully_evaluated_fast_path"),
         "alignment_debug": {"reason": "candidate_not_fully_evaluated_fast_path"},
@@ -1335,6 +1337,8 @@ def _detect_page(page_info: Dict[str, Any], page_image_paths: Dict[int, str], in
         else:
             candidate = _lightweight_candidate_from_result(result, include_template_id=include_template_id)
         if candidate is not None:
+            candidate["query_page_index"] = page_index
+            candidate["template_page_number"] = candidate.get("template_page_number") or metadata.get("matched_layout_reference_page_number") or metadata.get("page_number")
             candidate["retrieval_rank"] = index
             candidate["layout_confident"] = layout_confident
             candidate["top_k_limit"] = DETECTION_TOP_K_LIMIT

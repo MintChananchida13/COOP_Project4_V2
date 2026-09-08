@@ -3404,7 +3404,15 @@ class AdminTemplateService:
                 enriched.append(candidate)
                 continue
             try:
-                verification = verifier.verify_template(str(template_id), page_paths)
+                candidate_metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+                candidate_detection_mode = str(candidate.get("detection_mode") or candidate_metadata.get("detection_mode") or "")
+                candidate_page_paths = page_paths
+                if candidate_detection_mode == "main_page":
+                    query_page_number = int(candidate.get("query_page_index") or candidate_metadata.get("query_page_index") or 1)
+                    template_page_number = int(candidate.get("template_page_number") or candidate_metadata.get("matched_layout_reference_page_number") or candidate_metadata.get("page_number") or 1)
+                    query_page_path = page_paths.get(query_page_number)
+                    candidate_page_paths = {template_page_number: query_page_path} if query_page_path else {}
+                verification = verifier.verify_template(str(template_id), candidate_page_paths)
             except Exception as error:
                 enriched.append(
                     {

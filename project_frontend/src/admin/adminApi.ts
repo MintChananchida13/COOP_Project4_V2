@@ -515,6 +515,7 @@ export interface PrepublishDetectionTestResult {
   passed: boolean;
   warning: boolean;
   candidates: PrepublishCandidate[];
+  pages?: DetectionPageResult[];
   separationResult: {
     draftTemplateRank?: number | null;
     draftFinalScore: number;
@@ -1543,7 +1544,7 @@ function mapPrepublishCandidate(candidate: Record<string, unknown>): PrepublishC
     ? (candidate.alignment_details as Record<string, unknown>[])
     : [],
   verificationSourceUsed: (candidate.verification_source_used as string | null | undefined) ?? null,
-  decision: String(candidate.decision || ""),
+  decision: String(candidate.decision || candidate.decision_path || candidate.decision_reason || ""),
   finalPassed: Boolean(candidate.final_passed),
   requiredPassed: typeof candidate.required_passed === "boolean" ? candidate.required_passed : null,
   requiredFailedFields: Array.isArray(candidate.required_failed_fields)
@@ -1703,6 +1704,9 @@ export const runPrepublishDetectionTest = async (templateId: string, file: File)
   const candidates = Array.isArray(data.candidates)
     ? (data.candidates as Record<string, unknown>[]).map(mapPrepublishCandidate)
     : [];
+  const pages = Array.isArray(data.pages)
+    ? (data.pages as Record<string, unknown>[]).map(mapDetectionPage)
+    : [];
   const separation = (data.separation_result as Record<string, unknown> | undefined) || {};
   return {
     testId: String(data.test_id || ""),
@@ -1716,6 +1720,7 @@ export const runPrepublishDetectionTest = async (templateId: string, file: File)
     passed: Boolean(data.passed),
     warning: Boolean(data.warning),
     candidates,
+    pages,
     separationResult: {
       draftTemplateRank: typeof separation.draft_template_rank === "number" ? separation.draft_template_rank : null,
       draftFinalScore: Number(separation.draft_final_score || 0),
