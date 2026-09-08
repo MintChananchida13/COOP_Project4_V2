@@ -97,9 +97,9 @@ const statusSelectLabel = (status: TemplateStatus) => {
 };
 
 const detectionModeLabel = (value?: string) => {
-  if (value === "main_page") return "main_page";
-  if (value === "all_pages") return "all_pages";
-  return value || "all_pages";
+  if (value === "main_page") return "main page";
+  if (value === "all_pages") return "all pages";
+  return value || "all pages";
 };
 
 export default function AdminTemplatesPage() {
