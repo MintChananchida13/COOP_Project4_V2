@@ -1290,16 +1290,27 @@ def _lightweight_candidate_from_result(result: Dict[str, Any], include_template_
     }
 
 
-def _detect_page(page_info: Dict[str, Any], page_image_paths: Dict[int, str], include_template_id: Optional[str] = None) -> Dict[str, Any]:
+def _detect_page(
+    page_info: Dict[str, Any],
+    page_image_paths: Dict[int, str],
+    include_template_id: Optional[str] = None,
+    timing: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
     page_index = int(page_info["page_index"])
     normalized_image_path = str(page_info["normalized_path"])
+    step_started = time.perf_counter()
     query_signature = _layout_signature_for_image_path(normalized_image_path)
+    if timing is not None:
+        timing["layout_analysis"] = timing.get("layout_analysis", 0.0) + (time.perf_counter() - step_started)
+    step_started = time.perf_counter()
     raw_results = search_layout_candidates(
         query_signature,
         page_number=page_index,
         limit=DETECTION_RETRIEVAL_LIMIT,
         include_template_id=include_template_id,
     )
+    if timing is not None:
+        timing["template_matching"] = timing.get("template_matching", 0.0) + (time.perf_counter() - step_started)
     candidates = []
     full_evaluation_count = 0
     early_accept_rank = None
@@ -1325,6 +1336,7 @@ def _detect_page(page_info: Dict[str, Any], page_image_paths: Dict[int, str], in
         )
         if should_fully_evaluate:
             full_evaluation_count += 1
+            step_started = time.perf_counter()
             candidate = _candidate_from_result(
                 result,
                 page_image_paths,
@@ -1334,6 +1346,8 @@ def _detect_page(page_info: Dict[str, Any], page_image_paths: Dict[int, str], in
                 allow_alignment=index <= DETECTION_ALIGNMENT_LIMIT,
                 include_template_id=include_template_id,
             )
+            if timing is not None:
+                timing["verification"] = timing.get("verification", 0.0) + (time.perf_counter() - step_started)
         else:
             candidate = _lightweight_candidate_from_result(result, include_template_id=include_template_id)
         if candidate is not None:
@@ -1543,17 +1557,44 @@ def _no_match_message(candidates: List[Dict[str, Any]]) -> str:
     return "ไม่มี Template ที่ผ่านเกณฑ์การตรวจสอบและคะแนนความมั่นใจ"
 
 
-def detect_template_dev(file_bytes: bytes, include_template_id: Optional[str] = None, cleanup_generated: bool = True) -> Dict[str, Any]:
+def detect_template_dev(
+    file_bytes: bytes,
+    include_template_id: Optional[str] = None,
+    cleanup_generated: bool = True,
+    prepublish_timing: bool = False,
+    prepublish_total_started: Optional[float] = None,
+) -> Dict[str, Any]:
     query_id = f"detq_{uuid4().hex[:12]}"
+    timing: Dict[str, float] = {}
+    total_started = prepublish_total_started or time.perf_counter()
     try:
         source_type = "pdf" if file_bytes.lstrip().startswith(b"%PDF") else "image"
+        step_started = time.perf_counter()
         page_paths = _prepare_query_pages(query_id, file_bytes)
         skip_normalization = source_type == "pdf"
         normalized_pages = _normalize_query_pages(query_id, page_paths, skip_normalization=skip_normalization)
+        timing["prepare_pages"] = time.perf_counter() - step_started
+        if prepublish_timing:
+            print(f"[PREPUBLISH] prepare pages done: {timing['prepare_pages']:.2f}s")
         page_image_paths = {page["page_index"]: page["normalized_path"] for page in normalized_pages}
-        pages = [_detect_page(page, page_image_paths, include_template_id=include_template_id) for page in normalized_pages]
+        pages = [
+            _detect_page(page, page_image_paths, include_template_id=include_template_id, timing=timing)
+            for page in normalized_pages
+        ]
+        if prepublish_timing:
+            print(f"[PREPUBLISH] layout analysis done: {timing.get('layout_analysis', 0.0):.2f}s")
+            print(f"[PREPUBLISH] template matching done: {timing.get('template_matching', 0.0):.2f}s")
+            print(f"[PREPUBLISH] verification done: {timing.get('verification', 0.0):.2f}s")
+        step_started = time.perf_counter()
         candidates = _aggregate_candidates(pages)
+        timing["candidate_aggregation"] = time.perf_counter() - step_started
+        if prepublish_timing:
+            print(f"[PREPUBLISH] candidate aggregation done: {timing['candidate_aggregation']:.2f}s")
+        step_started = time.perf_counter()
         _attach_main_page_auto_roi_pages(candidates, normalized_pages)
+        timing["auto_roi"] = time.perf_counter() - step_started
+        if prepublish_timing:
+            print(f"[PREPUBLISH] auto roi done: {timing['auto_roi']:.2f}s")
         passing_candidates = sorted(
             [candidate for candidate in candidates if candidate["final_passed"]],
             key=lambda item: (item["final_score"], item["retrieval_score"]),

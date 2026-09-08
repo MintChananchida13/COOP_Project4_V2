@@ -3460,13 +3460,24 @@ class AdminTemplateService:
         return enriched
 
     def run_prepublish_detection_test(self, template_id: str, file_bytes: bytes) -> Dict[str, Any]:
+        total_started = time.perf_counter()
+        print("[PREPUBLISH] START")
+        step_started = time.perf_counter()
         draft = self.get_template(template_id)
+        print(f"[PREPUBLISH] load template done: {time.perf_counter() - step_started:.2f}s")
         if draft.get("status") == "not_found":
             raise HTTPException(status_code=404, detail="Template not found")
         from app.processing.detection_service import detect_template_dev
 
-        detection = detect_template_dev(file_bytes, include_template_id=template_id, cleanup_generated=False)
+        detection: Dict[str, Any] = {}
         try:
+            detection = detect_template_dev(
+                file_bytes,
+                include_template_id=template_id,
+                cleanup_generated=False,
+                prepublish_timing=True,
+                prepublish_total_started=total_started,
+            )
             candidates = [
                 {
                     **candidate,
@@ -3542,6 +3553,7 @@ class AdminTemplateService:
         finally:
             if not SAVE_DEBUG_ARTIFACTS:
                 shutil.rmtree(_detection_query_storage_root() / str(detection.get("query_id") or ""), ignore_errors=True)
+            print(f"[PREPUBLISH] TOTAL: {time.perf_counter() - total_started:.2f}s")
 
     def confirm_publish_template(self, template_id: str) -> Dict[str, Any]:
         template = self.get_template(template_id)
