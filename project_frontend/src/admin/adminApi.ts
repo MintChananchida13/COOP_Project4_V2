@@ -16,6 +16,8 @@ const fetchWithAuth = (input: RequestInfo | URL, init: RequestInit = {}) => {
   return fetch(input, { ...init, headers });
 };
 
+const sleep = (milliseconds: number) => new Promise((resolve) => globalThis.setTimeout(resolve, milliseconds));
+
 let templateRequestListCache: AdminTemplateRequest[] | null = null;
 let templateListCache: Template[] | null = null;
 let templateRequestListPromise: Promise<AdminTemplateRequest[]> | null = null;
@@ -1687,20 +1689,7 @@ export const runPrepublishSimulation = async (templateId: string): Promise<Prepu
   };
 };
 
-export const runPrepublishDetectionTest = async (templateId: string, file: File): Promise<PrepublishDetectionTestResult> => {
-  const formData = new FormData();
-  formData.append("file", file);
-  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/templates/${templateId}/prepublish-detection-test`, {
-    method: "POST",
-    body: formData,
-  });
-  const json = await response.json().catch(() => null);
-  if (!response.ok) {
-    const detail = json?.detail || json?.error?.message || json?.error || `Pre-publish detection test failed with ${response.status}`;
-    throw new Error(typeof detail === "string" ? detail : `Pre-publish detection test failed with ${response.status}`);
-  }
-
-  const data = (json?.data as Record<string, unknown> | undefined) || {};
+function mapPrepublishDetectionTestResult(data: Record<string, unknown>, templateId: string): PrepublishDetectionTestResult {
   const candidates = Array.isArray(data.candidates)
     ? (data.candidates as Record<string, unknown>[]).map(mapPrepublishCandidate)
     : [];
@@ -1731,6 +1720,48 @@ export const runPrepublishDetectionTest = async (templateId: string, file: File)
     },
     debug: (data.debug as Record<string, unknown> | undefined) || {},
   };
+}
+
+export const runPrepublishDetectionTest = async (templateId: string, file: File): Promise<PrepublishDetectionTestResult> => {
+  const formData = new FormData();
+  formData.append("file", file);
+  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/templates/${templateId}/prepublish-detection-test`, {
+    method: "POST",
+    body: formData,
+  });
+  const json = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = json?.detail || json?.error?.message || json?.error || `Pre-publish detection test failed with ${response.status}`;
+    throw new Error(typeof detail === "string" ? detail : `Pre-publish detection test failed with ${response.status}`);
+  }
+
+  const initialData = (json?.data as Record<string, unknown> | undefined) || {};
+  const jobId = typeof initialData.job_id === "string" ? initialData.job_id : "";
+  if (!jobId) {
+    return mapPrepublishDetectionTestResult(initialData, templateId);
+  }
+
+  while (true) {
+    await sleep(2500);
+    const pollResponse = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/templates/${templateId}/prepublish-detection-test/jobs/${jobId}`, {
+      method: "GET",
+      cache: "no-store",
+    });
+    const pollJson = await pollResponse.json().catch(() => null);
+    if (!pollResponse.ok) {
+      const detail = pollJson?.detail || pollJson?.error?.message || pollJson?.error || `Pre-publish detection job failed with ${pollResponse.status}`;
+      throw new Error(typeof detail === "string" ? detail : `Pre-publish detection job failed with ${pollResponse.status}`);
+    }
+    const job = (pollJson?.data as Record<string, unknown> | undefined) || {};
+    if (job.status === "completed") {
+      const result = asRecord(job.result);
+      return mapPrepublishDetectionTestResult(result, templateId);
+    }
+    if (job.status === "failed") {
+      const detail = job.error || "Pre-publish detection job failed.";
+      throw new Error(typeof detail === "string" ? detail : "Pre-publish detection job failed.");
+    }
+  }
 };
 
 export const confirmTemplatePublish = async (templateId: string) => {

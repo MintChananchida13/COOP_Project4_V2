@@ -1,8 +1,10 @@
 import io
+import threading
+from uuid import uuid4
 
 from typing import Any, Dict
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 
 from app.auth.auth_service import authenticate_user, create_access_token, create_user
 from app.core.db import connect as connect_db
@@ -49,10 +51,32 @@ admin_templates = AdminTemplateService()
 embeddings = EmbeddingService()
 storage_maintenance = StorageMaintenanceService()
 image_categories = ImageVerificationCategoryService()
+prepublish_detection_jobs_lock = threading.Lock()
+prepublish_detection_jobs: Dict[str, Dict[str, Any]] = {}
 
 
 def ok(data: dict) -> ApiResponse:
     return ApiResponse(data=data)
+
+
+def _run_prepublish_detection_job(job_id: str, template_id: str, file_bytes: bytes) -> None:
+    with prepublish_detection_jobs_lock:
+        job = prepublish_detection_jobs.get(job_id)
+        if job is not None:
+            job["status"] = "processing"
+    try:
+        result = admin_templates.run_prepublish_detection_test(template_id, file_bytes)
+        with prepublish_detection_jobs_lock:
+            job = prepublish_detection_jobs.get(job_id)
+            if job is not None:
+                job["status"] = "completed"
+                job["result"] = result
+    except Exception as error:
+        with prepublish_detection_jobs_lock:
+            job = prepublish_detection_jobs.get(job_id)
+            if job is not None:
+                job["status"] = "failed"
+                job["error"] = str(error)
 
 
 def _is_database_connection_error(error: Exception) -> bool:
@@ -606,9 +630,40 @@ def run_template_prepublish_simulation(template_id: str) -> ApiResponse:
 async def run_template_prepublish_detection_test(
     template_id: str,
     request: Request,
+    background_tasks: BackgroundTasks,
+    response: Response,
 ) -> ApiResponse:
     file_bytes = await _read_dev_detection_image(request)
-    return ok(admin_templates.run_prepublish_detection_test(template_id, file_bytes))
+    job_id = f"prepubdet_{uuid4().hex}"
+    with prepublish_detection_jobs_lock:
+        prepublish_detection_jobs[job_id] = {
+            "job_id": job_id,
+            "template_id": template_id,
+            "status": "processing",
+            "result": None,
+            "error": None,
+        }
+    background_tasks.add_task(_run_prepublish_detection_job, job_id, template_id, file_bytes)
+    response.status_code = 202
+    return ok({"job_id": job_id, "status": "processing"})
+
+
+@router.get("/admin/templates/{template_id}/prepublish-detection-test/jobs/{job_id}", response_model=ApiResponse)
+def get_template_prepublish_detection_test_job(template_id: str, job_id: str) -> ApiResponse:
+    with prepublish_detection_jobs_lock:
+        job = prepublish_detection_jobs.get(job_id)
+        if job is None or job.get("template_id") != template_id:
+            raise HTTPException(status_code=404, detail="Pre-publish detection job not found")
+        response = {
+            "job_id": job_id,
+            "template_id": template_id,
+            "status": job.get("status") or "processing",
+        }
+        if job.get("status") == "completed":
+            response["result"] = job.get("result")
+        if job.get("status") == "failed":
+            response["error"] = job.get("error") or "Pre-publish detection job failed."
+        return ok(response)
 
 
 @router.post("/admin/templates/{template_id}/confirm-publish", response_model=ApiResponse)
