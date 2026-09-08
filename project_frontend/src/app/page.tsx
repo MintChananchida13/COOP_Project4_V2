@@ -453,6 +453,56 @@ async function buildWholePageAutoRois(
   return autoRois;
 }
 
+async function buildDetectionAutoRois(
+  sourceImages: string[],
+  existingRois: (ROI & { pageIndex?: number })[],
+  autoPages?: Record<string, unknown>[]
+): Promise<(ROI & { pageIndex?: number; roiCoordinateSource?: string })[]> {
+  if (!Array.isArray(autoPages) || autoPages.length === 0) return [];
+  const autoRois: (ROI & { pageIndex?: number; roiCoordinateSource?: string })[] = [];
+  let nextFieldNumber = existingRois.filter(isCountableWorkspaceField).length + 1;
+  const pageImages = await Promise.all(sourceImages.map((src) => loadImageElement(src).catch(() => null)));
+
+  for (const autoPage of autoPages) {
+    const pageNumber = Number(autoPage.page_number ?? autoPage.pageNumber ?? autoPage.page_index ?? 1);
+    const pageIndex = Math.max(0, pageNumber - 1);
+    const pageImage = pageImages[pageIndex];
+    if (!pageImage) continue;
+    const renderedWidth = 750;
+    const renderedHeight = (pageImage.naturalHeight / pageImage.naturalWidth) * renderedWidth;
+    const regions = Array.isArray(autoPage.regions) ? (autoPage.regions as Record<string, any>[]) : [];
+
+    regions.forEach((block, index) => {
+      const rect = roiFromLayoutBlock(block, renderedWidth, renderedHeight, 1, 1);
+      if (!rect || ![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) || rect.width <= 1 || rect.height <= 1) {
+        return;
+      }
+      const type = normalizeResolvedBlockType(block);
+      autoRois.push({
+        id: stableNumericId(`detection-auto-roi:${pageIndex}:${block.field_id || index}:${rect.x}:${rect.y}:${rect.width}:${rect.height}`),
+        fieldName: String(block.display_label || block.field_name || `field_${nextFieldNumber}`),
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        pageIndex,
+        type,
+        dataType: type,
+        extractionMethod: type === "table" ? "table_recognition_v2" : type === "image" ? "extract_image" : "paddle_thai_ocr",
+        roiMode: "fix",
+        enabled: true,
+        role: "data_extraction",
+        isResolvedBlock: true,
+        roiCoordinateSource: "whole_page_auto_roi",
+        layoutType: String(block.layout_type || block.layoutType || type),
+      });
+      nextFieldNumber += 1;
+    });
+  }
+
+  return autoRois;
+}
+
 function compareTemplateFieldsForWorkspace(left: TemplateField, right: TemplateField) {
   return (
     left.pageNumber - right.pageNumber ||
@@ -1701,11 +1751,18 @@ function HomeWorkspace() {
           ];
         }
         if (isMainPageDetection && templateCanvasImages.length > 1) {
-          const extraPageAutoRois = await buildWholePageAutoRois(
+          let extraPageAutoRois = await buildDetectionAutoRois(
             templateCanvasImages,
             detectedRois,
-            new Set([matchedQueryPageIndex])
+            detection.bestCandidate?.mainPageAutoRoiPages
           );
+          if (extraPageAutoRois.length === 0) {
+            extraPageAutoRois = await buildWholePageAutoRois(
+              templateCanvasImages,
+              detectedRois,
+              new Set([matchedQueryPageIndex])
+            );
+          }
           detectedRois = [...detectedRois, ...extraPageAutoRois];
         }
         devTemplateFlowLog("ROIs mapped", {

@@ -44,12 +44,21 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 OUTPUT_DIR = "cropped_rois"
+SAVE_CROPPED_ROIS = os.getenv("SAVE_CROPPED_ROIS", "false").strip().lower() in {"1", "true", "yes", "on"}
 logger = logging.getLogger(__name__)
 
 
 def _cropped_roi_path(filename: str) -> str:
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     return os.path.join(OUTPUT_DIR, filename)
+
+
+def _save_cropped_roi(filename: str, crop_img: np.ndarray) -> str:
+    if not SAVE_CROPPED_ROIS or crop_img is None or crop_img.size == 0:
+        return ""
+    filepath = _cropped_roi_path(filename)
+    cv2.imwrite(filepath, crop_img)
+    return filepath
 
 
 def _expand_roi_ratio_by_auto_padding(roi: Dict[str, float], image_width: int, image_height: int) -> Dict[str, float]:
@@ -1035,11 +1044,8 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
             ocr_result = recognize_text_roi(crop_img) if crop_img.size > 0 else {"text": "", "confidence": 0.0, "segments": [], "raw_segments": []}
             text = str(ocr_result.get("text") or "")
             conf = float(ocr_result.get("confidence") or 0.0)
-            filepath = ""
-            if crop_img.size > 0:
-                filename = f"line_{idx + 1}_{uuid.uuid4().hex[:6]}.png"
-                filepath = _cropped_roi_path(filename)
-                cv2.imwrite(filepath, crop_img)
+            filename = f"line_{idx + 1}_{uuid.uuid4().hex[:6]}.png"
+            filepath = _save_cropped_roi(filename, crop_img)
 
             results.append(
                 {
@@ -1077,8 +1083,7 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
                 continue
 
             filename = f"{roi.fieldName}_{idx}_{uuid.uuid4().hex[:6]}.png"
-            filepath = _cropped_roi_path(filename)
-            cv2.imwrite(filepath, crop_img)
+            filepath = _save_cropped_roi(filename, crop_img)
 
             roi_mode = (roi.roiMode or "fix").lower()
             expected_content = (roi.expectedContent or "").lower()

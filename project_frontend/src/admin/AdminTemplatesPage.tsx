@@ -96,6 +96,12 @@ const statusSelectLabel = (status: TemplateStatus) => {
   return status.replaceAll("_", " ");
 };
 
+const detectionModeLabel = (value?: string) => {
+  if (value === "main_page") return "main_page";
+  if (value === "all_pages") return "all_pages";
+  return value || "all_pages";
+};
+
 export default function AdminTemplatesPage() {
   const router = useRouter();
   const [templates, setTemplates] = useState<Template[]>([]);
@@ -175,7 +181,7 @@ export default function AdminTemplatesPage() {
       const sortedVersions = versions.sort((a, b) => (b.versionNumber || b.version) - (a.versionNumber || a.version));
       const latest = sortedVersions[0];
       const baseVersion = sortedVersions.find((template) => !template.baseTemplateId) || sortedVersions[sortedVersions.length - 1] || latest;
-      const folderName = (baseVersion?.documentType || baseVersion?.name || latest?.documentType || latest?.name || "Template").trim() || "Template";
+      const folderName = (latest?.templateGroupName || baseVersion?.templateGroupName || baseVersion?.documentType || latest?.documentType || "Template").trim() || "Template";
       const activeCount = sortedVersions.filter((template) => template.status === "active").length;
       return {
         groupId,
@@ -234,6 +240,9 @@ export default function AdminTemplatesPage() {
     const prefix = `${folderName.trim()} - `;
     return templateName.startsWith(prefix) ? templateName.slice(prefix.length).trim() : templateName.trim();
   };
+
+  const templateVersionDisplayName = (template: Template, folderName: string) =>
+    template.versionName || templateNameSuffix(template.name, folderName) || `Version ${template.versionNumber || template.version}`;
 
   const handleRenameFolder = async (folder: { groupId: string; name: string; versions: Template[] }) => {
     const nextName = editingFolderName.trim();
@@ -297,7 +306,7 @@ export default function AdminTemplatesPage() {
 
   const startRenameTemplate = (template: Template, folderName: string) => {
     setEditingTemplateId(template.id);
-    setEditingTemplateName(templateNameSuffix(template.name, folderName));
+    setEditingTemplateName(templateVersionDisplayName(template, folderName));
     setRenameMessage("");
     setRenameError("");
   };
@@ -319,8 +328,7 @@ export default function AdminTemplatesPage() {
       setRenameError("กรุณาระบุชื่อ Template");
       return;
     }
-    const nextName = `${folderName.trim()} - ${nextSuffix}`;
-    if (nextName === template.name) {
+    if (nextSuffix === templateVersionDisplayName(template, folderName)) {
       cancelRenameTemplate();
       return;
     }
@@ -334,7 +342,7 @@ export default function AdminTemplatesPage() {
     setStatusError("");
 
     try {
-      const bundle = await updateTemplateApi(template.id, { name: nextName });
+      const bundle = await updateTemplateApi(template.id, { versionName: nextSuffix });
       setTemplates((current) => current.map((item) => (item.id === template.id ? bundle.template : item)));
       setEditingTemplateId(null);
       setEditingTemplateName("");
@@ -735,10 +743,10 @@ export default function AdminTemplatesPage() {
                             ) : (
                               <div className="flex items-start justify-between gap-2">
                                 <div className="min-w-0">
-                                  <div className="truncate text-sm font-black text-slate-900">{template.name}</div>
+                                  <div className="truncate text-sm font-black text-slate-900">{templateVersionDisplayName(template, folder.name)}</div>
                                   <div className="mt-1 flex flex-wrap gap-1.5">
                                     <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-black text-indigo-700">
-                                      Version {template.versionNumber || template.version}
+                                      รูปแบบการตรวจจับ: {detectionModeLabel(template.detectionMode)}
                                     </span>
                                     <StatusBadge status={template.status} />
                                   </div>

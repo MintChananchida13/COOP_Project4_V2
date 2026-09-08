@@ -165,6 +165,8 @@ export type TemplateStatus =
 export interface Template {
   id: string;
   name: string;
+  versionName?: string;
+  templateGroupName?: string;
   documentType?: string;
   category?: string;
   status: TemplateStatus;

@@ -196,6 +196,8 @@ interface ApiIgnoreRegion {
 interface ApiTemplate {
   id: string;
   name: string;
+  version_name?: string | null;
+  template_group_name?: string | null;
   document_type?: string | null;
   category?: string | null;
   status: string;
@@ -303,6 +305,9 @@ export interface DetectionCandidate {
   projection?: Record<string, unknown>;
   projectedFields?: DetectionProjectedField[];
   extractionTest?: TemplateStepTestResult | null;
+  mainPageAutoRoiPages?: Record<string, unknown>[];
+  mainPageAutoRoiTotalPages?: number | null;
+  mainPageAutoRoiTotalRegions?: number | null;
   coordinateDebug?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
 }
@@ -734,7 +739,9 @@ function mapApiTemplate(template: Partial<ApiTemplate> | null | undefined, fallb
 
   return {
     id: source.id || fallbackId,
-    name: source.name || source.id || fallbackId || "Template",
+    name: source.version_name || source.name || source.id || fallbackId || "Template",
+    versionName: source.version_name || source.name || undefined,
+    templateGroupName: source.template_group_name || undefined,
     documentType: source.document_type || undefined,
     category: source.category || undefined,
     status: mapTemplateStatus(source.status || "draft"),
@@ -891,6 +898,11 @@ function mapDetectionCandidate(candidate: Record<string, unknown>): DetectionCan
       ? (candidate.projected_fields as Record<string, unknown>[]).map(mapProjectedField)
       : [],
     extractionTest: candidate.extraction_test ? mapTemplateStepTestResult(candidate.extraction_test as Record<string, unknown>) : null,
+    mainPageAutoRoiPages: Array.isArray(candidate.main_page_auto_roi_pages)
+      ? (candidate.main_page_auto_roi_pages as Record<string, unknown>[])
+      : [],
+    mainPageAutoRoiTotalPages: typeof candidate.main_page_auto_roi_total_pages === "number" ? candidate.main_page_auto_roi_total_pages : null,
+    mainPageAutoRoiTotalRegions: typeof candidate.main_page_auto_roi_total_regions === "number" ? candidate.main_page_auto_roi_total_regions : null,
     coordinateDebug: (candidate.coordinate_debug as Record<string, unknown> | undefined) || undefined,
     metadata: (candidate.metadata as Record<string, unknown> | undefined) || {},
   };
@@ -1370,8 +1382,10 @@ export const updateTemplateApi = async (templateId: string, patch: Partial<Templ
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: patch.name,
+        version_name: patch.versionName,
         document_type: patch.documentType,
         category: patch.category,
+        description: patch.description,
         status: patch.status,
         page_count: patch.pageCount,
         similarity_threshold: patch.similarityThreshold,
@@ -1379,6 +1393,8 @@ export const updateTemplateApi = async (templateId: string, patch: Partial<Templ
         layout_weight: patch.layoutWeight,
         text_anchor_weight: patch.textAnchorWeight,
         image_anchor_weight: patch.imageAnchorWeight,
+        detection_mode: patch.detectionMode,
+        main_page_number: patch.mainPageNumber,
         rejection_reason: patch.rejectionReason,
       }),
     }),
@@ -2157,7 +2173,7 @@ export const convertTemplateRequestToVersion = async (
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       base_template_id: payload.baseTemplateId,
-      template_name: payload.templateName,
+      version_name: payload.templateName,
       description: payload.description,
       shared_fields: payload.sharedFields || [],
       document_type: payload.documentType,

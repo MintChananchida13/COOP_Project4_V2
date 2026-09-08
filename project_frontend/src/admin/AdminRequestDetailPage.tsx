@@ -22,14 +22,16 @@ import {
   convertTemplateRequestToVersion,
   convertTemplateRequestToTemplate,
   deleteTemplateRequest,
+  fetchTemplateBundle,
   fetchTemplateRequest,
   fetchTemplateRequestPages,
   fetchTemplates,
   suggestTemplateRequestBaseVersion,
   updateTemplateRequest,
   updateTemplateRequestImage,
+  updateTemplateApi,
 } from "./adminApi";
-import { Template } from "../types/ocr";
+import { RequestedField, Template } from "../types/ocr";
 
 const toWorkspaceRoi = (
   field: AdminTemplateRequest["requestedFields"][number],
@@ -80,10 +82,23 @@ const getPageSourceFileId = (page: TemplateRequestPage) =>
 const getPageSourceFileName = (page: TemplateRequestPage) =>
   page.sourceFileName || "ไฟล์ต้นทาง";
 
+const templateFieldToRequestedField = (
+  field: Awaited<ReturnType<typeof fetchTemplateBundle>>["fields"][number]
+): RequestedField => ({
+  id: field.id,
+  fieldName: field.fieldName,
+  displayLabel: field.displayLabel,
+  roi: field.roi,
+  dataType: field.dataType,
+  extractionMethod: field.extractionMethod,
+});
+
 export default function AdminRequestDetailPage({
   requestId,
+  templateId,
 }: {
-  requestId: string;
+  requestId?: string;
+  templateId?: string;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -117,6 +132,7 @@ export default function AdminRequestDetailPage({
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const previewPanelRef = useRef<HTMLDivElement | null>(null);
   const [previewCanvasWidth, setPreviewCanvasWidth] = useState(750);
+  const isTemplateEditMode = Boolean(templateId);
 
   useEffect(() => {
     let cancelled = false;
@@ -125,6 +141,63 @@ export default function AdminRequestDetailPage({
       setLoadStatus("loading");
 
       try {
+        if (templateId) {
+          const [bundle, templateList] = await Promise.all([
+            fetchTemplateBundle(templateId),
+            fetchTemplates(),
+          ]);
+          if (cancelled) return;
+
+          const templatePages: TemplateRequestPage[] = bundle.pages.map((page) => ({
+            id: page.id,
+            templateRequestId: templateId,
+            pageNumber: page.pageNumber,
+            sampleImageUrl: page.normalizedImageUrl || page.sampleImageUrl,
+            sourceFileId: `${templateId}_source_file`,
+            sourceFileName: bundle.template.name,
+            imageSource: "admin_upload",
+            reviewStatus: "approved",
+            isCanonical: bundle.template.detectionMode === "main_page"
+              ? page.pageNumber === (bundle.template.mainPageNumber || 1)
+              : page.pageNumber === 1,
+            layoutSignatureJson: page.layoutSignatureJson,
+          }));
+          const templateRequest: AdminTemplateRequest = {
+            id: templateId,
+            requestTitle: bundle.template.versionName || bundle.template.name,
+            documentType: bundle.template.documentType,
+            requestMode: "image_with_roi",
+            status: "in_review",
+            adminNote: bundle.template.description,
+            convertedTemplateId: templateId,
+            pageCount: templatePages.length || bundle.template.pageCount,
+            pages: templatePages,
+            requestedFields: bundle.fields
+              .filter((field) => !field.useForVerification)
+              .map(templateFieldToRequestedField),
+            createdAt: bundle.template.createdAt,
+            updatedAt: bundle.template.updatedAt,
+          };
+
+          setRequest(templateRequest);
+          setPages(templatePages);
+          setTemplateName(bundle.template.versionName || bundle.template.name || "");
+          setTemplateDocumentType(bundle.template.documentType || bundle.template.templateGroupName || "");
+          setVersionNameSuffix(bundle.template.versionName || bundle.template.name || "");
+          setTemplateDescription(bundle.template.description || "");
+          setAdminNote(bundle.template.description || "");
+          setTemplates(templateList);
+          setCreationType("new_template");
+          setDetectionMode(bundle.template.detectionMode === "main_page" ? "main_page" : "all_pages");
+          setMainPageNumber(bundle.template.mainPageNumber || 1);
+          setLoadStatus("loaded");
+          return;
+        }
+
+        if (!requestId) {
+          throw new Error("Request id is required");
+        }
+
         const [requestDetail, requestPages] = await Promise.all([
           fetchTemplateRequest(requestId),
           fetchTemplateRequestPages(requestId),
@@ -162,7 +235,7 @@ export default function AdminRequestDetailPage({
     return () => {
       cancelled = true;
     };
-  }, [requestId]);
+  }, [requestId, templateId]);
 
   useEffect(() => {
     if (searchParams.get("creationType") === "new_version") {
@@ -237,8 +310,9 @@ export default function AdminRequestDetailPage({
   const primaryDocumentGroup = documentGroups[0];
 
   useEffect(() => {
+    if (isTemplateEditMode) return;
     setMainPageNumber(1);
-  }, [primaryDocumentGroup?.pages.length]);
+  }, [isTemplateEditMode, primaryDocumentGroup?.pages.length]);
 
   const sharedFields = useMemo(
     () => sharedFieldsText.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
@@ -286,7 +360,7 @@ export default function AdminRequestDetailPage({
 
   useEffect(() => {
     let cancelled = false;
-    if (creationType !== "new_version" || !selectedBaseTemplateId || loadStatus !== "loaded") {
+    if (isTemplateEditMode || creationType !== "new_version" || !selectedBaseTemplateId || loadStatus !== "loaded" || !requestId) {
       setVersionSuggestion(null);
       return;
     }
@@ -308,7 +382,7 @@ export default function AdminRequestDetailPage({
     return () => {
       cancelled = true;
     };
-  }, [creationType, loadStatus, requestId, selectedBaseTemplateId]);
+  }, [creationType, isTemplateEditMode, loadStatus, requestId, selectedBaseTemplateId]);
 
   const workspacePages: WorkspacePage[] = useMemo(() => {
     const sourcePages = primaryDocumentGroup?.pages || [];
@@ -346,6 +420,34 @@ export default function AdminRequestDetailPage({
     const safeMainPageNumber = detectionMode === "main_page"
       ? 1
       : Math.min(Math.max(mainPageNumber, 1), primaryPages.length || 1);
+
+    if (isTemplateEditMode && templateId) {
+      setIsConverting(true);
+      try {
+        const bundle = await updateTemplateApi(templateId, {
+          versionName: templateName.trim(),
+          documentType: templateDocumentType.trim() || undefined,
+          description: templateDescription,
+          detectionMode,
+          mainPageNumber: safeMainPageNumber,
+        });
+        setRequest((current) => current ? {
+          ...current,
+          requestTitle: bundle.template.versionName || bundle.template.name,
+          documentType: bundle.template.documentType,
+          adminNote: bundle.template.description,
+          updatedAt: bundle.template.updatedAt,
+        } : current);
+        setActionStatus("อัปเดต Template เรียบร้อยแล้ว");
+        router.push("/admin/templates");
+      } catch (error) {
+        console.warn("Template update failed.", error);
+        setActionError(error instanceof Error ? error.message : "อัปเดต Template ไม่สำเร็จ");
+      } finally {
+        setIsConverting(false);
+      }
+      return;
+    }
 
     const nextTemplateName = templateName.trim();
     const nextDocumentType =
@@ -474,7 +576,7 @@ export default function AdminRequestDetailPage({
   if (loadStatus === "loading") {
     return (
       <section className="rounded-2xl border border-slate-200 bg-white p-6 text-sm font-semibold text-slate-500 shadow-sm">
-        กำลังโหลดคำขอ...
+        {isTemplateEditMode ? "กำลังโหลด Template..." : "กำลังโหลดคำขอ..."}
       </section>
     );
   }
@@ -483,14 +585,14 @@ export default function AdminRequestDetailPage({
     return (
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-black text-slate-900">
-          ไม่พบคำขอ
+          {isTemplateEditMode ? "ไม่พบ Template" : "ไม่พบคำขอ"}
         </h2>
 
         <Link
-          href="/admin/requests"
+          href={isTemplateEditMode ? "/admin/templates" : "/admin/requests"}
           className="mt-4 inline-flex rounded-xl bg-indigo-600 px-4 py-2 text-xs font-black text-white"
         >
-          กลับไปรายการคำขอ
+          {isTemplateEditMode ? "กลับไปคลัง Template" : "กลับไปรายการคำขอ"}
         </Link>
       </section>
     );
@@ -536,10 +638,10 @@ export default function AdminRequestDetailPage({
           </div>
 
           <Link
-            href="/admin/requests"
+            href={isTemplateEditMode ? "/admin/templates" : "/admin/requests"}
             className="inline-flex h-10 w-fit items-center rounded-xl border border-slate-200 bg-white px-4 text-xs font-black text-slate-700 hover:bg-slate-50"
           >
-            กลับไปรายการคำขอ
+            {isTemplateEditMode ? "กลับไปคลัง Template" : "กลับไปรายการคำขอ"}
           </Link>
         </div>
       </div>
@@ -994,20 +1096,24 @@ export default function AdminRequestDetailPage({
                 className="ui-stable-action-lg rounded-xl bg-indigo-600 px-3 py-2.5 text-xs font-black text-white hover:bg-indigo-700 disabled:bg-slate-300 disabled:text-slate-500"
               >
                 {isConverting
-                  ? "กำลังสร้าง Template..."
-                  : creationType === "new_version"
+                  ? isTemplateEditMode ? "กำลังอัปเดต Template..." : "กำลังสร้าง Template..."
+                  : isTemplateEditMode
+                    ? "อัปเดต Template"
+                    : creationType === "new_version"
                     ? "สร้าง Template Version"
                     : "Create Version 1"}
               </button>
 
-              <button
-                type="button"
-                onClick={() => setIsDeleteConfirmOpen(true)}
-                disabled={isDeleting || loadStatus !== "loaded"}
-                className="ui-stable-action rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-black text-red-700 hover:bg-red-50 disabled:border-slate-200 disabled:text-slate-400"
-              >
-                {isDeleting ? "กำลังลบ..." : "ลบคำขอ"}
-              </button>
+              {!isTemplateEditMode && (
+                <button
+                  type="button"
+                  onClick={() => setIsDeleteConfirmOpen(true)}
+                  disabled={isDeleting || loadStatus !== "loaded"}
+                  className="ui-stable-action rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-black text-red-700 hover:bg-red-50 disabled:border-slate-200 disabled:text-slate-400"
+                >
+                  {isDeleting ? "กำลังลบ..." : "ลบคำขอ"}
+                </button>
+              )}
             </div>
           </section>
         </aside>

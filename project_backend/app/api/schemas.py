@@ -141,6 +141,7 @@ class TemplateCreate(BaseModel):
 
 class TemplateUpdate(BaseModel):
     name: Optional[str] = None
+    version_name: Optional[str] = Field(default=None, validation_alias=AliasChoices("version_name", "versionName"))
     document_type: Optional[str] = None
     category: Optional[str] = None
     description: Optional[str] = None

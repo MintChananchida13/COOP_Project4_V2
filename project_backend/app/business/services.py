@@ -4,6 +4,8 @@ import logging
 import math
 import os
 import re
+import shutil
+import tempfile
 import time
 import unicodedata
 from datetime import datetime, timezone
@@ -68,6 +70,7 @@ from app.core.json_utils import jsonb_dump, jsonb_load
 
 
 logger = logging.getLogger(__name__)
+SAVE_DEBUG_ARTIFACTS = os.getenv("SAVE_DEBUG_ARTIFACTS", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class EmbeddingContextError(Exception):
@@ -217,7 +220,9 @@ def _template_row_to_api(row: Any) -> Dict[str, Any]:
     shared_fields = jsonb_load(item.get("shared_fields_json"), [])
     return {
         "id": item["id"],
-        "name": item.get("name") or item.get("template_name") or item.get("version_name") or item["id"],
+        "name": item.get("version_name") or item.get("name") or item.get("template_name") or item["id"],
+        "template_group_name": item.get("template_group_name") or item.get("name") or item.get("template_name"),
+        "version_name": item.get("version_name"),
         "document_type": item["document_type"],
         "category": item["category"],
         "status": item["status"],
@@ -347,6 +352,10 @@ def _cosine_similarity(left: List[float], right: List[float]) -> float:
 
 def _storage_root() -> Path:
     return Path(__file__).resolve().parents[1] / "storage"
+
+
+def _detection_query_storage_root() -> Path:
+    return Path(__file__).resolve().parents[2] / "storage" / "detection_queries"
 
 
 def _load_image_source(source: Optional[str]):
@@ -544,6 +553,16 @@ def _crop_anchor_roi(image_path_or_source: str, roi: Dict[str, Any], output_path
     return str(output_path)
 
 
+def _crop_anchor_roi_to_temp(image_path_or_source: str, roi: Dict[str, Any], padding: float = 0) -> Optional[str]:
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
+        temp_path = Path(temp_file.name)
+    cropped = _crop_anchor_roi(image_path_or_source, roi, temp_path, padding)
+    if cropped:
+        return cropped
+    temp_path.unlink(missing_ok=True)
+    return None
+
+
 def _image_path_to_data_url(path_value: Optional[str]) -> Optional[str]:
     if not path_value:
         return None
@@ -607,11 +626,23 @@ def _save_pil_image_for_processing(image: Any, output_path: Path) -> Optional[st
     if image is None:
         return None
     try:
+        if not SAVE_DEBUG_ARTIFACTS:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
+                output_path = Path(temp_file.name)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         image.save(output_path, format="PNG")
         return str(output_path)
     except Exception:
         return None
+
+
+def _cleanup_generated_paths(paths: Dict[int, str] | List[str]) -> None:
+    values = paths.values() if isinstance(paths, dict) else paths
+    for path_value in values:
+        try:
+            Path(path_value).unlink(missing_ok=True)
+        except (TypeError, OSError):
+            continue
 
 
 def _layout_region_type(region: Dict[str, Any]) -> str:
@@ -1300,6 +1331,8 @@ class EmbeddingService:
             SELECT
                 tv.id,
                 tg.name,
+                tg.name AS template_group_name,
+                tv.version_name,
                 tg.document_type,
                 tg.category,
                 tv.status,
@@ -1843,95 +1876,99 @@ class VerificationService:
         }
 
     def _score_image_anchor(self, field: Dict[str, Any], image_path: str) -> Dict[str, Any]:
-        crop_path = _storage_root() / "verification_query_anchor_crops" / field["template_id"] / f"{field['id']}_{uuid4().hex[:8]}.png"
-        cropped = _crop_anchor_roi(image_path, field["roi"], crop_path, field.get("roi_padding") or 6)
-        category_values = _image_category_values(field.get("image_category"))
-        category_value = category_values[0] if category_values else ""
-        active_categories = _active_image_category_payloads()
-        category_infos = [_image_category_api(value) for value in category_values]
-        valid_category_values = [
-            value for value, info in zip(category_values, category_infos) if not info.get("error")
-        ]
-        category_info = category_infos[0] if category_infos else _image_category_api(category_value)
-        category_error = category_info.get("error") if not valid_category_values else None
-        if category_error:
-            return {
-                "score": 0.0,
-                "field_score": 0.0,
-                "evidence_score": 0.0,
-                "passed": False,
-                "status": "error",
-                "failure_reason": category_error,
-                "verification_threshold": category_info.get("match_threshold", 0.0),
-                "margin_threshold": category_info.get("margin_threshold", 0.0),
-                "image_category": ", ".join(category_values) or category_value,
-                "image_category_label": _image_category_display(category_values) or category_info.get("label") or category_value,
-                "image_category_prompt": " | ".join(str(info.get("prompt") or "") for info in category_infos if info.get("prompt")),
-                "predicted_image_category": "",
-                "predicted_image_category_label": "",
-                "predicted_image_category_prompt": "",
-                "reference_crop_preview_data_url": None,
-                "current_crop_preview_data_url": _image_path_to_data_url(cropped) if cropped else None,
-                "siglip_similarity_score": 0.0,
-                "image_category_score": 0.0,
-                "raw_logit": 0.0,
-                "raw_pair_score": 0.0,
-                "relative_percentage": 0.0,
-                "siglip_target_rank": 0,
-                "siglip_score_margin": 0.0,
-                "siglip_labels": [],
-                "siglip_ui_percentages": [],
-            }
-        if not cropped:
-            return {
-                "score": 0.0,
-                "field_score": 0.0,
-                "evidence_score": 0.0,
-                "passed": False,
-                "status": "error",
-                "failure_reason": "roi_crop_failed",
-                "image_category": ", ".join(category_values) or category_value,
-                "image_category_label": _image_category_display(category_values) or category_info.get("label") or category_value,
-                "image_category_prompt": " | ".join(str(info.get("prompt") or "") for info in category_infos if info.get("prompt")),
-                "reference_crop_preview_data_url": None,
-                "current_crop_preview_data_url": None,
-            }
+        cropped = _crop_anchor_roi_to_temp(image_path, field["roi"], field.get("roi_padding") or 6)
+        try:
+            current_crop_preview_data_url = _image_path_to_data_url(cropped) if cropped else None
+            category_values = _image_category_values(field.get("image_category"))
+            category_value = category_values[0] if category_values else ""
+            active_categories = _active_image_category_payloads()
+            category_infos = [_image_category_api(value) for value in category_values]
+            valid_category_values = [
+                value for value, info in zip(category_values, category_infos) if not info.get("error")
+            ]
+            category_info = category_infos[0] if category_infos else _image_category_api(category_value)
+            category_error = category_info.get("error") if not valid_category_values else None
+            if category_error:
+                return {
+                    "score": 0.0,
+                    "field_score": 0.0,
+                    "evidence_score": 0.0,
+                    "passed": False,
+                    "status": "error",
+                    "failure_reason": category_error,
+                    "verification_threshold": category_info.get("match_threshold", 0.0),
+                    "margin_threshold": category_info.get("margin_threshold", 0.0),
+                    "image_category": ", ".join(category_values) or category_value,
+                    "image_category_label": _image_category_display(category_values) or category_info.get("label") or category_value,
+                    "image_category_prompt": " | ".join(str(info.get("prompt") or "") for info in category_infos if info.get("prompt")),
+                    "predicted_image_category": "",
+                    "predicted_image_category_label": "",
+                    "predicted_image_category_prompt": "",
+                    "reference_crop_preview_data_url": None,
+                    "current_crop_preview_data_url": current_crop_preview_data_url,
+                    "siglip_similarity_score": 0.0,
+                    "image_category_score": 0.0,
+                    "raw_logit": 0.0,
+                    "raw_pair_score": 0.0,
+                    "relative_percentage": 0.0,
+                    "siglip_target_rank": 0,
+                    "siglip_score_margin": 0.0,
+                    "siglip_labels": [],
+                    "siglip_ui_percentages": [],
+                }
+            if not cropped:
+                return {
+                    "score": 0.0,
+                    "field_score": 0.0,
+                    "evidence_score": 0.0,
+                    "passed": False,
+                    "status": "error",
+                    "failure_reason": "roi_crop_failed",
+                    "image_category": ", ".join(category_values) or category_value,
+                    "image_category_label": _image_category_display(category_values) or category_info.get("label") or category_value,
+                    "image_category_prompt": " | ".join(str(info.get("prompt") or "") for info in category_infos if info.get("prompt")),
+                    "reference_crop_preview_data_url": None,
+                    "current_crop_preview_data_url": None,
+                }
 
-        results = [verify_image_category(cropped, value, active_categories) for value in (valid_category_values or category_values)]
-        result = next((item for item in results if item.passed), None) or (max(results, key=lambda item: float(item.evidence_score)) if results else verify_image_category(cropped, category_value, active_categories))
-        score = round(float(result.evidence_score), 4)
-        threshold = result.verification_threshold
-        return {
-            "score": score,
-            "field_score": score,
-            "evidence_score": score,
-            "passed": result.passed,
-            "status": result.status,
-            "failure_reason": result.failure_reason,
-            "verification_threshold": round(float(threshold), 4),
-            "margin_threshold": round(float(result.margin_threshold), 4),
-            "model_version": result.model_version,
-            "scoring_version": result.scoring_version,
-            "siglip_similarity_score": score,
-            "image_category_score": score,
-            "raw_logit": result.raw_logit,
-            "raw_pair_score": result.raw_pair_score,
-            "relative_percentage": result.relative_percentage,
-            "image_category": result.image_category,
-            "image_category_label": result.image_category_label,
-            "image_category_prompt": result.prompt,
-            "predicted_image_category": result.predicted_category,
-            "predicted_image_category_label": result.predicted_label,
-            "predicted_image_category_prompt": result.predicted_prompt,
-            "siglip_target_rank": result.target_rank,
-            "siglip_score_margin": result.score_margin,
-            "siglip_labels": result.labels,
-            "siglip_ui_percentages": result.ui_percentages,
-            "reference_crop_preview_data_url": None,
-            "current_crop_preview_data_url": _image_path_to_data_url(cropped),
-            "model_name": result.model_name,
-            "device": result.device,
-        }
+            results = [verify_image_category(cropped, value, active_categories) for value in (valid_category_values or category_values)]
+            result = next((item for item in results if item.passed), None) or (max(results, key=lambda item: float(item.evidence_score)) if results else verify_image_category(cropped, category_value, active_categories))
+            score = round(float(result.evidence_score), 4)
+            threshold = result.verification_threshold
+            return {
+                "score": score,
+                "field_score": score,
+                "evidence_score": score,
+                "passed": result.passed,
+                "status": result.status,
+                "failure_reason": result.failure_reason,
+                "verification_threshold": round(float(threshold), 4),
+                "margin_threshold": round(float(result.margin_threshold), 4),
+                "model_version": result.model_version,
+                "scoring_version": result.scoring_version,
+                "siglip_similarity_score": score,
+                "image_category_score": score,
+                "raw_logit": result.raw_logit,
+                "raw_pair_score": result.raw_pair_score,
+                "relative_percentage": result.relative_percentage,
+                "image_category": result.image_category,
+                "image_category_label": result.image_category_label,
+                "image_category_prompt": result.prompt,
+                "predicted_image_category": result.predicted_category,
+                "predicted_image_category_label": result.predicted_label,
+                "predicted_image_category_prompt": result.predicted_prompt,
+                "siglip_target_rank": result.target_rank,
+                "siglip_score_margin": result.score_margin,
+                "siglip_labels": result.labels,
+                "siglip_ui_percentages": result.ui_percentages,
+                "reference_crop_preview_data_url": None,
+                "current_crop_preview_data_url": current_crop_preview_data_url,
+                "model_name": result.model_name,
+                "device": result.device,
+            }
+        finally:
+            if cropped:
+                Path(cropped).unlink(missing_ok=True)
 
     def verify_template(self, template_id: str, page_image_paths: Optional[Dict[int, str]] = None) -> Dict[str, Any]:
         fields = self.load_verification_fields(template_id)
@@ -2044,8 +2081,10 @@ class VerificationService:
                     except Exception:
                         category_info = {"label": category_value, "prompt": "", "match_threshold": 0.0, "margin_threshold": 0.0}
                         category_label = ", ".join(category_values)
-                    fallback_crop_path = _storage_root() / "verification_query_anchor_crops" / field["template_id"] / f"{field['id']}_failed_{uuid4().hex[:8]}.png"
-                    fallback_crop = _crop_anchor_roi(image_path, field["roi"], fallback_crop_path, field.get("roi_padding") or 6)
+                    fallback_crop = _crop_anchor_roi_to_temp(image_path, field["roi"], field.get("roi_padding") or 6)
+                    fallback_crop_preview_data_url = _image_path_to_data_url(fallback_crop)
+                    if fallback_crop:
+                        Path(fallback_crop).unlink(missing_ok=True)
                     image_match = {
                         "score": 0.0,
                         "field_score": 0.0,
@@ -2056,7 +2095,7 @@ class VerificationService:
                         "verification_threshold": category_info.get("match_threshold", 0.0),
                         "margin_threshold": category_info.get("margin_threshold", 0.0),
                         "reference_crop_preview_data_url": None,
-                        "current_crop_preview_data_url": _image_path_to_data_url(fallback_crop),
+                        "current_crop_preview_data_url": fallback_crop_preview_data_url,
                         "siglip_similarity_score": 0.0,
                         "image_category_score": 0.0,
                         "raw_logit": 0.0,
@@ -2136,9 +2175,10 @@ class VerificationService:
 
             if image_path:
                 try:
-                    crop_path = _storage_root() / "template_verification_test_crops" / template_id / f"{field['id']}.png"
-                    cropped = _crop_anchor_roi(image_path, field["roi"], crop_path, field.get("roi_padding") or 0)
+                    cropped = _crop_anchor_roi_to_temp(image_path, field["roi"], field.get("roi_padding") or 0)
                     current_crop_preview_data_url = _image_path_to_data_url(cropped)
+                    if cropped:
+                        Path(cropped).unlink(missing_ok=True)
                     if field["id"] in text_ocr_errors:
                         raise OcrUnavailableError(text_ocr_errors[field["id"]])
                     ocr_result = text_ocr_cache.get(field["id"])
@@ -3018,6 +3058,7 @@ class AdminTemplateService:
     def _template_base_query(self) -> str:
         return """
             SELECT tv.id, tg.name, tg.document_type, tg.category, tv.status,
+                   tg.name AS template_group_name, tv.version_name,
                    tv.version_number AS version, tv.template_group_id, tv.version_number,
                    tv.created_from_version_id AS base_template_id, tg.description,
                    'new_version' AS creation_type, tv.detection_mode, tv.main_page_number,
@@ -3169,7 +3210,8 @@ class AdminTemplateService:
 
     def _template_page_image_paths(self, template_id: str, pages: List[Dict[str, Any]]) -> Dict[int, str]:
         output_dir = _storage_root() / "prepublish_template_pages" / template_id
-        output_dir.mkdir(parents=True, exist_ok=True)
+        if SAVE_DEBUG_ARTIFACTS:
+            output_dir.mkdir(parents=True, exist_ok=True)
         paths: Dict[int, str] = {}
         for page in pages:
             source = page.get("normalized_image_url") or page.get("sample_image_url")
@@ -3177,7 +3219,11 @@ class AdminTemplateService:
             if image is None:
                 continue
             page_number = int(page.get("page_number") or 1)
-            output_path = output_dir / f"page_{page_number}.png"
+            if SAVE_DEBUG_ARTIFACTS:
+                output_path = output_dir / f"page_{page_number}.png"
+            else:
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
+                    output_path = Path(temp_file.name)
             image.save(output_path, format="PNG")
             paths[page_number] = str(output_path)
         return paths
@@ -3411,79 +3457,83 @@ class AdminTemplateService:
             raise HTTPException(status_code=404, detail="Template not found")
         from app.processing.detection_service import detect_template_dev
 
-        detection = detect_template_dev(file_bytes, include_template_id=template_id)
-        candidates = [
-            {
-                **candidate,
-                "rank": index,
-                "is_current_draft": candidate.get("template_id") == template_id,
-                "source": "draft" if candidate.get("template_id") == template_id else "published",
-                "source_label": "Draft Template" if candidate.get("template_id") == template_id else "Published Template",
-            }
-            for index, candidate in enumerate(detection.get("candidates") or [], start=1)
-            if isinstance(candidate, dict)
-        ]
-        candidates = self._enrich_prepublish_candidate_verification_details(candidates, detection)
-        best_candidate = detection.get("best_candidate")
-        if not best_candidate and candidates:
-            best_candidate = max(
-                candidates,
-                key=lambda item: (
-                    bool(item.get("final_passed")),
-                    float(item.get("final_score") or item.get("score") or 0.0),
-                    float(item.get("retrieval_score") or 0.0),
-                ),
-            )
-        elif isinstance(best_candidate, dict):
-            matching_candidate = next((candidate for candidate in candidates if candidate.get("template_id") == best_candidate.get("template_id")), None)
-            if matching_candidate:
-                best_candidate = matching_candidate
-
-        draft_rank = next(
-            (index for index, candidate in enumerate(candidates, start=1) if candidate.get("template_id") == template_id),
-            None,
-        )
-        selected_template_id = (best_candidate or {}).get("template_id") if isinstance(best_candidate, dict) else None
-        matched = bool(best_candidate)
-        selected_passed_final_gate = bool((best_candidate or {}).get("final_passed")) if isinstance(best_candidate, dict) else False
-        final_confidence = float((best_candidate or {}).get("final_score") or (best_candidate or {}).get("score") or 0.0) if isinstance(best_candidate, dict) else 0.0
-        decision_reason = (
-            (best_candidate or {}).get("decision_reason")
-            or detection.get("message")
-            or ("matched" if matched else "no_matching_template")
-        ) if isinstance(best_candidate, dict) or detection.get("message") else "no_matching_template"
-
-        return {
-            "test_id": detection.get("query_id"),
-            "template_id": template_id,
-            "status": "completed",
-            "matched": matched,
-            "selected_template": best_candidate if matched else None,
-            "selected_template_type": "draft" if selected_template_id == template_id else "published" if selected_template_id else None,
-            "final_confidence": final_confidence,
-            "decision_reason": decision_reason,
-            "draft_template_rank": draft_rank,
-            "passed": bool(selected_passed_final_gate and selected_template_id == template_id and draft_rank == 1),
-            "warning": bool(matched and selected_template_id != template_id),
-            "candidates": candidates,
-            "separation_result": {
-                "draft_template_rank": draft_rank,
-                "draft_final_score": next(
-                    (
-                        float(candidate.get("final_score") or candidate.get("score") or 0.0)
-                        for candidate in candidates
-                        if candidate.get("template_id") == template_id
+        detection = detect_template_dev(file_bytes, include_template_id=template_id, cleanup_generated=False)
+        try:
+            candidates = [
+                {
+                    **candidate,
+                    "rank": index,
+                    "is_current_draft": candidate.get("template_id") == template_id,
+                    "source": "draft" if candidate.get("template_id") == template_id else "published",
+                    "source_label": "Draft Template" if candidate.get("template_id") == template_id else "Published Template",
+                }
+                for index, candidate in enumerate(detection.get("candidates") or [], start=1)
+                if isinstance(candidate, dict)
+            ]
+            candidates = self._enrich_prepublish_candidate_verification_details(candidates, detection)
+            best_candidate = detection.get("best_candidate")
+            if not best_candidate and candidates:
+                best_candidate = max(
+                    candidates,
+                    key=lambda item: (
+                        bool(item.get("final_passed")),
+                        float(item.get("final_score") or item.get("score") or 0.0),
+                        float(item.get("retrieval_score") or 0.0),
                     ),
-                    0.0,
-                ),
-                "closest_published_template": selected_template_id if selected_template_id != template_id else None,
-                "closest_published_score": final_confidence if selected_template_id and selected_template_id != template_id else None,
-                "conflict_level": "none" if selected_template_id == template_id else "warning" if matched else "not_ready",
-                "recommendation": "publish" if selected_template_id == template_id and draft_rank == 1 else "review_detection_result",
-            },
-            "debug": detection.get("debug") or {},
-            "pages": detection.get("pages") or [],
-        }
+                )
+            elif isinstance(best_candidate, dict):
+                matching_candidate = next((candidate for candidate in candidates if candidate.get("template_id") == best_candidate.get("template_id")), None)
+                if matching_candidate:
+                    best_candidate = matching_candidate
+
+            draft_rank = next(
+                (index for index, candidate in enumerate(candidates, start=1) if candidate.get("template_id") == template_id),
+                None,
+            )
+            selected_template_id = (best_candidate or {}).get("template_id") if isinstance(best_candidate, dict) else None
+            matched = bool(best_candidate)
+            selected_passed_final_gate = bool((best_candidate or {}).get("final_passed")) if isinstance(best_candidate, dict) else False
+            final_confidence = float((best_candidate or {}).get("final_score") or (best_candidate or {}).get("score") or 0.0) if isinstance(best_candidate, dict) else 0.0
+            decision_reason = (
+                (best_candidate or {}).get("decision_reason")
+                or detection.get("message")
+                or ("matched" if matched else "no_matching_template")
+            ) if isinstance(best_candidate, dict) or detection.get("message") else "no_matching_template"
+
+            return {
+                "test_id": detection.get("query_id"),
+                "template_id": template_id,
+                "status": "completed",
+                "matched": matched,
+                "selected_template": best_candidate if matched else None,
+                "selected_template_type": "draft" if selected_template_id == template_id else "published" if selected_template_id else None,
+                "final_confidence": final_confidence,
+                "decision_reason": decision_reason,
+                "draft_template_rank": draft_rank,
+                "passed": bool(selected_passed_final_gate and selected_template_id == template_id and draft_rank == 1),
+                "warning": bool(matched and selected_template_id != template_id),
+                "candidates": candidates,
+                "separation_result": {
+                    "draft_template_rank": draft_rank,
+                    "draft_final_score": next(
+                        (
+                            float(candidate.get("final_score") or candidate.get("score") or 0.0)
+                            for candidate in candidates
+                            if candidate.get("template_id") == template_id
+                        ),
+                        0.0,
+                    ),
+                    "closest_published_template": selected_template_id if selected_template_id != template_id else None,
+                    "closest_published_score": final_confidence if selected_template_id and selected_template_id != template_id else None,
+                    "conflict_level": "none" if selected_template_id == template_id else "warning" if matched else "not_ready",
+                    "recommendation": "publish" if selected_template_id == template_id and draft_rank == 1 else "review_detection_result",
+                },
+                "debug": detection.get("debug") or {},
+                "pages": detection.get("pages") or [],
+            }
+        finally:
+            if not SAVE_DEBUG_ARTIFACTS:
+                shutil.rmtree(_detection_query_storage_root() / str(detection.get("query_id") or ""), ignore_errors=True)
 
     def confirm_publish_template(self, template_id: str) -> Dict[str, Any]:
         template = self.get_template(template_id)
@@ -3600,7 +3650,11 @@ class AdminTemplateService:
                         crop_image,
                         _storage_root() / "template_extraction_test_crops" / template_id / f"{field.get('id')}_flexible_boundary.png",
                     )
-                    ocr_result = _flexible_text_ocr_from_boundary(boundary_path)
+                    try:
+                        ocr_result = _flexible_text_ocr_from_boundary(boundary_path)
+                    finally:
+                        if boundary_path and not SAVE_DEBUG_ARTIFACTS:
+                            Path(boundary_path).unlink(missing_ok=True)
                 elif data_type == "table":
                     ocr_result = recognize_table_v2(crop_bgr)
                 else:
@@ -3654,13 +3708,17 @@ class AdminTemplateService:
     def test_verification_anchors(self, template_id: str) -> Dict[str, Any]:
         template = self.get_template(template_id)
         page_paths = self._template_page_image_paths(template_id, template.get("pages") or [])
-        verification = VerificationService().verify_template(template_id, page_paths)
-        checked = verification.get("checked_fields", [])
-        return {"template_id": template_id, "status": verification.get("status"), "passed": verification.get("passed"), "score": verification.get("score"), "tested_count": len(checked), "passed_count": sum(1 for item in checked if item.get("passed")), "failed_count": sum(1 for item in checked if not item.get("passed")), "anchors": checked}
+        try:
+            verification = VerificationService().verify_template(template_id, page_paths)
+            checked = verification.get("checked_fields", [])
+            return {"template_id": template_id, "status": verification.get("status"), "passed": verification.get("passed"), "score": verification.get("score"), "tested_count": len(checked), "passed_count": sum(1 for item in checked if item.get("passed")), "failed_count": sum(1 for item in checked if not item.get("passed")), "anchors": checked}
+        finally:
+            if not SAVE_DEBUG_ARTIFACTS:
+                _cleanup_generated_paths(page_paths)
 
     def update_template(self, template_id: str, payload: TemplateUpdate) -> Dict[str, Any]:
         patch = payload.model_dump(exclude_unset=True)
-        version_columns = {"status", "similarity_threshold", "final_confidence_threshold", "layout_weight", "text_anchor_weight", "image_anchor_weight", "detection_mode", "main_page_number"}
+        version_columns = {"status", "version_name", "similarity_threshold", "final_confidence_threshold", "layout_weight", "text_anchor_weight", "image_anchor_weight", "detection_mode", "main_page_number"}
         group_columns = {"name", "document_type", "category", "description"}
         with _connect() as conn:
             version_updates = []

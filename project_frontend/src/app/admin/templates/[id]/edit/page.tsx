@@ -1,6 +1,6 @@
-import AdminTemplateEditPage from "../../../../../admin/AdminTemplateEditPage";
+import AdminRequestDetailPage from "../../../../../admin/AdminRequestDetailPage";
 
 export default async function TemplateEditRoute({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  return <AdminTemplateEditPage templateId={id} />;
+  return <AdminRequestDetailPage templateId={id} />;
 }

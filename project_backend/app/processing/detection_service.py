@@ -2,6 +2,7 @@ import io
 import os
 import base64
 import cv2
+import shutil
 import numpy as np
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -30,6 +31,7 @@ DETECTION_TOP_K_LIMIT = 5
 DETECTION_RETRIEVAL_LIMIT = DETECTION_TOP_K_LIMIT
 DETECTION_FULL_EVAL_LIMIT = max(1, int(os.getenv("DETECTION_FULL_EVAL_LIMIT", str(DETECTION_RETRIEVAL_LIMIT))))
 DETECTION_ALIGNMENT_LIMIT = max(0, int(os.getenv("DETECTION_ALIGNMENT_LIMIT", "1")))
+SAVE_DEBUG_ARTIFACTS = os.getenv("SAVE_DEBUG_ARTIFACTS", "false").strip().lower() in {"1", "true", "yes", "on"}
 verification_service = VerificationService()
 decision_service = DecisionService()
 normalization_service = ImageNormalizationService()
@@ -71,6 +73,8 @@ def _fetch_template(template_id: Optional[str]) -> Optional[Dict[str, Any]]:
             SELECT
                 tv.id,
                 tg.name,
+                tg.name AS template_group_name,
+                tv.version_name,
                 tg.document_type,
                 tg.category,
                 tv.status,
@@ -270,6 +274,8 @@ def _layout_signature_for_image_path(image_path: str) -> Dict[str, Any]:
 
 
 def _detection_debug_url(path_value: Optional[str]) -> Optional[str]:
+    if not SAVE_DEBUG_ARTIFACTS:
+        return None
     if not path_value:
         return None
     try:
@@ -670,6 +676,99 @@ def _run_extraction_test(
         "roi_coordinate_space": roi_coordinate_space,
         "fields": results,
     }
+
+
+def _auto_roi_region_items(page_info: Dict[str, Any]) -> Dict[str, Any]:
+    page_index = int(page_info["page_index"])
+    image_path = str(page_info["normalized_path"])
+    image = cv2.imread(image_path)
+    if image is None:
+        return {
+            "page_index": page_index,
+            "page_number": page_index,
+            "status": "failed",
+            "reason": "image_unavailable",
+            "regions": [],
+        }
+
+    analysis = analyze_layout(image, expand_text_rois=True, auto_roi_mode="text_line")
+    regions = []
+    for index, region in enumerate(analysis.get("regions") or [], start=1):
+        region_type = str(region.get("type") or "text").lower()
+        extraction_method = (
+            "extract_image"
+            if region_type == "image"
+            else "table_recognition_v2"
+            if region_type == "table"
+            else "paddle_thai_ocr"
+        )
+        regions.append(
+            {
+                "field_id": f"auto_page_{page_index}_{index}",
+                "field_name": f"auto_page_{page_index}_field_{index}",
+                "display_label": f"Auto ROI {index}",
+                "page_number": page_index,
+                "data_type": region_type,
+                "type": region_type,
+                "extraction_method": extraction_method,
+                "roi_mode": "fix",
+                "expected_content": "text" if region_type == "text" else None,
+                "confidence": float(region.get("confidence") or 0.0),
+                "roi": {
+                    "page_number": page_index,
+                    **(region.get("roi") or {}),
+                },
+                "roi_source": "whole_page_auto_roi",
+                "roi_coordinate_space": "whole_page_auto_roi",
+                "roi_expansion": region.get("roi_expansion"),
+                "auto_roi_group": region.get("auto_roi_group"),
+            }
+        )
+
+    return {
+        "page_index": page_index,
+        "page_number": page_index,
+        "status": "completed",
+        "engine": analysis.get("engine"),
+        "model": analysis.get("model"),
+        "image_width": analysis.get("image_width"),
+        "image_height": analysis.get("image_height"),
+        "image_preview_data_url": _image_to_data_url(Path(image_path)),
+        "regions": regions,
+    }
+
+
+def _attach_main_page_auto_roi_pages(candidates: List[Dict[str, Any]], pages: List[Dict[str, Any]]) -> None:
+    auto_pages_cache: Dict[int, Dict[str, Any]] = {}
+    for candidate in candidates:
+        metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+        detection_mode = str(candidate.get("detection_mode") or metadata.get("detection_mode") or "")
+        if detection_mode != "main_page" or not candidate.get("final_passed"):
+            candidate["main_page_auto_roi_pages"] = []
+            continue
+
+        matched_query_page = int(candidate.get("query_page_index") or 1)
+        auto_pages: List[Dict[str, Any]] = []
+        for page_info in pages:
+            page_index = int(page_info.get("page_index") or 1)
+            if page_index == matched_query_page:
+                continue
+            if page_index not in auto_pages_cache:
+                try:
+                    auto_pages_cache[page_index] = _auto_roi_region_items(page_info)
+                except Exception as error:
+                    auto_pages_cache[page_index] = {
+                        "page_index": page_index,
+                        "page_number": page_index,
+                        "status": "failed",
+                        "reason": f"auto_roi_failed: {error}",
+                        "regions": [],
+                    }
+            auto_pages.append(auto_pages_cache[page_index])
+
+        candidate["main_page_auto_roi_pages"] = auto_pages
+        candidate["main_page_auto_roi_total_pages"] = len(auto_pages)
+        candidate["main_page_auto_roi_total_regions"] = sum(len(page.get("regions") or []) for page in auto_pages)
 
 
 def _align_candidate_page(
@@ -1203,12 +1302,17 @@ def _detect_page(page_info: Dict[str, Any], page_image_paths: Dict[int, str], in
     full_evaluation_count = 0
     early_accept_rank = None
     for index, result in enumerate(raw_results, start=1):
-        result_template_id = str((result.get("metadata") or {}).get("template_id") or "")
+        metadata = result.get("metadata") or {}
+        result_template_id = str(metadata.get("template_id") or "")
         is_included_template = bool(include_template_id and result_template_id == include_template_id)
+        result_detection_mode = str(metadata.get("detection_mode") or "all_pages")
+        result_main_page_number = int(metadata.get("main_page_number") or 1)
+        main_page_auto_roi_only = result_detection_mode == "main_page" and page_index != result_main_page_number
         layout_score = float(result.get("layout_score", result.get("score", 0.0)) or 0.0)
         layout_confident = layout_score >= DecisionService.MIN_RETRIEVAL_SCORE
         should_fully_evaluate = (
             layout_confident
+            and not main_page_auto_roi_only
             and (
                 is_included_template
                 or (
@@ -1239,6 +1343,11 @@ def _detect_page(page_info: Dict[str, Any], page_image_paths: Dict[int, str], in
                 candidate["decision_reason"] = "คะแนนรวมต่ำกว่าเกณฑ์"
                 candidate["decision_path"] = "คะแนนรวมต่ำกว่าเกณฑ์"
                 candidate["evaluation_status"] = "layout_rejected"
+            if main_page_auto_roi_only:
+                candidate["final_passed"] = False
+                candidate["decision_reason"] = "main_page_detection_uses_auto_roi_for_non_main_pages"
+                candidate["decision_path"] = "main_page_detection_uses_auto_roi_for_non_main_pages"
+                candidate["evaluation_status"] = "main_page_auto_roi_only"
             candidates.append(candidate)
             if should_fully_evaluate and candidate["final_passed"] and early_accept_rank is None:
                 early_accept_rank = index
@@ -1316,7 +1425,15 @@ def _aggregate_candidates(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     aggregated = []
     for template_id, page_candidates in by_template.items():
-        best_page_cand = max(page_candidates, key=lambda c: c["retrieval_score"])
+        best_page_cand = max(
+            page_candidates,
+            key=lambda c: (
+                bool(c.get("final_passed")),
+                c.get("evaluation_status") == "full",
+                float(c.get("final_score") or 0.0),
+                float(c.get("retrieval_score") or 0.0),
+            ),
+        )
         retrieval_scores = [c["retrieval_score"] for c in page_candidates]
         max_retrieval_score = max(retrieval_scores)
         avg_retrieval_score = sum(retrieval_scores) / len(retrieval_scores)
@@ -1422,43 +1539,64 @@ def _no_match_message(candidates: List[Dict[str, Any]]) -> str:
     return "ไม่มี Template ที่ผ่านเกณฑ์การตรวจสอบและคะแนนความมั่นใจ"
 
 
-def detect_template_dev(file_bytes: bytes, include_template_id: Optional[str] = None) -> Dict[str, Any]:
+def detect_template_dev(file_bytes: bytes, include_template_id: Optional[str] = None, cleanup_generated: bool = True) -> Dict[str, Any]:
     query_id = f"detq_{uuid4().hex[:12]}"
-    source_type = "pdf" if file_bytes.lstrip().startswith(b"%PDF") else "image"
-    page_paths = _prepare_query_pages(query_id, file_bytes)
-    skip_normalization = source_type == "pdf"
-    normalized_pages = _normalize_query_pages(query_id, page_paths, skip_normalization=skip_normalization)
-    page_image_paths = {page["page_index"]: page["normalized_path"] for page in normalized_pages}
-    pages = [_detect_page(page, page_image_paths, include_template_id=include_template_id) for page in normalized_pages]
-    candidates = _aggregate_candidates(pages)
-    passing_candidates = sorted(
-        [candidate for candidate in candidates if candidate["final_passed"]],
-        key=lambda item: (item["final_score"], item["retrieval_score"]),
-        reverse=True,
-    )
-    best_candidate = passing_candidates[0] if passing_candidates else None
-    matched = best_candidate is not None
+    try:
+        source_type = "pdf" if file_bytes.lstrip().startswith(b"%PDF") else "image"
+        page_paths = _prepare_query_pages(query_id, file_bytes)
+        skip_normalization = source_type == "pdf"
+        normalized_pages = _normalize_query_pages(query_id, page_paths, skip_normalization=skip_normalization)
+        page_image_paths = {page["page_index"]: page["normalized_path"] for page in normalized_pages}
+        pages = [_detect_page(page, page_image_paths, include_template_id=include_template_id) for page in normalized_pages]
+        candidates = _aggregate_candidates(pages)
+        _attach_main_page_auto_roi_pages(candidates, normalized_pages)
+        passing_candidates = sorted(
+            [candidate for candidate in candidates if candidate["final_passed"]],
+            key=lambda item: (item["final_score"], item["retrieval_score"]),
+            reverse=True,
+        )
+        best_candidate = passing_candidates[0] if passing_candidates else None
+        matched = best_candidate is not None
+        if best_candidate:
+            for page in pages:
+                page_candidate = next(
+                    (
+                        candidate
+                        for candidate in page.get("candidates", [])
+                        if candidate.get("template_id") == best_candidate.get("template_id")
+                    ),
+                    None,
+                )
+                if page_candidate is not None:
+                    page_candidate["main_page_auto_roi_pages"] = best_candidate.get("main_page_auto_roi_pages", [])
+                    page_candidate["main_page_auto_roi_total_pages"] = best_candidate.get("main_page_auto_roi_total_pages", 0)
+                    page_candidate["main_page_auto_roi_total_regions"] = best_candidate.get("main_page_auto_roi_total_regions", 0)
+                    if page.get("best_candidate", {}).get("template_id") == best_candidate.get("template_id"):
+                        page["best_candidate"] = page_candidate
 
-    return {
-        "query_id": query_id,
-        "engine": _detection_engine(pages),
-        "version": DETECTION_VERSION,
-        "threshold": DETECTION_THRESHOLD,
-        "matched": matched,
-        "best_candidate": best_candidate,
-        "candidates": candidates,
-        "pages": pages,
-        "message": None if matched else _no_match_message(candidates),
-        "debug": {
-            "pipeline_core": PIPELINE_CONFIG.to_debug_dict(),
-            "retrieval_engine": "layout_signature",
-            "image_verification_engine": "siglip_image_category",
-            "source_type": source_type,
-            "normalization_skipped": skip_normalization,
-            "input_page_count": len(page_paths),
-            "converted_page_count": len(page_paths) if source_type == "pdf" else 0,
-            "query_page_paths": [str(path) for path in page_paths],
-            "normalized_query_page_paths": [page["normalized_path"] for page in normalized_pages],
-            "include_template_id": include_template_id,
-        },
-    }
+        return {
+            "query_id": query_id,
+            "engine": _detection_engine(pages),
+            "version": DETECTION_VERSION,
+            "threshold": DETECTION_THRESHOLD,
+            "matched": matched,
+            "best_candidate": best_candidate,
+            "candidates": candidates,
+            "pages": pages,
+            "message": None if matched else _no_match_message(candidates),
+            "debug": {
+                "pipeline_core": PIPELINE_CONFIG.to_debug_dict(),
+                "retrieval_engine": "layout_signature",
+                "image_verification_engine": "siglip_image_category",
+                "source_type": source_type,
+                "normalization_skipped": skip_normalization,
+                "input_page_count": len(page_paths),
+                "converted_page_count": len(page_paths) if source_type == "pdf" else 0,
+                "query_page_paths": [str(path) for path in page_paths] if SAVE_DEBUG_ARTIFACTS else [],
+                "normalized_query_page_paths": [page["normalized_path"] for page in normalized_pages] if SAVE_DEBUG_ARTIFACTS else [],
+                "include_template_id": include_template_id,
+            },
+        }
+    finally:
+        if cleanup_generated and not SAVE_DEBUG_ARTIFACTS:
+            shutil.rmtree(_storage_path() / query_id, ignore_errors=True)
