@@ -241,8 +241,11 @@ export default function AdminTemplatesPage() {
     return templateName.startsWith(prefix) ? templateName.slice(prefix.length).trim() : templateName.trim();
   };
 
-  const templateVersionDisplayName = (template: Template, folderName: string) =>
+  const templateVersionSuffix = (template: Template, folderName: string) =>
     template.versionName || templateNameSuffix(template.name, folderName) || `Version ${template.versionNumber || template.version}`;
+
+  const templateVersionDisplayName = (template: Template, folderName: string) =>
+    `${folderName.trim()} - ${templateVersionSuffix(template, folderName)}`;
 
   const handleRenameFolder = async (folder: { groupId: string; name: string; versions: Template[] }) => {
     const nextName = editingFolderName.trim();
@@ -306,7 +309,7 @@ export default function AdminTemplatesPage() {
 
   const startRenameTemplate = (template: Template, folderName: string) => {
     setEditingTemplateId(template.id);
-    setEditingTemplateName(templateVersionDisplayName(template, folderName));
+    setEditingTemplateName(templateVersionSuffix(template, folderName));
     setRenameMessage("");
     setRenameError("");
   };
@@ -328,7 +331,7 @@ export default function AdminTemplatesPage() {
       setRenameError("กรุณาระบุชื่อ Template");
       return;
     }
-    if (nextSuffix === templateVersionDisplayName(template, folderName)) {
+    if (nextSuffix === templateVersionSuffix(template, folderName)) {
       cancelRenameTemplate();
       return;
     }
@@ -746,7 +749,7 @@ export default function AdminTemplatesPage() {
                                   <div className="truncate text-sm font-black text-slate-900">{templateVersionDisplayName(template, folder.name)}</div>
                                   <div className="mt-1 flex flex-wrap gap-1.5">
                                     <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-black text-indigo-700">
-                                      รูปแบบการตรวจจับ: {detectionModeLabel(template.detectionMode)}
+                                      {detectionModeLabel(template.detectionMode)}
                                     </span>
                                     <StatusBadge status={template.status} />
                                   </div>
