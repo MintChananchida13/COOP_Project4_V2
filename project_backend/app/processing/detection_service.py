@@ -1617,7 +1617,7 @@ def detect_template_dev(
                     page_candidate["main_page_auto_roi_pages"] = best_candidate.get("main_page_auto_roi_pages", [])
                     page_candidate["main_page_auto_roi_total_pages"] = best_candidate.get("main_page_auto_roi_total_pages", 0)
                     page_candidate["main_page_auto_roi_total_regions"] = best_candidate.get("main_page_auto_roi_total_regions", 0)
-                    if page.get("best_candidate", {}).get("template_id") == best_candidate.get("template_id"):
+                    if (page.get("best_candidate") or {}).get("template_id") == best_candidate.get("template_id"):
                         page["best_candidate"] = page_candidate
 
         return {
