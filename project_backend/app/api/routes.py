@@ -53,6 +53,8 @@ storage_maintenance = StorageMaintenanceService()
 image_categories = ImageVerificationCategoryService()
 prepublish_detection_jobs_lock = threading.Lock()
 prepublish_detection_jobs: Dict[str, Dict[str, Any]] = {}
+detect_dev_jobs_lock = threading.Lock()
+detect_dev_jobs: Dict[str, Dict[str, Any]] = {}
 
 
 def ok(data: dict) -> ApiResponse:
@@ -74,6 +76,26 @@ def _run_prepublish_detection_job(job_id: str, template_id: str, file_bytes: byt
     except Exception as error:
         with prepublish_detection_jobs_lock:
             job = prepublish_detection_jobs.get(job_id)
+            if job is not None:
+                job["status"] = "failed"
+                job["error"] = str(error)
+
+
+def _run_detect_dev_job(job_id: str, image_bytes: bytes) -> None:
+    with detect_dev_jobs_lock:
+        job = detect_dev_jobs.get(job_id)
+        if job is not None:
+            job["status"] = "processing"
+    try:
+        result = detect_template_dev(image_bytes)
+        with detect_dev_jobs_lock:
+            job = detect_dev_jobs.get(job_id)
+            if job is not None:
+                job["status"] = "completed"
+                job["result"] = result
+    except Exception as error:
+        with detect_dev_jobs_lock:
+            job = detect_dev_jobs.get(job_id)
             if job is not None:
                 job["status"] = "failed"
                 job["error"] = str(error)
@@ -233,20 +255,40 @@ async def _read_dev_detection_image(request: Request) -> bytes:
 
 
 @router.post("/api/templates/detect-dev")
-async def detect_template_dev_route(request: Request) -> dict:
+async def detect_template_dev_route(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    response: Response,
+) -> dict:
     image_bytes = await _read_dev_detection_image(request)
-    try:
-        return {"status": "success", "data": detect_template_dev(image_bytes)}
-    except HTTPException:
-        raise
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    except RuntimeError as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
-    except Exception as error:
-        if _is_database_connection_error(error):
-            raise _database_unavailable_error(error) from error
-        raise
+    job_id = f"detectdev_{uuid4().hex}"
+    with detect_dev_jobs_lock:
+        detect_dev_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "processing",
+            "result": None,
+            "error": None,
+        }
+    background_tasks.add_task(_run_detect_dev_job, job_id, image_bytes)
+    response.status_code = 202
+    return {"status": "success", "data": {"job_id": job_id, "status": "processing"}}
+
+
+@router.get("/api/templates/detect-dev/jobs/{job_id}")
+def get_detect_template_dev_job(job_id: str) -> dict:
+    with detect_dev_jobs_lock:
+        job = detect_dev_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Detection job not found")
+        response: Dict[str, Any] = {
+            "job_id": job_id,
+            "status": job.get("status") or "processing",
+        }
+        if job.get("status") == "completed":
+            response["result"] = job.get("result")
+        if job.get("status") == "failed":
+            response["error"] = job.get("error") or "Detection job failed."
+        return {"status": "success", "data": response}
 
 
 @router.post("/template-requests", response_model=ApiResponse)

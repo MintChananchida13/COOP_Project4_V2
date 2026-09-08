@@ -1479,6 +1479,23 @@ export const failEmbeddingJobDev = async (jobId: string) =>
     })
   );
 
+function mapDetectionDevResult(data: Record<string, unknown> | undefined): DetectionDevResult {
+  const candidates = Array.isArray(data?.candidates) ? (data.candidates as Record<string, unknown>[]).map(mapDetectionCandidate) : [];
+  const pages = Array.isArray(data?.pages) ? (data.pages as Record<string, unknown>[]).map(mapDetectionPage) : [];
+  return {
+    queryId: String(data?.query_id || ""),
+    engine: String(data?.engine || "stub"),
+    version: String(data?.version || "phase7.0"),
+    threshold: typeof data?.threshold === "number" ? data.threshold : 0.75,
+    matched: Boolean(data?.matched),
+    bestCandidate: data?.best_candidate ? mapDetectionCandidate(data.best_candidate as Record<string, unknown>) : null,
+    candidates,
+    pages,
+    message: (data?.message as string | null | undefined) ?? null,
+    debug: (data?.debug as Record<string, unknown> | undefined) || {},
+  };
+}
+
 export const detectTemplateDev = async (file: File | File[]): Promise<DetectionDevResult> => {
   const formData = new FormData();
   const files = Array.isArray(file) ? file : [file];
@@ -1495,21 +1512,32 @@ export const detectTemplateDev = async (file: File | File[]): Promise<DetectionD
     throw new Error(typeof detail === "string" ? detail : `Detection failed with ${response.status}`);
   }
 
-  const data = json?.data as Record<string, unknown> | undefined;
-  const candidates = Array.isArray(data?.candidates) ? (data.candidates as Record<string, unknown>[]).map(mapDetectionCandidate) : [];
-  const pages = Array.isArray(data?.pages) ? (data.pages as Record<string, unknown>[]).map(mapDetectionPage) : [];
-  return {
-    queryId: String(data?.query_id || ""),
-    engine: String(data?.engine || "stub"),
-    version: String(data?.version || "phase7.0"),
-    threshold: typeof data?.threshold === "number" ? data.threshold : 0.75,
-    matched: Boolean(data?.matched),
-    bestCandidate: data?.best_candidate ? mapDetectionCandidate(data.best_candidate as Record<string, unknown>) : null,
-    candidates,
-    pages,
-    message: (data?.message as string | null | undefined) ?? null,
-    debug: (data?.debug as Record<string, unknown> | undefined) || {},
-  };
+  const initialData = json?.data as Record<string, unknown> | undefined;
+  const jobId = typeof initialData?.job_id === "string" ? initialData.job_id : "";
+  if (!jobId) {
+    return mapDetectionDevResult(initialData);
+  }
+
+  while (true) {
+    await sleep(2500);
+    const pollResponse = await fetchWithAuth(`${ADMIN_API_BASE_URL}/api/templates/detect-dev/jobs/${jobId}`, {
+      method: "GET",
+      cache: "no-store",
+    });
+    const pollJson = await pollResponse.json().catch(() => null);
+    if (!pollResponse.ok) {
+      const detail = pollJson?.detail || pollJson?.error?.message || pollJson?.error || `Detection job failed with ${pollResponse.status}`;
+      throw new Error(typeof detail === "string" ? detail : `Detection job failed with ${pollResponse.status}`);
+    }
+    const job = pollJson?.data as Record<string, unknown> | undefined;
+    if (job?.status === "completed") {
+      return mapDetectionDevResult(asRecord(job.result));
+    }
+    if (job?.status === "failed") {
+      const detail = job.error || "Detection job failed.";
+      throw new Error(typeof detail === "string" ? detail : "Detection job failed.");
+    }
+  }
 };
 
 function mapPrepublishCandidate(candidate: Record<string, unknown>): PrepublishCandidate {
