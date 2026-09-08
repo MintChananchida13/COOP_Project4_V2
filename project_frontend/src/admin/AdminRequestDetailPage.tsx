@@ -147,6 +147,13 @@ export default function AdminRequestDetailPage({
             fetchTemplates(),
           ]);
           if (cancelled) return;
+          const loadedCreationType =
+            bundle.template.creationType === "new_version" || bundle.template.baseTemplateId
+              ? "new_version"
+              : "new_template";
+          const loadedBaseTemplate = bundle.template.baseTemplateId
+            ? templateList.find((template) => template.id === bundle.template.baseTemplateId)
+            : undefined;
 
           const templatePages: TemplateRequestPage[] = bundle.pages.map((page) => ({
             id: page.id,
@@ -187,7 +194,15 @@ export default function AdminRequestDetailPage({
           setTemplateDescription(bundle.template.description || "");
           setAdminNote(bundle.template.description || "");
           setTemplates(templateList);
-          setCreationType("new_template");
+          setCreationType(loadedCreationType);
+          setSelectedBaseTemplateId(bundle.template.baseTemplateId || "");
+          setSelectedExistingTemplateName(
+            loadedBaseTemplate?.documentType ||
+            loadedBaseTemplate?.templateGroupName ||
+            bundle.template.templateGroupName ||
+            bundle.template.documentType ||
+            ""
+          );
           setDetectionMode(bundle.template.detectionMode === "main_page" ? "main_page" : "all_pages");
           setMainPageNumber(bundle.template.mainPageNumber || 1);
           setLoadStatus("loaded");
@@ -603,7 +618,7 @@ export default function AdminRequestDetailPage({
     Math.max(workspacePages.length - 1, 0)
   );
   const currentPageFields = fieldsByPage[safeCurrentPage + 1] || [];
-  const isCreationTypeLocked = searchParams.has("creationType");
+  const isCreationTypeLocked = isTemplateEditMode || searchParams.has("creationType");
   const isBaseTemplateLocked = isCreationTypeLocked && creationType === "new_version" && Boolean(selectedBaseTemplateId);
   const hasRequiredCreationInfo =
     creationType === "new_template"

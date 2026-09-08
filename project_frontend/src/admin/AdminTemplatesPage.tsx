@@ -748,7 +748,7 @@ export default function AdminTemplatesPage() {
                                 <div className="min-w-0">
                                   <div className="truncate text-sm font-black text-slate-900">{templateVersionDisplayName(template, folder.name)}</div>
                                   <div className="mt-1 flex flex-wrap gap-1.5">
-                                    <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-black text-indigo-700">
+                                    <span className="inline-flex items-center justify-center rounded-full bg-indigo-50 px-2.5 py-1 text-[10px] font-black uppercase leading-none text-indigo-700">
                                       {detectionModeLabel(template.detectionMode)}
                                     </span>
                                     <StatusBadge status={template.status} />
