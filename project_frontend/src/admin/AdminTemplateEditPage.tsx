@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import WorkspaceTemplateEditor from "./workspace/WorkspaceTemplateEditorV2";
 import AdjustZone from "../user/components/AdjustZone";
@@ -126,6 +126,9 @@ const defaultAdjustPageConfig = (): AdminAdjustPageConfig => ({
 
 export default function AdminTemplateEditPage({ templateId }: { templateId: string }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const pendingDetectionMode = searchParams.get("detectionMode") === "main_page" ? "main_page" : searchParams.get("detectionMode") === "all_pages" ? "all_pages" : undefined;
+  const pendingMainPageNumber = Math.max(1, Number(searchParams.get("mainPageNumber") || 1));
   const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null);
   const [selectedTemplatePages, setSelectedTemplatePages] = useState<TemplatePage[]>([]);
   const [selectedTemplateFields, setSelectedTemplateFields] = useState<TemplateField[]>([]);
@@ -148,7 +151,11 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
   const pendingFieldSavePromisesRef = useRef(new Set<Promise<unknown>>());
 
   const applyBundle = (bundle: TemplateBundle) => {
-    setSelectedTemplate(bundle.template);
+    setSelectedTemplate({
+      ...bundle.template,
+      detectionMode: pendingDetectionMode || bundle.template.detectionMode,
+      mainPageNumber: pendingDetectionMode ? pendingMainPageNumber : bundle.template.mainPageNumber,
+    });
     setSelectedTemplatePages(bundle.pages);
     setSelectedTemplateFields(bundle.fields);
     setSelectedIgnoreRegions(bundle.ignoreRegions);
@@ -610,6 +617,8 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
   const handleConfirmTemplateUpdate = () => {
     void (async () => {
       await flushFieldDrafts();
+      if (!selectedTemplate) return;
+      const templateDraft = selectedTemplate;
       const nextFinalThreshold = Math.max(0, Math.min(1, finalConfidenceDraft));
       const nextWeights = calculateMatchingWeights({
         layoutWeight: layoutWeightDraft,
@@ -622,6 +631,8 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
         layoutWeight: nextWeights.layoutWeight,
         textAnchorWeight: nextWeights.textAnchorWeight,
         imageAnchorWeight: nextWeights.imageAnchorWeight,
+        detectionMode: templateDraft.detectionMode,
+        mainPageNumber: templateDraft.mainPageNumber,
       };
       setSelectedTemplate((current) => (current ? { ...current, ...patch } : current));
       if (canPersistToBackend) {

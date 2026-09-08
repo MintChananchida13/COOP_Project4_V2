@@ -29,7 +29,6 @@ import {
   suggestTemplateRequestBaseVersion,
   updateTemplateRequest,
   updateTemplateRequestImage,
-  updateTemplateApi,
 } from "./adminApi";
 import { RequestedField, Template } from "../types/ocr";
 
@@ -437,30 +436,12 @@ export default function AdminRequestDetailPage({
       : Math.min(Math.max(mainPageNumber, 1), primaryPages.length || 1);
 
     if (isTemplateEditMode && templateId) {
-      setIsConverting(true);
-      try {
-        const bundle = await updateTemplateApi(templateId, {
-          versionName: templateName.trim(),
-          documentType: templateDocumentType.trim() || undefined,
-          description: templateDescription,
-          detectionMode,
-          mainPageNumber: safeMainPageNumber,
-        });
-        setRequest((current) => current ? {
-          ...current,
-          requestTitle: bundle.template.versionName || bundle.template.name,
-          documentType: bundle.template.documentType,
-          adminNote: bundle.template.description,
-          updatedAt: bundle.template.updatedAt,
-        } : current);
-        setActionStatus("อัปเดต Template เรียบร้อยแล้ว");
-        router.push("/admin/templates");
-      } catch (error) {
-        console.warn("Template update failed.", error);
-        setActionError(error instanceof Error ? error.message : "อัปเดต Template ไม่สำเร็จ");
-      } finally {
-        setIsConverting(false);
-      }
+      const params = new URLSearchParams({
+        stage: "editor",
+        detectionMode,
+        mainPageNumber: String(safeMainPageNumber),
+      });
+      router.push(`/admin/templates/${templateId}/edit?${params.toString()}`);
       return;
     }
 
@@ -1111,9 +1092,9 @@ export default function AdminRequestDetailPage({
                 className="ui-stable-action-lg rounded-xl bg-indigo-600 px-3 py-2.5 text-xs font-black text-white hover:bg-indigo-700 disabled:bg-slate-300 disabled:text-slate-500"
               >
                 {isConverting
-                  ? isTemplateEditMode ? "กำลังอัปเดต Template..." : "กำลังสร้าง Template..."
+                  ? isTemplateEditMode ? "กำลังเปิดหน้าแก้ไข Template..." : "กำลังสร้าง Template..."
                   : isTemplateEditMode
-                    ? "อัปเดต Template"
+                    ? "แก้ไข Template"
                     : creationType === "new_version"
                     ? "สร้าง Template Version"
                     : "Create Version 1"}
