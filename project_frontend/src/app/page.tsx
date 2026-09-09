@@ -1453,7 +1453,20 @@ const assignExportField = (fields: Record<string, unknown>, name: string, value:
 
 const wait = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
 
-async function runAiProcessJob(payload: Record<string, unknown>) {
+async function runAiProcessJob(
+  payload: Record<string, unknown>,
+  diagnostics?: {
+    source: string;
+    pageNumber: number;
+    roiCount: number;
+    textCount: number;
+    tableCount: number;
+    flexibleCount: number;
+  }
+) {
+  if (diagnostics) {
+    console.info("[OCR diagnostic] POST /api/ai/process", diagnostics);
+  }
   const response = await fetch(`${ADMIN_API_BASE_URL}/api/ai/process`, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
@@ -1464,7 +1477,16 @@ async function runAiProcessJob(payload: Record<string, unknown>) {
     throw new Error(created?.detail || created?.error || "สร้าง OCR Job ไม่สำเร็จ");
   }
   if (!created.job_id) {
+    if (diagnostics) {
+      console.info("[OCR diagnostic] /api/ai/process completed without job", diagnostics);
+    }
     return created;
+  }
+  if (diagnostics) {
+    console.info("[OCR diagnostic] OCR job created", {
+      ...diagnostics,
+      job_id: created.job_id,
+    });
   }
 
   for (;;) {
@@ -1477,6 +1499,12 @@ async function runAiProcessJob(payload: Record<string, unknown>) {
       throw new Error(job?.detail || job?.error || "ตรวจสถานะ OCR Job ไม่สำเร็จ");
     }
     if (job.status === "completed") {
+      if (diagnostics) {
+        console.info("[OCR diagnostic] OCR job completed", {
+          ...diagnostics,
+          job_id: created.job_id,
+        });
+      }
       return job.result;
     }
     if (job.status === "failed") {
@@ -1895,12 +1923,20 @@ function HomeWorkspace() {
             expectedContent: roi.roiMode === "flexible" ? "text" : null,
           };
         });
+        const pageDiagnostics = {
+          source: "handleRunOCR",
+          pageNumber: pageIdx + 1,
+          roiCount: pagePayloadRois.length,
+          textCount: pagePayloadRois.filter((roi) => roi.type === "text" && roi.roiMode !== "flexible").length,
+          tableCount: pagePayloadRois.filter((roi) => roi.type === "table").length,
+          flexibleCount: pagePayloadRois.filter((roi) => roi.roiMode === "flexible").length,
+        };
 
         try {
           const aiData = await runAiProcessJob({
             image: currentImgUrl,
             rois: pagePayloadRois,
-          });
+          }, pageDiagnostics);
           const responseItems = Array.isArray(aiData?.extracted_data) ? aiData.extracted_data : [];
           const responseByRoiId = new Map<number, Record<string, any>>();
           responseItems.forEach((item: Record<string, any>) => {
@@ -2053,10 +2089,20 @@ function HomeWorkspace() {
         const scaleX = img.naturalWidth / renderedWidth;
         const scaleY = img.naturalHeight / renderedHeight;
 
-        const aiData = await runAiProcessJob({
-          image: currentImgUrl,
-          rois: [],
-        });
+        const aiData = await runAiProcessJob(
+          {
+            image: currentImgUrl,
+            rois: [],
+          },
+          {
+            source: "handleRunFullPageOCR",
+            pageNumber: pageIdx + 1,
+            roiCount: 0,
+            textCount: 0,
+            tableCount: 0,
+            flexibleCount: 0,
+          }
+        );
         if (ocrRunIdRef.current !== runId) return;
         if (!aiData.success || aiData.extracted_data.length === 0) {
           setOcrProgress({ currentPage: pageIdx + 1, totalPages: imagesList.length, completedPages: pageIdx + 1 });
