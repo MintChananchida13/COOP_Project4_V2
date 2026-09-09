@@ -259,7 +259,13 @@ export default function AdminRequestDetailPage({
     if (baseTemplateId) {
       setSelectedBaseTemplateId(baseTemplateId);
       const selectedTemplate = templates.find((template) => template.id === baseTemplateId);
-      if (selectedTemplate) setSelectedExistingTemplateName(selectedTemplate.name);
+      if (selectedTemplate) {
+        setSelectedExistingTemplateName(
+          selectedTemplate.documentType ||
+          selectedTemplate.templateGroupName ||
+          selectedTemplate.name
+        );
+      }
     }
   }, [searchParams, templates]);
 
@@ -605,7 +611,10 @@ export default function AdminRequestDetailPage({
     creationType === "new_template"
       ? templateName.trim().length > 0 && templateDocumentType.trim().length > 0
       : templateName.trim().length > 0 && selectedBaseTemplateId.trim().length > 0 && versionNameSuffix.trim().length > 0;
-  const canConvert = loadStatus === "loaded" && Boolean(primaryDocumentGroup?.pages.length) && hasRequiredCreationInfo;
+  const canConvert =
+    loadStatus === "loaded" &&
+    Boolean(primaryDocumentGroup?.pages.length) &&
+    (isTemplateEditMode || hasRequiredCreationInfo);
 
   return (
     <section className="space-y-4">
@@ -815,12 +824,13 @@ export default function AdminRequestDetailPage({
                       ประเภทเอกสาร / Template เดิม
                     </span>
                     <select
-                      value={selectedExistingTemplateName}
+                      value={selectedBaseTemplateId}
                       onChange={(event) => {
-                        const folderName = event.target.value;
-                        const folder = templateFolders.find((item) => item.name === folderName);
+                        const baseTemplateId = event.target.value;
+                        const folder = templateFolders.find((item) => item.versions[0]?.id === baseTemplateId);
+                        const folderName = folder?.name || "";
+                        setSelectedBaseTemplateId(baseTemplateId);
                         setSelectedExistingTemplateName(folderName);
-                        setSelectedBaseTemplateId(folder?.versions[0]?.id || "");
                         if (folderName) setTemplateName(folderName);
                         setVersionNameSuffix("");
                       }}
@@ -828,7 +838,7 @@ export default function AdminRequestDetailPage({
                     >
                       <option value="" disabled hidden />
                       {templateFolders.map((folder) => (
-                        <option key={folder.name} value={folder.name}>
+                        <option key={folder.groupId} value={folder.versions[0]?.id || ""}>
                           {folder.name}
                         </option>
                       ))}

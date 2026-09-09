@@ -35,6 +35,7 @@ from app.api.schemas import (
     TemplateVersionFromRequestCreate,
 )
 from app.processing.detection_service import detect_template_dev
+from app.model_runtime.layout_analysis_service import clear_layout_analysis_cache
 from app.core.model_runtime_client import configured_runtimes
 from app.business.services import (
     AdminTemplateService,
@@ -79,6 +80,8 @@ def _run_prepublish_detection_job(job_id: str, template_id: str, file_bytes: byt
             if job is not None:
                 job["status"] = "failed"
                 job["error"] = str(error)
+    finally:
+        clear_layout_analysis_cache()
 
 
 def _run_detect_dev_job(job_id: str, image_bytes: bytes) -> None:
@@ -99,6 +102,8 @@ def _run_detect_dev_job(job_id: str, image_bytes: bytes) -> None:
             if job is not None:
                 job["status"] = "failed"
                 job["error"] = str(error)
+    finally:
+        clear_layout_analysis_cache()
 
 
 def _is_database_connection_error(error: Exception) -> bool:

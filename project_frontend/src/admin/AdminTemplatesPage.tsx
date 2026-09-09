@@ -267,9 +267,15 @@ export default function AdminTemplatesPage() {
     setStatusError("");
 
     try {
-      await Promise.all(folder.versions.map((template) => updateTemplateApi(template.id, { documentType: nextName })));
+      await Promise.all(folder.versions.map((template) => updateTemplateApi(template.id, { name: nextName, documentType: nextName })));
       const versionIds = new Set(folder.versions.map((template) => template.id));
-      setTemplates((current) => current.map((template) => (versionIds.has(template.id) ? { ...template, documentType: nextName } : template)));
+      setTemplates((current) =>
+        current.map((template) =>
+          versionIds.has(template.id)
+            ? { ...template, templateGroupName: nextName, documentType: nextName }
+            : template
+        )
+      );
       setRenameMessage(`เปลี่ยนชื่อโฟลเดอร์เป็น "${nextName}" เรียบร้อยแล้ว`);
       cancelRenameFolder();
     } catch (error) {

@@ -30,6 +30,7 @@ from app.model_runtime.layout_analysis_service import (
     AUTO_ROI_EXPAND_TOP_PX,
     LayoutAnalysisUnavailableError,
     analyze_layout,
+    clear_layout_analysis_cache,
     detect_text_boxes,
 )
 from app.processing.ocr_adapter import recognize_text_crops_with_detection, recognize_text_roi
@@ -1058,6 +1059,8 @@ def run_ocr_job(job_id: str) -> None:
             update_ocr_job_status(job_id, "failed", error_message=str(error))
         except Exception:
             logger.exception("OCR job failed status update also failed: job_id=%s", job_id)
+    finally:
+        clear_layout_analysis_cache()
 
 
 def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:

@@ -1,8 +1,11 @@
+import copy
+import hashlib
 import logging
 import tempfile
 from dataclasses import dataclass
 import os
-from typing import Any, Dict, List, Optional, Literal
+from collections import OrderedDict
+from typing import Any, Dict, List, Optional, Literal, Tuple
 from pathlib import Path
 import cv2
 import numpy as np
@@ -47,8 +50,44 @@ AUTO_ROI_TABLE_NESTED_OVERLAP_RATIO = float(os.getenv("AUTO_ROI_TABLE_NESTED_OVE
 AUTO_ROI_TABLE_NESTED_AREA_RATIO = float(os.getenv("AUTO_ROI_TABLE_NESTED_AREA_RATIO", "1.02"))
 AUTO_ROI_IMAGE_NESTED_OVERLAP_RATIO = float(os.getenv("AUTO_ROI_IMAGE_NESTED_OVERLAP_RATIO", "0.92"))
 AUTO_ROI_IMAGE_NESTED_AREA_RATIO = float(os.getenv("AUTO_ROI_IMAGE_NESTED_AREA_RATIO", "1.02"))
+LAYOUT_RAW_ITEMS_CACHE_SIZE = max(0, int(os.getenv("LAYOUT_RAW_ITEMS_CACHE_SIZE", "16")))
 
 AutoRoiMode = Literal["text_line"]
+_layout_raw_items_cache: "OrderedDict[Tuple[Tuple[int, ...], str, str], List[Dict[str, Any]]]" = OrderedDict()
+
+
+def _layout_cache_key(image: np.ndarray) -> Tuple[Tuple[int, ...], str, str]:
+    digest = hashlib.sha256(image.tobytes()).hexdigest()
+    return (tuple(int(item) for item in image.shape), str(image.dtype), digest)
+
+
+def _get_cached_layout_raw_items(image: np.ndarray) -> Optional[List[Dict[str, Any]]]:
+    if LAYOUT_RAW_ITEMS_CACHE_SIZE <= 0:
+        return None
+    key = _layout_cache_key(image)
+    cached = _layout_raw_items_cache.get(key)
+    if cached is None:
+        return None
+    _layout_raw_items_cache.move_to_end(key)
+    logger.info("Layout diagnostic: raw_items_cache_hit shape=%s item_count=%s", image.shape, len(cached))
+    return copy.deepcopy(cached)
+
+
+def _set_cached_layout_raw_items(image: np.ndarray, raw_items: List[Dict[str, Any]]) -> None:
+    if LAYOUT_RAW_ITEMS_CACHE_SIZE <= 0:
+        return
+    key = _layout_cache_key(image)
+    _layout_raw_items_cache[key] = copy.deepcopy(raw_items)
+    _layout_raw_items_cache.move_to_end(key)
+    while len(_layout_raw_items_cache) > LAYOUT_RAW_ITEMS_CACHE_SIZE:
+        _layout_raw_items_cache.popitem(last=False)
+
+
+def clear_layout_analysis_cache() -> None:
+    cleared_count = len(_layout_raw_items_cache)
+    _layout_raw_items_cache.clear()
+    if cleared_count:
+        logger.info("Layout diagnostic: raw_items_cache_cleared count=%s", cleared_count)
 
 
 def _require_runtime(kind: ModelRuntimeKind) -> None:
@@ -661,30 +700,33 @@ def analyze_layout(image: np.ndarray, expand_text_rois: bool = False, auto_roi_m
     auto_roi_mode = "text_line"
 
     height, width = image.shape[:2]
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
-        temp_path = temp_file.name
-    try:
-        cv2.imwrite(temp_path, image)
-        _require_runtime(ModelRuntimeKind.LAYOUT)
-        _require_runtime(ModelRuntimeKind.TEXT_DETECTION)
-        logger.info("Using remote Layout and TextDetection runtimes")
+    raw_items = _get_cached_layout_raw_items(image)
+    if raw_items is None:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
+            temp_path = temp_file.name
         try:
-            layout_result = remote_analyze_layout(image)
-            text_result = remote_detect_text_boxes(temp_path)
-        except ModelRuntimeUnavailableError as error:
-            raise LayoutAnalysisUnavailableError(str(error)) from error
-        except Exception as error:
-            raise LayoutAnalysisUnavailableError(str(error)) from error
-        if not isinstance(layout_result, dict):
-            raise LayoutAnalysisUnavailableError("Layout runtime returned an invalid response.")
-        if not isinstance(text_result, dict):
-            raise LayoutAnalysisUnavailableError("TextDetection runtime returned an invalid response.")
-        raw_items = [
-            *_text_detection_items_from_response(text_result.get("result", text_result)),
-            *_layout_detection_items_from_response(layout_result.get("result", layout_result)),
-        ]
-    finally:
-        Path(temp_path).unlink(missing_ok=True)
+            cv2.imwrite(temp_path, image)
+            _require_runtime(ModelRuntimeKind.LAYOUT)
+            _require_runtime(ModelRuntimeKind.TEXT_DETECTION)
+            logger.info("Using remote Layout and TextDetection runtimes")
+            try:
+                layout_result = remote_analyze_layout(image)
+                text_result = remote_detect_text_boxes(temp_path)
+            except ModelRuntimeUnavailableError as error:
+                raise LayoutAnalysisUnavailableError(str(error)) from error
+            except Exception as error:
+                raise LayoutAnalysisUnavailableError(str(error)) from error
+            if not isinstance(layout_result, dict):
+                raise LayoutAnalysisUnavailableError("Layout runtime returned an invalid response.")
+            if not isinstance(text_result, dict):
+                raise LayoutAnalysisUnavailableError("TextDetection runtime returned an invalid response.")
+            raw_items = [
+                *_text_detection_items_from_response(text_result.get("result", text_result)),
+                *_layout_detection_items_from_response(layout_result.get("result", layout_result)),
+            ]
+            _set_cached_layout_raw_items(image, raw_items)
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
 
     parsed_items: List[Dict[str, Any]] = []
     for item in raw_items:
