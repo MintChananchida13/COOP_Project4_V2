@@ -1,3 +1,4 @@
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -9,6 +10,9 @@ from app.model_runtime.layout_analysis_service import LayoutAnalysisUnavailableE
 from app.processing.ocr_postprocess import normalize_ocr_text
 from app.model_runtime.paddle_thai_ocr_adapter import PaddleThaiOcrUnavailableError, run_paddle_thai_ocr, run_paddle_thai_ocr_batch
 from app.model_runtime.table_recognition_v2_adapter import TableRecognitionV2UnavailableError, recognize_table_v2
+
+
+logger = logging.getLogger(__name__)
 
 
 class OcrUnavailableError(RuntimeError):
@@ -54,7 +58,7 @@ def ocr_roi(image_path: str, roi: Dict[str, Any]) -> Dict[str, Any]:
     crop = image.crop((x, y, right, bottom))
     try:
         bgr_crop = cv2.cvtColor(np.array(crop), cv2.COLOR_RGB2BGR)
-        result = recognize_text_roi(bgr_crop)
+        result = recognize_text_roi(bgr_crop, source="ocr_roi")
     except PaddleThaiOcrUnavailableError as error:
         raise OcrUnavailableError(str(error)) from error
 
@@ -197,12 +201,31 @@ def _boxes_from_detection_result(detection: Dict[str, Any], bgr_crop) -> Tuple[L
     }
 
 
-def _detect_boxes_in_crops_batch(text_items: List[Tuple[str, Any]]) -> Dict[str, Tuple[List[Dict[str, int]], Dict[str, Any]]]:
+def _diagnostic_ids(text_items: List[Tuple[str, Any]]) -> List[str]:
+    return [str(key) for key, _ in text_items]
+
+
+def _detect_boxes_in_crops_batch(
+    text_items: List[Tuple[str, Any]], source: str = "unknown"
+) -> Dict[str, Tuple[List[Dict[str, int]], Dict[str, Any]]]:
     if not text_items:
         return {}
     try:
+        logger.info(
+            "OCR diagnostic: stage=text_detection_batch source=%s batch_size=%s ids=%s",
+            source,
+            len(text_items),
+            _diagnostic_ids(text_items),
+        )
         detections = detect_text_boxes_batch([bgr_crop for _, bgr_crop in text_items])
     except (LayoutAnalysisUnavailableError, RuntimeError, OcrUnavailableError, ValueError) as error:
+        logger.info(
+            "OCR diagnostic: stage=text_detection_batch_failed source=%s batch_size=%s ids=%s error=%s",
+            source,
+            len(text_items),
+            _diagnostic_ids(text_items),
+            error,
+        )
         return {
             key: (
                 [],
@@ -244,7 +267,9 @@ def _crop_box(bgr_crop, box: Dict[str, int]):
     return bgr_crop[y1:y2, x1:x2]
 
 
-def _recognize_text_crops_with_detection(text_items: List[Tuple[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def _recognize_text_crops_with_detection(
+    text_items: List[Tuple[str, Any]], source: str = "unknown"
+) -> Dict[str, Dict[str, Any]]:
     if not text_items:
         return {}
 
@@ -252,7 +277,7 @@ def _recognize_text_crops_with_detection(text_items: List[Tuple[str, Any]]) -> D
     recognition_crops = []
     recognition_meta: List[Dict[str, Any]] = []
     per_key_detection: Dict[str, Dict[str, Any]] = {}
-    detection_results = _detect_boxes_in_crops_batch(text_items)
+    detection_results = _detect_boxes_in_crops_batch(text_items, source=source)
 
     for key, bgr_crop in text_items:
         boxes, detection_meta = detection_results.get(
@@ -288,6 +313,12 @@ def _recognize_text_crops_with_detection(text_items: List[Tuple[str, Any]]) -> D
                 }
             )
 
+    logger.info(
+        "OCR diagnostic: stage=text_recognition_batch source=%s batch_size=%s ids=%s",
+        source,
+        len(recognition_crops),
+        [str(meta.get("key")) for meta in recognition_meta],
+    )
     batch_results = run_paddle_thai_ocr_batch(recognition_crops)
     grouped: Dict[str, List[Dict[str, Any]]] = {}
     for meta, result in zip(recognition_meta, batch_results):
@@ -336,6 +367,12 @@ def _recognize_text_crops_with_detection(text_items: List[Tuple[str, Any]]) -> D
         }
 
     if fallback_requests:
+        logger.info(
+            "OCR diagnostic: stage=text_recognition_batch source=%s:fallback_short_empty batch_size=%s ids=%s",
+            source,
+            len(fallback_requests),
+            _diagnostic_ids(fallback_requests),
+        )
         fallback_results = run_paddle_thai_ocr_batch([crop for _, crop in fallback_requests])
         for (key, full_crop), full_result in zip(fallback_requests, fallback_results):
             pending = pending_results[key]
@@ -395,16 +432,18 @@ def _recognize_text_crops_with_detection(text_items: List[Tuple[str, Any]]) -> D
     return results
 
 
-def recognize_text_crop_with_detection(bgr_crop) -> Dict[str, Any]:
-    return _recognize_text_crops_with_detection([("roi", bgr_crop)])["roi"]
+def recognize_text_crop_with_detection(bgr_crop, source: str = "single_text_roi") -> Dict[str, Any]:
+    return _recognize_text_crops_with_detection([("roi", bgr_crop)], source=source)["roi"]
 
 
-def recognize_text_crops_with_detection(text_items: List[Tuple[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    return _recognize_text_crops_with_detection(text_items)
+def recognize_text_crops_with_detection(
+    text_items: List[Tuple[str, Any]], source: str = "unknown"
+) -> Dict[str, Dict[str, Any]]:
+    return _recognize_text_crops_with_detection(text_items, source=source)
 
 
-def recognize_text_roi(bgr_crop) -> Dict[str, Any]:
-    result = recognize_text_crop_with_detection(bgr_crop)
+def recognize_text_roi(bgr_crop, source: str = "single_text_roi") -> Dict[str, Any]:
+    result = recognize_text_crop_with_detection(bgr_crop, source=source)
     segments = result.get("segments") or []
     return {
         "text": normalize_ocr_text(result.get("text")),
@@ -504,7 +543,7 @@ def ocr_rois(image_path: str, roi_items: List[Dict[str, Any]]) -> Dict[str, Dict
         return results
 
     try:
-        text_results = _recognize_text_crops_with_detection(text_items)
+        text_results = _recognize_text_crops_with_detection(text_items, source="ocr_rois")
     except PaddleThaiOcrUnavailableError as error:
         raise OcrUnavailableError(str(error)) from error
 

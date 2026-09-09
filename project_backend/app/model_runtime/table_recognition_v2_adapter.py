@@ -489,7 +489,7 @@ def _recognize_text_crops_with_core(crops: List[np.ndarray], status_prefix: str)
     if not crops:
         return ([], {"status": f"{status_prefix}_no_crops", "ocr_core": "recognize_text_roi", "crop_count": 0})
     try:
-        recognitions = run_paddle_thai_ocr_batch(crops)
+        recognitions = run_paddle_thai_ocr_batch(crops, source=f"table:{status_prefix}")
     except Exception as error:
         logger.info("%s OCR core failed: %s", status_prefix, error)
         return (
@@ -507,7 +507,7 @@ def _recognize_text_crops_with_core(crops: List[np.ndarray], status_prefix: str)
     )
 
 
-def run_paddle_thai_ocr_batch(crops: List[np.ndarray]) -> List[Dict[str, Any]]:
+def run_paddle_thai_ocr_batch(crops: List[np.ndarray], source: str = "table_internal") -> List[Dict[str, Any]]:
     """Compatibility seam for tests; production routes table text crops through the shared OCR core."""
     try:
         from app.processing.ocr_adapter import recognize_text_crops_with_detection
@@ -516,7 +516,8 @@ def run_paddle_thai_ocr_batch(crops: List[np.ndarray]) -> List[Dict[str, Any]]:
 
     try:
         results_by_index = recognize_text_crops_with_detection(
-            [(str(index), crop) for index, crop in enumerate(crops)]
+            [(str(index), crop) for index, crop in enumerate(crops)],
+            source=source,
         )
     except Exception as error:
         return [{"text": "", "confidence": 0.0, "error": str(error)} for _ in crops]

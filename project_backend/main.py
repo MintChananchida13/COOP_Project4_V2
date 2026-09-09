@@ -863,7 +863,7 @@ def _ocr_flexible_regions(search_img: np.ndarray, regions: List[Dict[str, Any]],
                 table_structured = ocr_result.get("table_structured")
                 table_html = ocr_result.get("table_html")
             else:
-                ocr_result = recognize_text_roi(block_img)
+                ocr_result = recognize_text_roi(block_img, source="flexible_text")
                 text = str(ocr_result.get("text") or "")
                 confidence = float(ocr_result.get("confidence") or 0.0)
                 raw_segments = ocr_result.get("raw_segments") or ocr_result.get("segments", [])
@@ -1084,7 +1084,11 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
             h = min(h, h_img - y)
 
             crop_img = opencv_img[y : y + h, x : x + w]
-            ocr_result = recognize_text_roi(crop_img) if crop_img.size > 0 else {"text": "", "confidence": 0.0, "segments": [], "raw_segments": []}
+            ocr_result = (
+                recognize_text_roi(crop_img, source="full_page_auto_text")
+                if crop_img.size > 0
+                else {"text": "", "confidence": 0.0, "segments": [], "raw_segments": []}
+            )
             text = str(ocr_result.get("text") or "")
             conf = float(ocr_result.get("confidence") or 0.0)
             filename = f"line_{idx + 1}_{uuid.uuid4().hex[:6]}.png"
@@ -1164,7 +1168,9 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
                 ocr_by_index.update(
                     {
                         int(key): result
-                        for key, result in recognize_text_crops_with_detection(text_items).items()
+                        for key, result in recognize_text_crops_with_detection(
+                            text_items, source="fixed_text"
+                        ).items()
                     }
                 )
             except PaddleThaiOcrUnavailableError:
