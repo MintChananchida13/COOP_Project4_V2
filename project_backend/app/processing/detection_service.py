@@ -21,7 +21,13 @@ from app.processing.layout_signature_service import build_layout_signature
 from app.processing.layout_template_matcher import search_layout_candidates
 from app.processing.ocr_adapter import OcrUnavailableError, ocr_rois
 from app.core.pipeline_core import get_pipeline_core_config
-from app.business.services import DecisionService, VerificationService
+from app.business.services import (
+    DecisionService,
+    GlobalSettingsService,
+    VerificationService,
+    VERIFICATION_STRATEGY_STRICT,
+    normalize_verification_strategy,
+)
 
 
 DETECTION_THRESHOLD = 0.75
@@ -36,6 +42,7 @@ DETECTION_ALIGNMENT_LIMIT = max(0, int(os.getenv("DETECTION_ALIGNMENT_LIMIT", "1
 SAVE_DEBUG_ARTIFACTS = os.getenv("SAVE_DEBUG_ARTIFACTS", "false").strip().lower() in {"1", "true", "yes", "on"}
 verification_service = VerificationService()
 decision_service = DecisionService()
+global_settings_service = GlobalSettingsService()
 normalization_service = ImageNormalizationService()
 alignment_service = AlignmentService()
 layout_alignment_service = LayoutAlignmentService()
@@ -843,6 +850,7 @@ def _candidate_from_result(
     normalization_info: Optional[Dict[str, Any]] = None,
     allow_alignment: bool = True,
     include_template_id: Optional[str] = None,
+    verification_strategy: str = "standard",
 ) -> Optional[Dict[str, Any]]:
     metadata = result.get("metadata") or {}
     vector_id = str(result.get("vector_id") or "")
@@ -877,6 +885,7 @@ def _candidate_from_result(
     if template_status != "active" and template_id != include_template_id:
         return None
 
+    verification_strategy = normalize_verification_strategy(verification_strategy)
     matching_weights = decision_service.matching_weights(template, metadata)
     template_page_number = int(
         metadata.get("matched_layout_reference_page_number")
@@ -894,7 +903,12 @@ def _candidate_from_result(
     )
 
     # 1) Verify จาก normalized ก่อน
-    normalized_verification = verification_service.verify_template(
+    verify_template_for_strategy = (
+        verification_service.verify_template_strict
+        if verification_strategy == VERIFICATION_STRATEGY_STRICT
+        else verification_service.verify_template
+    )
+    normalized_verification = verify_template_for_strategy(
         template_id,
         verification_page_image_paths,
     ) if template_id else {
@@ -921,7 +935,10 @@ def _candidate_from_result(
 
     # 2) Template alignment is part of the production path.
     # The alignment service precheck skips ORB when geometry already matches.
-    should_try_alignment = template_id is not None and allow_alignment
+    should_try_alignment = template_id is not None and allow_alignment and (
+        verification_strategy != VERIFICATION_STRATEGY_STRICT
+        or bool(normalized_verification.get("passed"))
+    )
 
     if should_try_alignment:
         alignment = _align_candidate_page(
@@ -940,7 +957,7 @@ def _candidate_from_result(
                 else aligned_page_image_paths
             )
 
-            aligned_verification = verification_service.verify_template(
+            aligned_verification = verify_template_for_strategy(
                 template_id,
                 aligned_verification_paths,
             )
@@ -990,12 +1007,20 @@ def _candidate_from_result(
     alignment["alignment_reason"] = alignment_reason
 
     retrieval_score = float(result.get("score", 0.0) or 0.0)
-    decision = decision_service.decide_candidate(
-        retrieval_score,
-        verification,
-        final_confidence_threshold,
-        matching_weights,
-    )
+    if verification_strategy == VERIFICATION_STRATEGY_STRICT:
+        decision = decision_service.decide_candidate_strict(
+            retrieval_score,
+            verification,
+            final_confidence_threshold,
+            matching_weights,
+        )
+    else:
+        decision = decision_service.decide_candidate(
+            retrieval_score,
+            verification,
+            final_confidence_threshold,
+            matching_weights,
+        )
     layout_threshold = float((template or {}).get("similarity_threshold") or metadata.get("similarity_threshold") or DETECTION_THRESHOLD)
     if retrieval_score < layout_threshold:
         decision = {
@@ -1180,6 +1205,7 @@ def _candidate_from_result(
         "extraction_test": extraction_test,
         "coordinate_debug": coordinate_debug,
         "metadata": metadata,
+        "verification_strategy": verification_strategy,
         "evaluation_status": "full",
         "alignment_evaluated": bool(allow_alignment),
     }
@@ -1298,6 +1324,7 @@ def _detect_page(
     include_template_id: Optional[str] = None,
     timing: Optional[Dict[str, float]] = None,
     retrieval_limit: int = DETECTION_RETRIEVAL_LIMIT,
+    verification_strategy: str = "standard",
 ) -> Dict[str, Any]:
     page_index = int(page_info["page_index"])
     normalized_image_path = str(page_info["normalized_path"])
@@ -1348,6 +1375,7 @@ def _detect_page(
                 page_info.get("normalization"),
                 allow_alignment=index <= DETECTION_ALIGNMENT_LIMIT,
                 include_template_id=include_template_id,
+                verification_strategy=verification_strategy,
             )
             if timing is not None:
                 timing["verification"] = timing.get("verification", 0.0) + (time.perf_counter() - step_started)
@@ -1422,6 +1450,7 @@ def _detect_page(
             "early_accept_enabled": True,
             "early_accept_rank": early_accept_rank,
             "early_accept_reason": "top_candidate_final_passed" if early_accept_rank else None,
+            "verification_strategy": verification_strategy,
             "alignment_limit": DETECTION_ALIGNMENT_LIMIT,
             "fast_path_enabled": early_accept_rank is not None or DETECTION_FULL_EVAL_LIMIT < DETECTION_RETRIEVAL_LIMIT or DETECTION_ALIGNMENT_LIMIT < DETECTION_FULL_EVAL_LIMIT,
             "aligned_candidate_paths": [
@@ -1468,12 +1497,21 @@ def _aggregate_candidates(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "required_passed": False,
             "checked_fields": [],
         }
-        decision = decision_service.decide_candidate(
-            max_retrieval_score,
-            verification,
-            float(best_page_cand.get("final_confidence_threshold") or DecisionService.DEFAULT_FINAL_CONFIDENCE_THRESHOLD),
-            best_page_cand.get("matching_weights"),
-        )
+        verification_strategy = normalize_verification_strategy(best_page_cand.get("verification_strategy"))
+        if verification_strategy == VERIFICATION_STRATEGY_STRICT:
+            decision = decision_service.decide_candidate_strict(
+                max_retrieval_score,
+                verification,
+                float(best_page_cand.get("final_confidence_threshold") or DecisionService.DEFAULT_FINAL_CONFIDENCE_THRESHOLD),
+                best_page_cand.get("matching_weights"),
+            )
+        else:
+            decision = decision_service.decide_candidate(
+                max_retrieval_score,
+                verification,
+                float(best_page_cand.get("final_confidence_threshold") or DecisionService.DEFAULT_FINAL_CONFIDENCE_THRESHOLD),
+                best_page_cand.get("matching_weights"),
+            )
 
         aggregated.append({
             "template_id": template_id,
@@ -1541,6 +1579,7 @@ def _aggregate_candidates(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "extraction_test": best_page_cand.get("extraction_test"),
             "coordinate_debug": best_page_cand.get("coordinate_debug"),
             "metadata": best_page_cand.get("metadata", {}),
+            "verification_strategy": verification_strategy,
         })
 
     return sorted(aggregated, key=lambda item: (item["final_score"], item["retrieval_score"]), reverse=True)
@@ -1591,6 +1630,9 @@ def detect_template_dev(
             print(f"[PREPUBLISH] prepare pages done: {timing['prepare_pages']:.2f}s")
         page_image_paths = {page["page_index"]: page["normalized_path"] for page in normalized_pages}
         retrieval_limit = DETECTION_RETRIEVAL_LIMIT if include_template_id else USER_DETECTION_RETRIEVAL_LIMIT
+        verification_strategy = normalize_verification_strategy(
+            global_settings_service.get_verification_strategy().get("verification_strategy")
+        )
         pages: List[Dict[str, Any]] = []
         confirmed_main_page_candidate: Optional[Dict[str, Any]] = None
         included_template = _fetch_template(include_template_id)
@@ -1605,6 +1647,7 @@ def detect_template_dev(
                 include_template_id=include_template_id,
                 timing=timing,
                 retrieval_limit=retrieval_limit,
+                verification_strategy=verification_strategy,
             )
             pages.append(detected_page)
             if int(page.get("page_index") or 1) == 1:
@@ -1671,6 +1714,7 @@ def detect_template_dev(
                 "query_page_paths": [str(path) for path in page_paths] if SAVE_DEBUG_ARTIFACTS else [],
                 "normalized_query_page_paths": [page["normalized_path"] for page in normalized_pages] if SAVE_DEBUG_ARTIFACTS else [],
                 "include_template_id": include_template_id,
+                "verification_strategy": verification_strategy,
             },
         }
     finally:

@@ -225,6 +225,13 @@ _POSTGRES_SCHEMA = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT NOT NULL PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS image_verification_categories (
         id TEXT NOT NULL PRIMARY KEY,
         value TEXT NOT NULL UNIQUE,

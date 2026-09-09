@@ -158,6 +158,10 @@ class TemplateUpdate(BaseModel):
     rejection_reason: Optional[str] = None
 
 
+class VerificationStrategyUpdate(BaseModel):
+    verification_strategy: str = Field(validation_alias=AliasChoices("verification_strategy", "verificationStrategy"))
+
+
 class TemplateVersionCreate(BaseModel):
     request_id: Optional[str] = None
     base_template_id: Optional[str] = None

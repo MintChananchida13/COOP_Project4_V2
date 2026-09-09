@@ -1410,6 +1410,33 @@ export const updateTemplateApi = async (templateId: string, patch: Partial<Templ
 export const updateTemplateStatus = async (templateId: string, status: TemplateStatus) =>
   updateTemplateApi(templateId, { status });
 
+export type VerificationStrategy = "standard" | "strict";
+
+const mapVerificationStrategy = (value: unknown): VerificationStrategy =>
+  value === "strict" ? "strict" : "standard";
+
+export const fetchVerificationStrategy = async (): Promise<VerificationStrategy> => {
+  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/settings/verification-strategy`);
+  const json = await response.json();
+  if (!response.ok || json?.success === false) {
+    throw new Error(json?.detail || json?.error?.message || "Fetch verification strategy failed");
+  }
+  return mapVerificationStrategy(json?.data?.verification_strategy || json?.verification_strategy);
+};
+
+export const updateVerificationStrategy = async (strategy: VerificationStrategy): Promise<VerificationStrategy> => {
+  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/settings/verification-strategy`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ verification_strategy: strategy }),
+  });
+  const json = await response.json();
+  if (!response.ok || json?.success === false) {
+    throw new Error(json?.detail || json?.error?.message || "Update verification strategy failed");
+  }
+  return mapVerificationStrategy(json?.data?.verification_strategy || json?.verification_strategy);
+};
+
 const embeddingJobResponseError = async (response: Response, fallback: string) => {
   const json = await response.json().catch(() => null);
   const detail = json?.detail || json?.error?.message || json?.error || fallback;

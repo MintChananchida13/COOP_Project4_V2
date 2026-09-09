@@ -31,6 +31,7 @@ from app.api.schemas import (
     TemplateRequestConvert,
     TemplateTestRequest,
     TemplateUpdate,
+    VerificationStrategyUpdate,
     TemplateVersionCreate,
     TemplateVersionFromRequestCreate,
 )
@@ -40,6 +41,7 @@ from app.core.model_runtime_client import configured_runtimes
 from app.business.services import (
     AdminTemplateService,
     EmbeddingService,
+    GlobalSettingsService,
     StorageMaintenanceService,
     TemplateRequestService,
     ImageVerificationCategoryService,
@@ -52,6 +54,7 @@ admin_templates = AdminTemplateService()
 embeddings = EmbeddingService()
 storage_maintenance = StorageMaintenanceService()
 image_categories = ImageVerificationCategoryService()
+global_settings = GlobalSettingsService()
 prepublish_detection_jobs_lock = threading.Lock()
 prepublish_detection_jobs: Dict[str, Dict[str, Any]] = {}
 detect_dev_jobs_lock = threading.Lock()
@@ -512,6 +515,16 @@ def create_template(payload: TemplateCreate) -> ApiResponse:
 @router.get("/admin/templates", response_model=ApiResponse)
 def list_templates() -> ApiResponse:
     return ok(admin_templates.list_templates())
+
+
+@router.get("/admin/settings/verification-strategy", response_model=ApiResponse)
+def get_verification_strategy() -> ApiResponse:
+    return ok(global_settings.get_verification_strategy())
+
+
+@router.put("/admin/settings/verification-strategy", response_model=ApiResponse)
+def update_verification_strategy(payload: VerificationStrategyUpdate) -> ApiResponse:
+    return ok(global_settings.update_verification_strategy(payload.verification_strategy))
 
 
 @router.get("/admin/templates/{template_id}", response_model=ApiResponse)

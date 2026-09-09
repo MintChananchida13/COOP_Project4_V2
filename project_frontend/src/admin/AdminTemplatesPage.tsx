@@ -4,7 +4,17 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, ChevronDown, ChevronRight, FileImage, Folder, Loader2, Pencil, Plus, Search, UploadCloud, X } from "lucide-react";
 import { Template, TemplateStatus } from "../types/ocr";
-import { addTemplateRequestImage, createTemplateRequest, deleteTemplateApi, fetchTemplates, updateTemplateApi, updateTemplateStatus } from "./adminApi";
+import {
+  addTemplateRequestImage,
+  createTemplateRequest,
+  deleteTemplateApi,
+  fetchTemplates,
+  fetchVerificationStrategy,
+  updateTemplateApi,
+  updateTemplateStatus,
+  updateVerificationStrategy,
+  VerificationStrategy,
+} from "./adminApi";
 import { AdminStatusFilter } from "./adminTypes";
 import { ActionButton, EmptyState, InlineState, LoadingState, PageHeader, StatusBadge, cardClassName } from "../shared/ui";
 
@@ -16,6 +26,22 @@ const statusFilterOptions: { value: AdminStatusFilter; label: string }[] = [
 ];
 
 const manageableStatuses: TemplateStatus[] = ["active", "nonactive", "disabled"];
+const verificationStrategyOptions: {
+  value: VerificationStrategy;
+  label: string;
+  description: string;
+}[] = [
+  {
+    value: "standard",
+    label: "แบบถ่วงน้ำหนัก (Standard)",
+    description: "ประเมินความตรงกันของ Template จากคะแนน Layout, Text และ Image ตามค่าน้ำหนักที่กำหนดไว้ในแต่ละ Template",
+  },
+  {
+    value: "strict",
+    label: "แบบเข้มงวด (Strict)",
+    description: "ประเมินความตรงกันของ Template จากผลการตรวจสอบ Text และ Image เป็นรายเงื่อนไข โดยไม่ใช้คะแนนรวมในการตัดสิน",
+  },
+];
 
 interface PdfJsLib {
   GlobalWorkerOptions: { workerSrc: string };
@@ -131,6 +157,9 @@ export default function AdminTemplatesPage() {
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
   const [isCreatingRequest, setIsCreatingRequest] = useState(false);
   const [createRequestError, setCreateRequestError] = useState("");
+  const [verificationStrategy, setVerificationStrategy] = useState<VerificationStrategy>("standard");
+  const [verificationStrategySaveStatus, setVerificationStrategySaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [verificationStrategyError, setVerificationStrategyError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -138,9 +167,13 @@ export default function AdminTemplatesPage() {
     const loadTemplates = async () => {
       setLoadStatus("loading");
       try {
-        const persistedTemplates = await fetchTemplates();
+        const [persistedTemplates, persistedVerificationStrategy] = await Promise.all([
+          fetchTemplates(),
+          fetchVerificationStrategy(),
+        ]);
         if (cancelled) return;
         setTemplates(persistedTemplates);
+        setVerificationStrategy(persistedVerificationStrategy);
         setLoadStatus("loaded");
       } catch (error) {
         console.warn("Templates load failed.", error);
@@ -156,6 +189,29 @@ export default function AdminTemplatesPage() {
       cancelled = true;
     };
   }, []);
+
+  const selectedVerificationStrategy = verificationStrategyOptions.find((option) => option.value === verificationStrategy) || verificationStrategyOptions[0];
+
+  const handleVerificationStrategyChange = async (nextStrategy: VerificationStrategy) => {
+    if (nextStrategy === verificationStrategy) return;
+    const previousStrategy = verificationStrategy;
+    setVerificationStrategy(nextStrategy);
+    setVerificationStrategySaveStatus("saving");
+    setVerificationStrategyError("");
+    try {
+      const savedStrategy = await updateVerificationStrategy(nextStrategy);
+      setVerificationStrategy(savedStrategy);
+      setVerificationStrategySaveStatus("saved");
+      window.setTimeout(() => {
+        setVerificationStrategySaveStatus((current) => (current === "saved" ? "idle" : current));
+      }, 1800);
+    } catch (error) {
+      console.warn("Verification strategy update failed.", error);
+      setVerificationStrategy(previousStrategy);
+      setVerificationStrategySaveStatus("error");
+      setVerificationStrategyError(error instanceof Error ? error.message : "บันทึกรูปแบบการตรวจสอบ Template ไม่สำเร็จ");
+    }
+  };
 
   const filteredTemplates = templates.filter((template) => {
     if (selectedStatus === "all") return true;
@@ -480,6 +536,41 @@ export default function AdminTemplatesPage() {
         title="รายการ Template เอกสาร"
         description="จัดการ Template ฉบับร่าง Template ที่ใช้งานจริง และ Template ที่ยังไม่พร้อมใช้งาน การลบข้อมูลจะมีผลกับฐานข้อมูลจริงเท่านั้น"
       />
+
+      <div className={`${cardClassName} p-5`}>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0">
+            <h2 className="text-base font-black text-slate-900">รูปแบบการตรวจสอบ Template</h2>
+            <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">
+              กำหนดวิธีการตรวจสอบ Template สำหรับเอกสารทั้งหมดในระบบ
+            </p>
+            <p className="mt-2 max-w-3xl text-xs font-medium leading-5 text-slate-500">
+              {selectedVerificationStrategy.description}
+            </p>
+            {verificationStrategySaveStatus === "saving" && (
+              <p className="mt-2 text-[11px] font-black text-indigo-600">กำลังบันทึก...</p>
+            )}
+            {verificationStrategySaveStatus === "saved" && (
+              <p className="mt-2 text-[11px] font-black text-emerald-600">บันทึกแล้ว</p>
+            )}
+            {verificationStrategySaveStatus === "error" && verificationStrategyError && (
+              <p className="mt-2 text-[11px] font-black text-red-600">{verificationStrategyError}</p>
+            )}
+          </div>
+          <select
+            value={verificationStrategy}
+            onChange={(event) => void handleVerificationStrategyChange(event.target.value as VerificationStrategy)}
+            disabled={verificationStrategySaveStatus === "saving"}
+            className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-black text-slate-800 outline-none transition-colors focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-100 disabled:text-slate-400 lg:w-72"
+          >
+            {verificationStrategyOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
 
       <div className="hidden">
         <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_360px]">

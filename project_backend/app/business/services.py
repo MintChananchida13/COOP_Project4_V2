@@ -71,6 +71,10 @@ from app.core.json_utils import jsonb_dump, jsonb_load
 
 logger = logging.getLogger(__name__)
 SAVE_DEBUG_ARTIFACTS = os.getenv("SAVE_DEBUG_ARTIFACTS", "false").strip().lower() in {"1", "true", "yes", "on"}
+VERIFICATION_STRATEGY_SETTING_KEY = "verification_strategy"
+VERIFICATION_STRATEGY_STANDARD = "standard"
+VERIFICATION_STRATEGY_STRICT = "strict"
+VERIFICATION_STRATEGIES = {VERIFICATION_STRATEGY_STANDARD, VERIFICATION_STRATEGY_STRICT}
 
 
 class EmbeddingContextError(Exception):
@@ -145,6 +149,38 @@ def _connect() -> Any:
     conn.execute("PRAGMA foreign_keys = ON")
     ensure_image_verification_categories_table(conn)
     return conn
+
+
+def normalize_verification_strategy(value: Optional[str]) -> str:
+    normalized = str(value or VERIFICATION_STRATEGY_STANDARD).strip().lower()
+    return normalized if normalized in VERIFICATION_STRATEGIES else VERIFICATION_STRATEGY_STANDARD
+
+
+class GlobalSettingsService:
+    def get_verification_strategy(self) -> Dict[str, Any]:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = ?",
+                (VERIFICATION_STRATEGY_SETTING_KEY,),
+            ).fetchone()
+        strategy = normalize_verification_strategy(row["value"] if row else None)
+        return {"verification_strategy": strategy}
+
+    def update_verification_strategy(self, value: str) -> Dict[str, Any]:
+        strategy = normalize_verification_strategy(value)
+        if strategy != str(value or "").strip().lower():
+            raise HTTPException(status_code=400, detail="verification_strategy must be standard or strict")
+        with _connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """,
+                (VERIFICATION_STRATEGY_SETTING_KEY, strategy),
+            )
+            conn.commit()
+        return {"verification_strategy": strategy}
 
 
 def _row_to_dict(row: Any) -> Dict[str, Any]:
@@ -2278,6 +2314,308 @@ class VerificationService:
             "verification_details": checked_fields,
         }
 
+    def _verification_summary(self, template_id: str, checked_fields: List[Dict[str, Any]], status: Optional[str] = None) -> Dict[str, Any]:
+        required_fields = [field for field in checked_fields if field["required"]]
+        required_passed = all(field["passed"] for field in required_fields)
+        score_weight = sum(max(0.0, float(field.get("weight") or 1.0)) for field in checked_fields) or 1.0
+        score = sum(field["score"] * max(0.0, float(field.get("weight") or 1.0)) for field in checked_fields) / score_weight
+        text_fields = [field for field in checked_fields if field.get("anchor_type") == "text"]
+        image_fields = [field for field in checked_fields if field.get("anchor_type") == "image"]
+        text_weight = sum(max(0.0, float(field.get("weight") or 1.0)) for field in text_fields) or 1.0
+        image_weight = sum(max(0.0, float(field.get("weight") or 1.0)) for field in image_fields) or 1.0
+        text_score = sum(field["score"] * max(0.0, float(field.get("weight") or 1.0)) for field in text_fields) / text_weight if text_fields else 1.0
+        image_score = sum(field["score"] * max(0.0, float(field.get("weight") or 1.0)) for field in image_fields) / image_weight if image_fields else 1.0
+        passed = required_passed
+        ocr_unavailable = any(
+            field.get("error")
+            and (
+                "OCR verification requires" in field["error"]
+                or "model runtime" in field["error"].lower()
+            )
+            for field in checked_fields
+        )
+        return {
+            "template_id": template_id,
+            "status": status or ("ocr_unavailable" if ocr_unavailable else "verified" if passed else "failed"),
+            "passed": passed,
+            "score": round(float(score), 4),
+            "text_anchor_score": round(float(text_score), 4),
+            "image_anchor_score": round(float(image_score), 4),
+            "required_passed": required_passed,
+            "checked_fields": checked_fields,
+            "verification_details": checked_fields,
+        }
+
+    def _text_anchor_check(self, field: Dict[str, Any], page_image_paths: Optional[Dict[int, str]]) -> Dict[str, Any]:
+        expected_text = field.get("expected_text")
+        page_number = int(field["page_number"])
+        image_path = (page_image_paths or {}).get(page_number)
+        actual_text = ""
+        ocr_confidence = 0.0
+        field_error = None
+        current_crop_preview_data_url = None
+        if image_path:
+            try:
+                cropped = _crop_anchor_roi_to_temp(image_path, field["roi"], field.get("roi_padding") or 0)
+                current_crop_preview_data_url = _image_path_to_data_url(cropped)
+                if cropped:
+                    Path(cropped).unlink(missing_ok=True)
+                ocr_result = ocr_roi(image_path, field["roi"])
+                actual_text = str(ocr_result.get("text") or "")
+                ocr_confidence = float(ocr_result.get("confidence") or 0.0)
+                if ocr_result.get("error"):
+                    field_error = str(ocr_result.get("error"))
+            except OcrUnavailableError as error:
+                field_error = str(error)
+            except Exception as error:
+                field_error = f"ROI OCR failed: {error}"
+        else:
+            field_error = f"No query page image available for page {page_number}"
+
+        verification_threshold = self.DEFAULT_VERIFICATION_THRESHOLD
+        match = self._score_match(
+            expected_text,
+            actual_text,
+            field.get("match_type"),
+            ocr_confidence,
+            verification_threshold,
+        ) if not field_error else {
+            "match_type": (field.get("match_type") or "contains").strip().lower(),
+            "normalized_expected": self._normalize_text(expected_text),
+            "normalized_actual": self._normalize_text(actual_text),
+            "text_similarity_score": 0.0,
+            "text_match_score": 0.0,
+            "ocr_confidence": round(float(ocr_confidence or 0.0), 4),
+            "field_score": 0.0,
+            "verification_threshold": verification_threshold,
+            "score": 0.0,
+            "passed": False,
+            "failure_reason": "ocr_error",
+        }
+        return {
+            "field_id": field["id"],
+            "anchor_id": field["id"],
+            "field_name": field["field_name"],
+            "display_label": field["display_label"],
+            "anchor_type": "text",
+            "verification_method": "ocr_text",
+            "page_number": page_number,
+            "expected_text": expected_text,
+            "actual_text": actual_text,
+            "normalized_expected": match["normalized_expected"],
+            "normalized_actual": match["normalized_actual"],
+            "text_similarity_score": match["text_similarity_score"],
+            "text_match_score": match.get("text_match_score", match["field_score"]),
+            "ocr_confidence": match["ocr_confidence"],
+            "field_score": match["field_score"],
+            "verification_threshold": match["verification_threshold"],
+            "match_type": match["match_type"],
+            "required": bool(field["required_for_verification"]),
+            "passed": match["passed"],
+            "score": match["field_score"],
+            "failure_reason": match["failure_reason"],
+            "roi": field["roi"],
+            "roi_padding": field.get("roi_padding") or 0,
+            "weight": float(field.get("verification_weight") or 1.0),
+            "reference_crop_preview_data_url": None,
+            "current_crop_preview_data_url": current_crop_preview_data_url,
+            "error": field_error,
+        }
+
+    def _image_anchor_check(self, field: Dict[str, Any], page_image_paths: Optional[Dict[int, str]]) -> Dict[str, Any]:
+        page_number = int(field["page_number"])
+        image_path = (page_image_paths or {}).get(page_number)
+        if not image_path:
+            category_info = _image_category_api(field.get("image_category"))
+            return {
+                "field_id": field["id"],
+                "anchor_id": field["id"],
+                "field_name": field["field_name"],
+                "display_label": field["display_label"],
+                "anchor_type": "image",
+                "verification_method": "image_feature",
+                "page_number": page_number,
+                "expected_text": category_info.get("label") or field.get("image_category"),
+                "actual_text": "",
+                "normalized_expected": "",
+                "normalized_actual": "",
+                "text_similarity_score": None,
+                "ocr_confidence": None,
+                "field_score": 0.0,
+                "verification_threshold": category_info.get("match_threshold", 0.0),
+                "margin_threshold": category_info.get("margin_threshold", 0.0),
+                "match_type": "image_feature",
+                "required": bool(field["required_for_verification"]),
+                "passed": False,
+                "score": 0.0,
+                "failure_reason": "query_page_missing",
+                "roi": field["roi"],
+                "roi_padding": field.get("roi_padding") or 6,
+                "weight": float(field.get("verification_weight") or 1.0),
+                "image_category": field.get("image_category"),
+                "image_category_label": category_info.get("label") or field.get("image_category"),
+                "image_category_prompt": category_info.get("prompt") or "",
+                "reference_crop_preview_data_url": None,
+                "current_crop_preview_data_url": None,
+                "siglip_similarity_score": 0.0,
+                "image_category_score": 0.0,
+                "evidence_score": 0.0,
+                "raw_logit": 0.0,
+                "raw_pair_score": 0.0,
+                "relative_percentage": 0.0,
+                "siglip_target_rank": 0,
+                "siglip_score_margin": 0.0,
+                "siglip_labels": [],
+                "siglip_ui_percentages": [],
+                "error": f"No query page image available for page {page_number}",
+            }
+        try:
+            image_match = self._score_image_anchor(field, image_path)
+        except Exception as error:
+            category_values = _image_category_values(field.get("image_category"))
+            category_value = category_values[0] if category_values else ""
+            try:
+                category_info = _image_category_api(category_value)
+                category_label = _image_category_display(category_values)
+            except Exception:
+                category_info = {"label": category_value, "prompt": "", "match_threshold": 0.0, "margin_threshold": 0.0}
+                category_label = ", ".join(category_values)
+            image_match = {
+                "score": 0.0,
+                "field_score": 0.0,
+                "evidence_score": 0.0,
+                "passed": False,
+                "status": "error",
+                "failure_reason": f"image_verification_error: {error}",
+                "verification_threshold": category_info.get("match_threshold", 0.0),
+                "margin_threshold": category_info.get("margin_threshold", 0.0),
+                "reference_crop_preview_data_url": None,
+                "current_crop_preview_data_url": None,
+                "siglip_similarity_score": 0.0,
+                "image_category_score": 0.0,
+                "raw_logit": 0.0,
+                "raw_pair_score": 0.0,
+                "relative_percentage": 0.0,
+                "image_category": ", ".join(category_values) or field.get("image_category"),
+                "image_category_label": category_label or category_info.get("label") or field.get("image_category"),
+                "image_category_prompt": category_info.get("prompt") or "",
+                "predicted_image_category": "",
+                "predicted_image_category_label": "",
+                "predicted_image_category_prompt": "",
+                "siglip_target_rank": 0,
+                "siglip_score_margin": 0.0,
+                "siglip_labels": [],
+                "siglip_ui_percentages": [],
+                "error": str(error),
+            }
+        image_verification_threshold = image_match.get("verification_threshold")
+        if image_verification_threshold is None:
+            try:
+                image_verification_threshold = _siglip_image_threshold(image_match.get("image_category"))
+            except Exception:
+                image_verification_threshold = 0.0
+        return {
+            "field_id": field["id"],
+            "anchor_id": field["id"],
+            "field_name": field["field_name"],
+            "display_label": field["display_label"],
+            "anchor_type": "image",
+            "verification_method": "image_feature",
+            "page_number": page_number,
+            "expected_text": image_match.get("image_category_label"),
+            "actual_text": image_match.get("predicted_image_category_label", ""),
+            "normalized_expected": image_match.get("image_category_prompt", ""),
+            "normalized_actual": image_match.get("predicted_image_category_prompt", ""),
+            "text_similarity_score": None,
+            "ocr_confidence": None,
+            "field_score": image_match["score"],
+            "verification_threshold": image_verification_threshold,
+            "margin_threshold": image_match.get("margin_threshold"),
+            "match_type": "image_feature",
+            "required": bool(field["required_for_verification"]),
+            "passed": image_match["passed"],
+            "score": image_match["score"],
+            "failure_reason": image_match["failure_reason"],
+            "roi": field["roi"],
+            "roi_padding": field.get("roi_padding") or 6,
+            "weight": float(field.get("verification_weight") or 1.0),
+            "reference_crop_preview_data_url": image_match.get("reference_crop_preview_data_url"),
+            "current_crop_preview_data_url": image_match.get("current_crop_preview_data_url"),
+            "siglip_similarity_score": image_match.get("siglip_similarity_score", image_match["score"]),
+            "image_category_score": image_match.get("image_category_score", image_match["score"]),
+            "evidence_score": image_match.get("evidence_score", image_match["score"]),
+            "raw_logit": image_match.get("raw_logit"),
+            "raw_pair_score": image_match.get("raw_pair_score"),
+            "relative_percentage": image_match.get("relative_percentage"),
+            "status": image_match.get("status"),
+            "image_category": image_match.get("image_category"),
+            "image_category_label": image_match.get("image_category_label"),
+            "image_category_prompt": image_match.get("image_category_prompt"),
+            "predicted_image_category": image_match.get("predicted_image_category"),
+            "predicted_image_category_label": image_match.get("predicted_image_category_label"),
+            "predicted_image_category_prompt": image_match.get("predicted_image_category_prompt"),
+            "siglip_target_rank": image_match.get("siglip_target_rank"),
+            "siglip_score_margin": image_match.get("siglip_score_margin"),
+            "siglip_labels": image_match.get("siglip_labels"),
+            "siglip_ui_percentages": image_match.get("siglip_ui_percentages"),
+            "model_name": image_match.get("model_name"),
+            "device": image_match.get("device"),
+            "model_version": image_match.get("model_version"),
+            "scoring_version": image_match.get("scoring_version"),
+            "error": image_match.get("error"),
+        }
+
+    def verify_template_strict(self, template_id: str, page_image_paths: Optional[Dict[int, str]] = None) -> Dict[str, Any]:
+        fields = self.load_verification_fields(template_id)
+        if not fields:
+            return {
+                "template_id": template_id,
+                "status": "no_verification_fields",
+                "passed": True,
+                "score": 1.0,
+                "text_anchor_score": 1.0,
+                "image_anchor_score": 1.0,
+                "required_passed": True,
+                "checked_fields": [],
+                "verification_details": [],
+                "verification_strategy": VERIFICATION_STRATEGY_STRICT,
+            }
+
+        checked_fields: List[Dict[str, Any]] = []
+        text_fields = [field for field in fields if field.get("data_type") != "image"]
+        image_fields = [field for field in fields if field.get("data_type") == "image"]
+        for field in text_fields:
+            checked = self._text_anchor_check(field, page_image_paths)
+            checked_fields.append(checked)
+            if not checked["passed"]:
+                return {
+                    **self._verification_summary(template_id, checked_fields, status="strict_text_failed"),
+                    "passed": False,
+                    "required_passed": False,
+                    "verification_strategy": VERIFICATION_STRATEGY_STRICT,
+                    "strict_failed_stage": "text",
+                }
+
+        for field in image_fields:
+            checked = self._image_anchor_check(field, page_image_paths)
+            checked_fields.append(checked)
+            if not checked["passed"]:
+                return {
+                    **self._verification_summary(template_id, checked_fields, status="strict_image_failed"),
+                    "passed": False,
+                    "required_passed": False,
+                    "verification_strategy": VERIFICATION_STRATEGY_STRICT,
+                    "strict_failed_stage": "image",
+                }
+
+        return {
+            **self._verification_summary(template_id, checked_fields, status="strict_verified"),
+            "passed": True,
+            "required_passed": True,
+            "verification_strategy": VERIFICATION_STRATEGY_STRICT,
+            "strict_failed_stage": None,
+        }
+
     def verify_candidate(
         self,
         document_page_id: Optional[str] = None,
@@ -2614,6 +2952,52 @@ class DecisionService:
             "layout_passed": layout_passed,
             "required_passed": required_passed,
             "required_failed_fields": required_failed_fields,
+        }
+
+    def decide_candidate_strict(
+        self,
+        retrieval_score: float,
+        verification: Dict[str, Any],
+        final_confidence_threshold: float,
+        matching_weights: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, Any]:
+        retrieval_score = round(float(retrieval_score), 4)
+        verification_score = round(float(verification.get("score", 0.0) or 0.0), 4)
+        text_anchor_score = round(float(verification.get("text_anchor_score", verification_score) or 0.0), 4)
+        image_anchor_score = round(float(verification.get("image_anchor_score", 1.0) or 0.0), 4)
+        verification_passed = self._truthy(verification.get("passed"))
+        layout_passed = retrieval_score >= self.MIN_RETRIEVAL_SCORE
+        required_passed = self._required_passed_from_fields(verification, verification_passed)
+        required_failed_fields = self._required_failed_fields(verification)
+        final_passed = verification_passed and required_passed and layout_passed
+        configured_weights = matching_weights or self.matching_weights(None, {})
+        effective_weights = self._effective_matching_weights(configured_weights, verification)
+        if not layout_passed:
+            decision_path = "strict_layout_score_below_threshold"
+        elif not verification_passed:
+            failed_stage = verification.get("strict_failed_stage")
+            decision_path = f"strict_{failed_stage}_anchor_failed" if failed_stage else "strict_anchor_failed"
+        else:
+            decision_path = "strict_all_anchors_passed"
+        return {
+            "retrieval_score": retrieval_score,
+            "verification_score": verification_score,
+            "text_anchor_score": text_anchor_score,
+            "image_anchor_score": image_anchor_score,
+            "anchor_score": verification_score,
+            "matching_weights": configured_weights,
+            "effective_matching_weights": effective_weights,
+            "verification_passed": verification_passed,
+            "final_score": retrieval_score if final_passed else verification_score,
+            "final_passed": final_passed,
+            "decision_reason": decision_path,
+            "decision_path": decision_path,
+            "final_confidence_threshold": final_confidence_threshold,
+            "final_threshold_passed": None,
+            "layout_passed": layout_passed,
+            "required_passed": required_passed,
+            "required_failed_fields": required_failed_fields,
+            "verification_strategy": VERIFICATION_STRATEGY_STRICT,
         }
 
 
