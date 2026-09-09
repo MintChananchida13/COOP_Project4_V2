@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import { LogOut } from "lucide-react";
+import { AlertTriangle, LogOut } from "lucide-react";
 import AdjustZone from "../user/components/AdjustZone";
 import WorkspaceZone from "../user/components/WorkspaceZone";
 import MatchedTemplateWorkspaceZone from "../user/components/MatchedTemplateWorkspaceZone";
@@ -168,19 +168,7 @@ const NoTemplateDetectionCard = ({
     <section className="rounded-2xl border border-amber-100 bg-amber-50 p-4">
       <div className="flex items-start gap-3">
         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-amber-600 shadow-sm ring-1 ring-amber-100">
-          <svg
-            className="h-[18px] w-[18px]"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.5"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M12 9v4m0 4h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"
-            />
-          </svg>
+          <AlertTriangle size={18} />
         </div>
 
         <div className="min-w-0">
@@ -194,18 +182,17 @@ const NoTemplateDetectionCard = ({
             {message}
           </p>
 
-          {!isRuntimeUnavailable && (
-            <div className="mt-3 rounded-xl border border-amber-100 bg-white/75 px-3 py-2">
-              <p className="ui-caption font-black text-amber-900">
-                {verificationStrategyLabel(strategy)}
-              </p>
-              <p className="ui-caption mt-0.5 break-words font-semibold text-amber-700">
-                {strategyDescription}
-              </p>
-            </div>
-          )}
-
           <div className="mt-3 rounded-xl border border-amber-100 bg-white/75 px-3 py-2">
+            {!isRuntimeUnavailable && (
+              <div className="mb-2 rounded-lg bg-amber-50 px-2.5 py-2">
+                <p className="ui-caption font-black text-amber-900">
+                  {verificationStrategyLabel(strategy)}
+                </p>
+                <p className="ui-caption mt-0.5 break-words font-semibold text-amber-700">
+                  {strategyDescription}
+                </p>
+              </div>
+            )}
             <p className="ui-caption break-words font-semibold text-amber-800">
               สามารถดำเนินการต่อด้วย Custom OCR
             </p>
