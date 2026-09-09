@@ -537,14 +537,14 @@ export default function AdminTemplatesPage() {
         description="จัดการ Template ฉบับร่าง Template ที่ใช้งานจริง และ Template ที่ยังไม่พร้อมใช้งาน การลบข้อมูลจะมีผลกับฐานข้อมูลจริงเท่านั้น"
       />
 
-      <div className={`${cardClassName} p-5`}>
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+      <div className={`${cardClassName} p-4`}>
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0">
-            <h2 className="text-base font-black text-slate-900">รูปแบบการตรวจสอบ Template</h2>
-            <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">
+            <h2 className="text-sm font-black text-slate-900">รูปแบบการตรวจสอบ Template</h2>
+            <p className="mt-1 text-[11px] font-semibold leading-5 text-slate-500">
               กำหนดวิธีการตรวจสอบ Template สำหรับเอกสารทั้งหมดในระบบ
             </p>
-            <p className="mt-2 max-w-3xl text-xs font-medium leading-5 text-slate-500">
+            <p className="mt-1.5 max-w-3xl text-[11px] font-medium leading-5 text-slate-500">
               {selectedVerificationStrategy.description}
             </p>
             {verificationStrategySaveStatus === "saving" && (
@@ -561,7 +561,7 @@ export default function AdminTemplatesPage() {
             value={verificationStrategy}
             onChange={(event) => void handleVerificationStrategyChange(event.target.value as VerificationStrategy)}
             disabled={verificationStrategySaveStatus === "saving"}
-            className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-black text-slate-800 outline-none transition-colors focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-100 disabled:text-slate-400 lg:w-72"
+            className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 outline-none transition-colors focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-100 disabled:text-slate-400 lg:w-64"
           >
             {verificationStrategyOptions.map((option) => (
               <option key={option.value} value={option.value}>

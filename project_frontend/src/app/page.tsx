@@ -48,6 +48,13 @@ interface TemplateDetectionNotice {
   detail?: string;
 }
 
+const isStrictVerificationStrategy = (value?: string | null) => value === "strict";
+
+const detectionFailureDetail = (detection: DetectionDevResult) =>
+  isStrictVerificationStrategy(detection.bestCandidate?.verificationStrategy || (detection.debug?.verification_strategy as string | null | undefined))
+    ? "ไม่ผ่านการทดสอบแบบเข้มงวด"
+    : "ไม่โหลด ROI จาก Template ใด ๆ";
+
 type NoticeTone = "success" | "warning" | "danger" | "info";
 type ExportFormat = "word" | "excel" | "json" | "images";
 type ExportContentOptions = {
@@ -1558,6 +1565,7 @@ function HomeWorkspace() {
     confidence?: number | null;
     decisionReason?: string | null;
     alignmentStatus?: string | null;
+    verificationStrategy?: "standard" | "strict" | string | null;
   } | null>(null);
   const tableExportDropdownRef = useRef<HTMLDivElement | null>(null);
 
@@ -1712,7 +1720,7 @@ function HomeWorkspace() {
         setTemplateDetectionNotice({
           title: "ไม่พบ Template ที่มั่นใจพอ",
           message: detection.message || "คะแนนการจับคู่ยังไม่ผ่านเกณฑ์ที่กำหนด",
-          detail: "ไม่โหลด ROI จาก Template ใด ๆ",
+          detail: detectionFailureDetail(detection),
         });
         return;
       }
@@ -1818,6 +1826,10 @@ function HomeWorkspace() {
         confidence: detection.bestCandidate?.finalScore ?? detection.bestCandidate?.score ?? null,
         decisionReason: detection.bestCandidate?.decisionReason ?? null,
         alignmentStatus: detection.bestCandidate?.alignmentStatus ?? null,
+        verificationStrategy:
+          detection.bestCandidate?.verificationStrategy ||
+          (detection.debug?.verification_strategy as string | null | undefined) ||
+          null,
       });
 
       if (detectedRois.length === 0) {

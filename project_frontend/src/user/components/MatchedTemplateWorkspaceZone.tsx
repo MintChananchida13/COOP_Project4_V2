@@ -12,6 +12,7 @@ interface MatchedTemplateInfo {
   confidence?: number | null;
   decisionReason?: string | null;
   alignmentStatus?: string | null;
+  verificationStrategy?: "standard" | "strict" | string | null;
 }
 
 interface MatchedTemplateWorkspaceZoneProps extends WorkspaceCustomEditorProps {
@@ -74,6 +75,13 @@ export default function MatchedTemplateWorkspaceZone({
     );
   const visibleRois = props.rois.filter((roi) => !hasResolvedChildren(roi));
   const selectedVisibleId = visibleRois.some((roi) => roi.id === props.selectedId) ? props.selectedId : null;
+  const isStrictVerification = matchedTemplate.verificationStrategy === "strict";
+  const verificationModeLabel = isStrictVerification ? "แบบเข้มงวด (Strict)" : "แบบถ่วงน้ำหนัก (Standard)";
+  const verificationModeMessage = isStrictVerification
+    ? matchedTemplate.decisionReason?.includes("failed")
+      ? "ไม่ผ่านการทดสอบแบบเข้มงวด"
+      : "ผ่านทุกเงื่อนไขแบบเข้มงวด"
+    : "ผ่านการตรวจสอบแบบถ่วงน้ำหนัก";
 
   return (
     <WorkspaceCustomEditor
@@ -182,6 +190,10 @@ export default function MatchedTemplateWorkspaceZone({
                     <p className="ui-caption break-words font-semibold text-emerald-800">
                       ใช้ภาพที่จัดแนวเข้ากับ Template และใช้ ROI ต้นฉบับของ Template
                     </p>
+                    <div className="mt-2 rounded-lg bg-emerald-50 px-2.5 py-2">
+                      <p className="ui-caption font-black text-emerald-900">{verificationModeLabel}</p>
+                      <p className="ui-caption mt-0.5 font-semibold text-emerald-700">{verificationModeMessage}</p>
+                    </div>
                   </div>
                 </div>
               </div>

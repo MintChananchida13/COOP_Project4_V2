@@ -269,6 +269,7 @@ export interface DetectionCandidate {
   finalPassed?: boolean | null;
   decisionReason?: string | null;
   decisionPath?: string | null;
+  verificationStrategy?: "standard" | "strict" | string | null;
   requiredPassed?: boolean | null;
   requiredFailedFields?: Record<string, unknown>[];
   finalConfidenceThreshold?: number | null;
@@ -848,6 +849,7 @@ function mapDetectionCandidate(candidate: Record<string, unknown>): DetectionCan
     finalPassed: typeof candidate.final_passed === "boolean" ? candidate.final_passed : null,
     decisionReason: (candidate.decision_reason as string | null | undefined) ?? null,
     decisionPath: (candidate.decision_path as string | null | undefined) ?? null,
+    verificationStrategy: (candidate.verification_strategy as string | null | undefined) ?? null,
     requiredPassed: typeof candidate.required_passed === "boolean" ? candidate.required_passed : null,
     requiredFailedFields: Array.isArray(candidate.required_failed_fields)
       ? (candidate.required_failed_fields as Record<string, unknown>[])
