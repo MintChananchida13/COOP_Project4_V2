@@ -510,18 +510,21 @@ def _recognize_text_crops_with_core(crops: List[np.ndarray], status_prefix: str)
 def run_paddle_thai_ocr_batch(crops: List[np.ndarray]) -> List[Dict[str, Any]]:
     """Compatibility seam for tests; production routes table text crops through the shared OCR core."""
     try:
-        from app.processing.ocr_adapter import recognize_text_roi
+        from app.processing.ocr_adapter import recognize_text_crops_with_detection
     except Exception as error:
         return [{"text": "", "confidence": 0.0, "error": str(error)} for _ in crops]
 
-    recognitions: List[Dict[str, Any]] = []
-    for crop in crops:
-        try:
-            result = recognize_text_roi(crop)
-            recognitions.append(result if isinstance(result, dict) else {"text": "", "confidence": 0.0})
-        except Exception as error:
-            recognitions.append({"text": "", "confidence": 0.0, "error": str(error)})
-    return recognitions
+    try:
+        results_by_index = recognize_text_crops_with_detection(
+            [(str(index), crop) for index, crop in enumerate(crops)]
+        )
+    except Exception as error:
+        return [{"text": "", "confidence": 0.0, "error": str(error)} for _ in crops]
+
+    return [
+        results_by_index.get(str(index), {"text": "", "confidence": 0.0, "error": "missing_batch_result"})
+        for index in range(len(crops))
+    ]
 
 
 def _merge_bboxes(boxes: List[Dict[str, float]]) -> Optional[Dict[str, float]]:
@@ -4124,7 +4127,6 @@ def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
         time.perf_counter() - whole_started,
     )
     slanext_result = _slanext_result_from_output(output, image, started)
-    slanext_result = _apply_backend_ocr_core_to_remote_cells(slanext_result, image)
     if _table_debug_trace_enabled():
         slanext_trace = _ensure_table_trace(slanext_result)
         if isinstance(slanext_trace, dict):
