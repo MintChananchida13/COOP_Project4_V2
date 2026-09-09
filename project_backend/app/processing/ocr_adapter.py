@@ -211,7 +211,7 @@ def _detect_boxes_in_crops_batch(
     if not text_items:
         return {}
     try:
-        logger.info(
+        logger.warning(
             "OCR diagnostic: stage=text_detection_batch source=%s batch_size=%s ids=%s",
             source,
             len(text_items),
@@ -219,7 +219,7 @@ def _detect_boxes_in_crops_batch(
         )
         detections = detect_text_boxes_batch([bgr_crop for _, bgr_crop in text_items])
     except (LayoutAnalysisUnavailableError, RuntimeError, OcrUnavailableError, ValueError) as error:
-        logger.info(
+        logger.warning(
             "OCR diagnostic: stage=text_detection_batch_failed source=%s batch_size=%s ids=%s error=%s",
             source,
             len(text_items),
@@ -313,7 +313,7 @@ def _recognize_text_crops_with_detection(
                 }
             )
 
-    logger.info(
+    logger.warning(
         "OCR diagnostic: stage=text_recognition_batch source=%s batch_size=%s ids=%s",
         source,
         len(recognition_crops),
@@ -367,7 +367,7 @@ def _recognize_text_crops_with_detection(
         }
 
     if fallback_requests:
-        logger.info(
+        logger.warning(
             "OCR diagnostic: stage=text_recognition_batch source=%s:fallback_short_empty batch_size=%s ids=%s",
             source,
             len(fallback_requests),
