@@ -162,6 +162,17 @@ def remote_detect_text_boxes(image_path: str) -> Optional[Dict[str, Any]]:
     return _post_predict(ModelRuntimeKind.TEXT_DETECTION, {"image": _path_to_data_url(image_path)})
 
 
+def remote_detect_text_boxes_batch(images: List[np.ndarray]) -> Optional[Dict[str, Any]]:
+    if not is_runtime_configured(ModelRuntimeKind.TEXT_DETECTION):
+        return None
+    return _post_predict(
+        ModelRuntimeKind.TEXT_DETECTION,
+        {"images": [_image_to_data_url(image) for image in images]},
+        timeout=240.0,
+        path_override="/api/v1/text-detection-batches?version=v5",
+    )
+
+
 def remote_recognize_image(image: np.ndarray) -> Optional[Dict[str, Any]]:
     if not is_runtime_configured(ModelRuntimeKind.TEXT_RECOGNITION):
         return None

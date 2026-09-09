@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Tuple
 
 import cv2
 
-from app.model_runtime.layout_analysis_service import LayoutAnalysisUnavailableError, detect_text_boxes
+from app.model_runtime.layout_analysis_service import LayoutAnalysisUnavailableError, detect_text_boxes, detect_text_boxes_batch
 from app.processing.ocr_postprocess import normalize_ocr_text
 from app.model_runtime.paddle_thai_ocr_adapter import PaddleThaiOcrUnavailableError, run_paddle_thai_ocr, run_paddle_thai_ocr_batch
 from app.model_runtime.table_recognition_v2_adapter import TableRecognitionV2UnavailableError, recognize_table_v2
@@ -181,6 +181,61 @@ def _detect_boxes_in_crop(bgr_crop) -> Tuple[List[Dict[str, int]], Dict[str, Any
                 pass
 
 
+def _boxes_from_detection_result(detection: Dict[str, Any], bgr_crop) -> Tuple[List[Dict[str, int]], Dict[str, Any]]:
+    image_height, image_width = bgr_crop.shape[:2]
+    boxes = [
+        box
+        for box in (_region_to_box(region, image_width, image_height) for region in detection.get("regions", []))
+        if box is not None
+    ]
+    return _sort_boxes_reading_order(boxes), {
+        "engine": "paddle_text_detection",
+        "model": detection.get("model"),
+        "box_count": len(boxes),
+        "fallback_used": False,
+        "error": None,
+    }
+
+
+def _detect_boxes_in_crops_batch(text_items: List[Tuple[str, Any]]) -> Dict[str, Tuple[List[Dict[str, int]], Dict[str, Any]]]:
+    if not text_items:
+        return {}
+    try:
+        detections = detect_text_boxes_batch([bgr_crop for _, bgr_crop in text_items])
+    except (LayoutAnalysisUnavailableError, RuntimeError, OcrUnavailableError, ValueError) as error:
+        return {
+            key: (
+                [],
+                {
+                    "engine": "paddle_text_detection",
+                    "model": "PP-OCRv5_server_det",
+                    "box_count": 0,
+                    "fallback_used": True,
+                    "error": str(error),
+                },
+            )
+            for key, _ in text_items
+        }
+
+    results: Dict[str, Tuple[List[Dict[str, int]], Dict[str, Any]]] = {}
+    for index, (key, bgr_crop) in enumerate(text_items):
+        detection = detections[index] if index < len(detections) else {}
+        if isinstance(detection, dict):
+            results[key] = _boxes_from_detection_result(detection, bgr_crop)
+        else:
+            results[key] = (
+                [],
+                {
+                    "engine": "paddle_text_detection",
+                    "model": "PP-OCRv5_server_det",
+                    "box_count": 0,
+                    "fallback_used": True,
+                    "error": "invalid_batch_item",
+                },
+            )
+    return results
+
+
 def _crop_box(bgr_crop, box: Dict[str, int]):
     y1 = box["y"]
     x1 = box["x"]
@@ -197,9 +252,22 @@ def _recognize_text_crops_with_detection(text_items: List[Tuple[str, Any]]) -> D
     recognition_crops = []
     recognition_meta: List[Dict[str, Any]] = []
     per_key_detection: Dict[str, Dict[str, Any]] = {}
+    detection_results = _detect_boxes_in_crops_batch(text_items)
 
     for key, bgr_crop in text_items:
-        boxes, detection_meta = _detect_boxes_in_crop(bgr_crop)
+        boxes, detection_meta = detection_results.get(
+            key,
+            (
+                [],
+                {
+                    "engine": "paddle_text_detection",
+                    "model": "PP-OCRv5_server_det",
+                    "box_count": 0,
+                    "fallback_used": True,
+                    "error": "missing_batch_detection_result",
+                },
+            ),
+        )
         if boxes:
             per_key_detection[key] = detection_meta
             for box in boxes:
@@ -237,7 +305,8 @@ def _recognize_text_crops_with_detection(text_items: List[Tuple[str, Any]]) -> D
             }
         )
 
-    results: Dict[str, Dict[str, Any]] = {}
+    pending_results: Dict[str, Dict[str, Any]] = {}
+    fallback_requests: List[Tuple[str, Any]] = []
     for key, _ in text_items:
         segments = grouped.get(key, [])
         text_segments = [segment["text"] for segment in segments if segment.get("text")]
@@ -256,41 +325,64 @@ def _recognize_text_crops_with_detection(text_items: List[Tuple[str, Any]]) -> D
         if not fallback_used and (not detected_text or len(detected_text) <= 2):
             full_crop = source_crops.get(key)
             if full_crop is not None and getattr(full_crop, "size", 0) > 0:
-                full_result = run_paddle_thai_ocr(full_crop)
-                full_text = normalize_ocr_text(full_result.get("text"))
-                full_confidence = round(float(full_result.get("confidence") or 0.0), 4)
-                detection_meta = {
-                    **detection_meta,
-                    "fallback_used": True,
-                    "fallback_reason": "detected_boxes_recognized_empty_or_too_short",
-                    "full_roi_confidence": full_confidence,
-                    "full_roi_text_length": len(full_text),
-                }
-                if full_text and (not detected_text or len(full_text) > len(detected_text) or full_confidence >= detected_confidence):
-                    segments.append(
-                        {
-                            "text": full_text,
-                            "confidence": full_confidence,
-                            "bbox": {
-                                "x": 0,
-                                "y": 0,
-                                "width": int(full_crop.shape[1]),
-                                "height": int(full_crop.shape[0]),
-                            },
-                            "engine": full_result.get("engine") or "paddle_thai_ocr",
-                            "model": full_result.get("model"),
-                            "fallback": True,
-                            "fallback_reason": "full_roi_after_empty_detected_boxes",
-                            "error": full_result.get("error"),
-                        }
-                    )
-                    detected_text = full_text
-                    detected_confidence = full_confidence
-                    fallback_used = True
+                fallback_requests.append((key, full_crop))
 
+        pending_results[key] = {
+            "segments": segments,
+            "detection_meta": detection_meta,
+            "detected_text": detected_text,
+            "detected_confidence": detected_confidence,
+            "fallback_used": fallback_used,
+        }
+
+    if fallback_requests:
+        fallback_results = run_paddle_thai_ocr_batch([crop for _, crop in fallback_requests])
+        for (key, full_crop), full_result in zip(fallback_requests, fallback_results):
+            pending = pending_results[key]
+            segments = pending["segments"]
+            detected_text = str(pending["detected_text"] or "")
+            detected_confidence = float(pending["detected_confidence"] or 0.0)
+            full_text = normalize_ocr_text(full_result.get("text"))
+            full_confidence = round(float(full_result.get("confidence") or 0.0), 4)
+            detection_meta = {
+                **pending["detection_meta"],
+                "fallback_used": True,
+                "fallback_reason": "detected_boxes_recognized_empty_or_too_short",
+                "full_roi_confidence": full_confidence,
+                "full_roi_text_length": len(full_text),
+            }
+            if full_text and (not detected_text or len(full_text) > len(detected_text) or full_confidence >= detected_confidence):
+                segments.append(
+                    {
+                        "text": full_text,
+                        "confidence": full_confidence,
+                        "bbox": {
+                            "x": 0,
+                            "y": 0,
+                            "width": int(full_crop.shape[1]),
+                            "height": int(full_crop.shape[0]),
+                        },
+                        "engine": full_result.get("engine") or "paddle_thai_ocr",
+                        "model": full_result.get("model"),
+                        "fallback": True,
+                        "fallback_reason": "full_roi_after_empty_detected_boxes",
+                        "error": full_result.get("error"),
+                    }
+                )
+                pending["detected_text"] = full_text
+                pending["detected_confidence"] = full_confidence
+            pending["detection_meta"] = detection_meta
+            pending["fallback_used"] = True
+
+    results: Dict[str, Dict[str, Any]] = {}
+    for key, _ in text_items:
+        pending = pending_results[key]
+        segments = pending["segments"]
+        detection_meta = pending["detection_meta"]
+        fallback_used = bool(pending["fallback_used"])
         results[key] = {
-            "text": detected_text,
-            "confidence": detected_confidence,
+            "text": pending["detected_text"],
+            "confidence": pending["detected_confidence"],
             "preprocessing": "paddle_text_detection_then_recognition"
             if not fallback_used
             else "paddle_text_detection_fallback_then_recognition",
@@ -305,6 +397,10 @@ def _recognize_text_crops_with_detection(text_items: List[Tuple[str, Any]]) -> D
 
 def recognize_text_crop_with_detection(bgr_crop) -> Dict[str, Any]:
     return _recognize_text_crops_with_detection([("roi", bgr_crop)])["roi"]
+
+
+def recognize_text_crops_with_detection(text_items: List[Tuple[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    return _recognize_text_crops_with_detection(text_items)
 
 
 def recognize_text_roi(bgr_crop) -> Dict[str, Any]:

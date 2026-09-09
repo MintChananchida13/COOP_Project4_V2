@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -31,7 +32,7 @@ from app.model_runtime.layout_analysis_service import (
     analyze_layout,
     detect_text_boxes,
 )
-from app.processing.ocr_adapter import recognize_text_roi
+from app.processing.ocr_adapter import recognize_text_crops_with_detection, recognize_text_roi
 from app.processing.ocr_postprocess import normalize_ocr_text, normalize_table_rows
 from app.model_runtime.paddle_thai_ocr_adapter import PaddleThaiOcrUnavailableError, run_paddle_thai_ocr, run_paddle_thai_ocr_batch
 from app.model_runtime.table_recognition_v2_adapter import TableRecognitionV2UnavailableError, recognize_table_v2
@@ -45,6 +46,7 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="repla
 
 OUTPUT_DIR = "cropped_rois"
 SAVE_CROPPED_ROIS = os.getenv("SAVE_CROPPED_ROIS", "false").strip().lower() in {"1", "true", "yes", "on"}
+OCR_JOB_PROCESSING_TIMEOUT_SECONDS = max(60, int(os.getenv("OCR_JOB_PROCESSING_TIMEOUT_SECONDS", "900")))
 logger = logging.getLogger(__name__)
 
 
@@ -997,11 +999,40 @@ def update_ocr_job_status(job_id: str, status: str, error_message: str | None = 
             )
 
 
+def _coerce_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
+def _mark_stale_ocr_job_failed(job: Dict[str, Any]) -> Dict[str, Any]:
+    if job.get("status") != "processing":
+        return job
+    started_at = _coerce_datetime(job.get("started_at") or job.get("requested_at"))
+    if started_at is None:
+        return job
+    elapsed = (datetime.now(timezone.utc) - started_at.astimezone(timezone.utc)).total_seconds()
+    if elapsed < OCR_JOB_PROCESSING_TIMEOUT_SECONDS:
+        return job
+    message = f"OCR job exceeded processing timeout ({OCR_JOB_PROCESSING_TIMEOUT_SECONDS}s)."
+    logger.error("OCR job stale timeout: job_id=%s elapsed=%.3fs", job.get("id"), elapsed)
+    update_ocr_job_status(str(job["id"]), "failed", error_message=message)
+    refreshed = get_ocr_job(str(job["id"]))
+    return refreshed or {**job, "status": "failed", "error_message": message, "completed_at": datetime.now(timezone.utc)}
+
+
 def run_ocr_job(job_id: str) -> None:
     job = get_ocr_job(job_id)
     if not job:
         return
     try:
+        logger.info("OCR job started: job_id=%s", job_id)
         update_ocr_job_status(job_id, "processing")
         with db_connect() as conn:
             row = conn.execute("SELECT request_json FROM ocr_jobs WHERE id = ?", (job_id,)).fetchone()
@@ -1011,10 +1042,22 @@ def run_ocr_job(job_id: str) -> None:
         if not isinstance(payload_data, dict):
             raise RuntimeError("OCR job request payload is invalid.")
         payload = DocumentPayload(**payload_data)
+        started = time.perf_counter()
         result = process_document_payload(payload)
+        logger.info(
+            "OCR job processing completed: job_id=%s elapsed=%.3fs result_count=%s",
+            job_id,
+            time.perf_counter() - started,
+            len(result.get("extracted_data") or []) if isinstance(result, dict) else 0,
+        )
         update_ocr_job_status(job_id, "completed", result=result)
+        logger.info("OCR job marked completed: job_id=%s", job_id)
     except Exception as error:
-        update_ocr_job_status(job_id, "failed", error_message=str(error))
+        logger.exception("OCR job failed before completion update: job_id=%s", job_id)
+        try:
+            update_ocr_job_status(job_id, "failed", error_message=str(error))
+        except Exception:
+            logger.exception("OCR job failed status update also failed: job_id=%s", job_id)
 
 
 def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
@@ -1071,6 +1114,7 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
                 }
             )
     else:
+        prepared_items: List[Dict[str, Any]] = []
         for idx, roi in enumerate(payload.rois):
             crop_img = crop_opencv_region(
                 opencv_img,
@@ -1084,11 +1128,76 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
 
             filename = f"{roi.fieldName}_{idx}_{uuid.uuid4().hex[:6]}.png"
             filepath = _save_cropped_roi(filename, crop_img)
-
+            field_type = (roi.type or "text").lower()
+            extraction_method = (roi.extractionMethod or "paddle_thai_ocr").lower()
+            if extraction_method == "typhoon_ocr":
+                extraction_method = "paddle_thai_ocr"
             roi_mode = (roi.roiMode or "fix").lower()
             expected_content = (roi.expectedContent or "").lower()
-            if roi_mode == "flexible" and expected_content == "text":
+            pipeline_type = (
+                "image"
+                if extraction_method == "extract_image" or field_type == "image"
+                else "table"
+                if field_type == "table" or extraction_method in {"table_recognition_v2", "ocr_table"}
+                else "flexible_text"
+                if roi_mode == "flexible" and expected_content == "text"
+                else "text"
+            )
+            prepared_items.append(
+                {
+                    "index": idx,
+                    "roi": roi,
+                    "crop_img": crop_img,
+                    "saved_path": filepath,
+                    "pipeline_type": pipeline_type,
+                }
+            )
+
+        ocr_by_index: Dict[int, Dict[str, Any]] = {}
+        text_items = [
+            (str(item["index"]), item["crop_img"])
+            for item in prepared_items
+            if item["pipeline_type"] == "text"
+        ]
+        if text_items:
+            try:
+                ocr_by_index.update(
+                    {
+                        int(key): result
+                        for key, result in recognize_text_crops_with_detection(text_items).items()
+                    }
+                )
+            except PaddleThaiOcrUnavailableError:
+                raise
+            except Exception as error:
+                for key, _ in text_items:
+                    ocr_by_index[int(key)] = {
+                        "text": "",
+                        "confidence": 0.0,
+                        "segments": [],
+                        "raw_segments": [],
+                        "preprocessing": "paddle_text_detection_then_recognition",
+                        "engine": "paddle_text_detection+paddle_thai_ocr",
+                        "model": None,
+                        "error": str(error),
+                    }
+
+        for item in prepared_items:
+            idx = int(item["index"])
+            roi = item["roi"]
+            crop_img = item["crop_img"]
+            pipeline_type = str(item["pipeline_type"])
+            if pipeline_type == "text":
+                ocr_result = ocr_by_index.get(idx) or {
+                    "text": "",
+                    "confidence": 0.0,
+                    "segments": [],
+                    "raw_segments": [],
+                }
+            elif pipeline_type == "flexible_text":
                 ocr_result = process_flexible_text_roi(crop_img)
+            elif pipeline_type == "image":
+                ocr_result = process_roi_with_engine(crop_img, roi)
             else:
                 ocr_result = process_roi_with_engine(crop_img, roi)
             extracted_text = normalize_ocr_text(ocr_result.get("text"))
@@ -1103,7 +1212,7 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
                     "fieldName": roi.fieldName,
                     "text": extracted_text,
                     "confidence": confidence_score,
-                    "saved_path": filepath,
+                    "saved_path": item["saved_path"],
                     "type": roi.type,
                     "extraction_method": roi.extractionMethod,
                     "roi_mode": roi.roiMode or "fix",
@@ -1168,6 +1277,7 @@ async def get_ai_process_job(job_id: str):
     job = get_ocr_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="OCR job not found.")
+    job = _mark_stale_ocr_job_failed(job)
     response: Dict[str, Any] = {
         "success": True,
         "job_id": job["id"],

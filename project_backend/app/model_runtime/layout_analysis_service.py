@@ -13,6 +13,7 @@ from app.core.model_runtime_client import (
     is_runtime_configured,
     remote_analyze_layout,
     remote_detect_text_boxes,
+    remote_detect_text_boxes_batch,
 )
 
 logger = logging.getLogger(__name__)
@@ -782,22 +783,8 @@ def analyze_layout(image: np.ndarray, expand_text_rois: bool = False, auto_roi_m
     }
 
 
-def detect_text_boxes(image_path: str) -> Dict[str, Any]:
-    image = cv2.imread(image_path)
-    if image is None or image.size == 0:
-        raise ValueError("Invalid image for text box detection.")
-
+def _text_detection_result_from_remote(remote_result: Dict[str, Any], image: np.ndarray) -> Dict[str, Any]:
     height, width = image.shape[:2]
-    _require_runtime(ModelRuntimeKind.TEXT_DETECTION)
-    logger.info("Using remote TextDetection runtime")
-    try:
-        remote_result = remote_detect_text_boxes(image_path)
-    except ModelRuntimeUnavailableError as error:
-        raise LayoutAnalysisUnavailableError(str(error)) from error
-    except Exception as error:
-        raise LayoutAnalysisUnavailableError(str(error)) from error
-    if not isinstance(remote_result, dict):
-        raise LayoutAnalysisUnavailableError("TextDetection runtime returned an invalid response.")
     raw_items = _text_detection_items_from_response(remote_result.get("result", remote_result))
     parsed_items: List[Dict[str, Any]] = []
     for item in raw_items:
@@ -844,3 +831,58 @@ def detect_text_boxes(image_path: str) -> Dict[str, Any]:
         "image_height": height,
         "regions": regions,
     }
+
+
+def detect_text_boxes(image_path: str) -> Dict[str, Any]:
+    image = cv2.imread(image_path)
+    if image is None or image.size == 0:
+        raise ValueError("Invalid image for text box detection.")
+
+    _require_runtime(ModelRuntimeKind.TEXT_DETECTION)
+    logger.info("Using remote TextDetection runtime")
+    try:
+        remote_result = remote_detect_text_boxes(image_path)
+    except ModelRuntimeUnavailableError as error:
+        raise LayoutAnalysisUnavailableError(str(error)) from error
+    except Exception as error:
+        raise LayoutAnalysisUnavailableError(str(error)) from error
+    if not isinstance(remote_result, dict):
+        raise LayoutAnalysisUnavailableError("TextDetection runtime returned an invalid response.")
+    return _text_detection_result_from_remote(remote_result, image)
+
+
+def detect_text_boxes_batch(images: List[np.ndarray]) -> List[Dict[str, Any]]:
+    if not images:
+        return []
+    _require_runtime(ModelRuntimeKind.TEXT_DETECTION)
+    logger.info("Using remote TextDetection batch runtime")
+    try:
+        remote_result = remote_detect_text_boxes_batch(images)
+    except ModelRuntimeUnavailableError as error:
+        raise LayoutAnalysisUnavailableError(str(error)) from error
+    except Exception as error:
+        raise LayoutAnalysisUnavailableError(str(error)) from error
+    if not isinstance(remote_result, dict):
+        raise LayoutAnalysisUnavailableError("TextDetection batch runtime returned an invalid response.")
+    raw_results = remote_result.get("results")
+    if not isinstance(raw_results, list):
+        raise LayoutAnalysisUnavailableError("TextDetection batch runtime returned an invalid batch response.")
+    ordered_results = [
+        raw_results[index] if index < len(raw_results) else None
+        for index in range(len(images))
+    ]
+    return [
+        _text_detection_result_from_remote(
+            item.get("result") if isinstance(item, dict) and isinstance(item.get("result"), dict) else item,
+            image,
+        )
+        if isinstance(item, dict)
+        else {
+            "engine": "text_detection_model_runtime",
+            "model": _TEXT_DETECTION_MODEL_NAME,
+            "image_width": int(image.shape[1]),
+            "image_height": int(image.shape[0]),
+            "regions": [],
+        }
+        for item, image in zip(ordered_results, images)
+    ]

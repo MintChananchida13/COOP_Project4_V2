@@ -30,6 +30,7 @@ DETECTION_VERSION = PIPELINE_CONFIG.version
 PDF_RENDER_SCALE = 2.0
 DETECTION_TOP_K_LIMIT = 5
 DETECTION_RETRIEVAL_LIMIT = DETECTION_TOP_K_LIMIT
+USER_DETECTION_RETRIEVAL_LIMIT = 3
 DETECTION_FULL_EVAL_LIMIT = max(1, int(os.getenv("DETECTION_FULL_EVAL_LIMIT", str(DETECTION_RETRIEVAL_LIMIT))))
 DETECTION_ALIGNMENT_LIMIT = max(0, int(os.getenv("DETECTION_ALIGNMENT_LIMIT", "1")))
 SAVE_DEBUG_ARTIFACTS = os.getenv("SAVE_DEBUG_ARTIFACTS", "false").strip().lower() in {"1", "true", "yes", "on"}
@@ -1296,6 +1297,7 @@ def _detect_page(
     page_image_paths: Dict[int, str],
     include_template_id: Optional[str] = None,
     timing: Optional[Dict[str, float]] = None,
+    retrieval_limit: int = DETECTION_RETRIEVAL_LIMIT,
 ) -> Dict[str, Any]:
     page_index = int(page_info["page_index"])
     normalized_image_path = str(page_info["normalized_path"])
@@ -1307,7 +1309,7 @@ def _detect_page(
     raw_results = search_layout_candidates(
         query_signature,
         page_number=page_index,
-        limit=DETECTION_RETRIEVAL_LIMIT,
+        limit=retrieval_limit,
         include_template_id=include_template_id,
     )
     if timing is not None:
@@ -1356,7 +1358,7 @@ def _detect_page(
             candidate["template_page_number"] = candidate.get("template_page_number") or metadata.get("matched_layout_reference_page_number") or metadata.get("page_number")
             candidate["retrieval_rank"] = index
             candidate["layout_confident"] = layout_confident
-            candidate["top_k_limit"] = DETECTION_TOP_K_LIMIT
+            candidate["top_k_limit"] = retrieval_limit
             if not layout_confident:
                 candidate["final_passed"] = False
                 candidate["decision_reason"] = "คะแนนรวมต่ำกว่าเกณฑ์"
@@ -1370,6 +1372,8 @@ def _detect_page(
             candidates.append(candidate)
             if should_fully_evaluate and candidate["final_passed"] and early_accept_rank is None:
                 early_accept_rank = index
+                if not include_template_id:
+                    break
 
     candidates = sorted(
         candidates,
@@ -1411,8 +1415,8 @@ def _detect_page(
             "active_candidate_count": len(candidates),
             "confident_layout_candidate_count": confident_layout_count,
             "layout_confidence_threshold": DecisionService.MIN_RETRIEVAL_SCORE,
-            "top_k_limit": DETECTION_TOP_K_LIMIT,
-            "retrieval_limit": DETECTION_RETRIEVAL_LIMIT,
+            "top_k_limit": retrieval_limit,
+            "retrieval_limit": retrieval_limit,
             "full_evaluation_limit": DETECTION_FULL_EVAL_LIMIT,
             "full_evaluation_count": full_evaluation_count,
             "early_accept_enabled": True,
@@ -1546,6 +1550,14 @@ def _detection_engine(pages: List[Dict[str, Any]]) -> str:
     return "layout_signature"
 
 
+def _is_confirmed_main_page_candidate(candidate: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(candidate, dict) or not candidate.get("final_passed"):
+        return False
+    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+    detection_mode = str(candidate.get("detection_mode") or metadata.get("detection_mode") or "")
+    return detection_mode == "main_page"
+
+
 def _no_match_message(candidates: List[Dict[str, Any]]) -> str:
     if not candidates:
         return "ไม่พบ Template ที่เปิดใช้งานใน 5 อันดับแรกจากการค้นหา Layout"
@@ -1578,10 +1590,28 @@ def detect_template_dev(
         if prepublish_timing:
             print(f"[PREPUBLISH] prepare pages done: {timing['prepare_pages']:.2f}s")
         page_image_paths = {page["page_index"]: page["normalized_path"] for page in normalized_pages}
-        pages = [
-            _detect_page(page, page_image_paths, include_template_id=include_template_id, timing=timing)
-            for page in normalized_pages
-        ]
+        retrieval_limit = DETECTION_RETRIEVAL_LIMIT if include_template_id else USER_DETECTION_RETRIEVAL_LIMIT
+        pages: List[Dict[str, Any]] = []
+        confirmed_main_page_candidate: Optional[Dict[str, Any]] = None
+        included_template = _fetch_template(include_template_id)
+        included_template_detection_mode = str((included_template or {}).get("detection_mode") or "all_pages")
+        included_template_main_page_only = bool(include_template_id and included_template_detection_mode == "main_page")
+        for page in normalized_pages:
+            if confirmed_main_page_candidate is not None:
+                break
+            detected_page = _detect_page(
+                page,
+                page_image_paths,
+                include_template_id=include_template_id,
+                timing=timing,
+                retrieval_limit=retrieval_limit,
+            )
+            pages.append(detected_page)
+            if int(page.get("page_index") or 1) == 1:
+                if _is_confirmed_main_page_candidate(detected_page.get("best_candidate")):
+                    confirmed_main_page_candidate = detected_page.get("best_candidate")
+                if included_template_main_page_only:
+                    break
         if prepublish_timing:
             print(f"[PREPUBLISH] layout analysis done: {timing.get('layout_analysis', 0.0):.2f}s")
             print(f"[PREPUBLISH] template matching done: {timing.get('template_matching', 0.0):.2f}s")

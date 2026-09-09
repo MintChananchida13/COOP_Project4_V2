@@ -1856,55 +1856,65 @@ function HomeWorkspace() {
         const scaleX = img.naturalWidth / renderedWidth;
         const scaleY = img.naturalHeight / renderedHeight;
 
-        const roiPromises = pageRois.map(async (roi, rIdx) => {
-          const croppedBase64 = cropRoiToImage(img, roi, scaleX, scaleY);
-          if (!croppedBase64) return null;
+        const createTablePlaceholderResult = (roi: ROI & { pageIndex?: number }, rIdx: number, message: string): OCRResult & { pageIndex?: number } => {
+          const emptyStructured = createEmptyStructuredTable();
+          return {
+            id: Date.now() + pageIdx * 100000 + rIdx + Math.floor(Math.random() * 1000000),
+            roiId: roi.id,
+            fieldName: roi.fieldName,
+            bbox: [],
+            extractedText: JSON.stringify(emptyStructured, null, 2),
+            originalText: message,
+            confidence: 0,
+            saved_path: "",
+            pageIndex: pageIdx,
+            type: "table",
+            dataType: "table",
+            role: roi.role || "data_extraction",
+            weight: roi.weight !== undefined ? roi.weight : 1.0,
+            points: roi.points,
+            tableRows: emptyStructured.rows,
+            tableStructured: emptyStructured,
+            tableDebug: { status: "table_placeholder", message },
+          };
+        };
+
+        const pagePayloadRois = pageRois.map((roi) => {
           const roiFieldType = getRoiFieldType(roi);
           const roiExtractionMethod = getRoiExtractionMethod(roi);
-          const isTableRoi = roiFieldType === "table";
-          const createTablePlaceholderResult = (message: string): OCRResult & { pageIndex?: number } => {
-            const emptyStructured = createEmptyStructuredTable();
-            return {
-              id: Date.now() + pageIdx * 100000 + rIdx + Math.floor(Math.random() * 1000000),
-              roiId: roi.id,
-              fieldName: roi.fieldName,
-              bbox: [],
-              extractedText: JSON.stringify(emptyStructured, null, 2),
-              originalText: message,
-              confidence: 0,
-              saved_path: "",
-              pageIndex: pageIdx,
-              type: "table",
-              dataType: "table",
-              role: roi.role || "data_extraction",
-              weight: roi.weight !== undefined ? roi.weight : 1.0,
-              points: roi.points,
-              tableRows: emptyStructured.rows,
-              tableStructured: emptyStructured,
-              tableDebug: { status: "table_placeholder", message },
-            };
+          return {
+            fieldName: roi.fieldName,
+            roiId: roi.id,
+            x: roi.x * scaleX,
+            y: roi.y * scaleY,
+            width: roi.width * scaleX,
+            height: roi.height * scaleY,
+            type: roiFieldType,
+            extractionMethod: roiExtractionMethod,
+            roiMode: roi.roiMode === "flexible" ? "flexible" : "fix",
+            expectedContent: roi.roiMode === "flexible" ? "text" : null,
           };
+        });
 
-          try {
-            const aiData = await runAiProcessJob({
-              image: croppedBase64,
-              rois: [
-                {
-                  fieldName: roi.fieldName,
-                  roiId: roi.id,
-                  x: 0,
-                  y: 0,
-                  width: roi.width * scaleX,
-                  height: roi.height * scaleY,
-                  type: roiFieldType,
-                  extractionMethod: roiExtractionMethod,
-                  roiMode: roi.roiMode === "flexible" ? "flexible" : "fix",
-                  expectedContent: roi.roiMode === "flexible" ? "text" : null,
-                },
-              ],
-            });
-            if (aiData.success && aiData.extracted_data.length > 0) {
-              const resItem = aiData.extracted_data[0];
+        try {
+          const aiData = await runAiProcessJob({
+            image: currentImgUrl,
+            rois: pagePayloadRois,
+          });
+          const responseItems = Array.isArray(aiData?.extracted_data) ? aiData.extracted_data : [];
+          const responseByRoiId = new Map<number, Record<string, any>>();
+          responseItems.forEach((item: Record<string, any>) => {
+            const responseRoiId = Number(item.roiId);
+            if (Number.isFinite(responseRoiId)) {
+              responseByRoiId.set(responseRoiId, item);
+            }
+          });
+
+          const roiResults = pageRois.map((roi, rIdx) => {
+            const roiFieldType = getRoiFieldType(roi);
+            const isTableRoi = roiFieldType === "table";
+            const resItem = responseByRoiId.get(roi.id) || responseItems[rIdx];
+            if (resItem) {
               const parsedHtmlStructured = parseHtmlTableStructured(typeof resItem.table_html === "string" ? resItem.table_html : undefined);
               const responseStructured =
                 resItem.table_structured && typeof resItem.table_structured === "object"
@@ -1970,20 +1980,25 @@ function HomeWorkspace() {
               return result;
             }
             if (isTableRoi) {
-              return createTablePlaceholderResult(aiData?.detail || aiData?.error || "Table Recognition did not return table data.");
+              return createTablePlaceholderResult(roi, rIdx, aiData?.detail || aiData?.error || "Table Recognition did not return table data.");
             }
-          } catch (innerErr) {
-            console.error(`Error processing ROI ${roi.fieldName}:`, innerErr);
-            if (isTableRoi) {
-              return createTablePlaceholderResult(innerErr instanceof Error ? innerErr.message : "Table Recognition failed.");
-            }
-          }
-          return null;
-        });
+            return null;
+          });
 
-        const roiResults = await Promise.all(roiPromises);
+          if (ocrRunIdRef.current !== runId) return;
+          combinedResults.push(...(roiResults.filter((r) => r !== null) as (OCRResult & { pageIndex?: number })[]));
+        } catch (pageError) {
+          console.error(`Error processing page ${pageIdx + 1}:`, pageError);
+          const tablePlaceholders = pageRois
+            .map((roi, rIdx) =>
+              getRoiFieldType(roi) === "table"
+                ? createTablePlaceholderResult(roi, rIdx, pageError instanceof Error ? pageError.message : "Table Recognition failed.")
+                : null
+            )
+            .filter((result): result is OCRResult & { pageIndex?: number } => result !== null);
+          combinedResults.push(...tablePlaceholders);
+        }
         if (ocrRunIdRef.current !== runId) return;
-        combinedResults.push(...(roiResults.filter((r) => r !== null) as (OCRResult & { pageIndex?: number })[]));
         setOcrProgress({ currentPage: pageIdx + 1, totalPages: imagesList.length, completedPages: pageIdx + 1 });
       }
 

@@ -10,7 +10,6 @@ from app.core.model_runtime_client import (
     ModelRuntimeKind,
     ModelRuntimeUnavailableError,
     is_runtime_configured,
-    remote_recognize_image,
     remote_recognize_images,
 )
 
@@ -134,19 +133,7 @@ def run_paddle_thai_ocr(opencv_img: np.ndarray) -> Dict[str, Any]:
             "error": "empty_image",
         }
 
-    _require_text_recognition_runtime()
-    logger.info("Using remote OCR runtime")
-    try:
-        remote_result = remote_recognize_image(opencv_img)
-    except ModelRuntimeUnavailableError as error:
-        raise PaddleThaiOcrUnavailableError(str(error)) from error
-    except Exception as error:
-        raise PaddleThaiOcrUnavailableError(str(error)) from error
-    if remote_result is None:
-        raise PaddleThaiOcrUnavailableError("Remote OCR runtime returned no result.")
-    if not isinstance(remote_result, dict):
-        raise PaddleThaiOcrUnavailableError("Remote OCR runtime returned an invalid response.")
-    return _result_from_output(remote_result)
+    return run_paddle_thai_ocr_batch([opencv_img])[0]
 
 
 def run_paddle_thai_ocr_batch(opencv_images: List[np.ndarray]) -> List[Dict[str, Any]]:
@@ -168,7 +155,13 @@ def run_paddle_thai_ocr_batch(opencv_images: List[np.ndarray]) -> List[Dict[str,
     results = remote_result.get("results")
     if not isinstance(results, list):
         raise PaddleThaiOcrUnavailableError("Remote OCR runtime returned an invalid batch response.")
+    ordered_results = [
+        results[index] if index < len(results) else None
+        for index in range(len(opencv_images))
+    ]
     return [
-        _result_from_output(item) if isinstance(item, dict) else {"text": "", "confidence": 0.0, "error": "invalid_batch_item"}
-        for item in results
+        _result_from_output(item.get("result") if isinstance(item, dict) and isinstance(item.get("result"), dict) else item)
+        if isinstance(item, dict)
+        else {"text": "", "confidence": 0.0, "error": "invalid_batch_item"}
+        for item in ordered_results
     ]
