@@ -46,14 +46,21 @@ interface TemplateDetectionNotice {
   title: string;
   message: string;
   detail?: string;
+  verificationStrategy?: "standard" | "strict" | string | null;
 }
 
 const isStrictVerificationStrategy = (value?: string | null) => value === "strict";
+
+const verificationStrategyLabel = (value?: string | null) =>
+  isStrictVerificationStrategy(value) ? "แบบเข้มงวด (Strict)" : "แบบถ่วงน้ำหนัก (Standard)";
 
 const detectionFailureDetail = (detection: DetectionDevResult) =>
   isStrictVerificationStrategy(detection.bestCandidate?.verificationStrategy || (detection.debug?.verification_strategy as string | null | undefined))
     ? "ไม่ผ่านการทดสอบแบบเข้มงวด"
     : "ไม่โหลด ROI จาก Template ใด ๆ";
+
+const detectionVerificationStrategy = (detection: DetectionDevResult) =>
+  detection.bestCandidate?.verificationStrategy || (detection.debug?.verification_strategy as string | null | undefined) || "standard";
 
 type NoticeTone = "success" | "warning" | "danger" | "info";
 type ExportFormat = "word" | "excel" | "json" | "images";
@@ -152,6 +159,10 @@ const NoTemplateDetectionCard = ({
   const message = isRuntimeUnavailable
     ? "ขณะนี้ไม่สามารถเชื่อมต่อระบบประมวลผลได้ กรุณาลองใหม่อีกครั้ง หรือดำเนินการด้วย Custom OCR"
     : notice.message || "ไม่พบ Template ที่ตรงกับเอกสารนี้";
+  const strategy = notice.verificationStrategy || "standard";
+  const strategyDescription = isStrictVerificationStrategy(strategy)
+    ? "ไม่ผ่านเงื่อนไขการตรวจสอบราย Anchor"
+    : "ไม่ผ่านเกณฑ์คะแนนความมั่นใจ";
 
   return (
     <section className="rounded-2xl border border-amber-100 bg-amber-50 p-4">
@@ -182,6 +193,17 @@ const NoTemplateDetectionCard = ({
           <p className="ui-caption mt-1 break-words text-amber-700">
             {message}
           </p>
+
+          {!isRuntimeUnavailable && (
+            <div className="mt-3 rounded-xl border border-amber-100 bg-white/75 px-3 py-2">
+              <p className="ui-caption font-black text-amber-900">
+                {verificationStrategyLabel(strategy)}
+              </p>
+              <p className="ui-caption mt-0.5 break-words font-semibold text-amber-700">
+                {strategyDescription}
+              </p>
+            </div>
+          )}
 
           <div className="mt-3 rounded-xl border border-amber-100 bg-white/75 px-3 py-2">
             <p className="ui-caption break-words font-semibold text-amber-800">
@@ -1721,6 +1743,7 @@ function HomeWorkspace() {
           title: "ไม่พบ Template ที่มั่นใจพอ",
           message: detection.message || "คะแนนการจับคู่ยังไม่ผ่านเกณฑ์ที่กำหนด",
           detail: detectionFailureDetail(detection),
+          verificationStrategy: detectionVerificationStrategy(detection),
         });
         return;
       }
