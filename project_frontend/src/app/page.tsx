@@ -1843,9 +1843,27 @@ function HomeWorkspace() {
         throw contextualTemplateError("Template ROI mapping failed", error);
       }
 
+      const matchedTemplateGroupName = (
+        bundle.template.templateGroupName ||
+        bundle.template.documentType ||
+        ""
+      ).trim();
+      const matchedTemplateVersionName = (
+        bundle.template.versionName ||
+        bundle.template.name ||
+        ""
+      ).trim();
+      const matchedTemplateDisplayName =
+        matchedTemplateGroupName &&
+        matchedTemplateVersionName &&
+        matchedTemplateVersionName !== matchedTemplateGroupName &&
+        !matchedTemplateVersionName.startsWith(`${matchedTemplateGroupName} - `)
+          ? `${matchedTemplateGroupName} - ${matchedTemplateVersionName}`
+          : matchedTemplateVersionName || matchedTemplateGroupName || bundle.template.name;
+
       setMatchedTemplate({
         id: bundle.template.id,
-        name: bundle.template.name,
+        name: matchedTemplateDisplayName,
         confidence: detection.bestCandidate?.finalScore ?? detection.bestCandidate?.score ?? null,
         decisionReason: detection.bestCandidate?.decisionReason ?? null,
         alignmentStatus: detection.bestCandidate?.alignmentStatus ?? null,
@@ -1856,13 +1874,13 @@ function HomeWorkspace() {
       });
 
       if (detectedRois.length === 0) {
-        setClassificationStatus(`ตรวจพบ Template: ${bundle.template.name} แต่ยังไม่มี Extraction ROI ให้ใช้งาน`);
+        setClassificationStatus(`ตรวจพบ Template: ${matchedTemplateDisplayName} แต่ยังไม่มี Extraction ROI ให้ใช้งาน`);
         return;
       }
 
       setRois(detectedRois);
       setSelectedId(detectedRois[0]?.id ?? null);
-      setClassificationStatus(`ตรวจพบ Template: ${bundle.template.name} และโหลด ROI สำหรับ OCR แล้ว`);
+      setClassificationStatus(`ตรวจพบ Template: ${matchedTemplateDisplayName} และโหลด ROI สำหรับ OCR แล้ว`);
     } catch (error) {
       console.warn("Document classification after boundary confirmation failed.", error);
       setClassificationStatus("ตรวจจับ Template ไม่สำเร็จ ระบบเปิด Custom OCR ให้ใช้งานต่อ");
