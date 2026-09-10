@@ -619,13 +619,7 @@ def _merge_tiny_text_fragments(
 
 
 def _filter_nested_same_type_regions(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    ordered = sorted(
-        items,
-        key=lambda item: (
-            0 if item.get("type") == "text" and item.get("source") == "text_detection" else 1,
-            -_box_area(item["box"]),
-        ),
-    )
+    ordered = sorted(items, key=lambda item: _box_area(item["box"]), reverse=True)
     kept: List[Dict[str, Any]] = []
     for item in ordered:
         box = item["box"]
@@ -765,9 +759,7 @@ def _refine_layout_text_regions_with_detection(
 
 
 def _filter_auto_roi_items(items: List[Dict[str, Any]], image_width: int, image_height: int) -> List[Dict[str, Any]]:
-    return _filter_nested_same_type_regions(
-        _merge_tiny_text_fragments(_prefer_text_detection_regions(items), image_width, image_height)
-    )
+    return _filter_nested_same_type_regions(_merge_tiny_text_fragments(items, image_width, image_height))
 
 
 def _response_region_to_item(region: Dict[str, Any], image_width: int, image_height: int) -> Optional[Dict[str, Any]]:
@@ -868,9 +860,28 @@ def analyze_layout(
                 _debug_item_summary(raw_layout_items, width, height),
                 _debug_item_summary(layout_items, width, height),
             )
-            raw_items = _refine_layout_text_regions_with_detection(image, layout_items, width, height) if use_text_detection else [
+            raw_items = [
                 {**item, "source": "layout"} for item in layout_items
             ]
+            if use_text_detection:
+                try:
+                    text_result = remote_detect_text_boxes(temp_path)
+                except ModelRuntimeUnavailableError as error:
+                    raise LayoutAnalysisUnavailableError(str(error)) from error
+                except Exception as error:
+                    raise LayoutAnalysisUnavailableError(str(error)) from error
+                if not isinstance(text_result, dict):
+                    raise LayoutAnalysisUnavailableError("TextDetection runtime returned an invalid response.")
+                text_items = _text_detection_items_from_response(text_result.get("result", text_result))
+                logger.info(
+                    "Layout signature trace: text_detection_items=%s text_summary=%s",
+                    len(text_items),
+                    _debug_item_summary(text_items, width, height),
+                )
+                raw_items = [
+                    *text_items,
+                    *raw_items,
+                ]
             logger.info(
                 "Layout signature trace: refined_items=%s refined_summary=%s",
                 len(raw_items),
