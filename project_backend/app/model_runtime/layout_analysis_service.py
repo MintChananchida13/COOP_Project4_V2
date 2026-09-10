@@ -382,6 +382,7 @@ def _prepare_auto_roi_box(
     image_width: int,
     image_height: int,
     neighbor_boxes: List[List[float]],
+    source: Optional[str] = None,
 ) -> Dict[str, Any]:
     original_box = _clip_box_to_image(box, image_width, image_height)
     if region_type == "table":
@@ -421,6 +422,7 @@ def _prepare_auto_roi_box(
         "box": adjusted_box,
         "expansion": {
             "enabled": True,
+            "reason": "text_detection_padding" if source == "text_detection" else "text_region_padding",
             "original_box": original_box,
             "expanded_box": expanded_box,
             "final_box": adjusted_box,
@@ -939,6 +941,7 @@ def analyze_layout(
                 width,
                 height,
                 [box for index, box in enumerate(original_boxes) if index != item_index],
+                item.get("source"),
             )
             if expand_text_rois
             else {
@@ -1016,7 +1019,12 @@ def _text_detection_result_from_remote(remote_result: Dict[str, Any], image: np.
         box = _extract_box(item)
         if not box:
             continue
-        parsed_items.append({"box": _clip_box_to_image(box, width, height), "type": "text", "confidence": _extract_score(item)})
+        parsed_items.append({
+            "box": _clip_box_to_image(box, width, height),
+            "type": "text",
+            "confidence": _extract_score(item),
+            "source": "text_detection",
+        })
     parsed_items = _filter_auto_roi_items(parsed_items, width, height)
     regions: List[Dict[str, Any]] = []
     for item in parsed_items:
@@ -1034,6 +1042,7 @@ def _text_detection_result_from_remote(remote_result: Dict[str, Any], image: np.
             {
                 "text": "",
                 "confidence": item.get("confidence", 0.0),
+                "source": item.get("source"),
                 "bbox": {
                     "x": left,
                     "y": top,
