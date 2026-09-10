@@ -747,6 +747,8 @@ def _auto_roi_region_items(page_info: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
 
+    regions = _dedupe_overlapping_auto_roi_regions(regions)
+
     return {
         "page_index": page_index,
         "page_number": page_index,
@@ -758,6 +760,57 @@ def _auto_roi_region_items(page_info: Dict[str, Any]) -> Dict[str, Any]:
         "image_preview_data_url": _image_to_data_url(Path(image_path)),
         "regions": regions,
     }
+
+
+def _auto_roi_area(region: Dict[str, Any]) -> float:
+    roi = region.get("roi") if isinstance(region.get("roi"), dict) else {}
+    return max(0.0, float(roi.get("width_ratio") or 0.0)) * max(0.0, float(roi.get("height_ratio") or 0.0))
+
+
+def _auto_roi_intersection_area(left: Dict[str, Any], right: Dict[str, Any]) -> float:
+    left_roi = left.get("roi") if isinstance(left.get("roi"), dict) else {}
+    right_roi = right.get("roi") if isinstance(right.get("roi"), dict) else {}
+    left_x = float(left_roi.get("x_ratio") or 0.0)
+    left_y = float(left_roi.get("y_ratio") or 0.0)
+    left_right = left_x + float(left_roi.get("width_ratio") or 0.0)
+    left_bottom = left_y + float(left_roi.get("height_ratio") or 0.0)
+    right_x = float(right_roi.get("x_ratio") or 0.0)
+    right_y = float(right_roi.get("y_ratio") or 0.0)
+    right_right = right_x + float(right_roi.get("width_ratio") or 0.0)
+    right_bottom = right_y + float(right_roi.get("height_ratio") or 0.0)
+    width = max(0.0, min(left_right, right_right) - max(left_x, right_x))
+    height = max(0.0, min(left_bottom, right_bottom) - max(left_y, right_y))
+    return width * height
+
+
+def _auto_roi_type_priority(region: Dict[str, Any]) -> int:
+    region_type = str(region.get("type") or region.get("data_type") or "").lower()
+    return {"table": 3, "image": 2, "text": 1}.get(region_type, 0)
+
+
+def _dedupe_overlapping_auto_roi_regions(regions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    prepared = [
+        {"index": index, "region": region, "area": _auto_roi_area(region)}
+        for index, region in enumerate(regions)
+        if isinstance(region.get("roi"), dict)
+    ]
+    prepared.sort(key=lambda item: (-_auto_roi_type_priority(item["region"]), -item["area"], item["index"]))
+
+    accepted: List[Dict[str, Any]] = []
+    for item in prepared:
+        if item["area"] <= 0:
+            continue
+        overlaps_existing = False
+        for existing in accepted:
+            smaller_area = max(min(item["area"], existing["area"]), 1e-9)
+            if _auto_roi_intersection_area(item["region"], existing["region"]) / smaller_area >= 0.82:
+                overlaps_existing = True
+                break
+        if not overlaps_existing:
+            accepted.append(item)
+
+    accepted.sort(key=lambda item: item["index"])
+    return [item["region"] for item in accepted]
 
 
 def _attach_main_page_auto_roi_pages(candidates: List[Dict[str, Any]], pages: List[Dict[str, Any]]) -> None:

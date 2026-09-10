@@ -1655,14 +1655,14 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
             <p className="mt-2 text-sm font-semibold text-slate-500">
               Template นี้ถูกเปิดใช้งานแล้ว ผู้ใช้สามารถค้นหาและใช้งานได้ตามกระบวนการจริง
             </p>
-            <div className="mt-5 flex justify-center gap-2">
-              <button
+            <div className="mt-5 flex justify-center">
+              {false && <button
                 type="button"
                 onClick={() => setShowPublishSuccessDialog(false)}
                 className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-black text-slate-700"
               >
                 ปิด
-              </button>
+              </button>}
               <Link href="/admin/templates" className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-black text-white">
                 ไปคลัง Template
               </Link>

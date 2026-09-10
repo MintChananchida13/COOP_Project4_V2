@@ -795,6 +795,43 @@ def _filter_nested_flexible_regions(regions: List[Dict[str, Any]], image_width: 
     return kept_regions
 
 
+def _auto_roi_type_priority(region: Dict[str, Any]) -> int:
+    region_type = str(region.get("type") or region.get("data_type") or "").lower()
+    return {"table": 3, "image": 2, "text": 1}.get(region_type, 0)
+
+
+def _dedupe_overlapping_auto_roi_regions(regions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    prepared = [
+        {"index": index, "region": region, "roi": region.get("roi") or {}, "area": _roi_area(region.get("roi") or {})}
+        for index, region in enumerate(regions)
+        if isinstance(region.get("roi"), dict)
+    ]
+    prepared.sort(
+        key=lambda item: (
+            -_auto_roi_type_priority(item["region"]),
+            -item["area"],
+            item["index"],
+        )
+    )
+
+    accepted: List[Dict[str, Any]] = []
+    for item in prepared:
+        if item["area"] <= 0:
+            continue
+        overlaps_existing = False
+        for existing in accepted:
+            overlap = _roi_intersection_area(item["roi"], existing["roi"])
+            smaller_area = max(min(item["area"], existing["area"]), 1e-9)
+            if overlap / smaller_area >= 0.82:
+                overlaps_existing = True
+                break
+        if not overlaps_existing:
+            accepted.append(item)
+
+    accepted.sort(key=lambda item: item["index"])
+    return [item["region"] for item in accepted]
+
+
 def _build_flexible_paragraph_regions(image: np.ndarray, analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
     h_img, w_img = image.shape[:2]
     layout_regions = [
@@ -1341,11 +1378,8 @@ async def analyze_document_layout(payload: LayoutAnalysisPayload):
         for page in payload.images:
             _, opencv_img = decode_base64_image(page.image)
             analysis = analyze_layout(opencv_img, expand_text_rois=True, auto_roi_mode="text_line")
-            analysis_regions = (
-                _build_flexible_paragraph_regions(opencv_img, analysis)
-                if (payload.context or "").strip().lower() == "flexible"
-                else analysis.get("regions", [])
-            )
+            analysis_regions = analysis.get("regions", [])
+            analysis_regions = _dedupe_overlapping_auto_roi_regions(analysis_regions)
             regions = []
             for index, region in enumerate(analysis_regions, start=1):
                 region_type = region["type"]
