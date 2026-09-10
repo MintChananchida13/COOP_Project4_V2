@@ -149,6 +149,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
   const pendingDeletedFieldIdsRef = useRef(new Set<string>());
   const selectedTemplateFieldsRef = useRef<TemplateField[]>([]);
   const pendingFieldSavePromisesRef = useRef(new Set<Promise<unknown>>());
+  const autoRoiReplaceSequenceRef = useRef(0);
 
   const applyBundle = (bundle: TemplateBundle) => {
     setSelectedTemplate({
@@ -189,6 +190,22 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
       if (!field.id.startsWith("local_field_")) return;
       pendingLocalFieldPatchesRef.current.delete(field.id);
       dirtyFieldPatchesRef.current.delete(field.id);
+    });
+  };
+
+  const markPendingDeletedFields = (fieldsToDelete: TemplateField[]) => {
+    fieldsToDelete.forEach((field) => {
+      if (!field.id.startsWith("local_field_")) {
+        pendingDeletedFieldIdsRef.current.add(field.id);
+      }
+      pendingLocalFieldPatchesRef.current.delete(field.id);
+      dirtyFieldPatchesRef.current.delete(field.id);
+    });
+  };
+
+  const clearPendingDeletedFields = (fieldsToClear: TemplateField[]) => {
+    fieldsToClear.forEach((field) => {
+      pendingDeletedFieldIdsRef.current.delete(field.id);
     });
   };
 
@@ -641,10 +658,32 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
   };
 
   const handleDeleteField = (fieldId: string) => {
+    const fieldToDelete = selectedTemplateFieldsRef.current.find((field) => field.id === fieldId);
+    selectedTemplateFieldsRef.current = selectedTemplateFieldsRef.current.filter((field) => field.id !== fieldId);
     setSelectedTemplateFields((prev) => prev.filter((field) => field.id !== fieldId));
     pendingLocalFieldPatchesRef.current.delete(fieldId);
     dirtyFieldPatchesRef.current.delete(fieldId);
-    if (!fieldId.startsWith("local_field_")) {
+    if (!fieldId.startsWith("local_field_") && canPersistToBackend) {
+      pendingDeletedFieldIdsRef.current.add(fieldId);
+      void trackFieldSave(
+        deleteTemplateFieldApi(templateId, fieldId)
+          .then((bundle) => {
+            pendingDeletedFieldIdsRef.current.delete(fieldId);
+            applyBundle(bundle);
+          })
+          .catch((error) => {
+            console.warn("Field delete failed.", error);
+            pendingDeletedFieldIdsRef.current.delete(fieldId);
+            if (fieldToDelete) {
+              selectedTemplateFieldsRef.current = [...selectedTemplateFieldsRef.current, fieldToDelete];
+              setSelectedTemplateFields((prev) => (
+                prev.some((field) => field.id === fieldId) ? prev : [...prev, fieldToDelete]
+              ));
+            }
+            setLocalOnly("Field delete could not be persisted.");
+          })
+      );
+    } else if (!fieldId.startsWith("local_field_")) {
       pendingDeletedFieldIdsRef.current.add(fieldId);
     }
     setSaved("Field deleted from draft.");
@@ -699,6 +738,8 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
   };
 
   const handleReplacePageExtractionFields = (pageNumber: number, detectedFields: AutoDetectedTemplateField[]) => {
+    const replaceSequence = autoRoiReplaceSequenceRef.current + 1;
+    autoRoiReplaceSequenceRef.current = replaceSequence;
     const targetPage = selectedTemplatePages.find((page) => page.pageNumber === pageNumber);
     if (!targetPage) return;
 
@@ -735,8 +776,9 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
     });
 
     registerPendingLocalFields(optimisticFields);
-    clearPendingLocalFields(fieldsToDelete);
+    markPendingDeletedFields(fieldsToDelete);
     setSelectedTemplateFields([...remainingFields, ...optimisticFields]);
+    selectedTemplateFieldsRef.current = [...remainingFields, ...optimisticFields];
 
     if (!canPersistToBackend) {
       setLocalOnly("Auto ROI fields replaced locally.");
@@ -758,18 +800,30 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
 
         if (latestBundle) {
           clearPendingLocalFields(optimisticFields);
-          applyBundle(latestBundle);
+          if (autoRoiReplaceSequenceRef.current === replaceSequence) {
+            clearPendingDeletedFields(fieldsToDelete);
+            applyBundle(latestBundle);
+          }
         } else {
           const bundle = await fetchTemplateBundle(templateId);
           clearPendingLocalFields(optimisticFields);
-          applyBundle(bundle);
+          if (autoRoiReplaceSequenceRef.current === replaceSequence) {
+            clearPendingDeletedFields(fieldsToDelete);
+            applyBundle(bundle);
+          }
         }
-        setSaved(`Auto ROI replaced ${fieldsToDelete.length} old fields with ${optimisticFields.length} fields.`);
+        if (autoRoiReplaceSequenceRef.current === replaceSequence) {
+          setSaved(`Auto ROI replaced ${fieldsToDelete.length} old fields with ${optimisticFields.length} fields.`);
+        }
       } catch (error) {
         console.warn("Auto ROI replace failed.", error);
         clearPendingLocalFields(optimisticFields);
-        setSelectedTemplateFields(previousFields);
-        setLocalOnly("Auto ROI replace could not be persisted.");
+        if (autoRoiReplaceSequenceRef.current === replaceSequence) {
+          clearPendingDeletedFields(fieldsToDelete);
+          setSelectedTemplateFields(previousFields);
+          selectedTemplateFieldsRef.current = previousFields;
+          setLocalOnly("Auto ROI replace could not be persisted.");
+        }
       }
     })());
   };
@@ -777,6 +831,8 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
   const handleReplaceExtractionFieldsForPages = (
     items: { pageNumber: number; fields: AutoDetectedTemplateField[] }[]
   ) => {
+    const replaceSequence = autoRoiReplaceSequenceRef.current + 1;
+    autoRoiReplaceSequenceRef.current = replaceSequence;
     const pageNumbers = new Set(items.map((item) => item.pageNumber));
     const templatePageByNumber = new Map(selectedTemplatePages.map((page) => [page.pageNumber, page]));
     const previousFields = selectedTemplateFields;
@@ -816,8 +872,9 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
     });
 
     registerPendingLocalFields(optimisticFields);
-    clearPendingLocalFields(fieldsToDelete);
+    markPendingDeletedFields(fieldsToDelete);
     setSelectedTemplateFields([...remainingFields, ...optimisticFields]);
+    selectedTemplateFieldsRef.current = [...remainingFields, ...optimisticFields];
 
     if (!canPersistToBackend) {
       setLocalOnly("Auto ROI fields replaced locally for all pages.");
@@ -839,18 +896,30 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
 
         if (latestBundle) {
           clearPendingLocalFields(optimisticFields);
-          applyBundle(latestBundle);
+          if (autoRoiReplaceSequenceRef.current === replaceSequence) {
+            clearPendingDeletedFields(fieldsToDelete);
+            applyBundle(latestBundle);
+          }
         } else {
           const bundle = await fetchTemplateBundle(templateId);
           clearPendingLocalFields(optimisticFields);
-          applyBundle(bundle);
+          if (autoRoiReplaceSequenceRef.current === replaceSequence) {
+            clearPendingDeletedFields(fieldsToDelete);
+            applyBundle(bundle);
+          }
         }
-        setSaved(`Auto ROI replaced ${fieldsToDelete.length} old fields with ${optimisticFields.length} fields across ${items.length} pages.`);
+        if (autoRoiReplaceSequenceRef.current === replaceSequence) {
+          setSaved(`Auto ROI replaced ${fieldsToDelete.length} old fields with ${optimisticFields.length} fields across ${items.length} pages.`);
+        }
       } catch (error) {
         console.warn("Auto ROI batch replace failed.", error);
         clearPendingLocalFields(optimisticFields);
-        setSelectedTemplateFields(previousFields);
-        setLocalOnly("Auto ROI batch replace could not be persisted.");
+        if (autoRoiReplaceSequenceRef.current === replaceSequence) {
+          clearPendingDeletedFields(fieldsToDelete);
+          setSelectedTemplateFields(previousFields);
+          selectedTemplateFieldsRef.current = previousFields;
+          setLocalOnly("Auto ROI batch replace could not be persisted.");
+        }
       }
     })());
   };

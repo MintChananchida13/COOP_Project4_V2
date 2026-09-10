@@ -1175,6 +1175,8 @@ def _ocr_flexible_regions(boundary_image_path: str, regions: List[Dict[str, Any]
     texts: List[str] = []
     confidences: List[float] = []
     segments: List[Dict[str, Any]] = []
+    flexible_text_items: List[tuple[str, Any]] = []
+    flexible_text_segment_indexes: Dict[str, int] = {}
     for index, region in enumerate(regions):
         roi = _region_roi_from_boundary(region, image_width, image_height)
         if not roi:
@@ -1243,10 +1245,12 @@ def _ocr_flexible_regions(boundary_image_path: str, regions: List[Dict[str, Any]
                 except ImportError as error:
                     raise OcrUnavailableError("Text OCR requires numpy and OpenCV.") from error
                 block_img = cv2.cvtColor(np.array(image.crop((left, top, right, bottom)).convert("RGB")), cv2.COLOR_RGB2BGR)
-                ocr_result = recognize_text_roi(block_img)
-                text = str(ocr_result.get("text") or "")
-                confidence = float(ocr_result.get("confidence") or 0.0)
-                raw_segments = ocr_result.get("raw_segments") or ocr_result.get("segments") or []
+                text_key = f"flexible_block_{index}"
+                flexible_text_items.append((text_key, block_img))
+                flexible_text_segment_indexes[text_key] = len(segments)
+                text = ""
+                confidence = 0.0
+                raw_segments = []
             error_message = None
         except Exception as error:
             text = ""
@@ -1274,6 +1278,29 @@ def _ocr_flexible_regions(boundary_image_path: str, regions: List[Dict[str, Any]
                 "ocr_error": error_message,
             }
         )
+    if flexible_text_items:
+        try:
+            batch_results = recognize_text_crops_with_detection(flexible_text_items, source="flexible_text")
+        except Exception as error:
+            for key in flexible_text_segment_indexes:
+                segment = segments[flexible_text_segment_indexes[key]]
+                segment["ocr_error"] = str(error)
+        else:
+            for key, result in batch_results.items():
+                segment_index = flexible_text_segment_indexes.get(key)
+                if segment_index is None:
+                    continue
+                segment = segments[segment_index]
+                text = str(result.get("text") or "")
+                confidence = float(result.get("confidence") or 0.0)
+                raw_segments = result.get("raw_segments") or result.get("segments") or []
+                segment["text"] = text
+                segment["confidence"] = confidence
+                segment["raw_segments"] = raw_segments
+                segment["ocr_error"] = result.get("error")
+                if text:
+                    texts.append(text)
+                    confidences.append(confidence)
     return {
         "text": "\n".join(texts),
         "confidence": sum(confidences) / len(confidences) if confidences else 0.0,
@@ -4455,8 +4482,77 @@ class AdminTemplateService:
             "image_category": patch.get("image_category", current.get("image_category")),
             "sort_order": patch.get("sort_order", current["sort_order"]),
         }
+        merged_payload = TemplateFieldCreate(**merged)
+        if bool(current.get("use_for_verification")) == bool(merged_payload.use_for_verification):
+            with _connect() as conn:
+                page_row = conn.execute(
+                    "SELECT id FROM template_pages WHERE id = ? AND template_version_id = ?",
+                    (merged_payload.template_page_id, template_id),
+                ).fetchone()
+                if page_row is None:
+                    raise HTTPException(status_code=404, detail="Template page not found.")
+                if merged_payload.use_for_verification:
+                    image_category_id = _resolve_image_category_id(conn, merged_payload.image_category)
+                    conn.execute(
+                        """
+                        UPDATE verification_anchors
+                        SET template_page_id = ?, anchor_name = ?, anchor_type = ?,
+                            roi_x_ratio = ?, roi_y_ratio = ?, roi_width_ratio = ?, roi_height_ratio = ?, roi_points_json = ?,
+                            required = ?, weight = ?, expected_text = ?, match_type = ?, regex_pattern = ?,
+                            image_category_id = ?, sort_order = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)
+                        """,
+                        (
+                            merged_payload.template_page_id,
+                            merged_payload.field_name,
+                            _normalize_data_type(merged_payload.data_type),
+                            merged_payload.roi.x_ratio,
+                            merged_payload.roi.y_ratio,
+                            merged_payload.roi.width_ratio,
+                            merged_payload.roi.height_ratio,
+                            _roi_points_json_from_payload(merged_payload.roi),
+                            bool(merged_payload.required_for_verification),
+                            merged_payload.verification_weight or 1.0,
+                            merged_payload.expected_text,
+                            merged_payload.match_type,
+                            merged_payload.regex_pattern,
+                            image_category_id,
+                            merged_payload.sort_order,
+                            field_id,
+                            template_id,
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE extraction_fields
+                        SET template_page_id = ?, field_name = ?, display_label = ?, data_type = ?, extraction_method = ?,
+                            roi_x_ratio = ?, roi_y_ratio = ?, roi_width_ratio = ?, roi_height_ratio = ?, roi_points_json = ?,
+                            roi_mode = ?, expected_content = ?, sort_order = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)
+                        """,
+                        (
+                            merged_payload.template_page_id,
+                            merged_payload.field_name,
+                            merged_payload.display_label,
+                            _normalize_data_type(merged_payload.data_type),
+                            _normalize_extraction_method(merged_payload.extraction_method),
+                            merged_payload.roi.x_ratio,
+                            merged_payload.roi.y_ratio,
+                            merged_payload.roi.width_ratio,
+                            merged_payload.roi.height_ratio,
+                            _roi_points_json_from_payload(merged_payload.roi),
+                            _normalize_roi_mode(merged_payload.roi_mode),
+                            _normalize_expected_content(merged_payload.expected_content),
+                            merged_payload.sort_order,
+                            field_id,
+                            template_id,
+                        ),
+                    )
+                conn.commit()
+            return self.get_template(template_id)
         self.delete_template_field(template_id, field_id)
-        return self.create_template_field(template_id, TemplateFieldCreate(**merged))
+        return self.create_template_field(template_id, merged_payload)
 
     def delete_template_field(self, template_id: str, field_id: str) -> Dict[str, Any]:
         with _connect() as conn:
