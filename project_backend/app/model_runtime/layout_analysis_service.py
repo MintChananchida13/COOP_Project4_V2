@@ -16,7 +16,7 @@ from app.core.model_runtime_client import (
     is_runtime_configured,
     remote_analyze_layout,
     remote_detect_text_boxes,
-    remote_detect_text_boxes_batch,
+    remote_detect_text_boxes_batch as _remote_detect_text_boxes_batch,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,10 +37,10 @@ class LayoutRegion:
 
 _LAYOUT_MODEL_NAME = "PP-DocLayoutV3"
 _TEXT_DETECTION_MODEL_NAME = "PP-OCRv5_server_det"
-AUTO_ROI_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_EXPAND_TOP_PX", "10"))
-AUTO_ROI_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_EXPAND_BOTTOM_PX", "10"))
-AUTO_ROI_EXPAND_LEFT_PX = float(os.getenv("AUTO_ROI_EXPAND_LEFT_PX", "10"))
-AUTO_ROI_EXPAND_RIGHT_PX = float(os.getenv("AUTO_ROI_EXPAND_RIGHT_PX", "10"))
+AUTO_ROI_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_EXPAND_TOP_PX", "8"))
+AUTO_ROI_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_EXPAND_BOTTOM_PX", "8"))
+AUTO_ROI_EXPAND_LEFT_PX = float(os.getenv("AUTO_ROI_EXPAND_LEFT_PX", "8"))
+AUTO_ROI_EXPAND_RIGHT_PX = float(os.getenv("AUTO_ROI_EXPAND_RIGHT_PX", "8"))
 AUTO_ROI_TABLE_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_TOP_PX", "4"))
 AUTO_ROI_TABLE_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_BOTTOM_PX", "4"))
 AUTO_ROI_TABLE_EXPAND_LEFT_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_LEFT_PX", "4"))
@@ -695,6 +695,73 @@ def _prefer_text_detection_regions(items: List[Dict[str, Any]]) -> List[Dict[str
     return filtered
 
 
+def _refine_layout_text_regions_with_detection(
+    image: np.ndarray,
+    layout_items: List[Dict[str, Any]],
+    image_width: int,
+    image_height: int,
+) -> List[Dict[str, Any]]:
+    text_items: List[Dict[str, Any]] = []
+    text_crops: List[np.ndarray] = []
+    crop_origins: List[Tuple[float, float]] = []
+    refined_items: List[Dict[str, Any]] = []
+
+    for item in layout_items:
+        if _normalize_region_type(_extract_label(item)) != "text":
+            refined_items.append({**item, "source": "layout"})
+            continue
+        box = _extract_box(item)
+        if not box:
+            refined_items.append({**item, "source": "layout"})
+            continue
+        left, top, right, bottom = _clip_box_to_image(box, image_width, image_height)
+        if right - left < 2 or bottom - top < 2:
+            refined_items.append({**item, "source": "layout"})
+            continue
+        crop = image[int(top):int(bottom), int(left):int(right)]
+        if crop.size == 0:
+            refined_items.append({**item, "source": "layout"})
+            continue
+        text_items.append({**item, "source": "layout"})
+        text_crops.append(crop)
+        crop_origins.append((left, top))
+
+    if not text_crops:
+        return refined_items
+
+    try:
+        batch_results = detect_text_boxes_batch(text_crops)
+    except Exception as error:
+        logger.info("Auto ROI text refine failed, falling back to layout text boxes: %s", error)
+        return [*refined_items, *text_items]
+
+    for layout_item, crop_result, (origin_x, origin_y) in zip(text_items, batch_results, crop_origins):
+        detection_regions = crop_result.get("regions") if isinstance(crop_result, dict) else []
+        detection_items: List[Dict[str, Any]] = []
+        for region in detection_regions or []:
+            roi = region.get("roi") if isinstance(region, dict) and isinstance(region.get("roi"), dict) else None
+            if not roi:
+                continue
+            crop_width = int(crop_result.get("image_width") or 1)
+            crop_height = int(crop_result.get("image_height") or 1)
+            left = origin_x + float(roi.get("x_ratio") or 0.0) * crop_width
+            top = origin_y + float(roi.get("y_ratio") or 0.0) * crop_height
+            right = left + float(roi.get("width_ratio") or 0.0) * crop_width
+            bottom = top + float(roi.get("height_ratio") or 0.0) * crop_height
+            detection_items.append(
+                {
+                    "label": "text",
+                    "type": "text",
+                    "box": _clip_box_to_image([left, top, right, bottom], image_width, image_height),
+                    "score": float(region.get("confidence") or 0.0),
+                    "source": "text_detection",
+                }
+            )
+        refined_items.extend(detection_items or [layout_item])
+
+    return refined_items
+
+
 def _filter_auto_roi_items(items: List[Dict[str, Any]], image_width: int, image_height: int) -> List[Dict[str, Any]]:
     return _filter_nested_same_type_regions(
         _merge_tiny_text_fragments(_prefer_text_detection_regions(items), image_width, image_height)
@@ -783,15 +850,12 @@ def analyze_layout(
             )
             try:
                 layout_result = remote_analyze_layout(image)
-                text_result = remote_detect_text_boxes(temp_path) if use_text_detection else None
             except ModelRuntimeUnavailableError as error:
                 raise LayoutAnalysisUnavailableError(str(error)) from error
             except Exception as error:
                 raise LayoutAnalysisUnavailableError(str(error)) from error
             if not isinstance(layout_result, dict):
                 raise LayoutAnalysisUnavailableError("Layout runtime returned an invalid response.")
-            if use_text_detection and not isinstance(text_result, dict):
-                raise LayoutAnalysisUnavailableError("TextDetection runtime returned an invalid response.")
             raw_layout_items = _walk_layout_items(layout_result.get("result", layout_result))
             layout_items = _layout_detection_items_from_response(layout_result.get("result", layout_result))
             logger.info(
@@ -802,20 +866,14 @@ def analyze_layout(
                 _debug_item_summary(raw_layout_items, width, height),
                 _debug_item_summary(layout_items, width, height),
             )
-            raw_items = [
-                *layout_items,
+            raw_items = _refine_layout_text_regions_with_detection(image, layout_items, width, height) if use_text_detection else [
+                {**item, "source": "layout"} for item in layout_items
             ]
-            if use_text_detection and isinstance(text_result, dict):
-                text_items = _text_detection_items_from_response(text_result.get("result", text_result))
-                logger.info(
-                    "Layout signature trace: text_detection_items=%s text_summary=%s",
-                    len(text_items),
-                    _debug_item_summary(text_items, width, height),
-                )
-                raw_items = [
-                    *text_items,
-                    *raw_items,
-                ]
+            logger.info(
+                "Layout signature trace: refined_items=%s refined_summary=%s",
+                len(raw_items),
+                _debug_item_summary(raw_items, width, height),
+            )
             _set_cached_layout_raw_items(image, raw_items, source_mode)
         finally:
             Path(temp_path).unlink(missing_ok=True)
@@ -1024,7 +1082,7 @@ def detect_text_boxes_batch(images: List[np.ndarray]) -> List[Dict[str, Any]]:
     _require_runtime(ModelRuntimeKind.TEXT_DETECTION)
     logger.info("Using remote TextDetection batch runtime")
     try:
-        remote_result = remote_detect_text_boxes_batch(images)
+        remote_result = _remote_detect_text_boxes_batch(images)
     except ModelRuntimeUnavailableError as error:
         raise LayoutAnalysisUnavailableError(str(error)) from error
     except Exception as error:
