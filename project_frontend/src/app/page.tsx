@@ -157,7 +157,7 @@ const NoTemplateDetectionCard = ({
     : notice.title || "ตรวจจับ Template ไม่สำเร็จ";
 
   const message = isRuntimeUnavailable
-    ? "ขณะนี้ไม่สามารถเชื่อมต่อระบบประมวลผลได้ กรุณาลองใหม่อีกครั้ง หรือดำเนินการด้วย Custom OCR"
+    ? "ลองใหม่อีกครั้ง หรือใช้ Custom OCR ต่อได้"
     : notice.message || "ไม่พบ Template ที่ตรงกับเอกสารนี้";
   const strategy = notice.verificationStrategy || "standard";
   const strategyDescription = isStrictVerificationStrategy(strategy)
@@ -178,9 +178,11 @@ const NoTemplateDetectionCard = ({
             {title}
           </p>
 
-          <p className="ui-caption mt-1 break-words text-amber-700">
-            {message}
-          </p>
+          {isRuntimeUnavailable && (
+            <p className="ui-caption mt-1 break-words text-amber-700">
+              {message}
+            </p>
+          )}
 
           <div className="mt-3 rounded-xl border border-amber-100 bg-white/75 px-3 py-2">
             {!isRuntimeUnavailable && (
@@ -194,11 +196,7 @@ const NoTemplateDetectionCard = ({
               </div>
             )}
             <p className="ui-caption break-words font-semibold text-amber-800">
-              สามารถดำเนินการต่อด้วย Custom OCR
-            </p>
-
-            <p className="ui-caption mt-0.5 break-words text-amber-700">
-              กำหนดกรอบ ROI ด้วยตนเอง หรือใช้ Auto ROI เพื่อช่วยตรวจจับพื้นที่ข้อมูล
+              ใช้ Custom OCR ต่อได้
             </p>
           </div>
         </div>

@@ -37,6 +37,7 @@ PDF_RENDER_SCALE = 2.0
 DETECTION_TOP_K_LIMIT = 5
 DETECTION_RETRIEVAL_LIMIT = DETECTION_TOP_K_LIMIT
 USER_DETECTION_RETRIEVAL_LIMIT = 3
+DETECTION_VERIFICATION_CANDIDATE_LIMIT = 3
 DETECTION_FULL_EVAL_LIMIT = max(1, int(os.getenv("DETECTION_FULL_EVAL_LIMIT", str(DETECTION_RETRIEVAL_LIMIT))))
 DETECTION_ALIGNMENT_LIMIT = max(0, int(os.getenv("DETECTION_ALIGNMENT_LIMIT", "1")))
 SAVE_DEBUG_ARTIFACTS = os.getenv("SAVE_DEBUG_ARTIFACTS", "false").strip().lower() in {"1", "true", "yes", "on"}
@@ -279,7 +280,7 @@ def _layout_signature_for_image_path(image_path: str) -> Dict[str, Any]:
         opencv_img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     except Exception as error:
         raise HTTPException(status_code=400, detail="Unable to read image for layout signature") from error
-    return build_layout_signature(analyze_layout(opencv_img))
+    return build_layout_signature(analyze_layout(opencv_img, use_text_detection=False))
 
 
 def _detection_debug_url(path_value: Optional[str]) -> Optional[str]:
@@ -1215,29 +1216,15 @@ def _lightweight_candidate_from_result(result: Dict[str, Any], include_template_
     metadata = result.get("metadata") or {}
     vector_id = str(result.get("vector_id") or "")
     template_id = _template_id_from_metadata(metadata, vector_id)
-    template = _fetch_template(template_id)
-    if template_id and template is None:
-        return None
 
-    template_status = template.get("status") if template else metadata.get("template_status")
+    template_status = metadata.get("template_status")
     if template_status != "active" and template_id != include_template_id:
         return None
 
-    template_name = template.get("name") if template else metadata.get("template_name")
-    page_count = template.get("page_count") if template else metadata.get("page_count")
-    final_confidence_threshold = decision_service.final_confidence_threshold(template, metadata)
+    template_name = metadata.get("template_name")
+    page_count = metadata.get("page_count")
+    final_confidence_threshold = decision_service.final_confidence_threshold(None, metadata)
     field_count = metadata.get("field_count")
-    if template and field_count is None:
-        with _connect() as conn:
-            field_count = conn.execute(
-                """
-                SELECT COUNT(*) as count
-                FROM extraction_fields ef
-                JOIN template_pages tp ON tp.id = ef.template_page_id
-                WHERE tp.template_version_id = ?
-                """,
-                (template_id,),
-            ).fetchone()["count"]
 
     retrieval_score = round(float(result.get("score", 0.0) or 0.0), 4)
     verification = {
@@ -1304,7 +1291,7 @@ def _lightweight_candidate_from_result(result: Dict[str, Any], include_template_
         "required_passed": False,
         "required_failed_fields": [],
         "final_confidence_threshold": final_confidence_threshold,
-        "layout_similarity_threshold": float((template or {}).get("similarity_threshold") or metadata.get("similarity_threshold") or DETECTION_THRESHOLD),
+        "layout_similarity_threshold": float(metadata.get("similarity_threshold") or DETECTION_THRESHOLD),
         "projection": {
             "template_id": template_id,
             "status": "not_evaluated",
@@ -1343,7 +1330,10 @@ def _detect_page(
         timing["template_matching"] = timing.get("template_matching", 0.0) + (time.perf_counter() - step_started)
     candidates = []
     full_evaluation_count = 0
+    early_reject_count = 0
     early_accept_rank = None
+    early_accept_enabled = verification_strategy == VERIFICATION_STRATEGY_STRICT
+    full_evaluation_limit = min(DETECTION_FULL_EVAL_LIMIT, DETECTION_VERIFICATION_CANDIDATE_LIMIT)
     for index, result in enumerate(raw_results, start=1):
         metadata = result.get("metadata") or {}
         result_template_id = str(metadata.get("template_id") or "")
@@ -1352,15 +1342,19 @@ def _detect_page(
         result_main_page_number = int(metadata.get("main_page_number") or 1)
         main_page_auto_roi_only = result_detection_mode == "main_page" and page_index != result_main_page_number
         layout_score = float(result.get("layout_score", result.get("score", 0.0)) or 0.0)
+        layout_similarity_threshold = _layout_similarity_threshold(metadata)
         layout_confident = layout_score >= DecisionService.MIN_RETRIEVAL_SCORE
+        early_rejected = layout_score < layout_similarity_threshold
         should_fully_evaluate = (
             layout_confident
+            and not early_rejected
+            and index <= DETECTION_VERIFICATION_CANDIDATE_LIMIT
             and not main_page_auto_roi_only
             and (
                 is_included_template
                 or (
-                    early_accept_rank is None
-                    and full_evaluation_count < DETECTION_FULL_EVAL_LIMIT
+                    (not early_accept_enabled or early_accept_rank is None)
+                    and full_evaluation_count < full_evaluation_limit
                 )
             )
         )
@@ -1392,6 +1386,12 @@ def _detect_page(
                 candidate["decision_reason"] = "คะแนนรวมต่ำกว่าเกณฑ์"
                 candidate["decision_path"] = "คะแนนรวมต่ำกว่าเกณฑ์"
                 candidate["evaluation_status"] = "layout_rejected"
+            if early_rejected and layout_confident:
+                early_reject_count += 1
+                candidate["final_passed"] = False
+                candidate["decision_reason"] = "layout_similarity_threshold_failed"
+                candidate["decision_path"] = "layout_similarity_threshold_failed"
+                candidate["evaluation_status"] = "layout_threshold_rejected"
             if main_page_auto_roi_only:
                 candidate["final_passed"] = False
                 candidate["decision_reason"] = "main_page_detection_uses_auto_roi_for_non_main_pages"
@@ -1400,7 +1400,7 @@ def _detect_page(
             candidates.append(candidate)
             if should_fully_evaluate and candidate["final_passed"] and early_accept_rank is None:
                 early_accept_rank = index
-                if not include_template_id:
+                if early_accept_enabled and not include_template_id:
                     break
 
     candidates = sorted(
@@ -1445,14 +1445,18 @@ def _detect_page(
             "layout_confidence_threshold": DecisionService.MIN_RETRIEVAL_SCORE,
             "top_k_limit": retrieval_limit,
             "retrieval_limit": retrieval_limit,
-            "full_evaluation_limit": DETECTION_FULL_EVAL_LIMIT,
+            "full_evaluation_limit": full_evaluation_limit,
+            "verification_candidate_limit": DETECTION_VERIFICATION_CANDIDATE_LIMIT,
             "full_evaluation_count": full_evaluation_count,
-            "early_accept_enabled": True,
+            "early_reject_count": early_reject_count,
+            "early_reject_rule": "layout_score_below_template_similarity_threshold",
+            "early_accept_enabled": early_accept_enabled,
             "early_accept_rank": early_accept_rank,
             "early_accept_reason": "top_candidate_final_passed" if early_accept_rank else None,
+            "standard_evaluates_all_eligible_top3": verification_strategy != VERIFICATION_STRATEGY_STRICT,
             "verification_strategy": verification_strategy,
             "alignment_limit": DETECTION_ALIGNMENT_LIMIT,
-            "fast_path_enabled": early_accept_rank is not None or DETECTION_FULL_EVAL_LIMIT < DETECTION_RETRIEVAL_LIMIT or DETECTION_ALIGNMENT_LIMIT < DETECTION_FULL_EVAL_LIMIT,
+            "fast_path_enabled": early_accept_rank is not None or full_evaluation_limit < retrieval_limit or DETECTION_ALIGNMENT_LIMIT < full_evaluation_limit,
             "aligned_candidate_paths": [
                 candidate["alignment"]["aligned_image_path"]
                 for candidate in candidates
@@ -1595,6 +1599,10 @@ def _is_confirmed_main_page_candidate(candidate: Optional[Dict[str, Any]]) -> bo
     metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
     detection_mode = str(candidate.get("detection_mode") or metadata.get("detection_mode") or "")
     return detection_mode == "main_page"
+
+
+def _layout_similarity_threshold(metadata: Dict[str, Any]) -> float:
+    return float(metadata.get("similarity_threshold") or DETECTION_THRESHOLD)
 
 
 def _no_match_message(candidates: List[Dict[str, Any]]) -> str:
