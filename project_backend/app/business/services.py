@@ -2434,6 +2434,16 @@ class VerificationService:
             "checked_fields": checked_fields,
             "verification_details": checked_fields,
         }
+        logger.info(
+            "[TEMPLATE VERIFY] total done: template_id=%s anchors=%s text_anchors=%s image_anchors=%s elapsed=%.2fs status=%s",
+            template_id,
+            len(checked_fields),
+            len(text_fields),
+            len(image_fields),
+            time.perf_counter() - verify_started,
+            result["status"],
+        )
+        return result
 
     def _verification_summary(self, template_id: str, checked_fields: List[Dict[str, Any]], status: Optional[str] = None) -> Dict[str, Any]:
         required_fields = [field for field in checked_fields if field["required"]]
@@ -2466,16 +2476,6 @@ class VerificationService:
             "checked_fields": checked_fields,
             "verification_details": checked_fields,
         }
-        logger.info(
-            "[TEMPLATE VERIFY] total done: template_id=%s anchors=%s text_anchors=%s image_anchors=%s elapsed=%.2fs status=%s",
-            template_id,
-            len(checked_fields),
-            len(text_fields),
-            len(image_fields),
-            time.perf_counter() - verify_started,
-            result["status"],
-        )
-        return result
 
     def _text_anchor_check(self, field: Dict[str, Any], page_image_paths: Optional[Dict[int, str]]) -> Dict[str, Any]:
         expected_text = field.get("expected_text")

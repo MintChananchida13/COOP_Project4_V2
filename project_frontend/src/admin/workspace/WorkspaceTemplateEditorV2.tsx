@@ -1318,6 +1318,14 @@ export default function WorkspaceTemplateEditorV2({
           if (roi.workspaceKind === "ignore_regions") onDeleteIgnoreRegion(roi.sourceId);
           else onDeleteField(roi.sourceId);
         }}
+        deleteCurrentPageRois={(roiIds) => {
+          const idsToDelete = new Set(roiIds);
+          activeRois.forEach((roi) => {
+            if (!idsToDelete.has(roi.id) || !roi.sourceId) return;
+            if (roi.workspaceKind === "ignore_regions") onDeleteIgnoreRegion(roi.sourceId);
+            else onDeleteField(roi.sourceId);
+          });
+        }}
         isLoading={false}
         onRunOCR={() => {}}
         onRunFullPageOCR={async () => {}}

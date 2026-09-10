@@ -91,6 +91,7 @@ export interface WorkspaceCustomEditorProps {
   setSelectedId: React.Dispatch<React.SetStateAction<number | null>>;
   onBackToAdjust: () => void;
   deleteROI: (id: number) => void;
+  deleteCurrentPageRois?: (roiIds: number[]) => void;
   isLoading: boolean;
   onRunOCR: (scaleX: number, scaleY: number) => void;
   onRunFullPageOCR: () => Promise<void>;
@@ -150,6 +151,7 @@ export default function WorkspaceCustomEditor({
   setSelectedId,
   onBackToAdjust,
   deleteROI,
+  deleteCurrentPageRois,
   isLoading,
   onRunOCR,
   onRunFullPageOCR,
@@ -1020,6 +1022,12 @@ export default function WorkspaceCustomEditor({
           {!readOnly && !hideDrawTools && <button 
             type="button"
             onClick={() => { 
+              const idsToDelete = currentPageRois.map((roi) => roi.id);
+              if (deleteCurrentPageRois) {
+                deleteCurrentPageRois(idsToDelete);
+                setSelectedId(null);
+                return;
+              }
               setRois(prev => prev.filter(roi => {
                 const roiPage = roi.pageIndex !== undefined ? Number(roi.pageIndex) : 0;
                 return roiPage !== Number(currentIndex);
