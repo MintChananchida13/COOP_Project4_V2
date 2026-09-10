@@ -22,6 +22,14 @@ let templateRequestListCache: AdminTemplateRequest[] | null = null;
 let templateListCache: Template[] | null = null;
 let templateRequestListPromise: Promise<AdminTemplateRequest[]> | null = null;
 let templateListPromise: Promise<Template[]> | null = null;
+type TemplateBundleData = {
+  template: Template;
+  pages: TemplatePage[];
+  fields: TemplateField[];
+  ignoreRegions: IgnoreRegion[];
+};
+const templateBundleCache = new Map<string, TemplateBundleData>();
+const templateBundlePromises = new Map<string, Promise<TemplateBundleData>>();
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
@@ -44,6 +52,15 @@ function cloneTemplates(templates: Template[] = []) {
     ...template,
     sharedFields: template.sharedFields ? [...template.sharedFields] : undefined,
   }));
+}
+
+function cloneTemplateBundle(bundle: TemplateBundleData): TemplateBundleData {
+  return {
+    template: cloneTemplates([bundle.template])[0],
+    pages: bundle.pages.map((page) => ({ ...page })),
+    fields: bundle.fields.map((field) => ({ ...field, roi: { ...field.roi } })),
+    ignoreRegions: bundle.ignoreRegions.map((region) => ({ ...region, roi: { ...region.roi } })),
+  };
 }
 
 function debugPrepublishPagesAccess(scope: string, value: unknown) {
@@ -98,6 +115,8 @@ export const invalidateAdminListCache = (target: "templates" | "requests" | "all
   if (target === "templates" || target === "all") {
     templateListCache = null;
     templateListPromise = null;
+    templateBundleCache.clear();
+    templateBundlePromises.clear();
   }
   if (target === "requests" || target === "all") {
     templateRequestListCache = null;
@@ -997,6 +1016,11 @@ function normalizeTemplateBundle(data: Partial<ApiTemplate> | null | undefined, 
   };
 }
 
+const setTemplateBundleCache = (templateId: string, bundle: TemplateBundleData) => {
+  templateBundleCache.set(templateId, cloneTemplateBundle(bundle));
+  upsertTemplateListCache(bundle.template);
+};
+
 interface ConvertTemplateResponse {
   template_request_id: string;
   converted_template_id?: string | null;
@@ -1294,18 +1318,39 @@ export const deleteTemplateRequest = async (requestId: string) => {
 };
 
 export const fetchTemplateBundle = async (templateId: string) => {
-  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/templates/${templateId}`);
-  if (!response.ok) {
-    throw new Error(`Template load failed with ${response.status}`);
+  const cached = templateBundleCache.get(templateId);
+  if (cached) {
+    return cloneTemplateBundle(cached);
   }
 
-  const json = await response.json();
-  const data = json?.data as ApiTemplate;
-  if (!data || data.status === "not_found") {
-    throw new Error("Template not found");
+  const pending = templateBundlePromises.get(templateId);
+  if (pending) {
+    return cloneTemplateBundle(await pending);
   }
 
-  return normalizeTemplateBundle(data, templateId);
+  const promise = (async () => {
+    const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/templates/${templateId}`);
+    if (!response.ok) {
+      throw new Error(`Template load failed with ${response.status}`);
+    }
+
+    const json = await response.json();
+    const data = json?.data as ApiTemplate;
+    if (!data || data.status === "not_found") {
+      throw new Error("Template not found");
+    }
+
+    const bundle = normalizeTemplateBundle(data, templateId);
+    setTemplateBundleCache(templateId, bundle);
+    return cloneTemplateBundle(bundle);
+  })();
+
+  templateBundlePromises.set(templateId, promise);
+  try {
+    return cloneTemplateBundle(await promise);
+  } finally {
+    templateBundlePromises.delete(templateId);
+  }
 };
 
 export const fetchTemplates = async () => {
@@ -1377,7 +1422,9 @@ const mapTemplateBundleResponse = async (response: Response, templateId: string)
     return fetchTemplateBundle(templateId);
   }
 
-  return normalizeTemplateBundle(data, templateId);
+  const bundle = normalizeTemplateBundle(data, templateId);
+  setTemplateBundleCache(templateId, bundle);
+  return cloneTemplateBundle(bundle);
 };
 
 export const updateTemplateApi = async (templateId: string, patch: Partial<Template>) => {

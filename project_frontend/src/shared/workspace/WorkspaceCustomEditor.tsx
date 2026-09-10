@@ -695,12 +695,30 @@ export default function WorkspaceCustomEditor({
     setDraggedItemId(null);
   };
 
-  const handleStyle = {
+  const cornerHandleStyle = {
     width: "8px",
     height: "8px",
     background: "#ffffff",
     border: "1.5px solid #2563eb",
-    borderRadius: "2px",
+    borderRadius: "999px",
+    boxShadow: "0 1px 2px rgba(0,0,0,0.2)"
+  };
+
+  const horizontalHandleStyle = {
+    width: "18px",
+    height: "5px",
+    background: "#ffffff",
+    border: "1.5px solid #2563eb",
+    borderRadius: "999px",
+    boxShadow: "0 1px 2px rgba(0,0,0,0.2)"
+  };
+
+  const verticalHandleStyle = {
+    width: "5px",
+    height: "18px",
+    background: "#ffffff",
+    border: "1.5px solid #2563eb",
+    borderRadius: "999px",
     boxShadow: "0 1px 2px rgba(0,0,0,0.2)"
   };
 
@@ -1061,7 +1079,16 @@ export default function WorkspaceCustomEditor({
                       className={customRoiClassName || `rnd-box-item border transition-shadow ${
                         activeTool !== 'pan' && selectedId !== roi.id ? 'pointer-events-none' : 'pointer-events-auto'
                       } ${hasPoints ? 'border-transparent bg-transparent shadow-none' : (selectedId === roi.id ? "border-indigo-600 bg-indigo-600/10 shadow-md z-30 ring-2 ring-indigo-500/20" : "border-indigo-400/80 bg-indigo-50/5 hover:border-indigo-500 hover:bg-indigo-50/10 z-20")}`}
-                      resizeHandleStyles={!readOnly && selectedId === roi.id ? { topLeft: handleStyle, topRight: handleStyle, bottomLeft: handleStyle, bottomRight: handleStyle, top: handleStyle, right: handleStyle, bottom: handleStyle, left: handleStyle } : {}}
+                      resizeHandleStyles={!readOnly && selectedId === roi.id ? {
+                        topLeft: cornerHandleStyle,
+                        topRight: cornerHandleStyle,
+                        bottomLeft: cornerHandleStyle,
+                        bottomRight: cornerHandleStyle,
+                        top: horizontalHandleStyle,
+                        bottom: horizontalHandleStyle,
+                        left: verticalHandleStyle,
+                        right: verticalHandleStyle,
+                      } : {}}
                       enableResizing={!readOnly && selectedId === roi.id}
                       disableDragging={readOnly}
                     >

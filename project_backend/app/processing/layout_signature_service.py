@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 from collections import Counter, defaultdict
 from typing import Any, Dict, List, Sequence
@@ -6,6 +7,7 @@ from typing import Any, Dict, List, Sequence
 from app.core.json_utils import jsonb_load
 
 
+logger = logging.getLogger(__name__)
 LABELS = ("text", "table", "image")
 GRID_SIZE = 4
 
@@ -115,11 +117,26 @@ def _metrics_for_regions(regions: List[Dict[str, Any]]) -> Dict[str, Any]:
 def build_layout_signature(layout_analysis: Dict[str, Any]) -> Dict[str, Any]:
     width = max(float(layout_analysis.get("image_width") or 1), 1.0)
     height = max(float(layout_analysis.get("image_height") or 1), 1.0)
+    input_regions = layout_analysis.get("regions", [])
     regions = [
         region
-        for region in (_region_from_layout(item) for item in layout_analysis.get("regions", []))
+        for region in (_region_from_layout(item) for item in input_regions)
         if region is not None
     ]
+    logger.info(
+        "Layout signature trace: build_input_regions=%s normalized_regions=%s normalized_summary=%s",
+        len(input_regions) if isinstance(input_regions, list) else 0,
+        len(regions),
+        [
+            {
+                "index": index,
+                "label": region.get("label"),
+                "bbox": region.get("bbox"),
+                "confidence": region.get("confidence"),
+            }
+            for index, region in enumerate(regions)
+        ],
+    )
     ignored_regions = [
         mask
         for mask in (item if isinstance(item, dict) else {} for item in layout_analysis.get("ignored_regions", []))
@@ -127,14 +144,30 @@ def build_layout_signature(layout_analysis: Dict[str, Any]) -> Dict[str, Any]:
     ]
     if ignored_regions:
         regions = [region for region in regions if not _region_inside_any_mask(region, ignored_regions)]
+        logger.info(
+            "Layout signature trace: after_ignored_regions regions=%s ignored_regions=%s",
+            len(regions),
+            ignored_regions,
+        )
     stable_regions = [
         region
         for region in (_region_from_layout(item) for item in layout_analysis.get("stable_regions", []))
         if region is not None
     ]
     regions.extend(stable_regions)
+    if stable_regions:
+        logger.info(
+            "Layout signature trace: after_stable_regions regions=%s stable_regions=%s",
+            len(regions),
+            stable_regions,
+        )
     regions.sort(key=lambda item: (item["label"], item["center"][1], item["center"][0]))
     metrics = _metrics_for_regions(regions)
+    logger.info(
+        "Layout signature trace: signature_region_count=%s labels=%s",
+        metrics["region_count"],
+        metrics["label_counts"],
+    )
 
     return {
         "version": "layout-signature-v1",

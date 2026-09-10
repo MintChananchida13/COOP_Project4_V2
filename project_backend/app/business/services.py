@@ -493,19 +493,14 @@ def _template_fields_for_page(conn: Any, template_id: str, page_number: int) -> 
     ]
 
 
-def _generate_layout_signature_for_source(source: Optional[str], fields: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
+def _generate_layout_signature_for_source(source: Optional[str]) -> Optional[Dict[str, Any]]:
     image = _load_image_source(source)
     if image is None:
         return None
     opencv_img = _image_to_bgr_array(image)
     if opencv_img is None:
         return None
-    analysis = analyze_layout(opencv_img)
-    overrides = _signature_layout_overrides(fields)
-    if overrides["ignored_regions"]:
-        analysis["ignored_regions"] = overrides["ignored_regions"]
-    if overrides["stable_regions"]:
-        analysis["stable_regions"] = overrides["stable_regions"]
+    analysis = analyze_layout(opencv_img, use_text_detection=False)
     return build_layout_signature(analysis)
 
 
@@ -526,7 +521,7 @@ def _refresh_template_layout_signatures(conn: Any, template_id: str) -> List[Dic
     refreshed: List[Dict[str, Any]] = []
     for row in rows:
         source = row["normalized_image_url"] or row["sample_image_url"]
-        signature = _generate_layout_signature_for_source(source, _template_fields_for_page(conn, template_id, int(row["page_number"])))
+        signature = _generate_layout_signature_for_source(source)
         if signature is None:
             refreshed.append(
                 {

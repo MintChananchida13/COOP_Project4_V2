@@ -251,8 +251,32 @@ def _layout_detection_items_from_response(value: Any) -> List[Dict[str, Any]]:
     return [
         item
         for item in _walk_layout_items(value)
-        if _normalize_region_type(_extract_label(item)) in {"table", "image"}
+        if _normalize_region_type(_extract_label(item)) in {"text", "table", "image"}
     ]
+
+
+def _debug_item_summary(items: List[Dict[str, Any]], image_width: int, image_height: int) -> List[Dict[str, Any]]:
+    summary: List[Dict[str, Any]] = []
+    for index, item in enumerate(items):
+        box = _extract_box(item) if isinstance(item, dict) else None
+        label = _normalize_region_type(_extract_label(item)) if isinstance(item, dict) else "unknown"
+        summary.append(
+            {
+                "index": index,
+                "label": label,
+                "bbox": [round(float(value), 2) for value in box] if box else None,
+                "bbox_ratio": [
+                    round(float(box[0]) / max(image_width, 1), 6),
+                    round(float(box[1]) / max(image_height, 1), 6),
+                    round((float(box[2]) - float(box[0])) / max(image_width, 1), 6),
+                    round((float(box[3]) - float(box[1])) / max(image_height, 1), 6),
+                ] if box else None,
+                "confidence": round(_extract_score(item), 4) if isinstance(item, dict) else 0.0,
+                "raw_label": _extract_label(item) if isinstance(item, dict) else None,
+                "source": item.get("source") if isinstance(item, dict) else None,
+            }
+        )
+    return summary
 
 
 def _intersection_area(box_a: List[float], box_b: List[float]) -> float:
@@ -730,12 +754,28 @@ def analyze_layout(
                 raise LayoutAnalysisUnavailableError("Layout runtime returned an invalid response.")
             if use_text_detection and not isinstance(text_result, dict):
                 raise LayoutAnalysisUnavailableError("TextDetection runtime returned an invalid response.")
+            raw_layout_items = _walk_layout_items(layout_result.get("result", layout_result))
+            layout_items = _layout_detection_items_from_response(layout_result.get("result", layout_result))
+            logger.info(
+                "Layout signature trace: raw_model_items=%s layout_items_after_type_filter=%s use_text_detection=%s raw_summary=%s filtered_summary=%s",
+                len(raw_layout_items),
+                len(layout_items),
+                use_text_detection,
+                _debug_item_summary(raw_layout_items, width, height),
+                _debug_item_summary(layout_items, width, height),
+            )
             raw_items = [
-                *_layout_detection_items_from_response(layout_result.get("result", layout_result)),
+                *layout_items,
             ]
             if use_text_detection and isinstance(text_result, dict):
+                text_items = _text_detection_items_from_response(text_result.get("result", text_result))
+                logger.info(
+                    "Layout signature trace: text_detection_items=%s text_summary=%s",
+                    len(text_items),
+                    _debug_item_summary(text_items, width, height),
+                )
                 raw_items = [
-                    *_text_detection_items_from_response(text_result.get("result", text_result)),
+                    *text_items,
                     *raw_items,
                 ]
             _set_cached_layout_raw_items(image, raw_items, source_mode)
@@ -755,6 +795,12 @@ def analyze_layout(
                 "confidence": _extract_score(item),
             }
         )
+    logger.info(
+        "Layout signature trace: raw_items_for_analysis=%s parsed_items=%s parsed_summary=%s",
+        len(raw_items),
+        len(parsed_items),
+        _debug_item_summary(parsed_items, width, height),
+    )
 
     table_boxes = [item["box"] for item in parsed_items if item["type"] == "table"]
     text_boxes = [item["box"] for item in parsed_items if item["type"] == "text"]
@@ -770,7 +816,18 @@ def analyze_layout(
 
         filtered_items.append(item)
 
+    logger.info(
+        "Layout signature trace: after_table_image_relation_filter=%s filtered_summary=%s",
+        len(filtered_items),
+        _debug_item_summary(filtered_items, width, height),
+    )
+
     filtered_items = _filter_auto_roi_items(filtered_items, width, height)
+    logger.info(
+        "Layout signature trace: after_auto_roi_filter=%s filtered_summary=%s",
+        len(filtered_items),
+        _debug_item_summary(filtered_items, width, height),
+    )
 
     layout_blocker_boxes = [item["box"] for item in filtered_items if item["type"] in {"table", "image"}]
     original_boxes = [_clip_box_to_image(item["box"], width, height) for item in filtered_items]
@@ -819,6 +876,19 @@ def analyze_layout(
         )
 
     regions.sort(key=lambda region: (region["roi"]["y_ratio"], region["roi"]["x_ratio"], -region["roi"]["width_ratio"] * region["roi"]["height_ratio"]))
+    logger.info(
+        "Layout signature trace: regions_returned=%s regions=%s",
+        len(regions),
+        [
+            {
+                "index": index,
+                "label": region.get("type"),
+                "bbox_ratio": region.get("roi"),
+                "confidence": round(float(region.get("confidence") or 0.0), 4),
+            }
+            for index, region in enumerate(regions)
+        ],
+    )
 
     return {
         "engine": "layout_model_runtime",

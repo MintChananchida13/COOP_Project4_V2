@@ -135,6 +135,7 @@ export default function AdminTemplatesPage() {
   const [templateSearch, setTemplateSearch] = useState("");
   const [loadStatus, setLoadStatus] = useState<"loading" | "loaded" | "error">("loading");
   const [deletingTemplateId, setDeletingTemplateId] = useState<string | null>(null);
+  const [deleteConfirmTemplate, setDeleteConfirmTemplate] = useState<Template | null>(null);
   const [statusUpdatingTemplateId, setStatusUpdatingTemplateId] = useState<string | null>(null);
   const [deleteMessage, setDeleteMessage] = useState("");
   const [deleteError, setDeleteError] = useState("");
@@ -503,6 +504,26 @@ export default function AdminTemplatesPage() {
       await deleteTemplateApi(template.id);
       setTemplates((current) => current.filter((item) => item.id !== template.id));
       setDeleteMessage(`ลบ Template "${template.name}" เรียบร้อยแล้ว`);
+    } catch (error) {
+      console.warn("Template delete failed.", error);
+      setDeleteError(error instanceof Error ? error.message : "ลบ Template ไม่สำเร็จ");
+    } finally {
+      setDeletingTemplateId(null);
+    }
+  };
+
+  const confirmDeleteTemplate = async () => {
+    const template = deleteConfirmTemplate;
+    if (!template) return;
+
+    setDeletingTemplateId(template.id);
+    setDeleteMessage("");
+    setDeleteError("");
+    try {
+      await deleteTemplateApi(template.id);
+      setTemplates((current) => current.filter((item) => item.id !== template.id));
+      setDeleteMessage(`ลบ Template "${template.name}" เรียบร้อยแล้ว`);
+      setDeleteConfirmTemplate(null);
     } catch (error) {
       console.warn("Template delete failed.", error);
       setDeleteError(error instanceof Error ? error.message : "ลบ Template ไม่สำเร็จ");
@@ -889,7 +910,11 @@ export default function AdminTemplatesPage() {
                               </label>
                               <button
                                 type="button"
-                                onClick={() => handleDeleteTemplate(template)}
+                                onClick={() => {
+                                  setDeleteConfirmTemplate(template);
+                                  setDeleteMessage("");
+                                  setDeleteError("");
+                                }}
                                 disabled={loadStatus !== "loaded" || deletingTemplateId === template.id || statusUpdatingTemplateId === template.id}
                                 className="ui-stable-action-sm rounded-xl border border-red-200 bg-white px-3 py-2 text-xs font-black text-red-600 hover:bg-red-50 disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
                               >
@@ -1031,7 +1056,11 @@ export default function AdminTemplatesPage() {
               </label>
               <button
                 type="button"
-                onClick={() => handleDeleteTemplate(template)}
+                onClick={() => {
+                  setDeleteConfirmTemplate(template);
+                  setDeleteMessage("");
+                  setDeleteError("");
+                }}
                 disabled={loadStatus !== "loaded" || deletingTemplateId === template.id || statusUpdatingTemplateId === template.id}
                 className="ui-stable-action-sm rounded-xl border border-red-200 bg-white px-4 py-2.5 text-xs font-black text-red-600 transition-colors hover:bg-red-50 disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
               >
@@ -1170,6 +1199,60 @@ export default function AdminTemplatesPage() {
                   กรอกข้อมูลให้ครบก่อนอัปโหลดไฟล์อ้างอิง
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+      {deleteConfirmTemplate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-100 p-5">
+              <div>
+                <h2 className="text-base font-black text-slate-900">ลบ Template นี้หรือไม่?</h2>
+                <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">
+                  การลบนี้จะลบ Template และข้อมูลที่เกี่ยวข้องออกจากฐานข้อมูลถาวร
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmTemplate(null)}
+                disabled={deletingTemplateId === deleteConfirmTemplate.id}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-300"
+                aria-label="ปิดหน้าต่างยืนยันการลบ"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="space-y-4 p-5">
+              <div className="rounded-xl border border-red-100 bg-red-50 px-3 py-3">
+                <p className="text-xs font-black text-red-900">{deleteConfirmTemplate.name}</p>
+                <p className="mt-1 text-[11px] font-semibold leading-5 text-red-700">
+                  จะลบหน้าเอกสาร, Field, Ignore Region และประวัติ Embedding ที่ผูกกับ Template นี้ด้วย
+                </p>
+              </div>
+
+              {deleteError && <InlineState tone="danger" message={deleteError} />}
+
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDeleteConfirmTemplate(null)}
+                  disabled={deletingTemplateId === deleteConfirmTemplate.id}
+                  className="inline-flex h-10 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void confirmDeleteTemplate()}
+                  disabled={deletingTemplateId === deleteConfirmTemplate.id}
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-red-600 px-4 text-xs font-black text-white hover:bg-red-700 disabled:bg-slate-300 disabled:text-slate-500"
+                >
+                  {deletingTemplateId === deleteConfirmTemplate.id && <Loader2 size={14} className="animate-spin" />}
+                  {deletingTemplateId === deleteConfirmTemplate.id ? "กำลังลบ..." : "ลบ Template"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
