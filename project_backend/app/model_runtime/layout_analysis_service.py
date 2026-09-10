@@ -37,14 +37,14 @@ class LayoutRegion:
 
 _LAYOUT_MODEL_NAME = "PP-DocLayoutV3"
 _TEXT_DETECTION_MODEL_NAME = "PP-OCRv5_server_det"
-AUTO_ROI_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_EXPAND_TOP_PX", "8"))
-AUTO_ROI_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_EXPAND_BOTTOM_PX", "8"))
-AUTO_ROI_EXPAND_LEFT_PX = float(os.getenv("AUTO_ROI_EXPAND_LEFT_PX", "8"))
-AUTO_ROI_EXPAND_RIGHT_PX = float(os.getenv("AUTO_ROI_EXPAND_RIGHT_PX", "8"))
-AUTO_ROI_TABLE_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_TOP_PX", "2"))
-AUTO_ROI_TABLE_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_BOTTOM_PX", "2"))
-AUTO_ROI_TABLE_EXPAND_LEFT_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_LEFT_PX", "2"))
-AUTO_ROI_TABLE_EXPAND_RIGHT_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_RIGHT_PX", "2"))
+AUTO_ROI_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_EXPAND_TOP_PX", "10"))
+AUTO_ROI_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_EXPAND_BOTTOM_PX", "10"))
+AUTO_ROI_EXPAND_LEFT_PX = float(os.getenv("AUTO_ROI_EXPAND_LEFT_PX", "10"))
+AUTO_ROI_EXPAND_RIGHT_PX = float(os.getenv("AUTO_ROI_EXPAND_RIGHT_PX", "10"))
+AUTO_ROI_TABLE_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_TOP_PX", "4"))
+AUTO_ROI_TABLE_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_BOTTOM_PX", "4"))
+AUTO_ROI_TABLE_EXPAND_LEFT_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_LEFT_PX", "4"))
+AUTO_ROI_TABLE_EXPAND_RIGHT_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_RIGHT_PX", "4"))
 AUTO_ROI_MAX_NEIGHBOR_OVERLAP_RATIO = float(os.getenv("AUTO_ROI_MAX_NEIGHBOR_OVERLAP_RATIO", "0.15"))
 AUTO_ROI_TABLE_NESTED_OVERLAP_RATIO = float(os.getenv("AUTO_ROI_TABLE_NESTED_OVERLAP_RATIO", "0.92"))
 AUTO_ROI_TABLE_NESTED_AREA_RATIO = float(os.getenv("AUTO_ROI_TABLE_NESTED_AREA_RATIO", "1.02"))
@@ -617,7 +617,13 @@ def _merge_tiny_text_fragments(
 
 
 def _filter_nested_same_type_regions(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    ordered = sorted(items, key=lambda item: _box_area(item["box"]), reverse=True)
+    ordered = sorted(
+        items,
+        key=lambda item: (
+            0 if item.get("type") == "text" and item.get("source") == "text_detection" else 1,
+            -_box_area(item["box"]),
+        ),
+    )
     kept: List[Dict[str, Any]] = []
     for item in ordered:
         box = item["box"]
@@ -659,8 +665,40 @@ def _filter_nested_same_type_regions(items: List[Dict[str, Any]]) -> List[Dict[s
     return kept
 
 
+def _prefer_text_detection_regions(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    text_detection_items = [
+        item for item in items
+        if item.get("type") == "text" and item.get("source") == "text_detection"
+    ]
+    if not text_detection_items:
+        return items
+
+    filtered: List[Dict[str, Any]] = []
+    for item in items:
+        if item.get("type") != "text" or item.get("source") == "text_detection":
+            filtered.append(item)
+            continue
+        box = item["box"]
+        area = max(_box_area(box), 1.0)
+        has_detection_support = any(
+            _intersection_area(box, detection_item["box"]) / area >= 0.20
+            or _box_center_inside(detection_item["box"], box)
+            for detection_item in text_detection_items
+        )
+        if has_detection_support:
+            logger.debug(
+                "Auto ROI dropped layout text block in favor of text detection lines box=%s",
+                box,
+            )
+            continue
+        filtered.append(item)
+    return filtered
+
+
 def _filter_auto_roi_items(items: List[Dict[str, Any]], image_width: int, image_height: int) -> List[Dict[str, Any]]:
-    return _filter_nested_same_type_regions(_merge_tiny_text_fragments(items, image_width, image_height))
+    return _filter_nested_same_type_regions(
+        _merge_tiny_text_fragments(_prefer_text_detection_regions(items), image_width, image_height)
+    )
 
 
 def _response_region_to_item(region: Dict[str, Any], image_width: int, image_height: int) -> Optional[Dict[str, Any]]:
@@ -788,11 +826,13 @@ def analyze_layout(
         if not box:
             continue
         region_type = _normalize_region_type(_extract_label(item))
+        item_source = str(item.get("source") or ("layout" if region_type in {"text", "table", "image"} else "unknown"))
         parsed_items.append(
             {
                 "box": box,
                 "type": region_type,
                 "confidence": _extract_score(item),
+                "source": item_source,
             }
         )
     logger.info(
@@ -864,6 +904,7 @@ def analyze_layout(
             {
                 "type": region_type,
                 "confidence": float(item["confidence"]),
+                "source": item.get("source"),
                 "auto_roi_group": item.get("auto_roi_group"),
                 "roi": {
                     "x_ratio": _clamp_ratio(left / max(width, 1)),
