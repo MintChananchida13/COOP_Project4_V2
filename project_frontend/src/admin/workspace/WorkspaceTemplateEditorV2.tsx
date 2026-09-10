@@ -841,11 +841,13 @@ export default function WorkspaceTemplateEditorV2({
       });
       const totalDetectedFields = detectedItems.reduce((sum, item) => sum + item.fields.length, 0);
 
-      onReplaceExtractionFieldsForPages(detectedItems);
+      if (totalDetectedFields > 0) {
+        onReplaceExtractionFieldsForPages(detectedItems.filter((item) => item.fields.length > 0));
+      }
       setAutoDetectStatus(
         totalDetectedFields > 0
           ? `สร้าง ROI อัตโนมัติ ${totalDetectedFields} รายการ จาก ${pagesToAnalyze.length} หน้า และลบ Extraction ROI เดิมของทุกหน้าแล้ว`
-          : `ไม่พบ Text, Table หรือ Image Region ใน ${pagesToAnalyze.length} หน้า ระบบลบ Extraction ROI เดิมของทุกหน้าแล้ว`
+          : `ไม่พบ Text, Table หรือ Image Region ใน ${pagesToAnalyze.length} หน้า จึงคง Extraction ROI เดิมไว้`
       );
     } catch (error) {
       console.error("Admin auto ROI detection failed.", error);

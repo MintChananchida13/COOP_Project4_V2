@@ -74,8 +74,14 @@ function cloneTemplateBundle(bundle: TemplateBundleData): TemplateBundleData {
   return {
     template: cloneTemplates([bundle.template])[0],
     pages: bundle.pages.map((page) => ({ ...page })),
-    fields: bundle.fields.map((field) => ({ ...field, roi: { ...field.roi } })),
-    ignoreRegions: bundle.ignoreRegions.map((region) => ({ ...region, roi: { ...region.roi } })),
+    fields: bundle.fields.map((field) => ({
+      ...field,
+      roi: { ...field.roi, points: field.roi.points ? field.roi.points.map((point) => ({ ...point })) : undefined },
+    })),
+    ignoreRegions: bundle.ignoreRegions.map((region) => ({
+      ...region,
+      roi: { ...region.roi, points: region.roi.points ? region.roi.points.map((point) => ({ ...point })) : undefined },
+    })),
   };
 }
 

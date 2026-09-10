@@ -158,17 +158,49 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
     });
     setSelectedTemplatePages(bundle.pages);
     setSelectedTemplateFields((currentFields) => {
-      const bundleFieldIds = new Set(bundle.fields.map((field) => field.id));
+      const mergedBundleFields = bundle.fields
+        .filter((field) => !pendingDeletedFieldIdsRef.current.has(field.id))
+        .map((field) => ({ ...field, ...(dirtyFieldPatchesRef.current.get(field.id) || {}) }));
+      const bundleFieldIds = new Set(mergedBundleFields.map((field) => field.id));
       const pendingLocalFields = currentFields.filter(
         (field) =>
           field.id.startsWith("local_field_") &&
           !bundleFieldIds.has(field.id) &&
           pendingLocalFieldPatchesRef.current.has(field.id)
       );
-      return pendingLocalFields.length > 0 ? [...bundle.fields, ...pendingLocalFields] : bundle.fields;
+      return pendingLocalFields.length > 0 ? [...mergedBundleFields, ...pendingLocalFields] : mergedBundleFields;
     });
     setSelectedIgnoreRegions(bundle.ignoreRegions);
   };
+
+  const registerPendingLocalFields = (fieldsToRegister: TemplateField[]) => {
+    fieldsToRegister.forEach((field) => {
+      if (!field.id.startsWith("local_field_")) return;
+      pendingLocalFieldPatchesRef.current.set(field.id, {
+        ...(pendingLocalFieldPatchesRef.current.get(field.id) || {}),
+        ...field,
+      });
+      dirtyFieldPatchesRef.current.delete(field.id);
+    });
+  };
+
+  const clearPendingLocalFields = (fieldsToClear: TemplateField[]) => {
+    fieldsToClear.forEach((field) => {
+      if (!field.id.startsWith("local_field_")) return;
+      pendingLocalFieldPatchesRef.current.delete(field.id);
+      dirtyFieldPatchesRef.current.delete(field.id);
+    });
+  };
+
+  const findMatchingPersistedField = (localField: TemplateField, fieldsToSearch: TemplateField[]) =>
+    fieldsToSearch.find(
+      (field) =>
+        !field.id.startsWith("local_field_") &&
+        field.templatePageId === localField.templatePageId &&
+        field.pageNumber === localField.pageNumber &&
+        field.fieldName === localField.fieldName &&
+        field.useForVerification === localField.useForVerification
+    );
 
   useEffect(() => {
     selectedTemplateFieldsRef.current = selectedTemplateFields;
@@ -228,9 +260,16 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
     for (const localField of localFields) {
       const localPatch = pendingLocalFieldPatchesRef.current.get(localField.id) || {};
       const fieldToCreate = { ...localField, ...localPatch };
-      latestBundle = await createTemplateFieldApi(templateId, fieldToCreate);
+      const existingField = findMatchingPersistedField(
+        fieldToCreate,
+        currentFields.filter((field) => field.id !== localField.id)
+      );
+      latestBundle = existingField
+        ? await updateTemplateFieldApi(templateId, existingField.id, fieldToCreate)
+        : await createTemplateFieldApi(templateId, fieldToCreate);
       const savedField =
         latestBundle.fields.find((field) => field.id === localField.id) ||
+        (existingField ? latestBundle.fields.find((field) => field.id === existingField.id) : undefined) ||
         latestBundle.fields.find(
           (field) =>
             field.templatePageId === fieldToCreate.templatePageId &&
@@ -546,7 +585,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
       sortOrder: nextIndex,
     };
     setSelectedTemplateFields((prev) => [...prev, optimisticField]);
-    pendingLocalFieldPatchesRef.current.set(optimisticId, optimisticField);
+    registerPendingLocalFields([optimisticField]);
     setSaved("Field added to draft.");
   };
 
@@ -695,6 +734,8 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
       } satisfies TemplateField;
     });
 
+    registerPendingLocalFields(optimisticFields);
+    clearPendingLocalFields(fieldsToDelete);
     setSelectedTemplateFields([...remainingFields, ...optimisticFields]);
 
     if (!canPersistToBackend) {
@@ -702,7 +743,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
       return;
     }
 
-    (async () => {
+    void trackFieldSave((async () => {
       try {
         for (const field of fieldsToDelete) {
           if (!field.id.startsWith("local_field_")) {
@@ -716,18 +757,21 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
         }
 
         if (latestBundle) {
+          clearPendingLocalFields(optimisticFields);
           applyBundle(latestBundle);
         } else {
           const bundle = await fetchTemplateBundle(templateId);
+          clearPendingLocalFields(optimisticFields);
           applyBundle(bundle);
         }
         setSaved(`Auto ROI replaced ${fieldsToDelete.length} old fields with ${optimisticFields.length} fields.`);
       } catch (error) {
         console.warn("Auto ROI replace failed.", error);
+        clearPendingLocalFields(optimisticFields);
         setSelectedTemplateFields(previousFields);
         setLocalOnly("Auto ROI replace could not be persisted.");
       }
-    })();
+    })());
   };
 
   const handleReplaceExtractionFieldsForPages = (
@@ -771,6 +815,8 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
       });
     });
 
+    registerPendingLocalFields(optimisticFields);
+    clearPendingLocalFields(fieldsToDelete);
     setSelectedTemplateFields([...remainingFields, ...optimisticFields]);
 
     if (!canPersistToBackend) {
@@ -778,7 +824,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
       return;
     }
 
-    (async () => {
+    void trackFieldSave((async () => {
       try {
         for (const field of fieldsToDelete) {
           if (!field.id.startsWith("local_field_")) {
@@ -792,18 +838,21 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
         }
 
         if (latestBundle) {
+          clearPendingLocalFields(optimisticFields);
           applyBundle(latestBundle);
         } else {
           const bundle = await fetchTemplateBundle(templateId);
+          clearPendingLocalFields(optimisticFields);
           applyBundle(bundle);
         }
         setSaved(`Auto ROI replaced ${fieldsToDelete.length} old fields with ${optimisticFields.length} fields across ${items.length} pages.`);
       } catch (error) {
         console.warn("Auto ROI batch replace failed.", error);
+        clearPendingLocalFields(optimisticFields);
         setSelectedTemplateFields(previousFields);
         setLocalOnly("Auto ROI batch replace could not be persisted.");
       }
-    })();
+    })());
   };
 
   const handleAddIgnoreRegion = (roi?: RoiRatio) => {
