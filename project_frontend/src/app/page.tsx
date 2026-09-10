@@ -363,6 +363,12 @@ async function templateFieldsToWorkspaceRois(
       y: roi.yRatio * displayHeight,
       width: roi.widthRatio * displayWidth,
       height: roi.heightRatio * displayHeight,
+      points: roi.points && roi.points.length > 2
+        ? roi.points.map((point) => ({
+            x: point.xRatio * displayWidth,
+            y: point.yRatio * displayHeight,
+          }))
+        : undefined,
       pageIndex,
       type,
       dataType: field.dataType || type,
@@ -1955,6 +1961,12 @@ function HomeWorkspace() {
             y: roi.y * scaleY,
             width: roi.width * scaleX,
             height: roi.height * scaleY,
+            points: roi.points && roi.points.length > 2
+              ? roi.points.map((point) => ({
+                  x: point.x * scaleX,
+                  y: point.y * scaleY,
+                }))
+              : undefined,
             type: roiFieldType,
             extractionMethod: roiExtractionMethod,
             roiMode: roi.roiMode === "flexible" ? "flexible" : "fix",

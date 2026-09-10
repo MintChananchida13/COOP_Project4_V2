@@ -704,7 +704,7 @@ export default function WorkspaceCustomEditor({
     boxShadow: "0 1px 2px rgba(0,0,0,0.2)"
   };
 
-  const horizontalHandleStyle = {
+  const horizontalHandleBaseStyle = {
     width: "18px",
     height: "5px",
     background: "#ffffff",
@@ -713,13 +713,37 @@ export default function WorkspaceCustomEditor({
     boxShadow: "0 1px 2px rgba(0,0,0,0.2)"
   };
 
-  const verticalHandleStyle = {
+  const verticalHandleBaseStyle = {
     width: "5px",
     height: "18px",
     background: "#ffffff",
     border: "1.5px solid #2563eb",
     borderRadius: "999px",
     boxShadow: "0 1px 2px rgba(0,0,0,0.2)"
+  };
+
+  const topHandleStyle = {
+    ...horizontalHandleBaseStyle,
+    left: "calc(50% - 9px)",
+    top: "-2.5px",
+  };
+
+  const bottomHandleStyle = {
+    ...horizontalHandleBaseStyle,
+    left: "calc(50% - 9px)",
+    bottom: "-2.5px",
+  };
+
+  const leftHandleStyle = {
+    ...verticalHandleBaseStyle,
+    left: "-2.5px",
+    top: "calc(50% - 9px)",
+  };
+
+  const rightHandleStyle = {
+    ...verticalHandleBaseStyle,
+    right: "-2.5px",
+    top: "calc(50% - 9px)",
   };
 
 
@@ -1084,10 +1108,10 @@ export default function WorkspaceCustomEditor({
                         topRight: cornerHandleStyle,
                         bottomLeft: cornerHandleStyle,
                         bottomRight: cornerHandleStyle,
-                        top: horizontalHandleStyle,
-                        bottom: horizontalHandleStyle,
-                        left: verticalHandleStyle,
-                        right: verticalHandleStyle,
+                        top: topHandleStyle,
+                        bottom: bottomHandleStyle,
+                        left: leftHandleStyle,
+                        right: rightHandleStyle,
                       } : {}}
                       enableResizing={!readOnly && selectedId === roi.id}
                       disableDragging={readOnly}

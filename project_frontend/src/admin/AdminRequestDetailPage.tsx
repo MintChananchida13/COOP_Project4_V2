@@ -447,6 +447,7 @@ export default function AdminRequestDetailPage({
         detectionMode,
         mainPageNumber: String(safeMainPageNumber),
       });
+      window.dispatchEvent(new Event("admin-route-transition-start"));
       router.push(`/admin/templates/${templateId}/edit?${params.toString()}`);
       return;
     }
@@ -531,8 +532,14 @@ export default function AdminRequestDetailPage({
         pages,
       });
 
+      const params = new URLSearchParams({
+        stage: "editor",
+        detectionMode,
+        mainPageNumber: String(safeMainPageNumber),
+      });
       setActionStatus(creationType === "new_version" ? "สร้าง Template Version ฉบับร่างเรียบร้อยแล้ว" : "สร้าง Template ฉบับร่างเรียบร้อยแล้ว");
-      router.push(`/admin/templates/${result.templateId}/edit`);
+      window.dispatchEvent(new Event("admin-route-transition-start"));
+      router.push(`/admin/templates/${result.templateId}/edit?${params.toString()}`);
     } catch (error) {
       console.warn("Template request conversion failed.", error);
       setActionError(
@@ -564,7 +571,10 @@ export default function AdminRequestDetailPage({
 
       setActionStatus("ลบคำขอเรียบร้อยแล้ว");
       setIsDeleteConfirmOpen(false);
-      setTimeout(() => router.push("/admin/requests"), 300);
+      setTimeout(() => {
+        window.dispatchEvent(new Event("admin-route-transition-start"));
+        router.push("/admin/requests");
+      }, 300);
     } catch (error) {
       console.warn("Template request delete failed.", error);
       setActionError(

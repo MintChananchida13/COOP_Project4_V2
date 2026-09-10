@@ -8,7 +8,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -92,6 +92,7 @@ class ROIModel(BaseModel):
     extractionMethod: str | None = None
     roiMode: str | None = None
     expectedContent: str | None = None
+    points: List[Dict[str, float]] | None = None
 
 
 class DocumentPayload(BaseModel):
@@ -167,6 +168,33 @@ def crop_opencv_region(opencv_img: np.ndarray, x: int, y: int, w: int, h: int) -
     x_end = min(x + max(1, w), w_img)
     y_end = min(y + max(1, h), h_img)
     return opencv_img[y:y_end, x:x_end]
+
+
+def crop_opencv_polygon_region(opencv_img: np.ndarray, points: Optional[List[Dict[str, float]]]) -> Optional[np.ndarray]:
+    if not points or len(points) < 3:
+        return None
+    h_img, w_img = opencv_img.shape[:2]
+    parsed = []
+    for point in points:
+        try:
+            parsed.append([
+                max(0, min(w_img - 1, int(round(float(point.get("x", 0)))))),
+                max(0, min(h_img - 1, int(round(float(point.get("y", 0)))))),
+            ])
+        except (TypeError, ValueError):
+            return None
+    polygon = np.array(parsed, dtype=np.int32)
+    x, y, w, h = cv2.boundingRect(polygon)
+    if w <= 0 or h <= 0:
+        return None
+    crop = crop_opencv_region(opencv_img, x, y, w, h)
+    if crop.size == 0:
+        return None
+    shifted = polygon - np.array([x, y], dtype=np.int32)
+    mask = np.zeros(crop.shape[:2], dtype=np.uint8)
+    cv2.fillPoly(mask, [shifted], 255)
+    white = np.full_like(crop, 255)
+    return np.where(mask[:, :, None] > 0, crop, white)
 
 
 def _markdown_table(rows: List[List[str]]) -> str:
@@ -1123,7 +1151,8 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
     else:
         prepared_items: List[Dict[str, Any]] = []
         for idx, roi in enumerate(payload.rois):
-            crop_img = crop_opencv_region(
+            polygon_crop = crop_opencv_polygon_region(opencv_img, roi.points)
+            crop_img = polygon_crop if polygon_crop is not None else crop_opencv_region(
                 opencv_img,
                 int(roi.x),
                 int(roi.y),

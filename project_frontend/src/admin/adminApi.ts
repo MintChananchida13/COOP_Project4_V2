@@ -39,6 +39,22 @@ function asRecordArray(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item))) : [];
 }
 
+const mapRoiPoints = (points: unknown) =>
+  asRecordArray(points)
+    .map((point) => ({
+      xRatio: Number(point.x_ratio ?? point.xRatio),
+      yRatio: Number(point.y_ratio ?? point.yRatio),
+    }))
+    .filter((point) => Number.isFinite(point.xRatio) && Number.isFinite(point.yRatio));
+
+const apiRoiPoints = (points?: { xRatio: number; yRatio: number }[]) =>
+  points && points.length > 2
+    ? points.map((point) => ({
+        x_ratio: point.xRatio,
+        y_ratio: point.yRatio,
+      }))
+    : undefined;
+
 function cloneTemplateRequests(requests: AdminTemplateRequest[] = []) {
   return requests.map((request) => ({
     ...request,
@@ -154,6 +170,7 @@ interface ApiRequestedField {
     y_ratio: number;
     width_ratio: number;
     height_ratio: number;
+    points?: unknown;
   };
 }
 
@@ -182,6 +199,7 @@ interface ApiTemplateField {
     y_ratio: number;
     width_ratio: number;
     height_ratio: number;
+    points?: unknown;
   };
   data_type?: string | null;
   user_selectable: boolean;
@@ -211,6 +229,7 @@ interface ApiIgnoreRegion {
     y_ratio: number;
     width_ratio: number;
     height_ratio: number;
+    points?: unknown;
   };
 }
 
@@ -736,21 +755,25 @@ export const mapApiRequest = (request: ApiTemplateRequest): AdminTemplateRequest
     isCanonical: Boolean(page.is_canonical),
     layoutSignatureJson: page.layout_signature_json || undefined,
   })),
-  requestedFields: (request.requested_fields || []).map((field) => ({
-    id: field.id,
-    fieldName: field.field_name,
-    displayLabel: field.display_label,
-    dataType: (field.data_type || field.dataType || "text") as RoiDataType,
-    extractionMethod: normalizeExtractionMethod(field.extraction_method || field.extractionMethod),
-    userNote: field.user_note || undefined,
-    roi: {
-      pageNumber: field.roi.page_number,
-      xRatio: field.roi.x_ratio,
-      yRatio: field.roi.y_ratio,
-      widthRatio: field.roi.width_ratio,
-      heightRatio: field.roi.height_ratio,
-    },
-  })),
+  requestedFields: (request.requested_fields || []).map((field) => {
+    const points = mapRoiPoints(field.roi.points);
+    return {
+      id: field.id,
+      fieldName: field.field_name,
+      displayLabel: field.display_label,
+      dataType: (field.data_type || field.dataType || "text") as RoiDataType,
+      extractionMethod: normalizeExtractionMethod(field.extraction_method || field.extractionMethod),
+      userNote: field.user_note || undefined,
+      roi: {
+        pageNumber: field.roi.page_number,
+        xRatio: field.roi.x_ratio,
+        yRatio: field.roi.y_ratio,
+        widthRatio: field.roi.width_ratio,
+        heightRatio: field.roi.height_ratio,
+        points: points.length > 2 ? points : undefined,
+      },
+    };
+  }),
 });
 
 function mapApiTemplate(template: Partial<ApiTemplate> | null | undefined, fallbackId = ""): Template {
@@ -960,35 +983,39 @@ const mapApiTemplatePage = (page: ApiTemplatePage): TemplatePage => ({
   finalConfidenceThreshold: page.final_confidence_threshold ?? 0.75,
 });
 
-const mapApiTemplateField = (field: ApiTemplateField): TemplateField => ({
-  id: field.id,
-  templateId: field.template_id,
-  templatePageId: field.template_page_id,
-  pageNumber: field.page_number,
-  fieldName: field.field_name,
-  displayLabel: field.display_label,
-  roi: {
-    pageNumber: field.roi.page_number,
-    xRatio: field.roi.x_ratio,
-    yRatio: field.roi.y_ratio,
-    widthRatio: field.roi.width_ratio,
-    heightRatio: field.roi.height_ratio,
-  },
-  dataType: (field.data_type || "text") as RoiDataType,
-  userSelectable: field.user_selectable,
-  defaultSelected: field.default_selected,
-  useForVerification: field.use_for_verification,
-  expectedText: field.expected_text || undefined,
-  matchType: field.match_type || undefined,
-  requiredForVerification: field.required_for_verification,
-  extractionMethod: normalizeExtractionMethod(field.extraction_method),
-  roiMode: field.roi_mode === "flexible" ? "flexible" : "fix",
-  expectedContent: field.expected_content === "text" ? "text" : null,
-  roiPadding: field.roi_padding ?? undefined,
-  verificationWeight: field.verification_weight ?? undefined,
-  imageCategory: parseImageCategoryValue(field.image_category),
-  sortOrder: field.sort_order,
-});
+const mapApiTemplateField = (field: ApiTemplateField): TemplateField => {
+  const points = mapRoiPoints(field.roi.points);
+  return {
+    id: field.id,
+    templateId: field.template_id,
+    templatePageId: field.template_page_id,
+    pageNumber: field.page_number,
+    fieldName: field.field_name,
+    displayLabel: field.display_label,
+    roi: {
+      pageNumber: field.roi.page_number,
+      xRatio: field.roi.x_ratio,
+      yRatio: field.roi.y_ratio,
+      widthRatio: field.roi.width_ratio,
+      heightRatio: field.roi.height_ratio,
+      points: points.length > 2 ? points : undefined,
+    },
+    dataType: (field.data_type || "text") as RoiDataType,
+    userSelectable: field.user_selectable,
+    defaultSelected: field.default_selected,
+    useForVerification: field.use_for_verification,
+    expectedText: field.expected_text || undefined,
+    matchType: field.match_type || undefined,
+    requiredForVerification: field.required_for_verification,
+    extractionMethod: normalizeExtractionMethod(field.extraction_method),
+    roiMode: field.roi_mode === "flexible" ? "flexible" : "fix",
+    expectedContent: field.expected_content === "text" ? "text" : null,
+    roiPadding: field.roi_padding ?? undefined,
+    verificationWeight: field.verification_weight ?? undefined,
+    imageCategory: parseImageCategoryValue(field.image_category),
+    sortOrder: field.sort_order,
+  };
+};
 
 const mapApiIgnoreRegion = (region: ApiIgnoreRegion): IgnoreRegion => ({
   id: region.id,
@@ -2082,6 +2109,7 @@ const fieldToApiPayload = (
     y_ratio: field.roi.yRatio,
     width_ratio: field.roi.widthRatio,
     height_ratio: field.roi.heightRatio,
+    points: apiRoiPoints(field.roi.points),
   },
   data_type: field.dataType || "text",
   user_selectable: field.userSelectable ?? true,
@@ -2141,6 +2169,7 @@ export const updateTemplateFieldApi = async (templateId: string, fieldId: string
       y_ratio: patch.roi.yRatio,
       width_ratio: patch.roi.widthRatio,
       height_ratio: patch.roi.heightRatio,
+      points: apiRoiPoints(patch.roi.points),
     };
   }
 

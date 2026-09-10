@@ -37,7 +37,7 @@ from app.model_runtime.layout_analysis_service import (
 )
 from app.processing.layout_signature_service import build_layout_signature, compare_layout_signatures, signature_from_json, signature_to_json
 from app.processing.layout_template_matcher import search_layout_candidates
-from app.processing.ocr_adapter import OcrUnavailableError, ocr_roi, ocr_rois, recognize_text_roi
+from app.processing.ocr_adapter import OcrUnavailableError, ocr_roi, ocr_rois, recognize_text_crops_with_detection, recognize_text_roi
 from app.processing.ocr_postprocess import normalize_ocr_text
 from app.model_runtime.siglip_image_verification_adapter import (
     verify_image_category,
@@ -187,6 +187,47 @@ def _row_to_dict(row: Any) -> Dict[str, Any]:
     return dict(row)
 
 
+def _normalize_roi_points(value: Any) -> Optional[List[Dict[str, float]]]:
+    points = jsonb_load(value, value) if isinstance(value, str) else value
+    if not isinstance(points, list) or len(points) < 3:
+        return None
+    normalized: List[Dict[str, float]] = []
+    for point in points:
+        if not isinstance(point, dict):
+            return None
+        try:
+            x_ratio = float(point.get("x_ratio", point.get("xRatio")))
+            y_ratio = float(point.get("y_ratio", point.get("yRatio")))
+        except (TypeError, ValueError):
+            return None
+        normalized.append(
+            {
+                "x_ratio": max(0.0, min(1.0, x_ratio)),
+                "y_ratio": max(0.0, min(1.0, y_ratio)),
+            }
+        )
+    return normalized
+
+
+def _roi_api_from_row(item: Dict[str, Any]) -> Dict[str, Any]:
+    roi = {
+        "page_number": item["page_number"],
+        "x_ratio": item["roi_x_ratio"],
+        "y_ratio": item["roi_y_ratio"],
+        "width_ratio": item["roi_width_ratio"],
+        "height_ratio": item["roi_height_ratio"],
+    }
+    points = _normalize_roi_points(item.get("roi_points_json"))
+    if points:
+        roi["points"] = points
+    return roi
+
+
+def _roi_points_json_from_payload(roi: Any) -> Optional[str]:
+    points = _normalize_roi_points(getattr(roi, "points", None))
+    return jsonb_dump(points) if points else None
+
+
 def _request_row_to_api(row: Any) -> Dict[str, Any]:
     item = _row_to_dict(row)
     return {
@@ -236,13 +277,7 @@ def _field_row_to_api(row: Any) -> Dict[str, Any]:
         "page_number": item.get("page_number", 1),
         "field_name": item["field_name"],
         "display_label": item["display_label"],
-        "roi": {
-            "page_number": item["page_number"],
-            "x_ratio": item["roi_x_ratio"],
-            "y_ratio": item["roi_y_ratio"],
-            "width_ratio": item["roi_width_ratio"],
-            "height_ratio": item["roi_height_ratio"],
-        },
+        "roi": _roi_api_from_row(item),
         "data_type": _normalize_data_type(item.get("data_type")),
         "extraction_method": _normalize_extraction_method(item.get("extraction_method")),
         "user_note": item.get("user_note"),
@@ -310,13 +345,7 @@ def _template_field_row_to_api(row: Any) -> Dict[str, Any]:
         "page_number": item.get("page_number", 1),
         "field_name": item.get("field_name") or item.get("anchor_name"),
         "display_label": item.get("display_label") or item.get("anchor_name") or item.get("field_name"),
-        "roi": {
-            "page_number": item["page_number"],
-            "x_ratio": item["roi_x_ratio"],
-            "y_ratio": item["roi_y_ratio"],
-            "width_ratio": item["roi_width_ratio"],
-            "height_ratio": item["roi_height_ratio"],
-        },
+        "roi": _roi_api_from_row(item),
         "data_type": item["data_type"],
         "user_selectable": bool(item.get("user_selectable", not item.get("use_for_verification", False))),
         "default_selected": bool(item.get("default_selected", False)),
@@ -344,13 +373,7 @@ def _ignore_region_row_to_api(row: Any) -> Dict[str, Any]:
         "template_page_id": item["template_page_id"],
         "page_number": item.get("page_number", 1),
         "field_name": item.get("field_name") or item.get("region_name"),
-        "roi": {
-            "page_number": item["page_number"],
-            "x_ratio": item["roi_x_ratio"],
-            "y_ratio": item["roi_y_ratio"],
-            "width_ratio": item["roi_width_ratio"],
-            "height_ratio": item["roi_height_ratio"],
-        },
+        "roi": _roi_api_from_row(item),
         "created_at": item["created_at"],
         "updated_at": item.get("updated_at") or item["created_at"],
     }
@@ -580,7 +603,27 @@ def _crop_anchor_roi(image_path_or_source: str, roi: Dict[str, Any], output_path
     if right <= left or bottom <= top:
         return None
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    image.crop((left, top, right, bottom)).save(output_path, format="PNG")
+    crop = image.crop((left, top, right, bottom)).convert("RGB")
+    points = _normalize_roi_points(roi.get("points"))
+    if points:
+        try:
+            from PIL import Image, ImageDraw
+
+            polygon = [
+                (
+                    int(round(point["x_ratio"] * width)) - left,
+                    int(round(point["y_ratio"] * height)) - top,
+                )
+                for point in points
+            ]
+            mask = Image.new("L", crop.size, 0)
+            ImageDraw.Draw(mask).polygon(polygon, fill=255)
+            background = Image.new("RGB", crop.size, "white")
+            background.paste(crop, mask=mask)
+            crop = background
+        except Exception:
+            pass
+    crop.save(output_path, format="PNG")
     return str(output_path)
 
 
@@ -638,7 +681,27 @@ def _crop_template_field_image(image_source: Optional[str], roi: Dict[str, Any])
     bottom = min(height, int(round(y + h)))
     if right <= left or bottom <= top:
         return None
-    return image.crop((left, top, right, bottom)).convert("RGB")
+    crop = image.crop((left, top, right, bottom)).convert("RGB")
+    points = _normalize_roi_points(roi.get("points"))
+    if not points:
+        return crop
+    try:
+        from PIL import Image, ImageDraw
+
+        polygon = [
+            (
+                int(round(point["x_ratio"] * width)) - left,
+                int(round(point["y_ratio"] * height)) - top,
+            )
+            for point in points
+        ]
+        mask = Image.new("L", crop.size, 0)
+        ImageDraw.Draw(mask).polygon(polygon, fill=255)
+        background = Image.new("RGB", crop.size, "white")
+        background.paste(crop, mask=mask)
+        return background
+    except Exception:
+        return crop
 
 
 def _pil_image_to_data_url(image: Any) -> Optional[str]:
@@ -1784,6 +1847,7 @@ class VerificationService:
                     va.roi_y_ratio,
                     va.roi_width_ratio,
                     va.roi_height_ratio,
+                    va.roi_points_json,
                     va.anchor_type AS data_type,
                     0 AS user_selectable,
                     0 AS default_selected,
@@ -2002,6 +2066,7 @@ class VerificationService:
                 Path(cropped).unlink(missing_ok=True)
 
     def verify_template(self, template_id: str, page_image_paths: Optional[Dict[int, str]] = None) -> Dict[str, Any]:
+        verify_started = time.perf_counter()
         fields = self.load_verification_fields(template_id)
         if not fields:
             return {
@@ -2028,18 +2093,42 @@ class VerificationService:
             image_path = (page_image_paths or {}).get(page_number)
             if not image_path:
                 continue
+            page_started = time.perf_counter()
             try:
                 page_results = ocr_rois(
                     image_path,
                     [{"id": field["id"], "roi": field["roi"]} for field in page_fields],
                 )
                 text_ocr_cache.update(page_results)
+                logger.info(
+                    "[TEMPLATE VERIFY] text OCR batch done: template_id=%s page=%s anchors=%s elapsed=%.2fs",
+                    template_id,
+                    page_number,
+                    len(page_fields),
+                    time.perf_counter() - page_started,
+                )
             except OcrUnavailableError as error:
                 for field in page_fields:
                     text_ocr_errors[field["id"]] = str(error)
+                logger.info(
+                    "[TEMPLATE VERIFY] text OCR batch failed: template_id=%s page=%s anchors=%s elapsed=%.2fs error=%s",
+                    template_id,
+                    page_number,
+                    len(page_fields),
+                    time.perf_counter() - page_started,
+                    error,
+                )
             except Exception as error:
                 for field in page_fields:
                     text_ocr_errors[field["id"]] = f"ROI OCR failed: {error}"
+                logger.info(
+                    "[TEMPLATE VERIFY] text OCR batch failed: template_id=%s page=%s anchors=%s elapsed=%.2fs error=%s",
+                    template_id,
+                    page_number,
+                    len(page_fields),
+                    time.perf_counter() - page_started,
+                    error,
+                )
 
         checked_fields = []
         for field in fields:
@@ -2101,6 +2190,7 @@ class VerificationService:
                 continue
 
             if anchor_type == "image" and image_path:
+                image_started = time.perf_counter()
                 try:
                     image_match = self._score_image_anchor(field, image_path)
                 except Exception as error:
@@ -2144,6 +2234,15 @@ class VerificationService:
                         "siglip_ui_percentages": [],
                         "error": str(error),
                     }
+                logger.info(
+                    "[TEMPLATE VERIFY] image anchor done: template_id=%s page=%s anchor_id=%s elapsed=%.2fs status=%s passed=%s",
+                    template_id,
+                    page_number,
+                    field.get("id"),
+                    time.perf_counter() - image_started,
+                    image_match.get("status"),
+                    image_match.get("passed"),
+                )
                 image_verification_threshold = image_match.get("verification_threshold")
                 if image_verification_threshold is None:
                     try:
@@ -2297,7 +2396,7 @@ class VerificationService:
             )
             for field in checked_fields
         )
-        return {
+        result = {
             "template_id": template_id,
             "status": "ocr_unavailable" if ocr_unavailable else "verified" if passed else "failed",
             "passed": passed,
@@ -2340,6 +2439,16 @@ class VerificationService:
             "checked_fields": checked_fields,
             "verification_details": checked_fields,
         }
+        logger.info(
+            "[TEMPLATE VERIFY] total done: template_id=%s anchors=%s text_anchors=%s image_anchors=%s elapsed=%.2fs status=%s",
+            template_id,
+            len(checked_fields),
+            len(text_fields),
+            len(image_fields),
+            time.perf_counter() - verify_started,
+            result["status"],
+        )
+        return result
 
     def _text_anchor_check(self, field: Dict[str, Any], page_image_paths: Optional[Dict[int, str]]) -> Dict[str, Any]:
         expected_text = field.get("expected_text")
@@ -3335,9 +3444,9 @@ class TemplateRequestService:
                 """
                 INSERT INTO requested_fields (
                     id, template_request_page_id, field_name, display_label, data_type, extraction_method,
-                    roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, user_note, created_at
+                    roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_points_json, user_note, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 """,
                 (
                     field_id,
@@ -3350,6 +3459,7 @@ class TemplateRequestService:
                     payload.roi.y_ratio,
                     payload.roi.width_ratio,
                     payload.roi.height_ratio,
+                    _roi_points_json_from_payload(payload.roi),
                     payload.user_note,
                 ),
             )
@@ -3382,6 +3492,7 @@ class TemplateRequestService:
                 "roi_y_ratio": payload.roi.y_ratio,
                 "roi_width_ratio": payload.roi.width_ratio,
                 "roi_height_ratio": payload.roi.height_ratio,
+                "roi_points_json": _roi_points_json_from_payload(payload.roi),
             })
         with _connect() as conn:
             if column_values:
@@ -3528,7 +3639,7 @@ class AdminTemplateService:
                 """
                 SELECT tp.template_version_id AS template_id, ef.template_page_id, tp.page_number,
                        ef.id, ef.field_name, ef.display_label,
-                       ef.roi_x_ratio, ef.roi_y_ratio, ef.roi_width_ratio, ef.roi_height_ratio,
+                       ef.roi_x_ratio, ef.roi_y_ratio, ef.roi_width_ratio, ef.roi_height_ratio, ef.roi_points_json,
                        ef.data_type, 1 AS user_selectable, 1 AS default_selected, 0 AS use_for_verification,
                        NULL AS expected_text, NULL AS match_type, 0 AS required_for_verification,
                        ef.extraction_method, ef.roi_mode, ef.expected_content,
@@ -3546,7 +3657,7 @@ class AdminTemplateService:
                 """
                 SELECT tp.template_version_id AS template_id, va.template_page_id, tp.page_number,
                        va.id, va.anchor_name AS field_name, va.anchor_name AS display_label,
-                       va.roi_x_ratio, va.roi_y_ratio, va.roi_width_ratio, va.roi_height_ratio,
+                       va.roi_x_ratio, va.roi_y_ratio, va.roi_width_ratio, va.roi_height_ratio, va.roi_points_json,
                        va.anchor_type AS data_type, 0 AS user_selectable, 0 AS default_selected, 1 AS use_for_verification,
                        va.expected_text, va.match_type, va.required AS required_for_verification,
                        'fixed_roi' AS extraction_method, 'fix' AS roi_mode, NULL AS expected_content,
@@ -4002,6 +4113,7 @@ class AdminTemplateService:
             for page in template.get("pages") or []
         }
         tested_fields: List[Dict[str, Any]] = []
+        pending_text_items: List[Dict[str, Any]] = []
         for field in fields:
             page_number = int(field.get("page_number") or (field.get("roi") or {}).get("page_number") or 1)
             page = pages_by_number.get(page_number)
@@ -4057,7 +4169,15 @@ class AdminTemplateService:
                 elif data_type == "table":
                     ocr_result = recognize_table_v2(crop_bgr)
                 else:
-                    ocr_result = recognize_text_roi(crop_bgr)
+                    pending_text_items.append(
+                        {
+                            "result_index": len(tested_fields),
+                            "key": str(field.get("id") or len(tested_fields)),
+                            "crop_bgr": crop_bgr,
+                        }
+                    )
+                    tested_fields.append(result_item)
+                    continue
             except (OcrUnavailableError, TableRecognitionV2UnavailableError) as error:
                 result_item["failure_reason"] = str(error)
                 tested_fields.append(result_item)
@@ -4094,6 +4214,44 @@ class AdminTemplateService:
                 }
             )
             tested_fields.append(result_item)
+        if pending_text_items:
+            try:
+                text_results = recognize_text_crops_with_detection(
+                    [(item["key"], item["crop_bgr"]) for item in pending_text_items],
+                    source="admin_test_extraction_fixed_text",
+                )
+            except OcrUnavailableError as error:
+                for item in pending_text_items:
+                    result_item = tested_fields[int(item["result_index"])]
+                    result_item["failure_reason"] = str(error)
+            except Exception as error:
+                for item in pending_text_items:
+                    result_item = tested_fields[int(item["result_index"])]
+                    result_item["failure_reason"] = str(error)
+            else:
+                for item in pending_text_items:
+                    result_item = tested_fields[int(item["result_index"])]
+                    ocr_result = text_results.get(str(item["key"])) or {}
+                    text = str(ocr_result.get("text") or "").strip()
+                    passed = bool(text)
+                    result_item.update(
+                        {
+                            "status": "completed" if passed else "failed",
+                            "passed": passed,
+                            "failure_reason": None if passed else "ocr_returned_empty_result",
+                            "actual_text": text,
+                            "ocr_text": text,
+                            "confidence": float(ocr_result.get("confidence") or 0.0),
+                            "raw_segments": ocr_result.get("raw_segments") or ocr_result.get("segments") or [],
+                            "resolved_blocks": ocr_result.get("resolved_blocks") or [],
+                            "flexible_overlay_preview_data_url": ocr_result.get("flexible_overlay_preview_data_url"),
+                            "table_rows": ocr_result.get("table_rows"),
+                            "table_structured": ocr_result.get("table_structured"),
+                            "table_sections": ocr_result.get("table_sections"),
+                            "table_html": ocr_result.get("table_html"),
+                            "table_debug": ocr_result.get("table_debug"),
+                        }
+                    )
         passed_count = sum(1 for item in tested_fields if item.get("passed"))
         return {
             "template_id": template_id,
@@ -4105,12 +4263,21 @@ class AdminTemplateService:
         }
 
     def test_verification_anchors(self, template_id: str) -> Dict[str, Any]:
+        started = time.perf_counter()
         template = self.get_template(template_id)
         page_paths = self._template_page_image_paths(template_id, template.get("pages") or [])
         try:
             verification = VerificationService().verify_template(template_id, page_paths)
             checked = verification.get("checked_fields", [])
-            return {"template_id": template_id, "status": verification.get("status"), "passed": verification.get("passed"), "score": verification.get("score"), "tested_count": len(checked), "passed_count": sum(1 for item in checked if item.get("passed")), "failed_count": sum(1 for item in checked if not item.get("passed")), "anchors": checked}
+            result = {"template_id": template_id, "status": verification.get("status"), "passed": verification.get("passed"), "score": verification.get("score"), "tested_count": len(checked), "passed_count": sum(1 for item in checked if item.get("passed")), "failed_count": sum(1 for item in checked if not item.get("passed")), "anchors": checked}
+            logger.info(
+                "[TEMPLATE VERIFY] test-verification done: template_id=%s anchors=%s elapsed=%.2fs status=%s",
+                template_id,
+                len(checked),
+                time.perf_counter() - started,
+                result["status"],
+            )
+            return result
         finally:
             if not SAVE_DEBUG_ARTIFACTS:
                 _cleanup_generated_paths(page_paths)
@@ -4188,11 +4355,11 @@ class AdminTemplateService:
                     """
                     INSERT INTO verification_anchors (
                         id, template_page_id, anchor_name, anchor_type,
-                        roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio,
+                        roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_points_json,
                         required, weight, expected_text, match_type, regex_pattern,
                         image_category_id, sort_order, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
                     (
                         field_id,
@@ -4203,6 +4370,7 @@ class AdminTemplateService:
                         payload.roi.y_ratio,
                         payload.roi.width_ratio,
                         payload.roi.height_ratio,
+                        _roi_points_json_from_payload(payload.roi),
                         bool(payload.required_for_verification),
                         payload.verification_weight or 1.0,
                         payload.expected_text,
@@ -4213,7 +4381,7 @@ class AdminTemplateService:
                     ),
                 )
             else:
-                conn.execute("INSERT INTO extraction_fields (id, template_page_id, field_name, display_label, data_type, extraction_method, roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_mode, expected_content, required, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (field_id, payload.template_page_id, payload.field_name, payload.display_label, _normalize_data_type(payload.data_type), _normalize_extraction_method(payload.extraction_method), payload.roi.x_ratio, payload.roi.y_ratio, payload.roi.width_ratio, payload.roi.height_ratio, _normalize_roi_mode(payload.roi_mode), _normalize_expected_content(payload.expected_content), payload.sort_order))
+                conn.execute("INSERT INTO extraction_fields (id, template_page_id, field_name, display_label, data_type, extraction_method, roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_points_json, roi_mode, expected_content, required, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (field_id, payload.template_page_id, payload.field_name, payload.display_label, _normalize_data_type(payload.data_type), _normalize_extraction_method(payload.extraction_method), payload.roi.x_ratio, payload.roi.y_ratio, payload.roi.width_ratio, payload.roi.height_ratio, _roi_points_json_from_payload(payload.roi), _normalize_roi_mode(payload.roi_mode), _normalize_expected_content(payload.expected_content), payload.sort_order))
             conn.commit()
         return self.get_template(template_id)
 
@@ -4222,7 +4390,7 @@ class AdminTemplateService:
             """
             SELECT tp.template_version_id AS template_id, ef.template_page_id, tp.page_number,
                    ef.id, ef.field_name, ef.display_label,
-                   ef.roi_x_ratio, ef.roi_y_ratio, ef.roi_width_ratio, ef.roi_height_ratio,
+                   ef.roi_x_ratio, ef.roi_y_ratio, ef.roi_width_ratio, ef.roi_height_ratio, ef.roi_points_json,
                    ef.data_type, 1 AS user_selectable, 1 AS default_selected, 0 AS use_for_verification,
                    NULL AS expected_text, NULL AS match_type, 0 AS required_for_verification,
                    ef.extraction_method, ef.roi_mode, ef.expected_content,
@@ -4241,7 +4409,7 @@ class AdminTemplateService:
             """
             SELECT tp.template_version_id AS template_id, va.template_page_id, tp.page_number,
                    va.id, va.anchor_name AS field_name, va.anchor_name AS display_label,
-                   va.roi_x_ratio, va.roi_y_ratio, va.roi_width_ratio, va.roi_height_ratio,
+                   va.roi_x_ratio, va.roi_y_ratio, va.roi_width_ratio, va.roi_height_ratio, va.roi_points_json,
                    va.anchor_type AS data_type, 0 AS user_selectable, 0 AS default_selected, 1 AS use_for_verification,
                    va.expected_text, va.match_type, va.required AS required_for_verification,
                    'fixed_roi' AS extraction_method, 'fix' AS roi_mode, NULL AS expected_content,
@@ -4613,6 +4781,7 @@ class AdminTemplateService:
                         roi_y_ratio,
                         roi_width_ratio,
                         roi_height_ratio,
+                        roi_points_json,
                         roi_mode,
                         expected_content,
                         required,
@@ -4623,7 +4792,7 @@ class AdminTemplateService:
                     VALUES (
                         ?, ?, ?, ?, ?,
                         'fixed_roi',
-                        ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?,
                         'fix',
                         NULL,
                         FALSE,
@@ -4644,6 +4813,7 @@ class AdminTemplateService:
                         field["roi_y_ratio"],
                         field["roi_width_ratio"],
                         field["roi_height_ratio"],
+                        field.get("roi_points_json"),
                         order,
                     ),
                 )

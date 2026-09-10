@@ -478,6 +478,7 @@ export default function AdminTemplatesPage() {
       setSelectedExistingDocumentType("");
       setIsCreateModalOpen(false);
       const baseTemplateParam = manualCreationType === "new_version" && selectedBaseTemplate?.id ? `&baseTemplateId=${encodeURIComponent(selectedBaseTemplate.id)}` : "";
+      window.dispatchEvent(new Event("admin-route-transition-start"));
       router.push(`/admin/requests/${request.id}?creationType=${manualCreationType}${baseTemplateParam}`);
     } catch (error) {
       console.warn("Admin create template request failed.", error);

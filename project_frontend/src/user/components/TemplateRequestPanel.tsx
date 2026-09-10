@@ -162,6 +162,12 @@ const toRequestedField = (
       yRatio: clampRatio(roi.y / renderedHeight),
       widthRatio: clampRatio(roi.width / WORKSPACE_RENDERED_WIDTH),
       heightRatio: clampRatio(roi.height / renderedHeight),
+      points: roi.points && roi.points.length > 2
+        ? roi.points.map((point) => ({
+            xRatio: clampRatio(point.x / WORKSPACE_RENDERED_WIDTH),
+            yRatio: clampRatio(point.y / renderedHeight),
+          }))
+        : undefined,
     },
   };
 };
@@ -327,6 +333,10 @@ export default function TemplateRequestPanel({
               y_ratio: field.roi.yRatio,
               width_ratio: field.roi.widthRatio,
               height_ratio: field.roi.heightRatio,
+              points: field.roi.points?.map((point) => ({
+                x_ratio: point.xRatio,
+                y_ratio: point.yRatio,
+              })),
             },
             user_note: field.userNote || null,
           };
@@ -427,9 +437,6 @@ export default function TemplateRequestPanel({
                   <div className="text-[10px] font-black uppercase tracking-wider text-slate-400">
                     Document Pages
                   </div>
-                  <p className="mt-1 text-xs font-semibold text-slate-500">
-                    เพิ่มรูปเอกสารตัวอย่างหลายภาพก่อนส่งให้ผู้ดูแลตรวจสอบ
-                  </p>
                 </div>
 
               </div>
@@ -452,17 +459,6 @@ export default function TemplateRequestPanel({
                           </div>
                           <div className="mt-2 flex items-center justify-between gap-2">
                             <span className="text-[10px] font-black text-slate-500">Page {item.index + 1}</span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setRequestImageItems((current) => current.filter((_, itemIndex) => itemIndex !== item.index));
-                                setRequestImages((current) => current.filter((_, itemIndex) => itemIndex !== item.index));
-                              }}
-                              disabled={status === "submitting" || requestImageItems.length <= 1}
-                              className="rounded-lg border border-red-100 bg-white px-2 py-1 text-[10px] font-black text-red-600 disabled:text-slate-300"
-                            >
-                              Remove
-                            </button>
                           </div>
                         </div>
                       ))}
@@ -479,14 +475,6 @@ export default function TemplateRequestPanel({
                     </div>
                     <div className="mt-2 flex items-center justify-between gap-2">
                       <span className="text-[10px] font-black text-slate-500">Page {index + 1}</span>
-                      <button
-                        type="button"
-                        onClick={() => setRequestImages((current) => current.filter((_, itemIndex) => itemIndex !== index))}
-                        disabled={status === "submitting" || requestImages.length <= 1}
-                        className="rounded-lg border border-red-100 bg-white px-2 py-1 text-[10px] font-black text-red-600 disabled:text-slate-300"
-                      >
-                        Remove
-                      </button>
                     </div>
                   </div>
                 ))}

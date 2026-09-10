@@ -306,6 +306,7 @@ _POSTGRES_SCHEMA = [
         roi_y_ratio DOUBLE PRECISION NOT NULL,
         roi_width_ratio DOUBLE PRECISION NOT NULL,
         roi_height_ratio DOUBLE PRECISION NOT NULL,
+        roi_points_json JSONB,
         roi_mode TEXT NOT NULL DEFAULT 'fix',
         expected_content TEXT,
         required BOOLEAN NOT NULL DEFAULT FALSE,
@@ -333,6 +334,7 @@ _POSTGRES_SCHEMA = [
         roi_y_ratio DOUBLE PRECISION NOT NULL,
         roi_width_ratio DOUBLE PRECISION NOT NULL,
         roi_height_ratio DOUBLE PRECISION NOT NULL,
+        roi_points_json JSONB,
         required BOOLEAN NOT NULL DEFAULT FALSE,
         weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
         expected_text TEXT,
@@ -434,6 +436,7 @@ _POSTGRES_SCHEMA = [
         roi_y_ratio DOUBLE PRECISION NOT NULL,
         roi_width_ratio DOUBLE PRECISION NOT NULL,
         roi_height_ratio DOUBLE PRECISION NOT NULL,
+        roi_points_json JSONB,
         user_note TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
         CONSTRAINT requested_fields_roi_ratio_check CHECK (
@@ -444,6 +447,9 @@ _POSTGRES_SCHEMA = [
         )
     )
     """,
+    "ALTER TABLE extraction_fields ADD COLUMN IF NOT EXISTS roi_points_json JSONB",
+    "ALTER TABLE verification_anchors ADD COLUMN IF NOT EXISTS roi_points_json JSONB",
+    "ALTER TABLE requested_fields ADD COLUMN IF NOT EXISTS roi_points_json JSONB",
     """
     CREATE TABLE IF NOT EXISTS publish_jobs (
         id TEXT NOT NULL PRIMARY KEY,

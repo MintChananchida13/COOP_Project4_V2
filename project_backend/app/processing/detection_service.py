@@ -1,6 +1,7 @@
 import io
 import os
 import base64
+import json
 import cv2
 import shutil
 import time
@@ -159,6 +160,7 @@ def _fetch_template_fields(template_id: str) -> List[Dict[str, Any]]:
                 ef.roi_y_ratio,
                 ef.roi_width_ratio,
                 ef.roi_height_ratio,
+                ef.roi_points_json,
                 ef.sort_order,
                 ef.created_at
             FROM extraction_fields ef
@@ -186,6 +188,7 @@ def _fetch_template_fields(template_id: str) -> List[Dict[str, Any]]:
                 va.roi_y_ratio,
                 va.roi_width_ratio,
                 va.roi_height_ratio,
+                va.roi_points_json,
                 va.sort_order,
                 va.created_at
             FROM verification_anchors va
@@ -198,6 +201,21 @@ def _fetch_template_fields(template_id: str) -> List[Dict[str, Any]]:
 
     fields: List[Dict[str, Any]] = []
     for row in rows:
+        roi = {
+            "page_number": row["page_number"],
+            "x_ratio": row["roi_x_ratio"],
+            "y_ratio": row["roi_y_ratio"],
+            "width_ratio": row["roi_width_ratio"],
+            "height_ratio": row["roi_height_ratio"],
+        }
+        raw_points = row["roi_points_json"] if "roi_points_json" in row.keys() else None
+        if raw_points:
+            try:
+                points = json.loads(raw_points) if isinstance(raw_points, str) else raw_points
+                if isinstance(points, list) and len(points) > 2:
+                    roi["points"] = points
+            except Exception:
+                pass
         fields.append(
             {
                 "id": row["id"],
@@ -206,13 +224,7 @@ def _fetch_template_fields(template_id: str) -> List[Dict[str, Any]]:
                 "page_number": row["page_number"],
                 "field_name": row["field_name"],
                 "display_label": row["display_label"],
-                "roi": {
-                    "page_number": row["page_number"],
-                    "x_ratio": row["roi_x_ratio"],
-                    "y_ratio": row["roi_y_ratio"],
-                    "width_ratio": row["roi_width_ratio"],
-                    "height_ratio": row["roi_height_ratio"],
-                },
+                "roi": roi,
                 "data_type": row["data_type"],
                 "use_for_verification": bool(row["use_for_verification"]),
                 "expected_text": row["expected_text"],

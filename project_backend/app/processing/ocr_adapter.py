@@ -473,7 +473,34 @@ def _crop_roi_from_image(image, roi: Dict[str, Any]):
     bottom = min(image_height, y + height)
     if right <= x or bottom <= y:
         raise ValueError("ROI crop is outside the image bounds")
-    return image.crop((x, y, right, bottom))
+    crop = image.crop((x, y, right, bottom)).convert("RGB")
+    points = roi.get("points")
+    if not isinstance(points, list) or len(points) < 3:
+        return crop
+    try:
+        polygon = [
+            (
+                int(round(float(point.get("x_ratio", point.get("xRatio"))) * image_width)) - x,
+                int(round(float(point.get("y_ratio", point.get("yRatio"))) * image_height)) - y,
+            )
+            for point in points
+            if isinstance(point, dict)
+        ]
+    except (TypeError, ValueError):
+        return crop
+    if len(polygon) < 3:
+        return crop
+    try:
+        Image, _ = _load_image()
+        from PIL import ImageDraw
+        mask = Image.new("L", crop.size, 0)
+        draw = ImageDraw.Draw(mask)
+        draw.polygon(polygon, fill=255)
+        background = Image.new("RGB", crop.size, "white")
+        background.paste(crop, mask=mask)
+        return background
+    except Exception:
+        return crop
 
 
 def _is_table_item(item: Dict[str, Any]) -> bool:

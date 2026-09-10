@@ -128,6 +128,7 @@ export interface RoiRatio {
   yRatio: number;
   widthRatio: number;
   heightRatio: number;
+  points?: { xRatio: number; yRatio: number }[];
 }
 
 export interface RequestedField {

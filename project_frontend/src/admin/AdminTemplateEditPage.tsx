@@ -157,7 +157,16 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
       mainPageNumber: pendingDetectionMode ? pendingMainPageNumber : bundle.template.mainPageNumber,
     });
     setSelectedTemplatePages(bundle.pages);
-    setSelectedTemplateFields(bundle.fields);
+    setSelectedTemplateFields((currentFields) => {
+      const bundleFieldIds = new Set(bundle.fields.map((field) => field.id));
+      const pendingLocalFields = currentFields.filter(
+        (field) =>
+          field.id.startsWith("local_field_") &&
+          !bundleFieldIds.has(field.id) &&
+          pendingLocalFieldPatchesRef.current.has(field.id)
+      );
+      return pendingLocalFields.length > 0 ? [...bundle.fields, ...pendingLocalFields] : bundle.fields;
+    });
     setSelectedIgnoreRegions(bundle.ignoreRegions);
   };
 
@@ -610,6 +619,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
         setSaveStatus("");
         return;
       }
+      window.dispatchEvent(new Event("admin-route-transition-start"));
       router.push(`/admin/templates/${templateId}/test`);
     })();
   };
@@ -1141,6 +1151,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
               type="button"
               onClick={() => {
                 setShowUpdateSuccessDialog(false);
+                window.dispatchEvent(new Event("admin-route-transition-start"));
                 router.push("/admin/templates");
               }}
               className="mt-5 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-black text-white shadow-sm hover:bg-emerald-700"

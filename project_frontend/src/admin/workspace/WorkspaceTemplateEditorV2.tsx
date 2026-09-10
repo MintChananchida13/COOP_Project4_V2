@@ -221,6 +221,12 @@ const roiToRatio = (roi: ROI, pageNumber: number, metrics: WorkspaceImageMetrics
   yRatio: clampRatio((roi.y - metrics.imageOffsetY) / Math.max(metrics.imageHeight, 1)),
   widthRatio: clampRatio(roi.width / Math.max(metrics.imageWidth, 1)),
   heightRatio: clampRatio(roi.height / Math.max(metrics.imageHeight, 1)),
+  points: roi.points && roi.points.length > 2
+    ? roi.points.map((point) => ({
+        xRatio: clampRatio((point.x - metrics.imageOffsetX) / Math.max(metrics.imageWidth, 1)),
+        yRatio: clampRatio((point.y - metrics.imageOffsetY) / Math.max(metrics.imageHeight, 1)),
+      }))
+    : undefined,
 });
 
 const normalizeLayoutRegionType = (region: LayoutDetectedRegion): "text" | "table" | "image" => {
@@ -285,6 +291,12 @@ const fieldToRoi = (field: TemplateField, metrics: WorkspaceImageMetrics): Admin
     height: box.height,
     pageIndex: field.pageNumber - 1,
     type: fieldToRoiType(field),
+    points: field.roi.points && field.roi.points.length > 2
+      ? field.roi.points.map((point) => ({
+          x: metrics.imageOffsetX + point.xRatio * metrics.imageWidth,
+          y: metrics.imageOffsetY + point.yRatio * metrics.imageHeight,
+        }))
+      : undefined,
     roiMode: field.roiMode === "flexible" ? "flexible" : "fix",
     expectedContent: field.roiMode === "flexible" ? "text" : null,
   };

@@ -26,6 +26,7 @@ class RoiRatio(BaseModel):
     y_ratio: float = Field(..., ge=0, le=1)
     width_ratio: float = Field(..., gt=0, le=1)
     height_ratio: float = Field(..., gt=0, le=1)
+    points: Optional[List[Dict[str, float]]] = None
 
 
 class PageInput(BaseModel):
