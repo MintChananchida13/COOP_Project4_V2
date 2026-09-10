@@ -203,6 +203,34 @@ export default function WorkspaceCustomEditor({
       height: maxY - minY
     };
   };
+  const roiArea = (roi: Pick<ROI, "width" | "height">) => roi.width * roi.height;
+  const roiOverlapRatio = (
+    left: Pick<ROI, "x" | "y" | "width" | "height">,
+    right: Pick<ROI, "x" | "y" | "width" | "height">
+  ) => {
+    const x1 = Math.max(left.x, right.x);
+    const y1 = Math.max(left.y, right.y);
+    const x2 = Math.min(left.x + left.width, right.x + right.width);
+    const y2 = Math.min(left.y + left.height, right.y + right.height);
+    const intersection = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+    const smallerArea = Math.min(roiArea(left), roiArea(right));
+    return smallerArea > 0 ? intersection / smallerArea : 0;
+  };
+  const autoRoiPriority = (roi: ROI & { pageIndex?: number }) => {
+    const typePriority = roi.type === "table" ? 3 : roi.type === "image" ? 2 : 1;
+    return typePriority * 100000000 + roiArea(roi);
+  };
+  const dedupeOverlappingAutoRois = (items: (ROI & { pageIndex?: number })[]) => {
+    const accepted: (ROI & { pageIndex?: number })[] = [];
+    [...items]
+      .sort((left, right) => autoRoiPriority(right) - autoRoiPriority(left))
+      .forEach((roi) => {
+        const pageIndex = roi.pageIndex ?? 0;
+        if (accepted.some((existing) => (existing.pageIndex ?? 0) === pageIndex && roiOverlapRatio(existing, roi) >= 0.82)) return;
+        accepted.push(roi);
+      });
+    return accepted.sort((left, right) => (left.pageIndex ?? 0) - (right.pageIndex ?? 0) || left.y - right.y || left.x - right.x);
+  };
   const [isDrawing, setIsDrawing] = useState(false);
   const [startPos, setStartPos] = useState({ x: 0, y: 0 });
   const [dragBox, setDragBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
@@ -833,7 +861,7 @@ export default function WorkspaceCustomEditor({
       }
 
       let fieldNumber = 1;
-      const detectedRois = (result.pages || []).flatMap((page) =>
+      const detectedRois = dedupeOverlappingAutoRois((result.pages || []).flatMap((page) =>
         (page.regions || [])
           .map((region, index) => {
             const nextRoi = layoutRegionToWorkspaceRoi(region, page, index, fieldNumber);
@@ -841,7 +869,7 @@ export default function WorkspaceCustomEditor({
             return nextRoi;
           })
           .filter((roi): roi is ROI & { pageIndex?: number } => roi !== null)
-      );
+      ));
       const processedPages = new Set((result.pages || []).map((page) => Number(page.page_index)));
       const emptyPages = (result.pages || [])
         .filter((page) => (page.regions || []).length === 0)

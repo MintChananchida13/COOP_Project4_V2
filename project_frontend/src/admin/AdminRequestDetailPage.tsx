@@ -130,6 +130,7 @@ export default function AdminRequestDetailPage({
   const [isDeleting, setIsDeleting] = useState(false);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const previewPanelRef = useRef<HTMLDivElement | null>(null);
+  const initialCreationParamsAppliedRef = useRef(false);
   const [previewCanvasWidth, setPreviewCanvasWidth] = useState(750);
   const isTemplateEditMode = Boolean(templateId);
 
@@ -252,6 +253,8 @@ export default function AdminRequestDetailPage({
   }, [requestId, templateId]);
 
   useEffect(() => {
+    if (initialCreationParamsAppliedRef.current) return;
+    initialCreationParamsAppliedRef.current = true;
     if (searchParams.get("creationType") === "new_version") {
       setCreationType("new_version");
     }
@@ -615,8 +618,8 @@ export default function AdminRequestDetailPage({
     Math.max(workspacePages.length - 1, 0)
   );
   const currentPageFields = fieldsByPage[safeCurrentPage + 1] || [];
-  const isCreationTypeLocked = isTemplateEditMode || searchParams.has("creationType");
-  const isBaseTemplateLocked = isCreationTypeLocked && creationType === "new_version" && Boolean(selectedBaseTemplateId);
+  const isCreationTypeLocked = isTemplateEditMode;
+  const isBaseTemplateLocked = isTemplateEditMode && creationType === "new_version" && Boolean(selectedBaseTemplateId);
   const hasRequiredCreationInfo =
     creationType === "new_template"
       ? templateName.trim().length > 0 && templateDocumentType.trim().length > 0

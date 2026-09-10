@@ -194,6 +194,35 @@ const stableNumericId = (value: string) =>
 
 const clampRatio = (value: number) => Math.min(1, Math.max(0, value));
 
+const roiArea = (roi: RoiRatio) => roi.widthRatio * roi.heightRatio;
+
+const roiOverlapRatio = (left: RoiRatio, right: RoiRatio) => {
+  const x1 = Math.max(left.xRatio, right.xRatio);
+  const y1 = Math.max(left.yRatio, right.yRatio);
+  const x2 = Math.min(left.xRatio + left.widthRatio, right.xRatio + right.widthRatio);
+  const y2 = Math.min(left.yRatio + left.heightRatio, right.yRatio + right.heightRatio);
+  const intersection = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+  const smallerArea = Math.min(roiArea(left), roiArea(right));
+  return smallerArea > 0 ? intersection / smallerArea : 0;
+};
+
+const autoRoiPriority = (item: { roi: RoiRatio; defaults: Partial<TemplateField> }) => {
+  const type = item.defaults.dataType;
+  const typePriority = type === "table" ? 3 : type === "image" ? 2 : 1;
+  return typePriority * 10 + roiArea(item.roi);
+};
+
+const dedupeOverlappingAutoFields = (items: { roi: RoiRatio; defaults: Partial<TemplateField> }[]) => {
+  const accepted: { roi: RoiRatio; defaults: Partial<TemplateField> }[] = [];
+  [...items]
+    .sort((left, right) => autoRoiPriority(right) - autoRoiPriority(left))
+    .forEach((item) => {
+      if (accepted.some((existing) => roiOverlapRatio(existing.roi, item.roi) >= 0.82)) return;
+      accepted.push(item);
+    });
+  return accepted.sort((left, right) => left.roi.yRatio - right.roi.yRatio || left.roi.xRatio - right.roi.xRatio);
+};
+
 const isAnchor = (field: TemplateField) => field.useForVerification;
 
 const fieldToRoiType = (field: TemplateField): ROI["type"] => {
@@ -834,9 +863,9 @@ export default function WorkspaceTemplateEditorV2({
       const detectedItems = pagesToAnalyze.map(({ index }) => {
         const pageNumber = index + 1;
         const detectedPage = (result.pages || []).find((page) => Number(page.page_index) === index);
-        const detectedFields = (detectedPage?.regions || [])
+        const detectedFields = dedupeOverlappingAutoFields((detectedPage?.regions || [])
           .map((region, regionIndex) => layoutRegionToDetectedField(region, pageNumber, regionIndex + 1))
-          .filter((item): item is { roi: RoiRatio; defaults: Partial<TemplateField> } => item !== null);
+          .filter((item): item is { roi: RoiRatio; defaults: Partial<TemplateField> } => item !== null));
         return { pageNumber, fields: detectedFields };
       });
       const totalDetectedFields = detectedItems.reduce((sum, item) => sum + item.fields.length, 0);
