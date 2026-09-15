@@ -267,7 +267,7 @@ _POSTGRES_SCHEMA = [
         status TEXT NOT NULL DEFAULT 'draft',
         detection_mode TEXT NOT NULL DEFAULT 'all_pages',
         main_page_number INTEGER NOT NULL DEFAULT 1,
-        similarity_threshold DOUBLE PRECISION NOT NULL DEFAULT 0.75,
+        similarity_threshold DOUBLE PRECISION NOT NULL DEFAULT 0.50,
         final_confidence_threshold DOUBLE PRECISION NOT NULL DEFAULT 0.75,
         layout_weight DOUBLE PRECISION NOT NULL DEFAULT 0.50,
         text_anchor_weight DOUBLE PRECISION NOT NULL DEFAULT 0.35,
@@ -412,6 +412,8 @@ _POSTGRES_SCHEMA = [
     "ALTER TABLE template_request_pages ADD COLUMN IF NOT EXISTS is_canonical BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE template_request_pages ADD COLUMN IF NOT EXISTS layout_signature_json JSONB",
     "ALTER TABLE template_request_pages ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    "ALTER TABLE template_versions ALTER COLUMN similarity_threshold SET DEFAULT 0.50",
+    "UPDATE template_versions SET similarity_threshold = 0.50 WHERE similarity_threshold IN (0.75, 0.72)",
     """
     CREATE TABLE IF NOT EXISTS version_test_cases (
         id TEXT NOT NULL PRIMARY KEY,

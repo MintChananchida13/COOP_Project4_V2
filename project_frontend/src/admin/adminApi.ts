@@ -807,7 +807,7 @@ function mapApiTemplate(template: Partial<ApiTemplate> | null | undefined, fallb
     detectionMode: source.detection_mode || undefined,
     mainPageNumber: source.main_page_number || undefined,
     pageCount: typeof source.page_count === "number" ? source.page_count : 0,
-    similarityThreshold: typeof source.similarity_threshold === "number" ? source.similarity_threshold : 0.75,
+    similarityThreshold: typeof source.similarity_threshold === "number" ? source.similarity_threshold : 0.5,
     finalConfidenceThreshold: typeof source.final_confidence_threshold === "number" ? source.final_confidence_threshold : 0.75,
     layoutWeight: typeof source.layout_weight === "number" ? source.layout_weight : 0.5,
     textAnchorWeight: typeof source.text_anchor_weight === "number" ? source.text_anchor_weight : 0.35,
@@ -985,7 +985,7 @@ const mapApiTemplatePage = (page: ApiTemplatePage): TemplatePage => ({
   sampleImageUrl: page.sample_image_url || undefined,
   normalizedImageUrl: page.normalized_image_url || undefined,
   layoutSignatureJson: page.layout_signature_json || undefined,
-  similarityThreshold: page.similarity_threshold ?? 0.75,
+  similarityThreshold: page.similarity_threshold ?? 0.5,
   finalConfidenceThreshold: page.final_confidence_threshold ?? 0.75,
 });
 
@@ -1769,7 +1769,7 @@ export const runPrepublishSimulation = async (templateId: string): Promise<Prepu
           status: String(summary.status || data.status || "draft"),
           version: 1,
           page_count: Number(summary.page_count || 0),
-          similarity_threshold: typeof summary.similarity_threshold === "number" ? summary.similarity_threshold : 0.75,
+          similarity_threshold: typeof summary.similarity_threshold === "number" ? summary.similarity_threshold : 0.5,
           final_confidence_threshold: typeof summary.final_confidence_threshold === "number" ? summary.final_confidence_threshold : 0.75,
           layout_weight: typeof summary.layout_weight === "number" ? summary.layout_weight : 0.5,
           text_anchor_weight: typeof summary.text_anchor_weight === "number" ? summary.text_anchor_weight : 0.35,
@@ -2296,7 +2296,7 @@ export const convertTemplateRequestToTemplate = async (
 export const suggestTemplateRequestBaseVersion = async (
   requestId: string,
   baseTemplateId: string,
-  similarityThreshold = 0.72
+  similarityThreshold = 0.5
 ) => {
   const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/template-requests/${requestId}/suggest-base-version`, {
     method: "POST",
@@ -2352,7 +2352,7 @@ export const convertTemplateRequestToVersion = async (
       description: payload.description,
       shared_fields: payload.sharedFields || [],
       document_type: payload.documentType,
-      similarity_threshold: payload.similarityThreshold ?? 0.72,
+      similarity_threshold: payload.similarityThreshold ?? 0.5,
       reuse_roi: payload.reuseRoi ?? true,
       detection_mode: payload.detectionMode || "all_pages",
       main_page_number: payload.mainPageNumber || 1,

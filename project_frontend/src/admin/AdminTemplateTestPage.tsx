@@ -592,7 +592,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
     };
   }, [testDocumentPreviewUrl]);
 
-  const safePages = pages.length > 0 ? pages : [{ id: "empty", templateId, pageNumber: 1, sampleImageUrl: samplePage, similarityThreshold: 0.75, finalConfidenceThreshold: DEFAULT_FINAL_CONFIDENCE_THRESHOLD }];
+  const safePages = pages.length > 0 ? pages : [{ id: "empty", templateId, pageNumber: 1, sampleImageUrl: samplePage, similarityThreshold: 0.5, finalConfidenceThreshold: DEFAULT_FINAL_CONFIDENCE_THRESHOLD }];
   const safeCurrentPage = Math.min(currentPage, Math.max(safePages.length - 1, 0));
   const currentPageNumber = safePages[safeCurrentPage]?.pageNumber || safeCurrentPage + 1;
   const currentPageImage = safePages[safeCurrentPage]?.normalizedImageUrl || safePages[safeCurrentPage]?.sampleImageUrl || samplePage;

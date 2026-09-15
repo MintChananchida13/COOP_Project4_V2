@@ -130,7 +130,7 @@ class TemplateCreate(BaseModel):
     description: Optional[str] = None
     shared_fields: List[str] = Field(default_factory=list)
     page_count: int = Field(default=1, ge=1)
-    similarity_threshold: float = Field(default=0.75, ge=0, le=1)
+    similarity_threshold: float = Field(default=0.50, ge=0, le=1)
     final_confidence_threshold: float = Field(default=0.75, ge=0, le=1)
     layout_weight: float = Field(default=0.50, ge=0, le=1)
     text_anchor_weight: float = Field(default=0.35, ge=0, le=1)
@@ -170,7 +170,7 @@ class TemplateVersionCreate(BaseModel):
     description: Optional[str] = None
     shared_fields: List[str] = Field(default_factory=list)
     document_type: Optional[str] = None
-    similarity_threshold: float = Field(default=0.72, ge=0, le=1)
+    similarity_threshold: float = Field(default=0.50, ge=0, le=1)
     reuse_roi: bool = True
     detection_mode: str = Field(default="all_pages", validation_alias=AliasChoices("detection_mode", "detectionMode"))
     main_page_number: int = Field(default=1, ge=1, validation_alias=AliasChoices("main_page_number", "mainPageNumber"))

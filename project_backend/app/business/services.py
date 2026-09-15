@@ -4610,7 +4610,7 @@ class AdminTemplateService:
             conn.commit()
         return TemplateRequestService().get(request_id)
 
-    def suggest_base_version_for_request(self, request_id: str, template_id: str, similarity_threshold: float = 0.72) -> Dict[str, Any]:
+    def suggest_base_version_for_request(self, request_id: str, template_id: str, similarity_threshold: float = 0.50) -> Dict[str, Any]:
         with _connect() as conn:
             selected = conn.execute("SELECT * FROM template_versions WHERE id = ?", (template_id,)).fetchone()
             if selected is None:

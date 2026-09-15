@@ -488,7 +488,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
       pageName: `Page ${nextPageNumber}`,
       sampleImageUrl: samplePage,
       normalizedImageUrl: samplePage,
-      similarityThreshold: selectedTemplate?.similarityThreshold ?? 0.75,
+      similarityThreshold: selectedTemplate?.similarityThreshold ?? 0.5,
       finalConfidenceThreshold: selectedTemplate?.finalConfidenceThreshold ?? DEFAULT_FINAL_CONFIDENCE_THRESHOLD,
     };
     setSelectedTemplatePages((prev) => [...prev, optimisticPage]);
