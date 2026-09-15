@@ -37,10 +37,10 @@ class LayoutRegion:
 
 _LAYOUT_MODEL_NAME = "PP-DocLayoutV3"
 _TEXT_DETECTION_MODEL_NAME = "PP-OCRv5_server_det"
-AUTO_ROI_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_EXPAND_TOP_PX", "8"))
-AUTO_ROI_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_EXPAND_BOTTOM_PX", "8"))
-AUTO_ROI_EXPAND_LEFT_PX = float(os.getenv("AUTO_ROI_EXPAND_LEFT_PX", "8"))
-AUTO_ROI_EXPAND_RIGHT_PX = float(os.getenv("AUTO_ROI_EXPAND_RIGHT_PX", "8"))
+AUTO_ROI_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_EXPAND_TOP_PX", "18"))
+AUTO_ROI_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_EXPAND_BOTTOM_PX", "12"))
+AUTO_ROI_EXPAND_LEFT_PX = float(os.getenv("AUTO_ROI_EXPAND_LEFT_PX", "10"))
+AUTO_ROI_EXPAND_RIGHT_PX = float(os.getenv("AUTO_ROI_EXPAND_RIGHT_PX", "10"))
 AUTO_ROI_TABLE_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_TOP_PX", "4"))
 AUTO_ROI_TABLE_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_BOTTOM_PX", "4"))
 AUTO_ROI_TABLE_EXPAND_LEFT_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_LEFT_PX", "4"))
@@ -54,6 +54,7 @@ LAYOUT_RAW_ITEMS_CACHE_SIZE = max(0, int(os.getenv("LAYOUT_RAW_ITEMS_CACHE_SIZE"
 
 AutoRoiMode = Literal["text_line"]
 _layout_raw_items_cache: "OrderedDict[Tuple[Tuple[int, ...], str, str, str], List[Dict[str, Any]]]" = OrderedDict()
+_RAW_LAYOUT_ONLY_CACHE_MODE = "raw_layout_only"
 
 
 def _layout_cache_key(image: np.ndarray, source_mode: str) -> Tuple[Tuple[int, ...], str, str, str]:
@@ -147,6 +148,34 @@ def _extract_box(item: Dict[str, Any]) -> Optional[List[float]]:
             return [x, y, x + float(item["width"]), y + float(item["height"])]
         except (TypeError, ValueError):
             return None
+    return None
+
+
+def _extract_polygon(item: Dict[str, Any]) -> Optional[List[List[float]]]:
+    for key in ("dt_polys", "poly", "points"):
+        value = item.get(key)
+        if isinstance(value, np.ndarray):
+            value = value.tolist()
+        if not isinstance(value, (list, tuple)):
+            continue
+        points: List[List[float]] = []
+        for point in value:
+            if isinstance(point, np.ndarray):
+                point = point.tolist()
+            if isinstance(point, dict):
+                x_value = point.get("x", point.get("x_ratio", point.get("xRatio")))
+                y_value = point.get("y", point.get("y_ratio", point.get("yRatio")))
+            elif isinstance(point, (list, tuple)) and len(point) >= 2:
+                x_value = point[0]
+                y_value = point[1]
+            else:
+                continue
+            try:
+                points.append([float(x_value), float(y_value)])
+            except (TypeError, ValueError):
+                continue
+        if len(points) >= 4:
+            return points[:4]
     return None
 
 
@@ -828,7 +857,7 @@ def analyze_layout(
     auto_roi_mode = "text_line"
 
     height, width = image.shape[:2]
-    source_mode = "layout_text_detection" if use_text_detection else "layout_only"
+    source_mode = "layout_text_detection" if use_text_detection else _RAW_LAYOUT_ONLY_CACHE_MODE
     raw_items = _get_cached_layout_raw_items(image, source_mode)
     if raw_items is None:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
@@ -1027,7 +1056,7 @@ def analyze_layout_signature(image: np.ndarray) -> Dict[str, Any]:
         raise ValueError("Invalid image for layout signature analysis.")
 
     height, width = image.shape[:2]
-    source_mode = "signature_layout_only"
+    source_mode = _RAW_LAYOUT_ONLY_CACHE_MODE
     raw_items = _get_cached_layout_raw_items(image, source_mode)
     if raw_items is None:
         _require_runtime(ModelRuntimeKind.LAYOUT)
@@ -1042,7 +1071,7 @@ def analyze_layout_signature(image: np.ndarray) -> Dict[str, Any]:
             raise LayoutAnalysisUnavailableError("Layout runtime returned an invalid response.")
         raw_layout_items = _walk_layout_items(layout_result.get("result", layout_result))
         layout_items = _layout_detection_items_from_response(layout_result.get("result", layout_result))
-        raw_items = [{**item, "source": "layout_signature"} for item in layout_items]
+        raw_items = [{**item, "source": "layout"} for item in layout_items]
         logger.info(
             "Layout signature-only trace: raw_model_items=%s layout_items=%s raw_summary=%s filtered_summary=%s",
             len(raw_layout_items),
@@ -1096,6 +1125,7 @@ def _text_detection_result_from_remote(remote_result: Dict[str, Any], image: np.
             continue
         parsed_items.append({
             "box": _clip_box_to_image(box, width, height),
+            "polygon": _extract_polygon(item),
             "type": "text",
             "confidence": _extract_score(item),
             "source": "text_detection",
@@ -1124,6 +1154,7 @@ def _text_detection_result_from_remote(remote_result: Dict[str, Any], image: np.
                     "width": box_width,
                     "height": box_height,
                 },
+                "polygon": item.get("polygon"),
                 "roi": {
                     "x_ratio": _clamp_ratio(left / max(width, 1)),
                     "y_ratio": _clamp_ratio(top / max(height, 1)),

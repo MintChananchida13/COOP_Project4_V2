@@ -2,9 +2,10 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
+import numpy as np
 
 from app.model_runtime.layout_analysis_service import LayoutAnalysisUnavailableError, detect_text_boxes, detect_text_boxes_batch
 from app.processing.ocr_postprocess import normalize_ocr_text
@@ -22,6 +23,7 @@ class OcrUnavailableError(RuntimeError):
 TEXT_DETECTION_MIN_BOX_SIZE = 2
 TEXT_DETECTION_LINE_Y_TOLERANCE = 0.6
 TEXT_DETECTION_DUPLICATE_OVERLAP_RATIO = 0.82
+TEXT_RECOGNITION_SCORE_THRESHOLD = float(os.getenv("TEXT_RECOGNITION_SCORE_THRESHOLD", "0.0"))
 
 
 def _load_image():
@@ -82,7 +84,38 @@ def _temp_png_from_crop(bgr_crop) -> str:
     return temp.name
 
 
-def _region_to_box(region: Dict[str, Any], image_width: int, image_height: int) -> Dict[str, int] | None:
+def _clip_point(x_value: Any, y_value: Any, image_width: int, image_height: int) -> Optional[List[float]]:
+    try:
+        x = max(0.0, min(float(image_width - 1), float(x_value)))
+        y = max(0.0, min(float(image_height - 1), float(y_value)))
+        return [x, y]
+    except (TypeError, ValueError):
+        return None
+
+
+def _region_to_polygon(region: Dict[str, Any], image_width: int, image_height: int) -> Optional[List[List[float]]]:
+    points = region.get("polygon") or region.get("dt_polys") or region.get("poly") or region.get("points")
+    if not isinstance(points, list):
+        return None
+    parsed: List[List[float]] = []
+    for point in points:
+        if isinstance(point, dict):
+            parsed_point = _clip_point(
+                point.get("x", point.get("x_ratio", point.get("xRatio"))),
+                point.get("y", point.get("y_ratio", point.get("yRatio"))),
+                image_width,
+                image_height,
+            )
+        elif isinstance(point, (list, tuple)) and len(point) >= 2:
+            parsed_point = _clip_point(point[0], point[1], image_width, image_height)
+        else:
+            parsed_point = None
+        if parsed_point is not None:
+            parsed.append(parsed_point)
+    return parsed[:4] if len(parsed) >= 4 else None
+
+
+def _region_to_box(region: Dict[str, Any], image_width: int, image_height: int) -> Dict[str, Any] | None:
     bbox = region.get("bbox") or {}
     x = max(0, min(image_width - 1, int(round(float(bbox.get("x") or 0)))))
     y = max(0, min(image_height - 1, int(round(float(bbox.get("y") or 0)))))
@@ -94,7 +127,11 @@ def _region_to_box(region: Dict[str, Any], image_width: int, image_height: int) 
     height = bottom - y
     if width < TEXT_DETECTION_MIN_BOX_SIZE or height < TEXT_DETECTION_MIN_BOX_SIZE:
         return None
-    return {"x": x, "y": y, "width": width, "height": height}
+    box: Dict[str, Any] = {"x": x, "y": y, "width": width, "height": height}
+    polygon = _region_to_polygon(region, image_width, image_height)
+    if polygon is not None:
+        box["polygon"] = polygon
+    return box
 
 
 def _box_area(box: Dict[str, int]) -> float:
@@ -125,13 +162,25 @@ def _deduplicate_detected_boxes(boxes: List[Dict[str, int]]) -> List[Dict[str, i
     return kept
 
 
-def _sort_boxes_reading_order(boxes: List[Dict[str, int]]) -> List[Dict[str, int]]:
+def _box_sort_anchor(box: Dict[str, Any]) -> Tuple[float, float]:
+    polygon = box.get("polygon")
+    if isinstance(polygon, list) and polygon:
+        try:
+            top_y = min(float(point[1]) for point in polygon if isinstance(point, list) and len(point) >= 2)
+            left_x = min(float(point[0]) for point in polygon if isinstance(point, list) and len(point) >= 2)
+            return top_y, left_x
+        except (TypeError, ValueError):
+            pass
+    return float(box["y"]), float(box["x"])
+
+
+def _sort_boxes_reading_order(boxes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not boxes:
         return []
-    ordered = sorted(_deduplicate_detected_boxes(boxes), key=lambda box: (box["y"] + box["height"] / 2, box["x"]))
+    ordered = sorted(_deduplicate_detected_boxes(boxes), key=lambda box: (_box_sort_anchor(box)[0], _box_sort_anchor(box)[1]))
     lines: List[Dict[str, Any]] = []
     for box in ordered:
-        center_y = box["y"] + box["height"] / 2
+        center_y = _box_sort_anchor(box)[0]
         matched_line = None
         for line in lines:
             tolerance = max(8.0, max(float(line["height"]), float(box["height"])) * TEXT_DETECTION_LINE_Y_TOLERANCE)
@@ -147,11 +196,11 @@ def _sort_boxes_reading_order(boxes: List[Dict[str, int]]) -> List[Dict[str, int
 
     sorted_boxes: List[Dict[str, int]] = []
     for line in sorted(lines, key=lambda item: item["center_y"]):
-        sorted_boxes.extend(sorted(line["boxes"], key=lambda box: box["x"]))
+            sorted_boxes.extend(sorted(line["boxes"], key=lambda box: _box_sort_anchor(box)[1]))
     return sorted_boxes
 
 
-def _detect_boxes_in_crop(bgr_crop) -> Tuple[List[Dict[str, int]], Dict[str, Any]]:
+def _detect_boxes_in_crop(bgr_crop) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     image_height, image_width = bgr_crop.shape[:2]
     temp_path = ""
     try:
@@ -185,7 +234,7 @@ def _detect_boxes_in_crop(bgr_crop) -> Tuple[List[Dict[str, int]], Dict[str, Any
                 pass
 
 
-def _boxes_from_detection_result(detection: Dict[str, Any], bgr_crop) -> Tuple[List[Dict[str, int]], Dict[str, Any]]:
+def _boxes_from_detection_result(detection: Dict[str, Any], bgr_crop) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     image_height, image_width = bgr_crop.shape[:2]
     boxes = [
         box
@@ -259,7 +308,59 @@ def _detect_boxes_in_crops_batch(
     return results
 
 
-def _crop_box(bgr_crop, box: Dict[str, int]):
+def _order_quad_points(points: List[List[float]]) -> Optional[np.ndarray]:
+    if len(points) < 4:
+        return None
+    pts = np.array(points[:4], dtype=np.float32)
+    rect = np.zeros((4, 2), dtype=np.float32)
+    sums = pts.sum(axis=1)
+    diffs = np.diff(pts, axis=1).reshape(-1)
+    rect[0] = pts[int(np.argmin(sums))]
+    rect[2] = pts[int(np.argmax(sums))]
+    rect[1] = pts[int(np.argmin(diffs))]
+    rect[3] = pts[int(np.argmax(diffs))]
+    return rect
+
+
+def _perspective_crop_text_line(bgr_crop, box: Dict[str, Any]):
+    polygon = box.get("polygon")
+    if not isinstance(polygon, list) or len(polygon) < 4:
+        return None
+    points = _order_quad_points(polygon)
+    if points is None:
+        return None
+
+    width = int(
+        max(
+            np.linalg.norm(points[0] - points[1]),
+            np.linalg.norm(points[2] - points[3]),
+        )
+    )
+    height = int(
+        max(
+            np.linalg.norm(points[0] - points[3]),
+            np.linalg.norm(points[1] - points[2]),
+        )
+    )
+    width = max(1, width)
+    height = max(1, height)
+    destination = np.array(
+        [[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]],
+        dtype=np.float32,
+    )
+    matrix = cv2.getPerspectiveTransform(points, destination)
+    warped = cv2.warpPerspective(bgr_crop, matrix, (width, height), borderMode=cv2.BORDER_REPLICATE)
+    if warped.size == 0:
+        return None
+    if height / max(float(width), 1.0) >= 1.5:
+        warped = cv2.rotate(warped, cv2.ROTATE_90_CLOCKWISE)
+    return warped
+
+
+def _crop_box(bgr_crop, box: Dict[str, Any]):
+    perspective_crop = _perspective_crop_text_line(bgr_crop, box)
+    if perspective_crop is not None:
+        return perspective_crop
     y1 = box["y"]
     x1 = box["x"]
     y2 = min(bgr_crop.shape[0], y1 + box["height"])
@@ -324,6 +425,8 @@ def _recognize_text_crops_with_detection(
     for meta, result in zip(recognition_meta, batch_results):
         text = normalize_ocr_text(result.get("text"))
         confidence = round(float(result.get("confidence") or 0.0), 4)
+        if confidence < TEXT_RECOGNITION_SCORE_THRESHOLD:
+            text = ""
         grouped.setdefault(meta["key"], []).append(
             {
                 "text": text,

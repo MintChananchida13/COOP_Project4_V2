@@ -894,6 +894,8 @@ def _ocr_flexible_regions(search_img: np.ndarray, regions: List[Dict[str, Any]],
     texts: List[str] = []
     confidences: List[float] = []
     segments: List[Dict[str, Any]] = []
+    prepared_blocks: List[Dict[str, Any]] = []
+    text_items: List[Tuple[str, np.ndarray]] = []
     for index, region in enumerate(regions):
         box = _region_crop_box(region, w_img, h_img)
         if not box:
@@ -912,9 +914,46 @@ def _ocr_flexible_regions(search_img: np.ndarray, regions: List[Dict[str, Any]],
         block_img = search_img[y : y + h, x : x + w]
         if block_img.size == 0:
             continue
+        block = {
+            "index": index,
+            "region": region,
+            "box": box,
+            "block_img": block_img,
+            "data_type": data_type,
+            "extraction_method": extraction_method,
+        }
+        prepared_blocks.append(block)
+        if data_type not in {"image", "table"}:
+            text_items.append((str(index), block_img))
+
+    text_results: Dict[str, Dict[str, Any]] = {}
+    if text_items:
+        try:
+            text_results = recognize_text_crops_with_detection(text_items, source="flexible_text")
+        except Exception as error:
+            text_results = {
+                key: {
+                    "text": "",
+                    "confidence": 0.0,
+                    "segments": [],
+                    "raw_segments": [],
+                    "error": str(error),
+                }
+                for key, _ in text_items
+            }
+
+    for block in prepared_blocks:
+        index = int(block["index"])
+        region = block["region"]
+        x, y, w, h = block["box"]
+        block_img = block["block_img"]
+        data_type = block["data_type"]
+        extraction_method = block["extraction_method"]
         table_rows = None
         table_structured = None
         table_html = None
+        ocr_result: Dict[str, Any] = {}
+        error_message = None
         try:
             if data_type == "image":
                 text = "(image crop)"
@@ -929,11 +968,11 @@ def _ocr_flexible_regions(search_img: np.ndarray, regions: List[Dict[str, Any]],
                 table_structured = ocr_result.get("table_structured")
                 table_html = ocr_result.get("table_html")
             else:
-                ocr_result = recognize_text_roi(block_img, source="flexible_text")
+                ocr_result = text_results.get(str(index), {})
                 text = str(ocr_result.get("text") or "")
                 confidence = float(ocr_result.get("confidence") or 0.0)
                 raw_segments = ocr_result.get("raw_segments") or ocr_result.get("segments", [])
-            error_message = None
+            error_message = ocr_result.get("error")
         except Exception as error:
             text = ""
             confidence = 0.0
