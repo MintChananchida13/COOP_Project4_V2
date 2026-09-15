@@ -180,12 +180,14 @@ export default function MatchedTemplateWorkspaceZone({
                 <div className="min-w-0">
                   <h3 className="ui-label text-emerald-800">พบ Template ที่ตรงกัน</h3>
                   <p className="ui-card-title mt-1 truncate text-emerald-950">{matchedTemplate.name}</p>
+                  {!isStrictVerification && (
                   <p className="ui-caption ui-tabular mt-1 text-emerald-700">
                     {matchedTemplate.confidence !== undefined && matchedTemplate.confidence !== null
                       ? `ความมั่นใจ ${(matchedTemplate.confidence * 100).toFixed(1)}%`
                       : "ยังไม่มีค่าความมั่นใจ"}
                     
                   </p>
+                  )}
                   <div className="mt-3 rounded-xl border border-emerald-100 bg-white/75 px-3 py-2">
                     <p className="ui-caption break-words font-semibold text-emerald-800">
                       ใช้ภาพที่จัดแนวเข้ากับ Template และใช้ ROI ต้นฉบับของ Template

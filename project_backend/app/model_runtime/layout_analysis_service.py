@@ -37,10 +37,10 @@ class LayoutRegion:
 
 _LAYOUT_MODEL_NAME = "PP-DocLayoutV3"
 _TEXT_DETECTION_MODEL_NAME = "PP-OCRv5_server_det"
-AUTO_ROI_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_EXPAND_TOP_PX", "8"))
-AUTO_ROI_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_EXPAND_BOTTOM_PX", "8"))
-AUTO_ROI_EXPAND_LEFT_PX = float(os.getenv("AUTO_ROI_EXPAND_LEFT_PX", "8"))
-AUTO_ROI_EXPAND_RIGHT_PX = float(os.getenv("AUTO_ROI_EXPAND_RIGHT_PX", "8"))
+AUTO_ROI_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_EXPAND_TOP_PX", "6"))
+AUTO_ROI_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_EXPAND_BOTTOM_PX", "6"))
+AUTO_ROI_EXPAND_LEFT_PX = float(os.getenv("AUTO_ROI_EXPAND_LEFT_PX", "6"))
+AUTO_ROI_EXPAND_RIGHT_PX = float(os.getenv("AUTO_ROI_EXPAND_RIGHT_PX", "6"))
 AUTO_ROI_TABLE_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_TOP_PX", "6"))
 AUTO_ROI_TABLE_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_BOTTOM_PX", "6"))
 AUTO_ROI_TABLE_EXPAND_LEFT_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_LEFT_PX", "6"))
@@ -427,6 +427,34 @@ def _enforce_minimum_margin(
     )
 
 
+def _trim_box_to_avoid_neighbors(
+    original_box: List[float],
+    adjusted_box: List[float],
+    neighbor_boxes: List[List[float]],
+    image_width: int,
+    image_height: int,
+) -> List[float]:
+    adjusted = _clip_box_to_image(adjusted_box, image_width, image_height)
+    original_left, original_top, original_right, original_bottom = original_box
+    for neighbor in neighbor_boxes:
+        if _box_area(neighbor) <= 0:
+            continue
+        neighbor_left, neighbor_top, neighbor_right, neighbor_bottom = neighbor
+        if original_right <= neighbor_left:
+            adjusted[2] = min(adjusted[2], neighbor_left)
+        elif original_left >= neighbor_right:
+            adjusted[0] = max(adjusted[0], neighbor_right)
+
+        if original_bottom <= neighbor_top:
+            adjusted[3] = min(adjusted[3], neighbor_top)
+        elif original_top >= neighbor_bottom:
+            adjusted[1] = max(adjusted[1], neighbor_bottom)
+
+        if adjusted[2] <= adjusted[0] or adjusted[3] <= adjusted[1]:
+            return _clip_box_to_image(original_box, image_width, image_height)
+    return _clip_box_to_image(adjusted, image_width, image_height)
+
+
 def _reduce_box_overlap(
     original_box: List[float],
     expanded_box: List[float],
@@ -467,7 +495,8 @@ def _reduce_box_overlap(
                 image_width,
                 image_height,
             )
-    return _enforce_minimum_margin(original_box, adjusted, minimum_margin, image_width, image_height)
+    adjusted = _enforce_minimum_margin(original_box, adjusted, minimum_margin, image_width, image_height)
+    return _trim_box_to_avoid_neighbors(original_box, adjusted, neighbor_boxes, image_width, image_height)
 
 
 
@@ -482,14 +511,21 @@ def _prepare_auto_roi_box(
     original_box = _clip_box_to_image(box, image_width, image_height)
     if region_type == "table":
         expanded_box = _expand_table_roi_box(original_box, image_width, image_height)
+        adjusted_box = _reduce_box_overlap(
+            original_box,
+            expanded_box,
+            neighbor_boxes,
+            image_width,
+            image_height,
+        )
         return {
-            "box": expanded_box,
+            "box": adjusted_box,
             "expansion": {
                 "enabled": True,
                 "reason": "table_edge_guard_padding",
                 "original_box": original_box,
                 "expanded_box": expanded_box,
-                "final_box": expanded_box,
+                "final_box": adjusted_box,
                 "padding": {
                     "unit": "px",
                     "top": AUTO_ROI_TABLE_EXPAND_TOP_PX,
@@ -497,6 +533,8 @@ def _prepare_auto_roi_box(
                     "left": AUTO_ROI_TABLE_EXPAND_LEFT_PX,
                     "right": AUTO_ROI_TABLE_EXPAND_RIGHT_PX,
                 },
+                "max_neighbor_overlap": AUTO_ROI_MAX_NEIGHBOR_OVERLAP_RATIO,
+                "overlap_adjusted": adjusted_box != expanded_box,
             },
         }
 
