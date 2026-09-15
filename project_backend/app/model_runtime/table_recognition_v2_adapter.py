@@ -39,6 +39,7 @@ _TABLE_CANDIDATE_TIE_EPSILON = 0.03
 _TABLE_LOW_OCR_CONFIDENCE_THRESHOLD = 0.65
 _SEMI_TABLE_MIN_CONFIDENCE = 0.72
 _SEMI_TABLE_MIN_TOPOLOGY_CHANGE_RATIO = 0.33
+_TEXT_RECOGNITION_SCORE_THRESHOLD = float(os.getenv("TEXT_RECOGNITION_SCORE_THRESHOLD", "0.0"))
 _TABLE_DEBUG_RAW_MODEL_FIELDS = (
     "table_type",
     "model_name",
@@ -652,6 +653,66 @@ def _recognize_text_crops_with_core(crops: List[np.ndarray], status_prefix: str)
             "ocr_core": "recognize_text_roi",
             "crop_count": len(crops),
             "failure_count": sum(1 for item in recognitions if isinstance(item, dict) and item.get("error")),
+        },
+    )
+
+
+def _recognize_detection_crops_directly(crops: List[np.ndarray], status_prefix: str) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if not crops:
+        return ([], {"status": f"{status_prefix}_no_crops", "ocr_core": "text_recognition_batch_direct", "crop_count": 0})
+    try:
+        from app.model_runtime.paddle_thai_ocr_adapter import run_paddle_thai_ocr_batch as recognize_text_batch
+    except Exception as error:
+        return (
+            [{"text": "", "confidence": 0.0, "error": str(error)} for _ in crops],
+            {
+                "status": f"{status_prefix}_direct_recognition_unavailable",
+                "reason": str(error),
+                "ocr_core": "text_recognition_batch_direct",
+                "crop_count": len(crops),
+            },
+        )
+
+    try:
+        recognitions = recognize_text_batch(crops)
+    except Exception as error:
+        logger.info("%s direct text recognition failed: %s", status_prefix, error)
+        return (
+            [{"text": "", "confidence": 0.0, "error": str(error)} for _ in crops],
+            {
+                "status": f"{status_prefix}_direct_recognition_failed",
+                "reason": str(error),
+                "ocr_core": "text_recognition_batch_direct",
+                "crop_count": len(crops),
+            },
+        )
+
+    normalized: List[Dict[str, Any]] = []
+    for result in recognitions:
+        item = dict(result) if isinstance(result, dict) else {"text": "", "confidence": 0.0, "error": "invalid_batch_item"}
+        confidence = round(float(item.get("confidence") or 0.0), 4)
+        text = normalize_ocr_text(item.get("text"))
+        if confidence < _TEXT_RECOGNITION_SCORE_THRESHOLD:
+            text = ""
+        item["text"] = text
+        item["confidence"] = confidence
+        normalized.append(item)
+
+    if len(normalized) < len(crops):
+        normalized.extend(
+            {"text": "", "confidence": 0.0, "error": "missing_batch_result"}
+            for _ in range(len(crops) - len(normalized))
+        )
+    elif len(normalized) > len(crops):
+        normalized = normalized[: len(crops)]
+
+    return (
+        normalized,
+        {
+            "status": status_prefix,
+            "ocr_core": "text_recognition_batch_direct",
+            "crop_count": len(crops),
+            "failure_count": sum(1 for item in normalized if isinstance(item, dict) and item.get("error")),
         },
     )
 
@@ -1620,7 +1681,7 @@ def _recognize_borderless_table(image: np.ndarray) -> Optional[Dict[str, Any]]:
         return None
 
     ocr_started = time.perf_counter()
-    recognitions, ocr_core_debug = _recognize_text_crops_with_core(crops, "borderless_table")
+    recognitions, ocr_core_debug = _recognize_detection_crops_directly(crops, "borderless_table")
     logger.info(
         "Table Recognition phase timing: phase=Geometry Reconstruction OCR core crops=%s elapsed=%.3fs",
         len(crops),
@@ -1736,7 +1797,7 @@ def _recognize_raw_ocr_geometry_table(image: np.ndarray) -> Optional[Dict[str, A
         return None
 
     ocr_started = time.perf_counter()
-    recognitions, ocr_core_debug = _recognize_text_crops_with_core(crops, "raw_ocr_geometry_table")
+    recognitions, ocr_core_debug = _recognize_detection_crops_directly(crops, "raw_ocr_geometry_table")
     logger.info(
         "Table Recognition phase timing: phase=Raw OCR Geometry OCR core crops=%s elapsed=%.3fs",
         len(crops),
@@ -1834,7 +1895,7 @@ def _ocr_cells_from_text_detection(image: np.ndarray, status_prefix: str) -> tup
     if not crops:
         return ([], [], {"status": f"{status_prefix}_no_valid_crops", "detected_boxes": len(regions)})
 
-    recognitions, ocr_core_debug = _recognize_text_crops_with_core(crops, status_prefix)
+    recognitions, ocr_core_debug = _recognize_detection_crops_directly(crops, status_prefix)
     cells: List[Dict[str, Any]] = []
     confidence_values: List[float] = []
     for region, recognition in zip(valid_regions, recognitions):
