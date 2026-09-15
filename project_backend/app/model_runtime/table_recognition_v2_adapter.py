@@ -485,6 +485,37 @@ def _region_bbox(region: Dict[str, Any], scale_factor: float = 1.0) -> Optional[
     return {"x": x, "y": y, "width": width, "height": height}
 
 
+def _crop_text_detection_region(image: np.ndarray, region: Dict[str, Any]) -> Optional[np.ndarray]:
+    bbox = region.get("bbox") if isinstance(region, dict) else None
+    if not isinstance(bbox, dict):
+        return None
+    image_height, image_width = image.shape[:2]
+    try:
+        x = max(0, int(float(bbox.get("x") or 0)))
+        y = max(0, int(float(bbox.get("y") or 0)))
+        width = max(1, int(float(bbox.get("width") or 1)))
+        height = max(1, int(float(bbox.get("height") or 1)))
+    except (TypeError, ValueError):
+        return None
+    width = min(width, image_width - x)
+    height = min(height, image_height - y)
+    if width <= 0 or height <= 0:
+        return None
+
+    box: Dict[str, Any] = {"x": x, "y": y, "width": width, "height": height}
+    polygon = region.get("polygon") or region.get("dt_polys") or region.get("poly") or region.get("points")
+    if isinstance(polygon, list) and len(polygon) >= 4:
+        box["polygon"] = polygon
+        from app.processing.ocr_adapter import _perspective_crop_text_line
+
+        crop = _perspective_crop_text_line(image, box)
+        if crop is not None and crop.size > 0:
+            return crop
+
+    crop = image[y : y + height, x : x + width]
+    return crop if crop.size > 0 else None
+
+
 def _recognize_text_crops_with_core(crops: List[np.ndarray], status_prefix: str) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
     if not crops:
         return ([], {"status": f"{status_prefix}_no_crops", "ocr_core": "recognize_text_roi", "crop_count": 0})
@@ -1460,24 +1491,9 @@ def _recognize_borderless_table(image: np.ndarray) -> Optional[Dict[str, Any]]:
 
     crops: List[np.ndarray] = []
     valid_regions: List[Dict[str, Any]] = []
-    h_working, w_working = working_img.shape[:2]
     for region in regions:
-        bbox = region.get("bbox") if isinstance(region, dict) else None
-        if not isinstance(bbox, dict):
-            continue
-        try:
-            x = max(0, int(float(bbox.get("x") or 0)))
-            y = max(0, int(float(bbox.get("y") or 0)))
-            width = max(1, int(float(bbox.get("width") or 1)))
-            height = max(1, int(float(bbox.get("height") or 1)))
-        except (TypeError, ValueError):
-            continue
-        width = min(width, w_working - x)
-        height = min(height, h_working - y)
-        if width <= 0 or height <= 0:
-            continue
-        crop = working_img[y : y + height, x : x + width]
-        if crop.size == 0:
+        crop = _crop_text_detection_region(working_img, region)
+        if crop is None:
             continue
         valid_regions.append(region)
         crops.append(crop)
@@ -1592,22 +1608,8 @@ def _recognize_raw_ocr_geometry_table(image: np.ndarray) -> Optional[Dict[str, A
     crops: List[np.ndarray] = []
     valid_regions: List[Dict[str, Any]] = []
     for region in regions:
-        bbox = region.get("bbox") if isinstance(region, dict) else None
-        if not isinstance(bbox, dict):
-            continue
-        try:
-            x = max(0, int(float(bbox.get("x") or 0)))
-            y = max(0, int(float(bbox.get("y") or 0)))
-            width = max(1, int(float(bbox.get("width") or 1)))
-            height = max(1, int(float(bbox.get("height") or 1)))
-        except (TypeError, ValueError):
-            continue
-        width = min(width, input_width - x)
-        height = min(height, input_height - y)
-        if width <= 0 or height <= 0:
-            continue
-        crop = image[y : y + height, x : x + width]
-        if crop.size == 0:
+        crop = _crop_text_detection_region(image, region)
+        if crop is None:
             continue
         valid_regions.append(region)
         crops.append(crop)
@@ -1705,22 +1707,8 @@ def _ocr_cells_from_text_detection(image: np.ndarray, status_prefix: str) -> tup
     crops: List[np.ndarray] = []
     valid_regions: List[Dict[str, Any]] = []
     for region in regions:
-        bbox = region.get("bbox") if isinstance(region, dict) else None
-        if not isinstance(bbox, dict):
-            continue
-        try:
-            x = max(0, int(float(bbox.get("x") or 0)))
-            y = max(0, int(float(bbox.get("y") or 0)))
-            width = max(1, int(float(bbox.get("width") or 1)))
-            height = max(1, int(float(bbox.get("height") or 1)))
-        except (TypeError, ValueError):
-            continue
-        width = min(width, input_width - x)
-        height = min(height, input_height - y)
-        if width <= 0 or height <= 0:
-            continue
-        crop = image[y : y + height, x : x + width]
-        if crop.size == 0:
+        crop = _crop_text_detection_region(image, region)
+        if crop is None:
             continue
         valid_regions.append(region)
         crops.append(crop)
