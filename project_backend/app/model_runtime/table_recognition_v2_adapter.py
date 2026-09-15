@@ -615,18 +615,6 @@ def _crop_text_detection_region(image: np.ndarray, region: Dict[str, Any]) -> Op
         return None
 
     expanded_bbox = _expand_table_text_detection_bbox(x, y, width, height, image_width, image_height)
-    box: Dict[str, Any] = dict(expanded_bbox)
-    polygon = region.get("polygon") or region.get("dt_polys") or region.get("poly") or region.get("points")
-    if isinstance(polygon, list) and len(polygon) >= 4:
-        expanded_polygon = _expand_table_text_detection_polygon(polygon, image_width, image_height)
-        if expanded_polygon:
-            box["polygon"] = expanded_polygon
-        from app.processing.ocr_adapter import _perspective_crop_text_line
-
-        crop = _perspective_crop_text_line(image, box)
-        if crop is not None and crop.size > 0:
-            return _pad_table_text_crop(crop)
-
     x = int(expanded_bbox["x"])
     y = int(expanded_bbox["y"])
     width = int(expanded_bbox["width"])
