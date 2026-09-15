@@ -485,6 +485,24 @@ def _region_bbox(region: Dict[str, Any], scale_factor: float = 1.0) -> Optional[
     return {"x": x, "y": y, "width": width, "height": height}
 
 
+def _pad_table_text_crop(crop: np.ndarray) -> np.ndarray:
+    if crop is None or crop.size == 0:
+        return crop
+    crop_height, crop_width = crop.shape[:2]
+    top = max(4, int(round(crop_height * 0.20)))
+    bottom = max(2, int(round(crop_height * 0.10)))
+    side = max(2, int(round(crop_width * 0.03)))
+    return cv2.copyMakeBorder(
+        crop,
+        top,
+        bottom,
+        side,
+        side,
+        cv2.BORDER_CONSTANT,
+        value=(255, 255, 255),
+    )
+
+
 def _crop_text_detection_region(image: np.ndarray, region: Dict[str, Any]) -> Optional[np.ndarray]:
     bbox = region.get("bbox") if isinstance(region, dict) else None
     if not isinstance(bbox, dict):
@@ -510,10 +528,10 @@ def _crop_text_detection_region(image: np.ndarray, region: Dict[str, Any]) -> Op
 
         crop = _perspective_crop_text_line(image, box)
         if crop is not None and crop.size > 0:
-            return crop
+            return _pad_table_text_crop(crop)
 
     crop = image[y : y + height, x : x + width]
-    return crop if crop.size > 0 else None
+    return _pad_table_text_crop(crop) if crop.size > 0 else None
 
 
 def _recognize_text_crops_with_core(crops: List[np.ndarray], status_prefix: str) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:

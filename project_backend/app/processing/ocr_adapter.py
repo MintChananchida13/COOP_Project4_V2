@@ -352,8 +352,6 @@ def _perspective_crop_text_line(bgr_crop, box: Dict[str, Any]):
     warped = cv2.warpPerspective(bgr_crop, matrix, (width, height), borderMode=cv2.BORDER_REPLICATE)
     if warped.size == 0:
         return None
-    if height / max(float(width), 1.0) >= 1.5:
-        warped = cv2.rotate(warped, cv2.ROTATE_90_CLOCKWISE)
     return warped
 
 
