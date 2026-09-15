@@ -614,13 +614,8 @@ def _crop_text_detection_region(image: np.ndarray, region: Dict[str, Any]) -> Op
     if width <= 0 or height <= 0:
         return None
 
-    expanded_bbox = _expand_table_text_detection_bbox(x, y, width, height, image_width, image_height)
-    x = int(expanded_bbox["x"])
-    y = int(expanded_bbox["y"])
-    width = int(expanded_bbox["width"])
-    height = int(expanded_bbox["height"])
-    crop = image[y : min(image_height, y + height), x : min(image_width, x + width)]
-    return _pad_table_text_crop(crop) if crop.size > 0 else None
+    crop = image[y : y + height, x : x + width]
+    return crop if crop.size > 0 else None
 
 
 def _recognize_text_crops_with_core(crops: List[np.ndarray], status_prefix: str) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -1669,7 +1664,7 @@ def _recognize_borderless_table(image: np.ndarray) -> Optional[Dict[str, Any]]:
         return None
 
     ocr_started = time.perf_counter()
-    recognitions, ocr_core_debug = _recognize_detection_crops_directly(crops, "borderless_table")
+    recognitions, ocr_core_debug = _recognize_text_crops_with_core(crops, "borderless_table")
     logger.info(
         "Table Recognition phase timing: phase=Geometry Reconstruction OCR core crops=%s elapsed=%.3fs",
         len(crops),
@@ -1785,7 +1780,7 @@ def _recognize_raw_ocr_geometry_table(image: np.ndarray) -> Optional[Dict[str, A
         return None
 
     ocr_started = time.perf_counter()
-    recognitions, ocr_core_debug = _recognize_detection_crops_directly(crops, "raw_ocr_geometry_table")
+    recognitions, ocr_core_debug = _recognize_text_crops_with_core(crops, "raw_ocr_geometry_table")
     logger.info(
         "Table Recognition phase timing: phase=Raw OCR Geometry OCR core crops=%s elapsed=%.3fs",
         len(crops),
@@ -1883,7 +1878,7 @@ def _ocr_cells_from_text_detection(image: np.ndarray, status_prefix: str) -> tup
     if not crops:
         return ([], [], {"status": f"{status_prefix}_no_valid_crops", "detected_boxes": len(regions)})
 
-    recognitions, ocr_core_debug = _recognize_detection_crops_directly(crops, status_prefix)
+    recognitions, ocr_core_debug = _recognize_text_crops_with_core(crops, status_prefix)
     cells: List[Dict[str, Any]] = []
     confidence_values: List[float] = []
     for region, recognition in zip(valid_regions, recognitions):
