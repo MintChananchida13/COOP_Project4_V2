@@ -503,6 +503,99 @@ def _pad_table_text_crop(crop: np.ndarray) -> np.ndarray:
     )
 
 
+def _table_text_crop_margin(width: float, height: float) -> Dict[str, float]:
+    return {
+        "top": max(1.0, float(height) * 0.12),
+        "bottom": max(1.0, float(height) * 0.08),
+        "left": max(1.0, float(width) * 0.03),
+        "right": max(1.0, float(width) * 0.03),
+    }
+
+
+def _clamp_point(x: float, y: float, image_width: int, image_height: int) -> List[float]:
+    return [
+        max(0.0, min(float(image_width), float(x))),
+        max(0.0, min(float(image_height), float(y))),
+    ]
+
+
+def _polygon_points(polygon: Any) -> List[List[float]]:
+    points: List[List[float]] = []
+    if not isinstance(polygon, list):
+        return points
+    for point in polygon:
+        try:
+            if isinstance(point, dict):
+                x = float(point.get("x"))
+                y = float(point.get("y"))
+            elif isinstance(point, (list, tuple)) and len(point) >= 2:
+                x = float(point[0])
+                y = float(point[1])
+            else:
+                continue
+        except (TypeError, ValueError):
+            continue
+        points.append([x, y])
+    return points
+
+
+def _expand_table_text_detection_polygon(
+    polygon: Any,
+    image_width: int,
+    image_height: int,
+) -> Optional[List[List[float]]]:
+    points = _polygon_points(polygon)
+    if len(points) < 4:
+        return None
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    left, right = min(xs), max(xs)
+    top, bottom = min(ys), max(ys)
+    width = max(1.0, right - left)
+    height = max(1.0, bottom - top)
+    margin = _table_text_crop_margin(width, height)
+    expanded_left = max(0.0, left - margin["left"])
+    expanded_right = min(float(image_width), right + margin["right"])
+    expanded_top = max(0.0, top - margin["top"])
+    expanded_bottom = min(float(image_height), bottom + margin["bottom"])
+    scale_x = (expanded_right - expanded_left) / width
+    scale_y = (expanded_bottom - expanded_top) / height
+    return [
+        _clamp_point(
+            expanded_left + (point[0] - left) * scale_x,
+            expanded_top + (point[1] - top) * scale_y,
+            image_width,
+            image_height,
+        )
+        for point in points
+    ]
+
+
+def _expand_table_text_detection_bbox(
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    image_width: int,
+    image_height: int,
+) -> Dict[str, int]:
+    margin = _table_text_crop_margin(width, height)
+    left = max(0.0, float(x) - margin["left"])
+    top = max(0.0, float(y) - margin["top"])
+    right = min(float(image_width), float(x) + float(width) + margin["right"])
+    bottom = min(float(image_height), float(y) + float(height) + margin["bottom"])
+    int_left = max(0, int(np.floor(left)))
+    int_top = max(0, int(np.floor(top)))
+    int_right = min(image_width, int(np.ceil(right)))
+    int_bottom = min(image_height, int(np.ceil(bottom)))
+    return {
+        "x": int_left,
+        "y": int_top,
+        "width": max(1, int_right - int_left),
+        "height": max(1, int_bottom - int_top),
+    }
+
+
 def _crop_text_detection_region(image: np.ndarray, region: Dict[str, Any]) -> Optional[np.ndarray]:
     bbox = region.get("bbox") if isinstance(region, dict) else None
     if not isinstance(bbox, dict):
@@ -520,17 +613,24 @@ def _crop_text_detection_region(image: np.ndarray, region: Dict[str, Any]) -> Op
     if width <= 0 or height <= 0:
         return None
 
-    box: Dict[str, Any] = {"x": x, "y": y, "width": width, "height": height}
+    expanded_bbox = _expand_table_text_detection_bbox(x, y, width, height, image_width, image_height)
+    box: Dict[str, Any] = dict(expanded_bbox)
     polygon = region.get("polygon") or region.get("dt_polys") or region.get("poly") or region.get("points")
     if isinstance(polygon, list) and len(polygon) >= 4:
-        box["polygon"] = polygon
+        expanded_polygon = _expand_table_text_detection_polygon(polygon, image_width, image_height)
+        if expanded_polygon:
+            box["polygon"] = expanded_polygon
         from app.processing.ocr_adapter import _perspective_crop_text_line
 
         crop = _perspective_crop_text_line(image, box)
         if crop is not None and crop.size > 0:
             return _pad_table_text_crop(crop)
 
-    crop = image[y : y + height, x : x + width]
+    x = int(expanded_bbox["x"])
+    y = int(expanded_bbox["y"])
+    width = int(expanded_bbox["width"])
+    height = int(expanded_bbox["height"])
+    crop = image[y : min(image_height, y + height), x : min(image_width, x + width)]
     return _pad_table_text_crop(crop) if crop.size > 0 else None
 
 
