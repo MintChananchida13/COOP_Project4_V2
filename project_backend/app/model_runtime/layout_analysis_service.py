@@ -1022,6 +1022,70 @@ def analyze_layout(
     }
 
 
+def analyze_layout_signature(image: np.ndarray) -> Dict[str, Any]:
+    if image is None or image.size == 0:
+        raise ValueError("Invalid image for layout signature analysis.")
+
+    height, width = image.shape[:2]
+    source_mode = "signature_layout_only"
+    raw_items = _get_cached_layout_raw_items(image, source_mode)
+    if raw_items is None:
+        _require_runtime(ModelRuntimeKind.LAYOUT)
+        logger.info("Using remote Layout runtime for layout signature")
+        try:
+            layout_result = remote_analyze_layout(image)
+        except ModelRuntimeUnavailableError as error:
+            raise LayoutAnalysisUnavailableError(str(error)) from error
+        except Exception as error:
+            raise LayoutAnalysisUnavailableError(str(error)) from error
+        if not isinstance(layout_result, dict):
+            raise LayoutAnalysisUnavailableError("Layout runtime returned an invalid response.")
+        raw_layout_items = _walk_layout_items(layout_result.get("result", layout_result))
+        layout_items = _layout_detection_items_from_response(layout_result.get("result", layout_result))
+        raw_items = [{**item, "source": "layout_signature"} for item in layout_items]
+        logger.info(
+            "Layout signature-only trace: raw_model_items=%s layout_items=%s raw_summary=%s filtered_summary=%s",
+            len(raw_layout_items),
+            len(raw_items),
+            _debug_item_summary(raw_layout_items, width, height),
+            _debug_item_summary(raw_items, width, height),
+        )
+        _set_cached_layout_raw_items(image, raw_items, source_mode)
+
+    regions: List[Dict[str, Any]] = []
+    for item in raw_items:
+        box = _extract_box(item)
+        if not box:
+            continue
+        left, top, right, bottom = _clip_box_to_image(box, width, height)
+        box_width = right - left
+        box_height = bottom - top
+        if box_width < 4 or box_height < 4:
+            continue
+        regions.append(
+            {
+                "type": _normalize_region_type(_extract_label(item)),
+                "confidence": float(_extract_score(item)),
+                "source": "layout_signature",
+                "roi": {
+                    "x_ratio": _clamp_ratio(left / max(width, 1)),
+                    "y_ratio": _clamp_ratio(top / max(height, 1)),
+                    "width_ratio": _clamp_ratio(box_width / max(width, 1)),
+                    "height_ratio": _clamp_ratio(box_height / max(height, 1)),
+                },
+            }
+        )
+
+    regions.sort(key=lambda region: (region["roi"]["y_ratio"], region["roi"]["x_ratio"], -region["roi"]["width_ratio"] * region["roi"]["height_ratio"]))
+    return {
+        "engine": "layout_signature_runtime",
+        "model": _LAYOUT_MODEL_NAME,
+        "image_width": width,
+        "image_height": height,
+        "regions": regions,
+    }
+
+
 def _text_detection_result_from_remote(remote_result: Dict[str, Any], image: np.ndarray) -> Dict[str, Any]:
     height, width = image.shape[:2]
     raw_items = _text_detection_items_from_response(remote_result.get("result", remote_result))

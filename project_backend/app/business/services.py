@@ -33,6 +33,7 @@ from app.model_runtime.layout_analysis_service import (
     AUTO_ROI_EXPAND_RIGHT_PX,
     AUTO_ROI_EXPAND_TOP_PX,
     analyze_layout,
+    analyze_layout_signature,
     detect_text_boxes,
 )
 from app.processing.layout_signature_service import build_layout_signature, compare_layout_signatures, signature_from_json, signature_to_json
@@ -523,7 +524,7 @@ def _generate_layout_signature_for_source(source: Optional[str]) -> Optional[Dic
     opencv_img = _image_to_bgr_array(image)
     if opencv_img is None:
         return None
-    analysis = analyze_layout(opencv_img, use_text_detection=False)
+    analysis = analyze_layout_signature(opencv_img)
     return build_layout_signature(analysis)
 
 

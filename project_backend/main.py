@@ -1377,7 +1377,7 @@ async def analyze_document_layout(payload: LayoutAnalysisPayload):
     try:
         for page in payload.images:
             _, opencv_img = decode_base64_image(page.image)
-            analysis = analyze_layout(opencv_img, expand_text_rois=True, auto_roi_mode="text_line")
+            analysis = analyze_layout(opencv_img, expand_text_rois=True, auto_roi_mode="text_line", use_text_detection=False)
             analysis_regions = analysis.get("regions", [])
             analysis_regions = _dedupe_overlapping_auto_roi_regions(analysis_regions)
             regions = []

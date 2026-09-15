@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from app.model_runtime.layout_analysis_service import analyze_layout
+from app.model_runtime.layout_analysis_service import analyze_layout_signature
 from app.processing.layout_signature_service import build_layout_signature, compare_layout_signatures
 
 
@@ -238,7 +238,7 @@ class LayoutAlignmentService:
         if use_cache and cache_key in self._signature_cache:
             return self._signature_cache[cache_key]
 
-        signature = build_layout_signature(analyze_layout(image))
+        signature = build_layout_signature(analyze_layout_signature(image))
         if use_cache:
             if len(self._signature_cache) >= self.MAX_SIGNATURE_CACHE:
                 first_key = next(iter(self._signature_cache))

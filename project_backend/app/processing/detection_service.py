@@ -16,7 +16,7 @@ from app.processing.alignment_service import AlignmentService
 from app.processing.anchor_projection_service import AnchorProjectionService
 from app.core.db import connect as connect_db
 from app.processing.image_normalization import ImageNormalizationService
-from app.model_runtime.layout_analysis_service import analyze_layout
+from app.model_runtime.layout_analysis_service import analyze_layout, analyze_layout_signature
 from app.processing.layout_alignment_service import LayoutAlignmentService
 from app.processing.layout_signature_service import build_layout_signature
 from app.processing.layout_template_matcher import search_layout_candidates
@@ -292,7 +292,7 @@ def _layout_signature_for_image_path(image_path: str) -> Dict[str, Any]:
         opencv_img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     except Exception as error:
         raise HTTPException(status_code=400, detail="Unable to read image for layout signature") from error
-    return build_layout_signature(analyze_layout(opencv_img, use_text_detection=False))
+    return build_layout_signature(analyze_layout_signature(opencv_img))
 
 
 def _detection_debug_url(path_value: Optional[str]) -> Optional[str]:
@@ -713,7 +713,7 @@ def _auto_roi_region_items(page_info: Dict[str, Any]) -> Dict[str, Any]:
             "regions": [],
         }
 
-    analysis = analyze_layout(image, expand_text_rois=True, auto_roi_mode="text_line")
+    analysis = analyze_layout(image, expand_text_rois=True, auto_roi_mode="text_line", use_text_detection=False)
     regions = []
     for index, region in enumerate(analysis.get("regions") or [], start=1):
         region_type = str(region.get("type") or "text").lower()
