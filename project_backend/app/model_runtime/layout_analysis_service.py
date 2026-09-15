@@ -41,8 +41,8 @@ AUTO_ROI_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_EXPAND_TOP_PX", "10"))
 AUTO_ROI_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_EXPAND_BOTTOM_PX", "10"))
 AUTO_ROI_EXPAND_LEFT_PX = float(os.getenv("AUTO_ROI_EXPAND_LEFT_PX", "10"))
 AUTO_ROI_EXPAND_RIGHT_PX = float(os.getenv("AUTO_ROI_EXPAND_RIGHT_PX", "10"))
-AUTO_ROI_TABLE_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_TOP_PX", "4"))
-AUTO_ROI_TABLE_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_BOTTOM_PX", "4"))
+AUTO_ROI_TABLE_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_TOP_PX", "6"))
+AUTO_ROI_TABLE_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_BOTTOM_PX", "6"))
 AUTO_ROI_TABLE_EXPAND_LEFT_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_LEFT_PX", "4"))
 AUTO_ROI_TABLE_EXPAND_RIGHT_PX = float(os.getenv("AUTO_ROI_TABLE_EXPAND_RIGHT_PX", "4"))
 AUTO_ROI_MAX_NEIGHBOR_OVERLAP_RATIO = float(os.getenv("AUTO_ROI_MAX_NEIGHBOR_OVERLAP_RATIO", "0.1"))
@@ -373,12 +373,70 @@ def _expand_table_roi_box(box: List[float], image_width: int, image_height: int)
     return _clip_box_to_image(expanded, image_width, image_height)
 
 
+def _minimum_text_roi_margin_px() -> Dict[str, float]:
+    return {
+        "top": max(6.0, AUTO_ROI_EXPAND_TOP_PX * 0.60),
+        "bottom": max(4.0, AUTO_ROI_EXPAND_BOTTOM_PX * 0.50),
+        "left": max(4.0, AUTO_ROI_EXPAND_LEFT_PX * 0.40),
+        "right": max(4.0, AUTO_ROI_EXPAND_RIGHT_PX * 0.40),
+    }
+
+
+def _box_with_minimum_margin(
+    original_box: List[float],
+    margin: Dict[str, float],
+    image_width: int,
+    image_height: int,
+) -> List[float]:
+    left, top, right, bottom = _clip_box_to_image(original_box, image_width, image_height)
+    return _clip_box_to_image(
+        [
+            left - float(margin.get("left") or 0.0),
+            top - float(margin.get("top") or 0.0),
+            right + float(margin.get("right") or 0.0),
+            bottom + float(margin.get("bottom") or 0.0),
+        ],
+        image_width,
+        image_height,
+    )
+
+
+def _enforce_minimum_margin(
+    original_box: List[float],
+    adjusted_box: List[float],
+    margin: Dict[str, float],
+    image_width: int,
+    image_height: int,
+) -> List[float]:
+    minimum_box = _box_with_minimum_margin(original_box, margin, image_width, image_height)
+    adjusted_left, adjusted_top, adjusted_right, adjusted_bottom = _clip_box_to_image(
+        adjusted_box,
+        image_width,
+        image_height,
+    )
+    min_left, min_top, min_right, min_bottom = minimum_box
+    return _clip_box_to_image(
+        [
+            min(adjusted_left, min_left),
+            min(adjusted_top, min_top),
+            max(adjusted_right, min_right),
+            max(adjusted_bottom, min_bottom),
+        ],
+        image_width,
+        image_height,
+    )
+
+
 def _reduce_box_overlap(
     original_box: List[float],
     expanded_box: List[float],
     neighbor_boxes: List[List[float]],
+    image_width: int,
+    image_height: int,
+    minimum_margin: Optional[Dict[str, float]] = None,
 ) -> List[float]:
     adjusted = expanded_box[:]
+    minimum_margin = minimum_margin or {}
     for neighbor in neighbor_boxes:
         if _box_area(neighbor) <= 0:
             continue
@@ -399,10 +457,18 @@ def _reduce_box_overlap(
             adjusted[1] = max(adjusted[1], neighbor_bottom)
 
         if adjusted[2] <= adjusted[0] or adjusted[3] <= adjusted[1]:
-            return original_box[:]
+            adjusted = _box_with_minimum_margin(original_box, minimum_margin, image_width, image_height)
+            continue
         if _overlap_ratio_against_smaller_box(adjusted, neighbor) > AUTO_ROI_MAX_NEIGHBOR_OVERLAP_RATIO:
-            return original_box[:]
-    return adjusted
+            adjusted = _enforce_minimum_margin(
+                original_box,
+                adjusted,
+                minimum_margin,
+                image_width,
+                image_height,
+            )
+    return _enforce_minimum_margin(original_box, adjusted, minimum_margin, image_width, image_height)
+
 
 
 def _prepare_auto_roi_box(
@@ -446,7 +512,15 @@ def _prepare_auto_roi_box(
         }
 
     expanded_box = _expand_text_roi_box(original_box, image_width, image_height)
-    adjusted_box = _reduce_box_overlap(original_box, expanded_box, neighbor_boxes)
+    minimum_margin = _minimum_text_roi_margin_px()
+    adjusted_box = _reduce_box_overlap(
+        original_box,
+        expanded_box,
+        neighbor_boxes,
+        image_width,
+        image_height,
+        minimum_margin,
+    )
     return {
         "box": adjusted_box,
         "expansion": {
@@ -461,6 +535,10 @@ def _prepare_auto_roi_box(
                 "bottom": AUTO_ROI_EXPAND_BOTTOM_PX,
                 "left": AUTO_ROI_EXPAND_LEFT_PX,
                 "right": AUTO_ROI_EXPAND_RIGHT_PX,
+            },
+            "minimum_safety_margin": {
+                "unit": "px",
+                **minimum_margin,
             },
             "max_neighbor_overlap": AUTO_ROI_MAX_NEIGHBOR_OVERLAP_RATIO,
             "overlap_adjusted": adjusted_box != expanded_box,
