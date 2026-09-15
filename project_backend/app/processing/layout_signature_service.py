@@ -1,6 +1,7 @@
 import json
 import logging
 import math
+import os
 from collections import Counter, defaultdict
 from typing import Any, Dict, List, Sequence
 
@@ -10,6 +11,8 @@ from app.core.json_utils import jsonb_load
 logger = logging.getLogger(__name__)
 LABELS = ("text", "table", "image")
 GRID_SIZE = 4
+COUNT_PREFILTER_THRESHOLD = float(os.getenv("LAYOUT_COUNT_PREFILTER_THRESHOLD", "0.45"))
+AREA_PREFILTER_THRESHOLD = float(os.getenv("LAYOUT_AREA_PREFILTER_THRESHOLD", "0.45"))
 
 
 def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
@@ -317,6 +320,25 @@ def compare_layout_signatures(query: Dict[str, Any], template: Dict[str, Any]) -
     label_count_score = sum(count_scores) / len(count_scores)
     area_distribution_score = sum(area_scores) / len(area_scores)
     grid_score = sum(grid_scores) / len(grid_scores)
+    prefilter_rejected = (
+        label_count_score < COUNT_PREFILTER_THRESHOLD
+        and area_distribution_score < AREA_PREFILTER_THRESHOLD
+    )
+    if prefilter_rejected:
+        return {
+            "score": 0.0,
+            "aspect_score": round(aspect_score, 4),
+            "label_count_score": round(label_count_score, 4),
+            "area_distribution_score": round(area_distribution_score, 4),
+            "grid_score": round(grid_score, 4),
+            "spatial_score": None,
+            "query_region_count": int(query.get("region_count") or 0),
+            "template_region_count": int(template.get("region_count") or 0),
+            "prefilter_rejected": True,
+            "prefilter_reason": "label_count_and_area_distribution_below_threshold",
+            "count_prefilter_threshold": COUNT_PREFILTER_THRESHOLD,
+            "area_prefilter_threshold": AREA_PREFILTER_THRESHOLD,
+        }
     spatial_score = _spatial_similarity(query, template)
     final_score = _clamp(
         (aspect_score * 0.15)
@@ -334,4 +356,7 @@ def compare_layout_signatures(query: Dict[str, Any], template: Dict[str, Any]) -
         "spatial_score": round(spatial_score, 4),
         "query_region_count": int(query.get("region_count") or 0),
         "template_region_count": int(template.get("region_count") or 0),
+        "prefilter_rejected": False,
+        "count_prefilter_threshold": COUNT_PREFILTER_THRESHOLD,
+        "area_prefilter_threshold": AREA_PREFILTER_THRESHOLD,
     }

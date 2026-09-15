@@ -1,4 +1,5 @@
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -88,6 +89,10 @@ def search_layout_candidates(
         )
 
     best_by_template: Dict[str, Dict[str, Any]] = {}
+    compared_count = 0
+    prefilter_rejected_count = 0
+    spatial_evaluated_count = 0
+    compare_elapsed = 0.0
     for row in rows:
         template_id = row["template_id"]
 
@@ -114,10 +119,29 @@ def search_layout_candidates(
             print("[LAYOUT] skipped invalid signature:", template_id)
             continue
 
+        compare_started = time.perf_counter()
         similarity = compare_layout_signatures(
             query_signature,
             signature,
         )
+        compare_elapsed += time.perf_counter() - compare_started
+        compared_count += 1
+        if similarity.get("prefilter_rejected"):
+            prefilter_rejected_count += 1
+            print(
+                "[LAYOUT] prefilter rejected:",
+                template_id,
+                "label_count_score=",
+                similarity.get("label_count_score"),
+                "area_distribution_score=",
+                similarity.get("area_distribution_score"),
+                "count_threshold=",
+                similarity.get("count_prefilter_threshold"),
+                "area_threshold=",
+                similarity.get("area_prefilter_threshold"),
+            )
+            continue
+        spatial_evaluated_count += 1
 
         print(
             "[LAYOUT] compared:",
@@ -161,6 +185,17 @@ def search_layout_candidates(
 
     ranked = sorted(best_by_template.values(), key=lambda item: item["score"], reverse=True)
     limited = ranked[:limit]
+    print(
+        "[LAYOUT] compare timing:",
+        "compared=",
+        compared_count,
+        "spatial_evaluated=",
+        spatial_evaluated_count,
+        "prefilter_rejected=",
+        prefilter_rejected_count,
+        "elapsed=",
+        round(compare_elapsed, 4),
+    )
     
     if include_template_id and not any(
         item.get("metadata", {}).get("template_id") == include_template_id
