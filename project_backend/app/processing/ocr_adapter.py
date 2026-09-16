@@ -372,10 +372,11 @@ def _perspective_crop_text_line(bgr_crop, box: Dict[str, Any], official_style: b
     return warped
 
 
-def _crop_box(bgr_crop, box: Dict[str, Any], official_style: bool = True):
-    perspective_crop = _perspective_crop_text_line(bgr_crop, box, official_style=official_style)
-    if perspective_crop is not None:
-        return perspective_crop
+def _crop_box(bgr_crop, box: Dict[str, Any], official_style: bool = True, allow_perspective: bool = True):
+    if allow_perspective:
+        perspective_crop = _perspective_crop_text_line(bgr_crop, box, official_style=official_style)
+        if perspective_crop is not None:
+            return perspective_crop
     y1 = box["y"]
     x1 = box["x"]
     y2 = min(bgr_crop.shape[0], y1 + box["height"])
@@ -414,7 +415,12 @@ def _recognize_text_crops_with_detection(
         if boxes:
             per_key_detection[key] = detection_meta
             for box in boxes:
-                sub_crop = _crop_box(bgr_crop, box, official_style=official_crop_style)
+                sub_crop = _crop_box(
+                    bgr_crop,
+                    box,
+                    official_style=official_crop_style,
+                    allow_perspective=not is_table_source,
+                )
                 if sub_crop.size == 0:
                     continue
                 recognition_crops.append(sub_crop)
@@ -442,7 +448,7 @@ def _recognize_text_crops_with_detection(
     for meta, result in zip(recognition_meta, batch_results):
         text = normalize_ocr_text(result.get("text"))
         confidence = round(float(result.get("confidence") or 0.0), 4)
-        if confidence < TEXT_RECOGNITION_SCORE_THRESHOLD:
+        if not is_table_source and confidence < TEXT_RECOGNITION_SCORE_THRESHOLD:
             text = ""
         grouped.setdefault(meta["key"], []).append(
             {
