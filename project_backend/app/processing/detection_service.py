@@ -1377,6 +1377,7 @@ def _detect_page(
     timing: Optional[Dict[str, float]] = None,
     retrieval_limit: int = DETECTION_RETRIEVAL_LIMIT,
     verification_strategy: str = "standard",
+    query_page_count: Optional[int] = None,
 ) -> Dict[str, Any]:
     page_index = int(page_info["page_index"])
     normalized_image_path = str(page_info["normalized_path"])
@@ -1406,6 +1407,13 @@ def _detect_page(
         result_detection_mode = str(metadata.get("detection_mode") or "all_pages")
         result_main_page_number = int(metadata.get("main_page_number") or 1)
         main_page_auto_roi_only = result_detection_mode == "main_page" and page_index != result_main_page_number
+        template_page_count = int(metadata.get("page_count") or 0)
+        all_pages_page_count_mismatch = (
+            result_detection_mode != "main_page"
+            and bool(query_page_count)
+            and bool(template_page_count)
+            and int(query_page_count or 0) != template_page_count
+        )
         layout_score = float(result.get("layout_score", result.get("score", 0.0)) or 0.0)
         layout_similarity_threshold = _layout_similarity_threshold(metadata)
         layout_confident = layout_score >= DecisionService.MIN_RETRIEVAL_SCORE
@@ -1413,6 +1421,7 @@ def _detect_page(
         should_fully_evaluate = (
             layout_confident
             and not early_rejected
+            and not all_pages_page_count_mismatch
             and index <= DETECTION_VERIFICATION_CANDIDATE_LIMIT
             and not main_page_auto_roi_only
             and (
@@ -1457,6 +1466,13 @@ def _detect_page(
                 candidate["decision_reason"] = "layout_similarity_threshold_failed"
                 candidate["decision_path"] = "layout_similarity_threshold_failed"
                 candidate["evaluation_status"] = "layout_threshold_rejected"
+            if all_pages_page_count_mismatch:
+                candidate["final_passed"] = False
+                candidate["decision_reason"] = "all_pages_page_count_mismatch"
+                candidate["decision_path"] = "all_pages_page_count_mismatch"
+                candidate["evaluation_status"] = "page_count_rejected"
+                candidate["query_page_count"] = int(query_page_count or 0)
+                candidate["template_page_count"] = template_page_count
             if main_page_auto_roi_only:
                 candidate["final_passed"] = False
                 candidate["decision_reason"] = "main_page_detection_uses_auto_roi_for_non_main_pages"
@@ -1702,6 +1718,7 @@ def detect_template_dev(
         if prepublish_timing:
             print(f"[PREPUBLISH] prepare pages done: {timing['prepare_pages']:.2f}s")
         page_image_paths = {page["page_index"]: page["normalized_path"] for page in normalized_pages}
+        query_page_count = len(normalized_pages)
         retrieval_limit = DETECTION_RETRIEVAL_LIMIT if include_template_id else USER_DETECTION_RETRIEVAL_LIMIT
         verification_strategy = normalize_verification_strategy(
             global_settings_service.get_verification_strategy().get("verification_strategy")
@@ -1721,6 +1738,7 @@ def detect_template_dev(
                 timing=timing,
                 retrieval_limit=retrieval_limit,
                 verification_strategy=verification_strategy,
+                query_page_count=query_page_count,
             )
             pages.append(detected_page)
             if int(page.get("page_index") or 1) == 1:

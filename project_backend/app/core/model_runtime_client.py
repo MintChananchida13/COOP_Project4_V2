@@ -32,7 +32,7 @@ class ModelRuntimeKind(str, Enum):
 
 MODEL_RUNTIME_GATEWAY_PATH: Dict[ModelRuntimeKind, str] = {
     ModelRuntimeKind.LAYOUT: "/api/v1/document-layouts",
-    ModelRuntimeKind.TEXT_DETECTION: "/api/v1/text-detections?version=v5",
+    ModelRuntimeKind.TEXT_DETECTION: "/api/v1/text-detections?version=v6",
     ModelRuntimeKind.TEXT_RECOGNITION: "/api/v1/text-recognitions",
     ModelRuntimeKind.TABLE: "/api/v1/table-model-results",
     ModelRuntimeKind.IMAGE_VERIFICATION: "/api/v1/image-classifications",
@@ -169,7 +169,7 @@ def remote_detect_text_boxes_batch(images: List[np.ndarray]) -> Optional[Dict[st
         ModelRuntimeKind.TEXT_DETECTION,
         {"images": [_image_to_data_url(image) for image in images]},
         timeout=240.0,
-        path_override="/api/v1/text-detection-batches?version=v5",
+        path_override="/api/v1/text-detection-batches?version=v6",
     )
 
 
