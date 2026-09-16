@@ -309,6 +309,21 @@ def _detection_debug_url(path_value: Optional[str]) -> Optional[str]:
     return f"/debug/detection-queries/{relative.as_posix()}"
 
 
+def _detection_preview_url(path_value: Optional[str]) -> Optional[str]:
+    debug_url = _detection_debug_url(path_value)
+    if debug_url:
+        return debug_url
+    if not path_value:
+        return None
+    try:
+        path = Path(path_value)
+        if not path.exists():
+            return None
+        return _image_to_data_url(path)
+    except Exception:
+        return None
+
+
 def _save_query_image(query_id: str, image_bytes: bytes, page_index: int = 1) -> Path:
     Image = _load_pillow()
     if Image is None:
@@ -872,8 +887,8 @@ def _align_candidate_page(
             str(output_path),
         )
         layout_status = str(layout_alignment.get("alignment_status") or "")
-        layout_alignment["aligned_image_preview_url"] = _detection_debug_url(layout_alignment.get("aligned_image_path"))
-        layout_alignment["alignment_match_image_preview_url"] = _detection_debug_url(layout_alignment.get("alignment_match_image_path"))
+        layout_alignment["aligned_image_preview_url"] = _detection_preview_url(layout_alignment.get("aligned_image_path"))
+        layout_alignment["alignment_match_image_preview_url"] = _detection_preview_url(layout_alignment.get("alignment_match_image_path"))
         layout_debug = layout_alignment.get("alignment_debug") or {}
         layout_debug["layout_alignment_executed"] = layout_status != "skipped"
         layout_debug["orb_executed"] = False
@@ -893,8 +908,8 @@ def _align_candidate_page(
         service_status = str(alignment.get("alignment_status") or "")
         alignment_status = "aligned" if alignment.get("aligned_image_path") and service_status == "aligned" else "fallback"
         alignment["alignment_status"] = alignment_status
-        alignment["aligned_image_preview_url"] = _detection_debug_url(alignment.get("aligned_image_path"))
-        alignment["alignment_match_image_preview_url"] = _detection_debug_url(alignment.get("alignment_match_image_path"))
+        alignment["aligned_image_preview_url"] = _detection_preview_url(alignment.get("aligned_image_path"))
+        alignment["alignment_match_image_preview_url"] = _detection_preview_url(alignment.get("alignment_match_image_path"))
         alignment_debug = alignment.get("alignment_debug") or {}
         alignment_debug["orb_executed"] = True
         alignment_debug["precheck"] = precheck
@@ -1096,7 +1111,7 @@ def _candidate_from_result(
             "decision_path": "คะแนนรวมต่ำกว่าเกณฑ์",
         }
     extraction_image_path = str(alignment.get("aligned_image_path") or query_image_path) if verification_source_used == "aligned" else query_image_path
-    extraction_image_preview_url = _detection_debug_url(extraction_image_path)
+    extraction_image_preview_url = _detection_preview_url(extraction_image_path)
     roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} else "projected"
 
     template_fields: List[Dict[str, Any]] = []
@@ -1239,7 +1254,7 @@ def _candidate_from_result(
         "aligned_image_path": alignment.get("aligned_image_path"),
         "aligned_image_preview_url": alignment.get("aligned_image_preview_url"),
         "normalized_image_path": query_image_path,
-        "normalized_image_preview_url": _detection_debug_url(query_image_path),
+        "normalized_image_preview_url": _detection_preview_url(query_image_path),
         "extraction_image_path": extraction_image_path,
         "extraction_image_preview_url": extraction_image_preview_url,
         "roi_coordinate_space": roi_coordinate_space,
@@ -1504,16 +1519,16 @@ def _detect_page(
         "best_candidate": best_candidate,
         "candidates": candidates,
         "image_preview_data_url": _image_to_data_url(Path(normalized_image_path)),
-        "original_image_preview_url": _detection_debug_url(str(page_info["original_path"])),
-        "normalized_image_preview_url": _detection_debug_url(normalized_image_path),
+        "original_image_preview_url": _detection_preview_url(str(page_info["original_path"])),
+        "normalized_image_preview_url": _detection_preview_url(normalized_image_path),
         "original_image_path": str(page_info["original_path"]),
         "normalized_image_path": normalized_image_path,
         "normalization": page_info["normalization"],
         "debug": {
             "query_image_path": str(page_info["original_path"]),
             "normalized_query_image_path": normalized_image_path,
-            "original_image_preview_url": _detection_debug_url(str(page_info["original_path"])),
-            "normalized_image_preview_url": _detection_debug_url(normalized_image_path),
+            "original_image_preview_url": _detection_preview_url(str(page_info["original_path"])),
+            "normalized_image_preview_url": _detection_preview_url(normalized_image_path),
             "query_engine": "layout_signature",
             "query_version": query_signature.get("version"),
             "query_model_name": query_signature.get("model"),
@@ -1728,11 +1743,10 @@ def detect_template_dev(
         included_template = _fetch_template(include_template_id)
         included_template_detection_mode = str((included_template or {}).get("detection_mode") or "all_pages")
         included_template_main_page_only = bool(include_template_id and included_template_detection_mode == "main_page")
-        for page in normalized_pages:
-            if confirmed_main_page_candidate is not None:
-                break
-            detected_page = _detect_page(
-                page,
+        if normalized_pages:
+            first_page = normalized_pages[0]
+            first_detected_page = _detect_page(
+                first_page,
                 page_image_paths,
                 include_template_id=include_template_id,
                 timing=timing,
@@ -1740,12 +1754,34 @@ def detect_template_dev(
                 verification_strategy=verification_strategy,
                 query_page_count=query_page_count,
             )
-            pages.append(detected_page)
-            if int(page.get("page_index") or 1) == 1:
-                if _is_confirmed_main_page_candidate(detected_page.get("best_candidate")):
-                    confirmed_main_page_candidate = detected_page.get("best_candidate")
-                if included_template_main_page_only:
-                    break
+            pages.append(first_detected_page)
+            first_best_candidate = first_detected_page.get("best_candidate")
+            if _is_confirmed_main_page_candidate(first_best_candidate):
+                confirmed_main_page_candidate = first_best_candidate
+
+            should_detect_remaining_pages = False
+            if confirmed_main_page_candidate is None and not included_template_main_page_only and isinstance(first_best_candidate, dict):
+                first_metadata = first_best_candidate.get("metadata") if isinstance(first_best_candidate.get("metadata"), dict) else {}
+                first_detection_mode = str(first_best_candidate.get("detection_mode") or first_metadata.get("detection_mode") or "all_pages")
+                first_template_page_count = int(first_best_candidate.get("template_page_count") or first_metadata.get("page_count") or 0)
+                should_detect_remaining_pages = (
+                    first_detection_mode != "main_page"
+                    and first_template_page_count == query_page_count
+                    and query_page_count > 1
+                )
+
+            if should_detect_remaining_pages:
+                for page in normalized_pages[1:]:
+                    detected_page = _detect_page(
+                        page,
+                        page_image_paths,
+                        include_template_id=include_template_id,
+                        timing=timing,
+                        retrieval_limit=retrieval_limit,
+                        verification_strategy=verification_strategy,
+                        query_page_count=query_page_count,
+                    )
+                    pages.append(detected_page)
         if prepublish_timing:
             print(f"[PREPUBLISH] layout analysis done: {timing.get('layout_analysis', 0.0):.2f}s")
             print(f"[PREPUBLISH] template matching done: {timing.get('template_matching', 0.0):.2f}s")

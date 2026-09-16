@@ -1753,22 +1753,15 @@ function HomeWorkspace() {
         throw contextualTemplateError("Template bundle loading failed", error);
       }
 
-      const keepOriginalPdfPages =
-        uploadedSourceFileType === "pdf" || uploadedSourceFileName.toLowerCase().endsWith(".pdf");
       setTemplateDecisionStatus(
-        keepOriginalPdfPages
-          ? "พบ Template แล้ว กำลังเตรียมกรอบ OCR บนหน้า PDF เดิม"
-          : "กำลังจัดภาพให้ตรงกับ Template และเตรียมกรอบ OCR"
+        "กำลังจัดภาพให้ตรงกับ Template และเตรียมกรอบ OCR"
       );
       let templateCanvasImages: string[];
       try {
-        templateCanvasImages = await buildTemplateCanvasImages(finalProcessedImages, detection, templateId, {
-          keepOriginalImages: keepOriginalPdfPages,
-        });
+        templateCanvasImages = await buildTemplateCanvasImages(finalProcessedImages, detection, templateId);
         devTemplateFlowLog("canvas images prepared", {
           pageCount: templateCanvasImages.length,
           replacedCount: templateCanvasImages.filter((src, index) => src !== finalProcessedImages[index]).length,
-          keptOriginalPdfPages: keepOriginalPdfPages,
         });
       } catch (error) {
         throw contextualTemplateError("Template canvas preparation failed", error);
