@@ -221,7 +221,7 @@ def _detect_boxes_in_crop(bgr_crop) -> Tuple[List[Dict[str, Any]], Dict[str, Any
     except (LayoutAnalysisUnavailableError, RuntimeError, OcrUnavailableError, ValueError) as error:
         return [], {
             "engine": "paddle_text_detection",
-            "model": "PP-OCRv5_server_det",
+            "model": "PP-OCRv6_medium_det",
             "box_count": 0,
             "fallback_used": True,
             "error": str(error),
@@ -280,7 +280,7 @@ def _detect_boxes_in_crops_batch(
                 [],
                 {
                     "engine": "paddle_text_detection",
-                    "model": "PP-OCRv5_server_det",
+                    "model": "PP-OCRv6_medium_det",
                     "box_count": 0,
                     "fallback_used": True,
                     "error": str(error),
@@ -299,7 +299,7 @@ def _detect_boxes_in_crops_batch(
                 [],
                 {
                     "engine": "paddle_text_detection",
-                    "model": "PP-OCRv5_server_det",
+                    "model": "PP-OCRv6_medium_det",
                     "box_count": 0,
                     "fallback_used": True,
                     "error": "invalid_batch_item",
@@ -308,10 +308,20 @@ def _detect_boxes_in_crops_batch(
     return results
 
 
-def _order_quad_points(points: List[List[float]]) -> Optional[np.ndarray]:
+def _order_quad_points(points: List[List[float]], official_style: bool = True) -> Optional[np.ndarray]:
     if len(points) < 4:
         return None
     pts = np.array(points[:4], dtype=np.float32)
+    if official_style:
+        x_sorted = pts[np.argsort(pts[:, 0]), :]
+        left = x_sorted[:2, :]
+        right = x_sorted[2:, :]
+        left = left[np.argsort(left[:, 1]), :]
+        left_top, left_bottom = left[0], left[1]
+        right = right[np.argsort(right[:, 1]), :]
+        right_top, right_bottom = right[0], right[1]
+        return np.array([left_top, right_top, right_bottom, left_bottom], dtype=np.float32)
+
     rect = np.zeros((4, 2), dtype=np.float32)
     sums = pts.sum(axis=1)
     diffs = np.diff(pts, axis=1).reshape(-1)
@@ -322,11 +332,11 @@ def _order_quad_points(points: List[List[float]]) -> Optional[np.ndarray]:
     return rect
 
 
-def _perspective_crop_text_line(bgr_crop, box: Dict[str, Any]):
+def _perspective_crop_text_line(bgr_crop, box: Dict[str, Any], official_style: bool = True):
     polygon = box.get("polygon")
     if not isinstance(polygon, list) or len(polygon) < 4:
         return None
-    points = _order_quad_points(polygon)
+    points = _order_quad_points(polygon, official_style=official_style)
     if points is None:
         return None
 
@@ -349,14 +359,21 @@ def _perspective_crop_text_line(bgr_crop, box: Dict[str, Any]):
         dtype=np.float32,
     )
     matrix = cv2.getPerspectiveTransform(points, destination)
-    warped = cv2.warpPerspective(bgr_crop, matrix, (width, height), borderMode=cv2.BORDER_REPLICATE)
+    warp_flags = cv2.INTER_CUBIC if official_style else cv2.INTER_LINEAR
+    warped = cv2.warpPerspective(
+        bgr_crop,
+        matrix,
+        (width, height),
+        flags=warp_flags,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
     if warped.size == 0:
         return None
     return warped
 
 
-def _crop_box(bgr_crop, box: Dict[str, Any]):
-    perspective_crop = _perspective_crop_text_line(bgr_crop, box)
+def _crop_box(bgr_crop, box: Dict[str, Any], official_style: bool = True):
+    perspective_crop = _perspective_crop_text_line(bgr_crop, box, official_style=official_style)
     if perspective_crop is not None:
         return perspective_crop
     y1 = box["y"]
@@ -377,6 +394,8 @@ def _recognize_text_crops_with_detection(
     recognition_meta: List[Dict[str, Any]] = []
     per_key_detection: Dict[str, Dict[str, Any]] = {}
     detection_results = _detect_boxes_in_crops_batch(text_items, source=source)
+    is_table_source = str(source or "").startswith("table:")
+    official_crop_style = not is_table_source
 
     for key, bgr_crop in text_items:
         boxes, detection_meta = detection_results.get(
@@ -385,7 +404,7 @@ def _recognize_text_crops_with_detection(
                 [],
                 {
                     "engine": "paddle_text_detection",
-                    "model": "PP-OCRv5_server_det",
+                    "model": "PP-OCRv6_medium_det",
                     "box_count": 0,
                     "fallback_used": True,
                     "error": "missing_batch_detection_result",
@@ -395,7 +414,7 @@ def _recognize_text_crops_with_detection(
         if boxes:
             per_key_detection[key] = detection_meta
             for box in boxes:
-                sub_crop = _crop_box(bgr_crop, box)
+                sub_crop = _crop_box(bgr_crop, box, official_style=official_crop_style)
                 if sub_crop.size == 0:
                     continue
                 recognition_crops.append(sub_crop)
@@ -454,7 +473,7 @@ def _recognize_text_crops_with_detection(
             "detected_text_length": len(detected_text),
         }
 
-        if not fallback_used and (not detected_text or len(detected_text) <= 2):
+        if is_table_source and not fallback_used and (not detected_text or len(detected_text) <= 2):
             full_crop = source_crops.get(key)
             if full_crop is not None and getattr(full_crop, "size", 0) > 0:
                 fallback_requests.append((key, full_crop))
