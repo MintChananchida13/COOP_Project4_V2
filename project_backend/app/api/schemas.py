@@ -163,6 +163,18 @@ class VerificationStrategyUpdate(BaseModel):
     verification_strategy: str = Field(validation_alias=AliasChoices("verification_strategy", "verificationStrategy"))
 
 
+class OcrModelPayload(BaseModel):
+    id: Optional[str] = None
+    display_name: str = Field(validation_alias=AliasChoices("display_name", "displayName"))
+    single_api_path: str = Field(validation_alias=AliasChoices("single_api_path", "singleApiPath"))
+    batch_api_path: str = Field(validation_alias=AliasChoices("batch_api_path", "batchApiPath"))
+
+
+class OcrActiveModelsUpdate(BaseModel):
+    text_detection_model_id: str = Field(validation_alias=AliasChoices("text_detection_model_id", "textDetectionModelId"))
+    text_recognition_model_id: str = Field(validation_alias=AliasChoices("text_recognition_model_id", "textRecognitionModelId"))
+
+
 class TemplateVersionCreate(BaseModel):
     request_id: Optional[str] = None
     base_template_id: Optional[str] = None

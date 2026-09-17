@@ -31,6 +31,8 @@ from app.api.schemas import (
     TemplateRequestConvert,
     TemplateTestRequest,
     TemplateUpdate,
+    OcrActiveModelsUpdate,
+    OcrModelPayload,
     VerificationStrategyUpdate,
     TemplateVersionCreate,
     TemplateVersionFromRequestCreate,
@@ -525,6 +527,31 @@ def get_verification_strategy() -> ApiResponse:
 @router.put("/admin/settings/verification-strategy", response_model=ApiResponse)
 def update_verification_strategy(payload: VerificationStrategyUpdate) -> ApiResponse:
     return ok(global_settings.update_verification_strategy(payload.verification_strategy))
+
+
+@router.get("/admin/settings/ocr-models", response_model=ApiResponse)
+def get_ocr_model_settings() -> ApiResponse:
+    return ok(global_settings.get_ocr_model_settings())
+
+
+@router.put("/admin/settings/ocr-models/active", response_model=ApiResponse)
+def update_ocr_active_models(payload: OcrActiveModelsUpdate) -> ApiResponse:
+    return ok(
+        global_settings.update_ocr_active_models(
+            payload.text_detection_model_id,
+            payload.text_recognition_model_id,
+        )
+    )
+
+
+@router.post("/admin/settings/ocr-models/{kind}", response_model=ApiResponse)
+def create_ocr_model(kind: str, payload: OcrModelPayload) -> ApiResponse:
+    return ok(global_settings.upsert_ocr_model(kind, payload))
+
+
+@router.put("/admin/settings/ocr-models/{kind}/{model_id}", response_model=ApiResponse)
+def update_ocr_model(kind: str, model_id: str, payload: OcrModelPayload) -> ApiResponse:
+    return ok(global_settings.upsert_ocr_model(kind, payload, model_id=model_id))
 
 
 @router.get("/admin/templates/{template_id}", response_model=ApiResponse)

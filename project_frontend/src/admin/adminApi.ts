@@ -1519,6 +1519,96 @@ export const updateVerificationStrategy = async (strategy: VerificationStrategy)
   return mapVerificationStrategy(json?.data?.verification_strategy || json?.verification_strategy);
 };
 
+export type OcrModelKind = "text_detection" | "text_recognition";
+
+export interface OcrModelConfig {
+  id: string;
+  displayName: string;
+  singleApiPath: string;
+  batchApiPath: string;
+}
+
+export interface OcrModelSettings {
+  active: Record<OcrModelKind, string>;
+  models: Record<OcrModelKind, OcrModelConfig[]>;
+}
+
+const mapOcrModel = (item: Record<string, unknown>): OcrModelConfig => ({
+  id: String(item.id || ""),
+  displayName: String(item.display_name || item.displayName || ""),
+  singleApiPath: String(item.single_api_path || item.singleApiPath || ""),
+  batchApiPath: String(item.batch_api_path || item.batchApiPath || ""),
+});
+
+const mapOcrModelSettings = (data: Record<string, unknown>): OcrModelSettings => {
+  const settings = (data.ocr_models || data.ocrModels || data) as Record<string, unknown>;
+  const active = (settings.active || {}) as Record<string, unknown>;
+  const models = (settings.models || {}) as Record<string, unknown>;
+  return {
+    active: {
+      text_detection: String(active.text_detection || active.textDetection || ""),
+      text_recognition: String(active.text_recognition || active.textRecognition || ""),
+    },
+    models: {
+      text_detection: asRecordArray(models.text_detection || models.textDetection).map(mapOcrModel),
+      text_recognition: asRecordArray(models.text_recognition || models.textRecognition).map(mapOcrModel),
+    },
+  };
+};
+
+export const fetchOcrModelSettings = async (): Promise<OcrModelSettings> => {
+  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/settings/ocr-models`);
+  const json = await response.json();
+  if (!response.ok || json?.success === false) {
+    throw new Error(json?.detail || json?.error?.message || "Fetch OCR model settings failed");
+  }
+  return mapOcrModelSettings((json?.data as Record<string, unknown>) || {});
+};
+
+export const updateActiveOcrModels = async (payload: {
+  textDetectionModelId: string;
+  textRecognitionModelId: string;
+}): Promise<OcrModelSettings> => {
+  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/settings/ocr-models/active`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text_detection_model_id: payload.textDetectionModelId,
+      text_recognition_model_id: payload.textRecognitionModelId,
+    }),
+  });
+  const json = await response.json();
+  if (!response.ok || json?.success === false) {
+    throw new Error(json?.detail || json?.error?.message || "Update OCR active models failed");
+  }
+  return mapOcrModelSettings((json?.data as Record<string, unknown>) || {});
+};
+
+export const saveOcrModel = async (
+  kind: OcrModelKind,
+  model: Omit<OcrModelConfig, "id"> & { id?: string }
+): Promise<OcrModelSettings> => {
+  const isEdit = Boolean(model.id);
+  const response = await fetchWithAuth(
+    `${ADMIN_API_BASE_URL}/admin/settings/ocr-models/${kind}${isEdit ? `/${encodeURIComponent(String(model.id))}` : ""}`,
+    {
+      method: isEdit ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: model.id,
+        display_name: model.displayName,
+        single_api_path: model.singleApiPath,
+        batch_api_path: model.batchApiPath,
+      }),
+    }
+  );
+  const json = await response.json();
+  if (!response.ok || json?.success === false) {
+    throw new Error(json?.detail || json?.error?.message || "Save OCR model failed");
+  }
+  return mapOcrModelSettings((json?.data as Record<string, unknown>) || {});
+};
+
 const embeddingJobResponseError = async (response: Response, fallback: string) => {
   const json = await response.json().catch(() => null);
   const detail = json?.detail || json?.error?.message || json?.error || fallback;

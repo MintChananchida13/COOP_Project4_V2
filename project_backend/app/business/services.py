@@ -76,6 +76,39 @@ VERIFICATION_STRATEGY_SETTING_KEY = "verification_strategy"
 VERIFICATION_STRATEGY_STANDARD = "standard"
 VERIFICATION_STRATEGY_STRICT = "strict"
 VERIFICATION_STRATEGIES = {VERIFICATION_STRATEGY_STANDARD, VERIFICATION_STRATEGY_STRICT}
+OCR_MODEL_SETTINGS_KEY = "ocr_model_settings"
+OCR_MODEL_KINDS = {"text_detection", "text_recognition"}
+
+DEFAULT_OCR_MODEL_SETTINGS: Dict[str, Any] = {
+    "active": {
+        "text_detection": "ocr_det_v6_medium",
+        "text_recognition": "thai_ocr_v5_mobile",
+    },
+    "models": {
+        "text_detection": [
+            {
+                "id": "ocr_det_v6_medium",
+                "display_name": "PP-OCRv6 Medium",
+                "single_api_path": "/api/v1/text-detections?version=v6",
+                "batch_api_path": "/api/v1/text-detection-batches?version=v6",
+            },
+            {
+                "id": "ocr_det_v5_server",
+                "display_name": "PP-OCRv5 Server",
+                "single_api_path": "/api/v1/text-detections?version=v5",
+                "batch_api_path": "/api/v1/text-detection-batches?version=v5",
+            },
+        ],
+        "text_recognition": [
+            {
+                "id": "thai_ocr_v5_mobile",
+                "display_name": "Thai PP-OCRv5 Mobile",
+                "single_api_path": "/api/v1/text-recognitions",
+                "batch_api_path": "/api/v1/text-recognition-batches",
+            },
+        ],
+    },
+}
 
 
 class EmbeddingContextError(Exception):
@@ -157,7 +190,85 @@ def normalize_verification_strategy(value: Optional[str]) -> str:
     return normalized if normalized in VERIFICATION_STRATEGIES else VERIFICATION_STRATEGY_STANDARD
 
 
+def _normalize_model_kind(kind: str) -> str:
+    normalized = str(kind or "").strip().lower().replace("-", "_")
+    if normalized not in OCR_MODEL_KINDS:
+        raise HTTPException(status_code=400, detail="model kind must be text_detection or text_recognition")
+    return normalized
+
+
+def _clean_api_path(value: Any, field_name: str) -> str:
+    path = str(value or "").strip()
+    if not path.startswith("/"):
+        raise HTTPException(status_code=400, detail=f"{field_name} must start with /")
+    return path
+
+
+def _clean_ocr_model_payload(payload: Any, existing_id: Optional[str] = None) -> Dict[str, Any]:
+    data = payload.model_dump(by_alias=False) if hasattr(payload, "model_dump") else dict(payload or {})
+    display_name = str(data.get("display_name") or "").strip()
+    if not display_name:
+        raise HTTPException(status_code=400, detail="display_name is required")
+    model_id = str(existing_id or data.get("id") or _stub_id("ocr_model")).strip()
+    return {
+        "id": model_id,
+        "display_name": display_name,
+        "single_api_path": _clean_api_path(data.get("single_api_path"), "single_api_path"),
+        "batch_api_path": _clean_api_path(data.get("batch_api_path"), "batch_api_path"),
+    }
+
+
+def normalize_ocr_model_settings(value: Any = None) -> Dict[str, Any]:
+    raw = jsonb_load(value, {}) if isinstance(value, str) else (value or {})
+    defaults = {
+        "active": dict(DEFAULT_OCR_MODEL_SETTINGS["active"]),
+        "models": {
+            kind: [dict(model) for model in DEFAULT_OCR_MODEL_SETTINGS["models"][kind]]
+            for kind in OCR_MODEL_KINDS
+        },
+    }
+    if not isinstance(raw, dict):
+        return defaults
+
+    raw_models = raw.get("models") if isinstance(raw.get("models"), dict) else {}
+    for kind in OCR_MODEL_KINDS:
+        incoming = raw_models.get(kind)
+        if isinstance(incoming, list) and incoming:
+            cleaned: List[Dict[str, Any]] = []
+            for item in incoming:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    cleaned.append(_clean_ocr_model_payload(item, existing_id=str(item.get("id") or "")))
+                except HTTPException:
+                    continue
+            if cleaned:
+                defaults["models"][kind] = cleaned
+
+    raw_active = raw.get("active") if isinstance(raw.get("active"), dict) else {}
+    for kind in OCR_MODEL_KINDS:
+        ids = {model["id"] for model in defaults["models"][kind]}
+        active_id = str(raw_active.get(kind) or defaults["active"][kind])
+        if active_id in ids:
+            defaults["active"][kind] = active_id
+        elif defaults["models"][kind]:
+            defaults["active"][kind] = defaults["models"][kind][0]["id"]
+    return defaults
+
+
 class GlobalSettingsService:
+    def _save_setting(self, key: str, value: str) -> None:
+        with _connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """,
+                (key, value),
+            )
+            conn.commit()
+
     def get_verification_strategy(self) -> Dict[str, Any]:
         with _connect() as conn:
             row = conn.execute(
@@ -171,17 +282,55 @@ class GlobalSettingsService:
         strategy = normalize_verification_strategy(value)
         if strategy != str(value or "").strip().lower():
             raise HTTPException(status_code=400, detail="verification_strategy must be standard or strict")
-        with _connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO app_settings (key, value, updated_at)
-                VALUES (?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
-                """,
-                (VERIFICATION_STRATEGY_SETTING_KEY, strategy),
-            )
-            conn.commit()
+        self._save_setting(VERIFICATION_STRATEGY_SETTING_KEY, strategy)
         return {"verification_strategy": strategy}
+
+    def get_ocr_model_settings(self) -> Dict[str, Any]:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = ?",
+                (OCR_MODEL_SETTINGS_KEY,),
+            ).fetchone()
+        settings = normalize_ocr_model_settings(row["value"] if row else None)
+        return {"ocr_models": settings}
+
+    def update_ocr_active_models(self, text_detection_model_id: str, text_recognition_model_id: str) -> Dict[str, Any]:
+        settings = self.get_ocr_model_settings()["ocr_models"]
+        requested = {
+            "text_detection": str(text_detection_model_id or "").strip(),
+            "text_recognition": str(text_recognition_model_id or "").strip(),
+        }
+        for kind, model_id in requested.items():
+            ids = {model["id"] for model in settings["models"][kind]}
+            if model_id not in ids:
+                raise HTTPException(status_code=400, detail=f"Unknown {kind} model id")
+            settings["active"][kind] = model_id
+        self._save_setting(OCR_MODEL_SETTINGS_KEY, jsonb_dump(settings))
+        return {"ocr_models": settings}
+
+    def upsert_ocr_model(self, kind: str, payload: Any, model_id: Optional[str] = None) -> Dict[str, Any]:
+        normalized_kind = _normalize_model_kind(kind)
+        settings = self.get_ocr_model_settings()["ocr_models"]
+        cleaned = _clean_ocr_model_payload(payload, existing_id=model_id)
+        models = settings["models"][normalized_kind]
+        index = next((item_index for item_index, item in enumerate(models) if item["id"] == cleaned["id"]), -1)
+        if index >= 0:
+            models[index] = cleaned
+        else:
+            models.append(cleaned)
+        if not settings["active"].get(normalized_kind):
+            settings["active"][normalized_kind] = cleaned["id"]
+        self._save_setting(OCR_MODEL_SETTINGS_KEY, jsonb_dump(settings))
+        return {"ocr_models": settings, "model": cleaned}
+
+    def active_ocr_model(self, kind: str) -> Dict[str, Any]:
+        normalized_kind = _normalize_model_kind(kind)
+        settings = self.get_ocr_model_settings()["ocr_models"]
+        active_id = settings["active"][normalized_kind]
+        for model in settings["models"][normalized_kind]:
+            if model["id"] == active_id:
+                return model
+        return settings["models"][normalized_kind][0]
 
 
 def _row_to_dict(row: Any) -> Dict[str, Any]:

@@ -13,6 +13,8 @@ import cv2
 import numpy as np
 
 from app.core.config import GATEWAY_URL
+from app.core.db import connect as connect_db
+from app.core.json_utils import jsonb_load
 
 
 logger = logging.getLogger(__name__)
@@ -37,6 +39,67 @@ MODEL_RUNTIME_GATEWAY_PATH: Dict[ModelRuntimeKind, str] = {
     ModelRuntimeKind.TABLE: "/api/v1/table-model-results",
     ModelRuntimeKind.IMAGE_VERIFICATION: "/api/v1/image-classifications",
 }
+
+OCR_MODEL_SETTINGS_KEY = "ocr_model_settings"
+DEFAULT_OCR_MODEL_SETTINGS: Dict[str, Any] = {
+    "active": {
+        "text_detection": "ocr_det_v6_medium",
+        "text_recognition": "thai_ocr_v5_mobile",
+    },
+    "models": {
+        "text_detection": [
+            {
+                "id": "ocr_det_v6_medium",
+                "display_name": "PP-OCRv6 Medium",
+                "single_api_path": "/api/v1/text-detections?version=v6",
+                "batch_api_path": "/api/v1/text-detection-batches?version=v6",
+            },
+        ],
+        "text_recognition": [
+            {
+                "id": "thai_ocr_v5_mobile",
+                "display_name": "Thai PP-OCRv5 Mobile",
+                "single_api_path": "/api/v1/text-recognitions",
+                "batch_api_path": "/api/v1/text-recognition-batches",
+            },
+        ],
+    },
+}
+
+
+def _active_ocr_model(kind: str) -> Dict[str, Any]:
+    settings = DEFAULT_OCR_MODEL_SETTINGS
+    try:
+        with connect_db() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = ?",
+                (OCR_MODEL_SETTINGS_KEY,),
+            ).fetchone()
+        loaded = jsonb_load(row["value"] if row else None, None)
+        if isinstance(loaded, dict):
+            settings = loaded
+    except Exception as error:
+        logger.warning("Unable to load OCR model settings; using defaults: %s", error)
+
+    models = ((settings.get("models") if isinstance(settings, dict) else {}) or {}).get(kind)
+    active_id = ((settings.get("active") if isinstance(settings, dict) else {}) or {}).get(kind)
+    if isinstance(models, list):
+        for model in models:
+            if isinstance(model, dict) and model.get("id") == active_id:
+                return model
+        for model in models:
+            if isinstance(model, dict):
+                return model
+    return DEFAULT_OCR_MODEL_SETTINGS["models"][kind][0]
+
+
+def _active_ocr_path(kind: str, mode: str) -> str:
+    model = _active_ocr_model(kind)
+    key = "batch_api_path" if mode == "batch" else "single_api_path"
+    path = str(model.get(key) or "").strip()
+    if path.startswith("/"):
+        return path
+    return DEFAULT_OCR_MODEL_SETTINGS["models"][kind][0][key]
 
 
 def runtime_url(kind: ModelRuntimeKind) -> Optional[str]:
@@ -159,7 +222,11 @@ def remote_analyze_layout(image: np.ndarray) -> Optional[Dict[str, Any]]:
 def remote_detect_text_boxes(image_path: str) -> Optional[Dict[str, Any]]:
     if not is_runtime_configured(ModelRuntimeKind.TEXT_DETECTION):
         return None
-    return _post_predict(ModelRuntimeKind.TEXT_DETECTION, {"image": _path_to_data_url(image_path)})
+    return _post_predict(
+        ModelRuntimeKind.TEXT_DETECTION,
+        {"image": _path_to_data_url(image_path)},
+        path_override=_active_ocr_path("text_detection", "single"),
+    )
 
 
 def remote_detect_text_boxes_batch(images: List[np.ndarray]) -> Optional[Dict[str, Any]]:
@@ -169,14 +236,18 @@ def remote_detect_text_boxes_batch(images: List[np.ndarray]) -> Optional[Dict[st
         ModelRuntimeKind.TEXT_DETECTION,
         {"images": [_image_to_data_url(image) for image in images]},
         timeout=240.0,
-        path_override="/api/v1/text-detection-batches?version=v6",
+        path_override=_active_ocr_path("text_detection", "batch"),
     )
 
 
 def remote_recognize_image(image: np.ndarray) -> Optional[Dict[str, Any]]:
     if not is_runtime_configured(ModelRuntimeKind.TEXT_RECOGNITION):
         return None
-    return _post_predict(ModelRuntimeKind.TEXT_RECOGNITION, {"image": _image_to_data_url(image)})
+    return _post_predict(
+        ModelRuntimeKind.TEXT_RECOGNITION,
+        {"image": _image_to_data_url(image)},
+        path_override=_active_ocr_path("text_recognition", "single"),
+    )
 
 
 def remote_recognize_images(images: List[np.ndarray]) -> Optional[Dict[str, Any]]:
@@ -186,7 +257,7 @@ def remote_recognize_images(images: List[np.ndarray]) -> Optional[Dict[str, Any]
         ModelRuntimeKind.TEXT_RECOGNITION,
         {"images": [_image_to_data_url(image) for image in images]},
         timeout=240.0,
-        path_override="/api/v1/text-recognition-batches",
+        path_override=_active_ocr_path("text_recognition", "batch"),
     )
 
 
