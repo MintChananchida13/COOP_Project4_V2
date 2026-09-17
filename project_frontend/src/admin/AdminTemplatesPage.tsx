@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, ChevronDown, ChevronRight, FileImage, Folder, Loader2, Pencil, Plus, Search, UploadCloud, X } from "lucide-react";
 import { Template, TemplateStatus } from "../types/ocr";
@@ -135,6 +135,7 @@ export default function AdminTemplatesPage() {
   const [expandedFolderId, setExpandedFolderId] = useState<string | null>(null);
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
   const [editingFolderName, setEditingFolderName] = useState("");
+  const editingFolderInputRef = useRef<HTMLInputElement | null>(null);
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
   const [isCreatingRequest, setIsCreatingRequest] = useState(false);
   const [createRequestError, setCreateRequestError] = useState("");
@@ -163,6 +164,12 @@ export default function AdminTemplatesPage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!editingFolderId) return;
+    editingFolderInputRef.current?.focus();
+    editingFolderInputRef.current?.select();
+  }, [editingFolderId]);
 
   const filteredTemplates = templates.filter((template) => {
     if (selectedStatus === "all") return true;
@@ -502,26 +509,32 @@ export default function AdminTemplatesPage() {
       </div>
 
       <div className={`${cardClassName} space-y-4 p-4`}>
-        <div className="grid w-full gap-2 sm:grid-cols-4 lg:ml-auto lg:w-auto lg:min-w-[520px]">
-          {statusFilterOptions.map((status) => (
-            <button
-              key={status.value}
-              type="button"
-              onClick={() => setSelectedStatus(status.value)}
-              className={`inline-flex h-10 items-center justify-between rounded-xl border px-3 text-xs font-black transition-colors ${
-                selectedStatus === status.value
-                  ? "border-indigo-500 bg-indigo-600 text-white"
-                  : "border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-50"
-              }`}
-            >
-              <span>{status.label}</span>
-              <span className={`ml-2 inline-flex min-w-6 justify-center rounded-full px-1.5 py-0.5 text-[10px] tabular-nums ${
-                selectedStatus === status.value ? "bg-white/20 text-white" : "bg-white text-slate-500"
-              }`}>
-                {statusCounts[status.value]}
-              </span>
-            </button>
-          ))}
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h2 className="text-sm font-black uppercase tracking-wide text-slate-800">สถานะ Template</h2>
+            <p className="mt-1 text-xs font-medium text-slate-500">เลือกดู Template ตามสถานะ</p>
+          </div>
+          <div className="grid w-full gap-2 sm:grid-cols-4 lg:w-auto lg:min-w-[520px]">
+            {statusFilterOptions.map((status) => (
+              <button
+                key={status.value}
+                type="button"
+                onClick={() => setSelectedStatus(status.value)}
+                className={`inline-flex h-10 items-center justify-between rounded-xl border px-3 text-xs font-black transition-colors ${
+                  selectedStatus === status.value
+                    ? "border-indigo-500 bg-indigo-600 text-white"
+                    : "border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                <span>{status.label}</span>
+                <span className={`ml-2 inline-flex min-w-6 justify-center rounded-full px-1.5 py-0.5 text-[10px] tabular-nums ${
+                  selectedStatus === status.value ? "bg-white/20 text-white" : "bg-white text-slate-500"
+                }`}>
+                  {statusCounts[status.value]}
+                </span>
+              </button>
+            ))}
+          </div>
         </div>
 
       {loadStatus === "loading" && <LoadingState message="กำลังโหลด Template จากฐานข้อมูล..." />}
@@ -587,21 +600,77 @@ export default function AdminTemplatesPage() {
                   <Folder size={24} strokeWidth={1.8} />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="truncate text-sm font-black text-slate-900">{folder.name}</h3>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        startRenameFolder(folder);
-                      }}
-                      disabled={loadStatus !== "loaded" || renamingFolderId === folder.groupId}
-                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 disabled:bg-slate-100 disabled:text-slate-300"
-                      title="เปลี่ยนชื่อโฟลเดอร์"
-                      aria-label={`เปลี่ยนชื่อโฟลเดอร์ ${folder.name}`}
-                    >
-                      <Pencil size={13} />
-                    </button>
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    {editingFolderId === folder.groupId ? (
+                      <div
+                        className="flex min-w-[180px] max-w-full flex-1 items-center gap-1.5 sm:max-w-sm"
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => event.stopPropagation()}
+                      >
+                        <input
+                          type="text"
+                          value={editingFolderName}
+                          onChange={(event) => setEditingFolderName(event.target.value)}
+                          onKeyDown={(event) => {
+                            event.stopPropagation();
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              void handleRenameFolder(folder);
+                            }
+                            if (event.key === "Escape") {
+                              event.preventDefault();
+                              cancelRenameFolder();
+                            }
+                          }}
+                          disabled={renamingFolderId === folder.groupId}
+                          ref={editingFolderInputRef}
+                          className="h-8 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2.5 text-sm font-black text-slate-900 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-100 disabled:text-slate-400"
+                        />
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void handleRenameFolder(folder);
+                          }}
+                          disabled={renamingFolderId === folder.groupId}
+                          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-slate-300"
+                          title="บันทึก"
+                          aria-label="บันทึกชื่อ Template"
+                        >
+                          {renamingFolderId === folder.groupId ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            cancelRenameFolder();
+                          }}
+                          disabled={renamingFolderId === folder.groupId}
+                          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400"
+                          title="ยกเลิก"
+                          aria-label="ยกเลิกการแก้ชื่อ Template"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <h3 className="truncate text-sm font-black text-slate-900">{folder.name}</h3>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            startRenameFolder(folder);
+                          }}
+                          disabled={loadStatus !== "loaded" || renamingFolderId === folder.groupId}
+                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 disabled:bg-slate-100 disabled:text-slate-300"
+                          title="เปลี่ยนชื่อโฟลเดอร์"
+                          aria-label={`เปลี่ยนชื่อโฟลเดอร์ ${folder.name}`}
+                        >
+                          <Pencil size={13} />
+                        </button>
+                      </>
+                    )}
                     <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-black text-slate-600">
                       {folder.versions.length} Version
                     </span>
@@ -618,48 +687,6 @@ export default function AdminTemplatesPage() {
                 <div className="shrink-0 text-slate-400">
                   {isExpanded ? <ChevronDown size={20} /> : <ChevronRight size={20} />}
                 </div>
-              </div>
-
-              <div className={editingFolderId === folder.groupId ? "flex justify-end border-t border-slate-100 px-4 py-2" : "hidden"}>
-                {editingFolderId === folder.groupId ? (
-                  <div className="flex w-full max-w-md flex-col gap-2 sm:flex-row">
-                    <input
-                      type="text"
-                      value={editingFolderName}
-                      onChange={(event) => setEditingFolderName(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          void handleRenameFolder(folder);
-                        }
-                        if (event.key === "Escape") cancelRenameFolder();
-                      }}
-                      disabled={renamingFolderId === folder.groupId}
-                      autoFocus
-                      className="h-10 min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-900 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-                    />
-                    <div className="flex shrink-0 gap-2">
-                      <button type="button" onClick={() => void handleRenameFolder(folder)} disabled={renamingFolderId === folder.groupId} className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl bg-indigo-600 px-3 text-xs font-black text-white disabled:bg-slate-300">
-                        {renamingFolderId === folder.groupId ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
-                        บันทึก
-                      </button>
-                      <button type="button" onClick={cancelRenameFolder} disabled={renamingFolderId === folder.groupId} className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-600">
-                        <X size={14} />
-                        ยกเลิก
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => startRenameFolder(folder)}
-                    disabled={loadStatus !== "loaded" || renamingFolderId === folder.groupId}
-                    className="hidden"
-                  >
-                    <Pencil size={14} />
-                    เปลี่ยนชื่อ Template
-                  </button>
-                )}
               </div>
 
               {isExpanded && (
