@@ -4006,10 +4006,23 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
                 previous_columns = cluster_columns(previous_cluster)
                 previous_bottom = cluster_bounds(previous_cluster)[1]
                 current_top, current_bottom = cluster_bounds(cluster)
-                shares_column = bool(previous_columns.intersection(current_columns))
+                shared_columns = previous_columns.intersection(current_columns)
+                shares_column = bool(shared_columns)
+                vertical_gap = current_top - previous_bottom
+                vertically_continuous = vertical_gap <= max(2.0, median_ocr_height * 0.35)
                 sparse_header_line = 0 < len(current_columns) <= max(1, int(col_count * 0.5))
-                body_like_row = len(current_columns) >= 2 and not sparse_header_line
-                if current_top - previous_bottom <= multiline_gap and shares_column and sparse_header_line and not body_like_row:
+                multi_column_header_continuation = (
+                    len(current_columns) >= 2
+                    and len(previous_columns) >= 2
+                    and len(shared_columns) >= 2
+                    and vertically_continuous
+                )
+                sparse_header_continuation = (
+                    sparse_header_line
+                    and shares_column
+                    and vertical_gap <= multiline_gap
+                )
+                if multi_column_header_continuation or sparse_header_continuation:
                     header_ocr_cluster_count = index + 1
                     header_bottom_y = current_bottom
                     continue
