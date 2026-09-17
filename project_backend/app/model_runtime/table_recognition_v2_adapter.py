@@ -3408,12 +3408,25 @@ def _reassign_ocr_text_to_slanext_cells(candidate: Dict[str, Any]) -> tuple[Dict
     structured = candidate.get("table_structured") if isinstance(candidate.get("table_structured"), dict) else None
     candidate_debug = candidate.get("table_debug") if isinstance(candidate.get("table_debug"), dict) else {}
     recovery_debug = candidate_debug.get("structure_collapse_recovery") if isinstance(candidate_debug.get("structure_collapse_recovery"), dict) else {}
+    if not recovery_debug:
+        recovery_debug = candidate_debug.get("row_collapse_recovery") if isinstance(candidate_debug.get("row_collapse_recovery"), dict) else {}
     recovery_selected = bool(recovery_debug.get("selected"))
     reassignment_row_start: Optional[int] = None
     reassignment_row_end: Optional[int] = None
     if recovery_selected:
         try:
-            reassignment_row_start = int(recovery_debug.get("effective_header_row_count") or recovery_debug.get("declared_header_row_count") or 0)
+            body_reconstruction = recovery_debug.get("body_reconstruction") if isinstance(recovery_debug.get("body_reconstruction"), dict) else {}
+            ocr_geometry = recovery_debug.get("ocr_geometry_fallback") if isinstance(recovery_debug.get("ocr_geometry_fallback"), dict) else {}
+            effective_header_count = (
+                recovery_debug.get("effective_header_row_count")
+                or body_reconstruction.get("effective_header_row_count")
+                or ocr_geometry.get("effective_header_row_count")
+                or recovery_debug.get("declared_header_row_count")
+                or body_reconstruction.get("declared_header_row_count")
+                or ocr_geometry.get("declared_header_row_count")
+                or 0
+            )
+            reassignment_row_start = int(effective_header_count)
             recovered_body_row_count = int(recovery_debug.get("recovered_body_row_count") or 0)
             if recovered_body_row_count > 0:
                 reassignment_row_end = reassignment_row_start + recovered_body_row_count
@@ -4372,6 +4385,8 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
         "body_row_count": body_row_count,
         "body_column_count": col_count,
         "original_body_row_count": body_row_count,
+        "declared_header_row_count": header_row_count,
+        "effective_header_row_count": effective_header_row_count,
         "ocr_supported_body_row_count": ocr_supported_body_row_count,
         "body_row_evidence": body_reconstruction_evidence,
         "original_structure_gate": {
