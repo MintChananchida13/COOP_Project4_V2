@@ -486,24 +486,6 @@ def _region_bbox(region: Dict[str, Any], scale_factor: float = 1.0) -> Optional[
     return {"x": x, "y": y, "width": width, "height": height}
 
 
-def _pad_table_text_crop(crop: np.ndarray) -> np.ndarray:
-    if crop is None or crop.size == 0:
-        return crop
-    crop_height, crop_width = crop.shape[:2]
-    top = max(4, int(round(crop_height * 0.20)))
-    bottom = max(2, int(round(crop_height * 0.10)))
-    side = max(2, int(round(crop_width * 0.03)))
-    return cv2.copyMakeBorder(
-        crop,
-        top,
-        bottom,
-        side,
-        side,
-        cv2.BORDER_CONSTANT,
-        value=(255, 255, 255),
-    )
-
-
 def _table_text_crop_margin(width: float, height: float) -> Dict[str, float]:
     return {
         "top": max(1.0, float(height) * 0.12),
@@ -3906,7 +3888,9 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
         "x_cluster_count": 0,
         "body_y_cluster_count": 0,
         "summary_cluster_count": 0,
+        "declared_header_row_count": header_row_count,
         "effective_header_row_count": effective_header_row_count,
+        "merged_multiline_count": 0,
         "body_region_source": "slanext_boundaries",
     }
     fallback_body_ocr_cells: Optional[List[Dict[str, Any]]] = None
@@ -3916,7 +3900,9 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
         "ocr_box_count": len(ocr_cells),
         "body_box_count": 0,
         "detected_body_rows": 0,
+        "declared_header_row_count": header_row_count,
         "effective_header_row_count": effective_header_row_count,
+        "merged_multiline_count": 0,
         "column_count": col_count,
         "reconstructed_row_count": 0,
         "selected": False,
@@ -3941,13 +3927,47 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
             }
         summary_cluster_count = max(0, row_count - summary_start)
         body_cluster_end = len(all_y_clusters) - summary_cluster_count if summary_cluster_count else len(all_y_clusters)
-        body_clusters_from_ocr = all_y_clusters[effective_header_row_count:body_cluster_end]
+        structural_header_cluster_count = effective_header_row_count
+        header_bottom_values: List[float] = []
+        for cell in visible_cells:
+            try:
+                row = int(cell.get("row") or 0)
+            except (TypeError, ValueError):
+                continue
+            if row >= effective_header_row_count:
+                continue
+            bbox = cell.get("bbox")
+            if not isinstance(bbox, dict):
+                continue
+            try:
+                header_bottom_values.append(float(bbox.get("y") or 0.0) + float(bbox.get("height") or 0.0))
+            except (TypeError, ValueError):
+                continue
+        if header_bottom_values:
+            header_bottom = max(header_bottom_values)
+            header_margin = max(1.0, (float(np.median(ocr_heights)) if ocr_heights else 12.0) * 0.35)
+            structural_header_cluster_count = max(
+                structural_header_cluster_count,
+                sum(
+                    1
+                    for cluster in all_y_clusters
+                    if cluster
+                    and (
+                        sum(float(item.get("center_y") or 0.0) for item in cluster) / max(1, len(cluster))
+                    )
+                    <= header_bottom + header_margin
+                ),
+            )
+        merged_multiline_count = max(0, structural_header_cluster_count - effective_header_row_count)
+        body_clusters_from_ocr = all_y_clusters[structural_header_cluster_count:body_cluster_end]
         if not body_clusters_from_ocr and len(all_y_clusters) > body_row_count:
             body_clusters_from_ocr = all_y_clusters
         fallback_body_ocr_cells = [cell for cluster in body_clusters_from_ocr for cell in cluster]
         ocr_geometry_fallback["body_y_cluster_count"] = len(body_clusters_from_ocr)
         ocr_geometry_fallback["summary_cluster_count"] = summary_cluster_count
+        ocr_geometry_fallback["declared_header_row_count"] = header_row_count
         ocr_geometry_fallback["effective_header_row_count"] = effective_header_row_count
+        ocr_geometry_fallback["merged_multiline_count"] = merged_multiline_count
         ocr_geometry_fallback["body_region_source"] = "ocr_y_clusters"
         if missing_col_boundaries:
             col_boundaries = [
@@ -3966,7 +3986,9 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
             "ocr_box_count": len(ocr_cells),
             "body_box_count": len(fallback_body_ocr_cells),
             "detected_body_rows": len(body_clusters_from_ocr),
+            "declared_header_row_count": header_row_count,
             "effective_header_row_count": effective_header_row_count,
+            "merged_multiline_count": merged_multiline_count,
             "column_count": col_count,
             "reconstructed_row_count": len(direct_body_rows),
             "selected": False,

@@ -19,9 +19,9 @@ class ImageNormalizationService:
     MIN_IMAGE_STDDEV = 3.0
     LAYOUT_CROP_MIN_REGIONS = 3
     LAYOUT_CROP_MIN_CONTENT_AREA_RATIO = 0.025
-    LAYOUT_CROP_PADDING_X_RATIO = 0.16
-    LAYOUT_CROP_PADDING_TOP_RATIO = 0.24
-    LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.24
+    LAYOUT_CROP_PADDING_X_RATIO = 0.12
+    LAYOUT_CROP_PADDING_TOP_RATIO = 0.18
+    LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.18
 
     def normalize_document(self, image_path: str, output_path: Optional[str] = None) -> Dict[str, Any]:
         source_path = Path(image_path)
