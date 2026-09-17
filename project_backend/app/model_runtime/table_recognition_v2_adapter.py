@@ -3141,9 +3141,21 @@ def _cell_text_value(cell: Dict[str, Any]) -> str:
     return normalize_ocr_text(cell.get("text") or cell.get("ocrText") or "")
 
 
-def _structured_assignment_quality(structured: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _structured_assignment_quality(
+    structured: Optional[Dict[str, Any]],
+    row_start: Optional[int] = None,
+    row_end: Optional[int] = None,
+) -> Dict[str, Any]:
     cells = [cell for cell in (structured or {}).get("cells", []) if isinstance(cell, dict)]
     visible = [cell for cell in cells if not cell.get("hidden")]
+    if row_start is not None or row_end is not None:
+        start = 0 if row_start is None else row_start
+        end = 10**9 if row_end is None else row_end
+        visible = [
+            cell
+            for cell in visible
+            if start <= int(cell.get("row") or 0) < end
+        ]
     text_cells = [cell for cell in visible if _cell_text_value(cell)]
     owners = [cell for cell in visible if _bbox_edges(cell) is not None]
     if not text_cells:
@@ -4464,14 +4476,29 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
     debug["recovered_body_row_count"] = len(final_row_clusters)
     recovery_quality = _calculate_table_quality(next_rows, next_structured, "slanext_structure_collapse_recovery")
     recovery_assignment_quality = _structured_assignment_quality(next_structured)
+    body_assignment_quality = _structured_assignment_quality(
+        next_structured,
+        row_start=effective_header_row_count,
+        row_end=effective_header_row_count + len(final_row_clusters),
+    )
+    use_body_assignment_gate = (
+        row_collapse
+        and not column_collapse
+        and bool(body_reconstruction_evidence.get("requires_more_rows_than_original"))
+        and len(final_row_clusters) == ocr_supported_body_row_count
+        and ocr_supported_body_row_count > body_row_count
+    )
+    selected_assignment_quality = body_assignment_quality if use_body_assignment_gate else recovery_assignment_quality
     recovery_confident = (
         bool(recovery_quality.get("usable_shape"))
         and float(recovery_quality.get("score") or 0.0) >= 0.48
-        and bool(recovery_assignment_quality.get("passed"))
+        and bool(selected_assignment_quality.get("passed"))
         and alignment_score >= 0.45
     )
     debug["quality"] = recovery_quality
     debug["assignment_quality"] = recovery_assignment_quality
+    debug["body_assignment_quality"] = body_assignment_quality
+    debug["assignment_quality_scope"] = "data_body" if use_body_assignment_gate else "full_table"
     debug["selected"] = recovery_confident
     debug["recovery_success"] = recovery_confident
     if isinstance(debug.get("body_reconstruction"), dict) and bool(debug["body_reconstruction"].get("attempted")):
