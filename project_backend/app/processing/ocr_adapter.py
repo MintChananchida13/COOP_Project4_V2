@@ -24,6 +24,9 @@ TEXT_DETECTION_MIN_BOX_SIZE = 2
 TEXT_DETECTION_LINE_Y_TOLERANCE = 0.6
 TEXT_DETECTION_DUPLICATE_OVERLAP_RATIO = 0.82
 TEXT_RECOGNITION_SCORE_THRESHOLD = float(os.getenv("TEXT_RECOGNITION_SCORE_THRESHOLD", "0.0"))
+TABLE_ROI_WHITE_PADDING_RATIO = float(os.getenv("TABLE_ROI_WHITE_PADDING_RATIO", "0.025"))
+TABLE_ROI_WHITE_PADDING_MIN_PX = int(os.getenv("TABLE_ROI_WHITE_PADDING_MIN_PX", "12"))
+TABLE_ROI_WHITE_PADDING_MAX_PX = int(os.getenv("TABLE_ROI_WHITE_PADDING_MAX_PX", "48"))
 
 
 def _load_image():
@@ -629,6 +632,38 @@ def _crop_roi_from_image(image, roi: Dict[str, Any]):
         return crop
 
 
+def _table_roi_white_padding_px(bgr_crop: Any) -> int:
+    try:
+        height, width = bgr_crop.shape[:2]
+    except Exception:
+        return 0
+    if height <= 0 or width <= 0:
+        return 0
+    ratio_px = int(round(min(height, width) * max(0.0, TABLE_ROI_WHITE_PADDING_RATIO)))
+    padding_px = max(0, TABLE_ROI_WHITE_PADDING_MIN_PX, ratio_px)
+    if TABLE_ROI_WHITE_PADDING_MAX_PX > 0:
+        padding_px = min(padding_px, TABLE_ROI_WHITE_PADDING_MAX_PX)
+    return padding_px
+
+
+def pad_table_roi_crop(bgr_crop: Any) -> Tuple[Any, int]:
+    padding_px = _table_roi_white_padding_px(bgr_crop)
+    if padding_px <= 0:
+        return bgr_crop, 0
+    return (
+        cv2.copyMakeBorder(
+            bgr_crop,
+            padding_px,
+            padding_px,
+            padding_px,
+            padding_px,
+            cv2.BORDER_CONSTANT,
+            value=(255, 255, 255),
+        ),
+        padding_px,
+    )
+
+
 def _is_table_item(item: Dict[str, Any]) -> bool:
     data_type = str(item.get("data_type") or item.get("dataType") or "").lower()
     extraction_method = str(item.get("extraction_method") or item.get("extractionMethod") or "").lower()
@@ -653,7 +688,16 @@ def ocr_rois(image_path: str, roi_items: List[Dict[str, Any]]) -> Dict[str, Dict
             crop = _crop_roi_from_image(image, item.get("roi") or item)
             bgr_crop = cv2.cvtColor(np.array(crop), cv2.COLOR_RGB2BGR)
             if _is_table_item(item):
-                table_result = recognize_table_v2(bgr_crop)
+                padded_crop, table_padding_px = pad_table_roi_crop(bgr_crop)
+                table_result = recognize_table_v2(padded_crop)
+                table_debug = table_result.get("table_debug")
+                if isinstance(table_debug, dict):
+                    table_debug = {
+                        **table_debug,
+                        "roi_white_padding_px": table_padding_px,
+                        "roi_crop_size": {"width": int(bgr_crop.shape[1]), "height": int(bgr_crop.shape[0])},
+                        "roi_padded_size": {"width": int(padded_crop.shape[1]), "height": int(padded_crop.shape[0])},
+                    }
                 results_text = str(table_result.get("text") or "")
                 failed[key] = {
                     "text": results_text,
@@ -665,7 +709,7 @@ def ocr_rois(image_path: str, roi_items: List[Dict[str, Any]]) -> Dict[str, Dict
                     "table_html": table_result.get("table_html"),
                     "table_rows": table_result.get("table_rows"),
                     "table_structured": table_result.get("table_structured"),
-                    "table_debug": table_result.get("table_debug"),
+                    "table_debug": table_debug,
                     "error": table_result.get("error"),
                 }
             else:

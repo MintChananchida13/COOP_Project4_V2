@@ -38,7 +38,14 @@ from app.model_runtime.layout_analysis_service import (
 )
 from app.processing.layout_signature_service import build_layout_signature, compare_layout_signatures, signature_from_json, signature_to_json
 from app.processing.layout_template_matcher import search_layout_candidates
-from app.processing.ocr_adapter import OcrUnavailableError, ocr_roi, ocr_rois, recognize_text_crops_with_detection, recognize_text_roi
+from app.processing.ocr_adapter import (
+    OcrUnavailableError,
+    ocr_roi,
+    ocr_rois,
+    pad_table_roi_crop,
+    recognize_text_crops_with_detection,
+    recognize_text_roi,
+)
 from app.processing.ocr_postprocess import normalize_ocr_text
 from app.model_runtime.siglip_image_verification_adapter import (
     verify_image_category,
@@ -4344,7 +4351,19 @@ class AdminTemplateService:
                         if boundary_path and not SAVE_DEBUG_ARTIFACTS:
                             Path(boundary_path).unlink(missing_ok=True)
                 elif data_type == "table":
-                    ocr_result = recognize_table_v2(crop_bgr)
+                    padded_crop_bgr, table_padding_px = pad_table_roi_crop(crop_bgr)
+                    ocr_result = recognize_table_v2(padded_crop_bgr)
+                    table_debug = ocr_result.get("table_debug")
+                    if isinstance(table_debug, dict):
+                        ocr_result["table_debug"] = {
+                            **table_debug,
+                            "roi_white_padding_px": table_padding_px,
+                            "roi_crop_size": {"width": int(crop_bgr.shape[1]), "height": int(crop_bgr.shape[0])},
+                            "roi_padded_size": {
+                                "width": int(padded_crop_bgr.shape[1]),
+                                "height": int(padded_crop_bgr.shape[0]),
+                            },
+                        }
                 else:
                     pending_text_items.append(
                         {
