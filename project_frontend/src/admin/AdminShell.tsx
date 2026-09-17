@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { MouseEvent, ReactNode, useEffect, useRef, useState } from "react";
-import { LogOut } from "lucide-react";
+import { LogOut, Settings } from "lucide-react";
 import { StatusBadge } from "../shared/ui";
 import { AuthSession, clearAuthSession, readAuthSession } from "../auth/session";
 import { preloadAdminLists } from "./adminApi";
@@ -12,8 +12,8 @@ const navItems = [
   { href: "/admin", label: "ภาพรวม" },
   { href: "/admin/requests", label: "คำขอ Template" },
   { href: "/admin/templates", label: "คลัง Template" },
-  { href: "/admin/settings", label: "⚙ ตั้งค่าระบบ" },
   { href: "/admin/detection-lab", label: "ทดสอบการค้นหา", badge: "DEV" },
+  { href: "/admin/settings", label: "ตั้งค่าระบบ", iconOnly: true },
 ];
 
 export default function AdminShell({ children }: { children: ReactNode }) {
@@ -110,13 +110,17 @@ export default function AdminShell({ children }: { children: ReactNode }) {
                   key={item.href}
                   href={item.href}
                   aria-current={pathname === item.href ? "page" : undefined}
-                  className={`ui-button-text rounded-xl border px-4 py-2 transition-colors ${
+                  title={"iconOnly" in item && item.iconOnly ? item.label : undefined}
+                  aria-label={"iconOnly" in item && item.iconOnly ? item.label : undefined}
+                  className={`ui-button-text inline-flex items-center justify-center rounded-xl border py-2 transition-colors ${
+                    "iconOnly" in item && item.iconOnly ? "h-10 w-10 px-0" : "px-4"
+                  } ${
                     pathname === item.href
                       ? "border-blue-200 bg-blue-50 text-blue-700"
                       : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-blue-700"
                   }`}
                 >
-                  {item.label}
+                  {"iconOnly" in item && item.iconOnly ? <Settings size={16} strokeWidth={2.2} /> : item.label}
                   {"badge" in item && item.badge && (
                     <span className="ml-2">
                       <StatusBadge status={item.badge} tone="warning" />
