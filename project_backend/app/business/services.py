@@ -40,9 +40,9 @@ from app.processing.layout_signature_service import build_layout_signature, comp
 from app.processing.layout_template_matcher import search_layout_candidates
 from app.processing.ocr_adapter import (
     OcrUnavailableError,
+    crop_table_processing_roi_from_image,
     ocr_roi,
     ocr_rois,
-    pad_table_roi_crop,
     recognize_text_crops_with_detection,
     recognize_text_roi,
 )
@@ -4351,19 +4351,40 @@ class AdminTemplateService:
                         if boundary_path and not SAVE_DEBUG_ARTIFACTS:
                             Path(boundary_path).unlink(missing_ok=True)
                 elif data_type == "table":
-                    padded_crop_bgr, table_padding = pad_table_roi_crop(crop_bgr)
-                    ocr_result = recognize_table_v2(padded_crop_bgr)
+                    source_image = _load_image_source(image_source)
+                    if source_image is None:
+                        result_item["failure_reason"] = "template_page_image_or_roi_unavailable"
+                        tested_fields.append(result_item)
+                        continue
+                    neighbor_rois = [
+                        other_field.get("roi") or {}
+                        for other_field in fields
+                        if other_field.get("id") != field.get("id")
+                        and int(
+                            other_field.get("page_number")
+                            or (other_field.get("roi") or {}).get("page_number")
+                            or 1
+                        )
+                        == page_number
+                    ]
+                    processing_crop_image, processing_debug = crop_table_processing_roi_from_image(
+                        source_image,
+                        field.get("roi") or {},
+                        neighbor_rois,
+                    )
+                    processing_crop_bgr = _pil_image_to_bgr_array(processing_crop_image)
+                    if processing_crop_bgr is None:
+                        result_item["failure_reason"] = "processing_crop_image_conversion_failed"
+                        tested_fields.append(result_item)
+                        continue
+                    ocr_result = recognize_table_v2(processing_crop_bgr)
                     table_debug = ocr_result.get("table_debug")
-                    if isinstance(table_debug, dict):
-                        ocr_result["table_debug"] = {
-                            **table_debug,
-                            "roi_white_padding_px": table_padding,
-                            "roi_crop_size": {"width": int(crop_bgr.shape[1]), "height": int(crop_bgr.shape[0])},
-                            "roi_padded_size": {
-                                "width": int(padded_crop_bgr.shape[1]),
-                                "height": int(padded_crop_bgr.shape[0]),
-                            },
-                        }
+                    if not isinstance(table_debug, dict):
+                        table_debug = {}
+                    ocr_result["table_debug"] = {
+                        **table_debug,
+                        **processing_debug,
+                    }
                 else:
                     pending_text_items.append(
                         {

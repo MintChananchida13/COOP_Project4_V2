@@ -24,10 +24,10 @@ TEXT_DETECTION_MIN_BOX_SIZE = 2
 TEXT_DETECTION_LINE_Y_TOLERANCE = 0.6
 TEXT_DETECTION_DUPLICATE_OVERLAP_RATIO = 0.82
 TEXT_RECOGNITION_SCORE_THRESHOLD = float(os.getenv("TEXT_RECOGNITION_SCORE_THRESHOLD", "0.0"))
-TABLE_ROI_WHITE_PADDING_TOP_PX = int(os.getenv("TABLE_ROI_WHITE_PADDING_TOP_PX", "8"))
-TABLE_ROI_WHITE_PADDING_BOTTOM_PX = int(os.getenv("TABLE_ROI_WHITE_PADDING_BOTTOM_PX", "12"))
-TABLE_ROI_WHITE_PADDING_LEFT_PX = int(os.getenv("TABLE_ROI_WHITE_PADDING_LEFT_PX", "12"))
-TABLE_ROI_WHITE_PADDING_RIGHT_PX = int(os.getenv("TABLE_ROI_WHITE_PADDING_RIGHT_PX", "12"))
+TABLE_PROCESSING_EXPAND_TOP_PX = int(os.getenv("TABLE_PROCESSING_EXPAND_TOP_PX", "8"))
+TABLE_PROCESSING_EXPAND_BOTTOM_PX = int(os.getenv("TABLE_PROCESSING_EXPAND_BOTTOM_PX", "20"))
+TABLE_PROCESSING_EXPAND_LEFT_PX = int(os.getenv("TABLE_PROCESSING_EXPAND_LEFT_PX", "20"))
+TABLE_PROCESSING_EXPAND_RIGHT_PX = int(os.getenv("TABLE_PROCESSING_EXPAND_RIGHT_PX", "20"))
 
 
 def _load_image():
@@ -633,31 +633,116 @@ def _crop_roi_from_image(image, roi: Dict[str, Any]):
         return crop
 
 
-def _table_roi_white_padding() -> Dict[str, int]:
+def _table_processing_expand_px() -> Dict[str, int]:
     return {
-        "top": max(0, TABLE_ROI_WHITE_PADDING_TOP_PX),
-        "bottom": max(0, TABLE_ROI_WHITE_PADDING_BOTTOM_PX),
-        "left": max(0, TABLE_ROI_WHITE_PADDING_LEFT_PX),
-        "right": max(0, TABLE_ROI_WHITE_PADDING_RIGHT_PX),
+        "top": max(0, TABLE_PROCESSING_EXPAND_TOP_PX),
+        "bottom": max(0, TABLE_PROCESSING_EXPAND_BOTTOM_PX),
+        "left": max(0, TABLE_PROCESSING_EXPAND_LEFT_PX),
+        "right": max(0, TABLE_PROCESSING_EXPAND_RIGHT_PX),
     }
 
 
-def pad_table_roi_crop(bgr_crop: Any) -> Tuple[Any, Dict[str, int]]:
-    padding = _table_roi_white_padding()
-    if not any(padding.values()):
-        return bgr_crop, padding
-    return (
-        cv2.copyMakeBorder(
-            bgr_crop,
-            padding["top"],
-            padding["bottom"],
-            padding["left"],
-            padding["right"],
-            cv2.BORDER_CONSTANT,
-            value=(255, 255, 255),
-        ),
-        padding,
+def _roi_bbox_from_image(roi: Dict[str, Any], image_width: int, image_height: int) -> Dict[str, int]:
+    x_ratio = float(roi.get("x_ratio", 0) or 0)
+    y_ratio = float(roi.get("y_ratio", 0) or 0)
+    width_ratio = float(roi.get("width_ratio", 0) or 0)
+    height_ratio = float(roi.get("height_ratio", 0) or 0)
+
+    x = max(0, min(image_width - 1, int(round(x_ratio * image_width))))
+    y = max(0, min(image_height - 1, int(round(y_ratio * image_height))))
+    width = max(1, int(round(width_ratio * image_width)))
+    height = max(1, int(round(height_ratio * image_height)))
+    right = min(image_width, x + width)
+    bottom = min(image_height, y + height)
+    if right <= x or bottom <= y:
+        raise ValueError("ROI crop is outside the image bounds")
+    return {"left": x, "top": y, "right": right, "bottom": bottom}
+
+
+def _trim_processing_bbox_to_neighbors(
+    original_bbox: Dict[str, int],
+    processing_bbox: Dict[str, int],
+    neighbor_bboxes: List[Dict[str, int]],
+) -> Tuple[Dict[str, int], bool]:
+    trimmed = dict(processing_bbox)
+    for neighbor in neighbor_bboxes:
+        if neighbor["right"] <= neighbor["left"] or neighbor["bottom"] <= neighbor["top"]:
+            continue
+        horizontally_overlaps = original_bbox["left"] < neighbor["right"] and original_bbox["right"] > neighbor["left"]
+        vertically_overlaps = original_bbox["top"] < neighbor["bottom"] and original_bbox["bottom"] > neighbor["top"]
+
+        if vertically_overlaps:
+            if original_bbox["right"] <= neighbor["left"]:
+                trimmed["right"] = min(trimmed["right"], neighbor["left"])
+            elif original_bbox["left"] >= neighbor["right"]:
+                trimmed["left"] = max(trimmed["left"], neighbor["right"])
+
+        if horizontally_overlaps:
+            if original_bbox["bottom"] <= neighbor["top"]:
+                trimmed["bottom"] = min(trimmed["bottom"], neighbor["top"])
+            elif original_bbox["top"] >= neighbor["bottom"]:
+                trimmed["top"] = max(trimmed["top"], neighbor["bottom"])
+
+    if trimmed["right"] <= trimmed["left"] or trimmed["bottom"] <= trimmed["top"]:
+        return original_bbox, processing_bbox != original_bbox
+    return trimmed, trimmed != processing_bbox
+
+
+def crop_table_processing_roi_from_image(
+    image,
+    roi: Dict[str, Any],
+    neighbor_rois: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[Any, Dict[str, Any]]:
+    image_width, image_height = image.size
+    original_bbox = _roi_bbox_from_image(roi, image_width, image_height)
+    expand_px = _table_processing_expand_px()
+    processing_bbox = {
+        "left": max(0, original_bbox["left"] - expand_px["left"]),
+        "top": max(0, original_bbox["top"] - expand_px["top"]),
+        "right": min(image_width, original_bbox["right"] + expand_px["right"]),
+        "bottom": min(image_height, original_bbox["bottom"] + expand_px["bottom"]),
+    }
+    if processing_bbox["right"] <= processing_bbox["left"] or processing_bbox["bottom"] <= processing_bbox["top"]:
+        raise ValueError("Processing ROI crop is outside the image bounds")
+    neighbor_bboxes: List[Dict[str, int]] = []
+    for neighbor_roi in neighbor_rois or []:
+        try:
+            neighbor_bboxes.append(_roi_bbox_from_image(neighbor_roi, image_width, image_height))
+        except (TypeError, ValueError):
+            continue
+    processing_bbox, neighbor_trimmed = _trim_processing_bbox_to_neighbors(
+        original_bbox,
+        processing_bbox,
+        neighbor_bboxes,
     )
+
+    crop = image.crop(
+        (
+            processing_bbox["left"],
+            processing_bbox["top"],
+            processing_bbox["right"],
+            processing_bbox["bottom"],
+        )
+    ).convert("RGB")
+    debug = {
+        "original_roi_bbox": original_bbox,
+        "processing_roi_bbox": processing_bbox,
+        "processing_expand_px": expand_px,
+        "processing_neighbor_guard": {
+            "enabled": True,
+            "neighbor_count": len(neighbor_bboxes),
+            "trimmed": neighbor_trimmed,
+        },
+        "original_crop_size": {
+            "width": original_bbox["right"] - original_bbox["left"],
+            "height": original_bbox["bottom"] - original_bbox["top"],
+        },
+        "processing_crop_size": {
+            "width": processing_bbox["right"] - processing_bbox["left"],
+            "height": processing_bbox["bottom"] - processing_bbox["top"],
+        },
+    }
+    return crop, debug
 
 
 def _is_table_item(item: Dict[str, Any]) -> bool:
@@ -681,19 +766,26 @@ def ocr_rois(image_path: str, roi_items: List[Dict[str, Any]]) -> Dict[str, Dict
     for index, item in enumerate(roi_items):
         key = str(item.get("id") or item.get("field_id") or index)
         try:
-            crop = _crop_roi_from_image(image, item.get("roi") or item)
-            bgr_crop = cv2.cvtColor(np.array(crop), cv2.COLOR_RGB2BGR)
             if _is_table_item(item):
-                padded_crop, table_padding = pad_table_roi_crop(bgr_crop)
-                table_result = recognize_table_v2(padded_crop)
+                neighbor_rois = [
+                    other.get("roi") or other
+                    for other_index, other in enumerate(roi_items)
+                    if other_index != index
+                ]
+                crop, processing_debug = crop_table_processing_roi_from_image(
+                    image,
+                    item.get("roi") or item,
+                    neighbor_rois,
+                )
+                bgr_crop = cv2.cvtColor(np.array(crop), cv2.COLOR_RGB2BGR)
+                table_result = recognize_table_v2(bgr_crop)
                 table_debug = table_result.get("table_debug")
-                if isinstance(table_debug, dict):
-                    table_debug = {
-                        **table_debug,
-                        "roi_white_padding_px": table_padding,
-                        "roi_crop_size": {"width": int(bgr_crop.shape[1]), "height": int(bgr_crop.shape[0])},
-                        "roi_padded_size": {"width": int(padded_crop.shape[1]), "height": int(padded_crop.shape[0])},
-                    }
+                if not isinstance(table_debug, dict):
+                    table_debug = {}
+                table_debug = {
+                    **table_debug,
+                    **processing_debug,
+                }
                 results_text = str(table_result.get("text") or "")
                 failed[key] = {
                     "text": results_text,
@@ -709,6 +801,8 @@ def ocr_rois(image_path: str, roi_items: List[Dict[str, Any]]) -> Dict[str, Dict
                     "error": table_result.get("error"),
                 }
             else:
+                crop = _crop_roi_from_image(image, item.get("roi") or item)
+                bgr_crop = cv2.cvtColor(np.array(crop), cv2.COLOR_RGB2BGR)
                 text_items.append((key, bgr_crop))
         except TableRecognitionV2UnavailableError as error:
             failed[key] = {
