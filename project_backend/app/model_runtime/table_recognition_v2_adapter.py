@@ -3890,12 +3890,18 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
         "summary_cluster_count": 0,
         "declared_header_row_count": header_row_count,
         "effective_header_row_count": effective_header_row_count,
-        "header_ocr_cluster_count": effective_header_row_count,
+        "header_boundary_source": "not_evaluated",
+        "header_bottom_y": None,
+        "header_ocr_cluster_count": 0,
         "merged_multiline_count": 0,
         "body_region_source": "slanext_boundaries",
     }
     fallback_body_ocr_cells: Optional[List[Dict[str, Any]]] = None
     direct_body_rows: Optional[List[List[Dict[str, Any]]]] = None
+    header_boundary_source = "not_evaluated"
+    header_bottom_y: Optional[float] = None
+    header_ocr_cluster_count = 0
+    merged_multiline_count = 0
     body_reconstruction_debug: Dict[str, Any] = {
         "attempted": False,
         "ocr_box_count": len(ocr_cells),
@@ -3903,7 +3909,9 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
         "detected_body_rows": 0,
         "declared_header_row_count": header_row_count,
         "effective_header_row_count": effective_header_row_count,
-        "header_ocr_cluster_count": effective_header_row_count,
+        "header_boundary_source": "not_evaluated",
+        "header_bottom_y": None,
+        "header_ocr_cluster_count": 0,
         "merged_multiline_count": 0,
         "column_count": col_count,
         "reconstructed_row_count": 0,
@@ -3929,7 +3937,15 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
             }
         summary_cluster_count = max(0, row_count - summary_start)
         body_cluster_end = len(all_y_clusters) - summary_cluster_count if summary_cluster_count else len(all_y_clusters)
-        header_ocr_cluster_count = effective_header_row_count
+        if missing_col_boundaries:
+            col_boundaries = [
+                float(image.shape[1]) * index / max(1, col_count)
+                for index in range(col_count + 1)
+            ]
+
+        header_boundary_source = "ocr_transition_from_structural_header"
+        header_bottom_y = None
+        header_ocr_cluster_count = 0
         header_bottom_values: List[float] = []
         for cell in visible_cells:
             try:
@@ -3946,20 +3962,59 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
             except (TypeError, ValueError):
                 continue
         if header_bottom_values:
-            header_bottom = max(header_bottom_values)
+            header_bottom_y = max(header_bottom_values)
+            header_boundary_source = "slanext_header_bbox"
             header_margin = max(1.0, (float(np.median(ocr_heights)) if ocr_heights else 12.0) * 0.35)
-            header_ocr_cluster_count = max(
-                header_ocr_cluster_count,
-                sum(
-                    1
-                    for cluster in all_y_clusters
-                    if cluster
-                    and (
-                        sum(float(item.get("center_y") or 0.0) for item in cluster) / max(1, len(cluster))
-                    )
-                    <= header_bottom + header_margin
-                ),
+            header_ocr_cluster_count = sum(
+                1
+                for cluster in all_y_clusters[:body_cluster_end]
+                if cluster
+                and (
+                    sum(float(item.get("center_y") or 0.0) for item in cluster) / max(1, len(cluster))
+                )
+                <= header_bottom_y + header_margin
             )
+        else:
+            median_ocr_height = float(np.median(ocr_heights)) if ocr_heights else 12.0
+            multiline_gap = max(5.0, median_ocr_height * 1.15)
+
+            def cluster_bounds(cluster: List[Dict[str, Any]]) -> tuple[float, float]:
+                tops = [float(item.get("y") or 0.0) for item in cluster]
+                bottoms = [float(item.get("y") or 0.0) + float(item.get("height") or 0.0) for item in cluster]
+                return (min(tops) if tops else 0.0, max(bottoms) if bottoms else 0.0)
+
+            def cluster_columns(cluster: List[Dict[str, Any]]) -> set[int]:
+                columns: set[int] = set()
+                if len(col_boundaries) < 2:
+                    return columns
+                direct_x_tolerance = max(4.0, median_ocr_height * 0.35)
+                for item in cluster:
+                    left = float(item.get("x") or 0.0)
+                    right = left + float(item.get("width") or 0.0)
+                    columns.add(_dominant_interval_index(left, right, col_boundaries, direct_x_tolerance))
+                return columns
+
+            for index, cluster in enumerate(all_y_clusters[:body_cluster_end]):
+                current_columns = cluster_columns(cluster)
+                if index < effective_header_row_count:
+                    header_ocr_cluster_count = index + 1
+                    header_bottom_y = cluster_bounds(cluster)[1]
+                    continue
+                if header_ocr_cluster_count <= 0:
+                    break
+                previous_cluster = all_y_clusters[header_ocr_cluster_count - 1]
+                previous_columns = cluster_columns(previous_cluster)
+                previous_bottom = cluster_bounds(previous_cluster)[1]
+                current_top, current_bottom = cluster_bounds(cluster)
+                shares_column = bool(previous_columns.intersection(current_columns))
+                sparse_header_line = 0 < len(current_columns) <= max(1, int(col_count * 0.5))
+                body_like_row = len(current_columns) >= 2 and not sparse_header_line
+                if current_top - previous_bottom <= multiline_gap and shares_column and sparse_header_line and not body_like_row:
+                    header_ocr_cluster_count = index + 1
+                    header_bottom_y = current_bottom
+                    continue
+                break
+        header_ocr_cluster_count = min(max(0, header_ocr_cluster_count), body_cluster_end)
         merged_multiline_count = max(0, header_ocr_cluster_count - effective_header_row_count)
         body_clusters_from_ocr = all_y_clusters[header_ocr_cluster_count:body_cluster_end]
         if not body_clusters_from_ocr and len(all_y_clusters) > body_row_count:
@@ -3969,14 +4024,11 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
         ocr_geometry_fallback["summary_cluster_count"] = summary_cluster_count
         ocr_geometry_fallback["declared_header_row_count"] = header_row_count
         ocr_geometry_fallback["effective_header_row_count"] = effective_header_row_count
+        ocr_geometry_fallback["header_boundary_source"] = header_boundary_source
+        ocr_geometry_fallback["header_bottom_y"] = round(header_bottom_y, 3) if header_bottom_y is not None else None
         ocr_geometry_fallback["header_ocr_cluster_count"] = header_ocr_cluster_count
         ocr_geometry_fallback["merged_multiline_count"] = merged_multiline_count
         ocr_geometry_fallback["body_region_source"] = "ocr_y_clusters"
-        if missing_col_boundaries:
-            col_boundaries = [
-                float(image.shape[1]) * index / max(1, col_count)
-                for index in range(col_count + 1)
-            ]
         direct_widths = [float(cell.get("width") or 0.0) for cell in fallback_body_ocr_cells if float(cell.get("width") or 0.0) > 0]
         direct_x_tolerance = max(4.0, (float(np.median(direct_widths)) if direct_widths else 24.0) * 0.16)
         direct_body_rows, direct_rows_debug = _direct_body_rows_from_ocr_clusters(
@@ -4006,6 +4058,8 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
             "body_row_evidence": body_row_evidence,
             "declared_header_row_count": header_row_count,
             "effective_header_row_count": effective_header_row_count,
+            "header_boundary_source": header_boundary_source,
+            "header_bottom_y": round(header_bottom_y, 3) if header_bottom_y is not None else None,
             "header_ocr_cluster_count": header_ocr_cluster_count,
             "merged_multiline_count": merged_multiline_count,
             "column_count": col_count,
@@ -4079,6 +4133,10 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
         "original_body_row_count": body_row_count,
         "ocr_supported_body_row_count": ocr_supported_body_row_count,
         "body_row_evidence": body_reconstruction_evidence,
+        "header_boundary_source": header_boundary_source,
+        "header_bottom_y": round(header_bottom_y, 3) if header_bottom_y is not None else None,
+        "header_ocr_cluster_count": header_ocr_cluster_count,
+        "merged_multiline_count": merged_multiline_count,
         "y_cluster_count": y_cluster_count,
         "x_cluster_count": x_cluster_count,
         "raw_y_cluster_count": len(raw_y_clusters),
