@@ -3406,16 +3406,37 @@ def _logical_owner_cells_from_structured(cells: List[Dict[str, Any]]) -> List[Di
 
 def _reassign_ocr_text_to_slanext_cells(candidate: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:
     structured = candidate.get("table_structured") if isinstance(candidate.get("table_structured"), dict) else None
+    candidate_debug = candidate.get("table_debug") if isinstance(candidate.get("table_debug"), dict) else {}
+    recovery_debug = candidate_debug.get("structure_collapse_recovery") if isinstance(candidate_debug.get("structure_collapse_recovery"), dict) else {}
+    recovery_selected = bool(recovery_debug.get("selected"))
+    reassignment_row_start: Optional[int] = None
+    reassignment_row_end: Optional[int] = None
+    if recovery_selected:
+        try:
+            reassignment_row_start = int(recovery_debug.get("effective_header_row_count") or recovery_debug.get("declared_header_row_count") or 0)
+            recovered_body_row_count = int(recovery_debug.get("recovered_body_row_count") or 0)
+            if recovered_body_row_count > 0:
+                reassignment_row_end = reassignment_row_start + recovered_body_row_count
+        except (TypeError, ValueError):
+            reassignment_row_start = None
+            reassignment_row_end = None
     source_cells = [cell for cell in (structured or {}).get("cells", []) if isinstance(cell, dict)]
     visible_cells = [cell for cell in source_cells if not cell.get("hidden")]
-    owners = _logical_owner_cells_from_structured(visible_cells)
+    scoped_visible_cells = visible_cells
+    if reassignment_row_start is not None and reassignment_row_end is not None:
+        scoped_visible_cells = [
+            cell
+            for cell in visible_cells
+            if reassignment_row_start <= int(cell.get("row") or 0) < reassignment_row_end
+        ]
+    owners = _logical_owner_cells_from_structured(scoped_visible_cells)
     if not structured or not source_cells or not owners:
-        quality = _structured_assignment_quality(structured)
+        quality = _structured_assignment_quality(structured, reassignment_row_start, reassignment_row_end)
         return candidate, {"attempted": False, "selected": False, "quality": quality, "reason": "missing_structured_cell_geometry"}
 
-    text_sources = [cell for cell in visible_cells if _cell_text_value(cell) and _bbox_edges(cell) is not None]
+    text_sources = [cell for cell in scoped_visible_cells if _cell_text_value(cell) and _bbox_edges(cell) is not None]
     if not text_sources:
-        quality = _structured_assignment_quality(structured)
+        quality = _structured_assignment_quality(structured, reassignment_row_start, reassignment_row_end)
         return candidate, {"attempted": False, "selected": False, "quality": quality, "reason": "no_ocr_text_geometry"}
 
     edge_heights = [max(1.0, (_bbox_edges(cell) or (0, 0, 0, 1))[3] - (_bbox_edges(cell) or (0, 0, 0, 1))[1]) for cell in owners]
@@ -3444,6 +3465,15 @@ def _reassign_ocr_text_to_slanext_cells(candidate: Dict[str, Any]) -> tuple[Dict
     for cell in source_cells:
         next_cell = dict(cell)
         if not next_cell.get("hidden"):
+            row = int(next_cell.get("row") or 0)
+            preserve_recovered_row = (
+                reassignment_row_start is not None
+                and reassignment_row_end is not None
+                and not (reassignment_row_start <= row < reassignment_row_end)
+            )
+            if preserve_recovered_row:
+                next_cells.append(next_cell)
+                continue
             key = (int(next_cell.get("row") or 0), int(next_cell.get("col") or 0))
             if key in emitted_visible_positions:
                 continue
@@ -3480,7 +3510,7 @@ def _reassign_ocr_text_to_slanext_cells(candidate: Dict[str, Any]) -> tuple[Dict
     reassigned["text"] = _markdown_table(next_rows)
     debug = reassigned.get("table_debug") if isinstance(reassigned.get("table_debug"), dict) else {}
     reassigned["table_debug"] = dict(debug)
-    quality = _structured_assignment_quality(next_structured)
+    quality = _structured_assignment_quality(next_structured, reassignment_row_start, reassignment_row_end)
     reassignment_debug = {
         "attempted": True,
         "selected": bool(quality.get("passed")),
@@ -3489,6 +3519,11 @@ def _reassign_ocr_text_to_slanext_cells(candidate: Dict[str, Any]) -> tuple[Dict
         "assigned_text_boxes": len(text_sources) - unassigned,
         "unassigned_text_boxes": unassigned,
         "ambiguous_text_boxes": ambiguous,
+        "row_scope": {
+            "start": reassignment_row_start,
+            "end": reassignment_row_end,
+            "preserved_outside_scope": bool(reassignment_row_start is not None and reassignment_row_end is not None),
+        },
         "average_overlap": round(
             sum(float(item.get("overlap_ratio") or 0.0) for item in assignment_metrics) / max(1, len(assignment_metrics)),
             4,
