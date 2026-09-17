@@ -3861,6 +3861,51 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
             "reason": "no_body_region",
         }
 
+    original_rows = normalize_table_rows(candidate.get("table_rows") or structured.get("rows") or [])
+    original_quality = _calculate_table_quality(original_rows, structured, "slanext_original_structure_gate")
+    original_row_count = int(original_quality.get("row_count") or 0)
+    original_column_count = int(original_quality.get("column_count") or 0)
+    visible_body_rows: set[int] = set()
+    visible_body_columns: set[int] = set()
+    for cell in visible_cells:
+        try:
+            row = int(cell.get("row") or 0)
+            col = int(cell.get("col") or 0)
+            col_span = max(1, int(cell.get("colSpan") or cell.get("colspan") or cell.get("col_span") or 1))
+        except (TypeError, ValueError):
+            continue
+        if header_row_count <= row < summary_start and _cell_text_value(cell):
+            visible_body_rows.add(row)
+            for column in range(max(0, col), min(col_count, col + col_span)):
+                visible_body_columns.add(column)
+    original_structure_usable = (
+        bool(original_quality.get("usable_shape"))
+        and bool(original_quality.get("has_structured_cells"))
+        and original_row_count == row_count
+        and original_column_count == col_count
+        and body_row_count >= 2
+        and len(visible_body_rows) >= body_row_count
+        and len(visible_body_columns) >= max(2, col_count)
+    )
+    if original_structure_usable:
+        return candidate, {
+            **base_debug,
+            "attempted": True,
+            "body_row_count": body_row_count,
+            "body_column_count": col_count,
+            "recovered_row_count": row_count,
+            "recovered_column_count": col_count,
+            "reason": "original_slanext_structure_usable",
+            "original_structure_gate": {
+                "usable_shape": bool(original_quality.get("usable_shape")),
+                "row_count": original_row_count,
+                "column_count": original_column_count,
+                "body_row_count": body_row_count,
+                "visible_body_row_count": len(visible_body_rows),
+                "visible_body_column_count": len(visible_body_columns),
+            },
+        }
+
     row_boundaries = _infer_axis_boundaries_from_cells(visible_cells, "y", row_count)
     col_boundaries = _infer_axis_boundaries_from_cells(visible_cells, "x", col_count)
     try:
