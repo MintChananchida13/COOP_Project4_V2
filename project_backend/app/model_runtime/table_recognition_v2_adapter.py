@@ -3861,6 +3861,27 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
             "reason": "no_body_region",
         }
 
+    row_boundaries = _infer_axis_boundaries_from_cells(visible_cells, "y", row_count)
+    col_boundaries = _infer_axis_boundaries_from_cells(visible_cells, "x", col_count)
+    try:
+        ocr_cells, _, ocr_debug = _ocr_cells_from_text_detection(image, "slanext_row_collapse")
+    except Exception as error:
+        return candidate, {
+            **base_debug,
+            "attempted": True,
+            "body_row_count": body_row_count,
+            "body_column_count": col_count,
+            "recovered_row_count": row_count,
+            "recovered_column_count": col_count,
+            "reason": f"ocr_geometry_failed:{error}",
+        }
+
+    ocr_heights = [float(cell.get("height") or 0.0) for cell in ocr_cells if float(cell.get("height") or 0.0) > 0]
+    body_margin = max(2.0, (float(np.median(ocr_heights)) if ocr_heights else 12.0) * 0.85)
+    missing_row_boundaries = len(row_boundaries) < row_count + 1
+    missing_col_boundaries = len(col_boundaries) < col_count + 1
+    all_y_clusters_for_gate = _cluster_ocr_rows_by_y(ocr_cells)
+
     original_rows = normalize_table_rows(candidate.get("table_rows") or structured.get("rows") or [])
     original_quality = _calculate_table_quality(original_rows, structured, "slanext_original_structure_gate")
     original_row_count = int(original_quality.get("row_count") or 0)
@@ -3887,7 +3908,31 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
         and len(visible_body_rows) >= body_row_count
         and len(visible_body_columns) >= max(2, col_count)
     )
-    if original_structure_usable:
+    det_body_row_count = 0
+    det_body_row_source = "not_available"
+    if len(row_boundaries) >= row_count + 1:
+        body_top_index = effective_header_row_count if effective_header_row_count < len(row_boundaries) else header_row_count
+        body_top = row_boundaries[body_top_index] if body_top_index < len(row_boundaries) else row_boundaries[0]
+        body_bottom = row_boundaries[summary_start] if summary_start < len(row_boundaries) else row_boundaries[-1]
+        det_body_cells = [
+            cell
+            for cell in ocr_cells
+            if body_top - body_margin <= float(cell.get("center_y") or 0.0) <= body_bottom + body_margin
+        ]
+        det_body_row_count = len(_cluster_ocr_rows_by_y(det_body_cells))
+        det_body_row_source = "slanext_row_boundaries"
+    elif all_y_clusters_for_gate:
+        summary_cluster_count_for_gate = max(0, row_count - summary_start)
+        body_cluster_start = min(effective_header_row_count, len(all_y_clusters_for_gate))
+        body_cluster_end_for_gate = len(all_y_clusters_for_gate) - summary_cluster_count_for_gate if summary_cluster_count_for_gate else len(all_y_clusters_for_gate)
+        det_body_row_count = max(0, body_cluster_end_for_gate - body_cluster_start)
+        det_body_row_source = "ocr_y_clusters_structural_slice"
+
+    row_geometry_suspicious = (
+        det_body_row_count >= body_row_count + 2
+        and body_row_count <= max(1, int(det_body_row_count * 0.7))
+    )
+    if original_structure_usable and not row_geometry_suspicious:
         return candidate, {
             **base_debug,
             "attempted": True,
@@ -3903,28 +3948,11 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
                 "body_row_count": body_row_count,
                 "visible_body_row_count": len(visible_body_rows),
                 "visible_body_column_count": len(visible_body_columns),
+                "det_body_row_count": det_body_row_count,
+                "det_body_row_source": det_body_row_source,
+                "row_geometry_suspicious": row_geometry_suspicious,
             },
         }
-
-    row_boundaries = _infer_axis_boundaries_from_cells(visible_cells, "y", row_count)
-    col_boundaries = _infer_axis_boundaries_from_cells(visible_cells, "x", col_count)
-    try:
-        ocr_cells, _, ocr_debug = _ocr_cells_from_text_detection(image, "slanext_row_collapse")
-    except Exception as error:
-        return candidate, {
-            **base_debug,
-            "attempted": True,
-            "body_row_count": body_row_count,
-            "body_column_count": col_count,
-            "recovered_row_count": row_count,
-            "recovered_column_count": col_count,
-            "reason": f"ocr_geometry_failed:{error}",
-        }
-
-    ocr_heights = [float(cell.get("height") or 0.0) for cell in ocr_cells if float(cell.get("height") or 0.0) > 0]
-    body_margin = max(2.0, (float(np.median(ocr_heights)) if ocr_heights else 12.0) * 0.85)
-    missing_row_boundaries = len(row_boundaries) < row_count + 1
-    missing_col_boundaries = len(col_boundaries) < col_count + 1
     ocr_geometry_fallback: Dict[str, Any] = {
         "enabled": missing_row_boundaries or missing_col_boundaries,
         "missing_row_boundaries": missing_row_boundaries,
@@ -4299,6 +4327,17 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
         "original_body_row_count": body_row_count,
         "ocr_supported_body_row_count": ocr_supported_body_row_count,
         "body_row_evidence": body_reconstruction_evidence,
+        "original_structure_gate": {
+            "usable_shape": bool(original_quality.get("usable_shape")),
+            "row_count": original_row_count,
+            "column_count": original_column_count,
+            "body_row_count": body_row_count,
+            "visible_body_row_count": len(visible_body_rows),
+            "visible_body_column_count": len(visible_body_columns),
+            "det_body_row_count": det_body_row_count,
+            "det_body_row_source": det_body_row_source,
+            "row_geometry_suspicious": row_geometry_suspicious,
+        },
         "header_boundary_source": header_boundary_source,
         "header_bottom_y": round(header_bottom_y, 3) if header_bottom_y is not None else None,
         "header_ocr_cluster_count": header_ocr_cluster_count,
