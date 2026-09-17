@@ -3861,35 +3861,6 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
             "reason": "no_body_region",
         }
 
-    original_rows = (
-        normalize_table_rows(candidate.get("table_rows") or [])
-        or normalize_table_rows(structured.get("rows") or [])
-        or _rows_from_structured_cells_preserve_grid(source_cells)
-    )
-    original_quality = _calculate_table_quality(original_rows, structured, "slanext_original_structure_gate")
-    if (
-        bool(original_quality.get("usable_shape"))
-        and body_row_count > 1
-        and int(original_quality.get("column_count") or 0) == col_count
-        and float(original_quality.get("column_consistency") or 0.0) >= _TABLE_BORDERLESS_COLUMN_CONSISTENCY_THRESHOLD
-    ):
-        return candidate, {
-            **base_debug,
-            "attempted": True,
-            "body_row_count": body_row_count,
-            "body_column_count": col_count,
-            "recovered_row_count": row_count,
-            "recovered_column_count": col_count,
-            "row_collapse_gate_reason": "original_slanext_structure_usable",
-            "reason": "original_structure_usable_no_body_collapse_evidence",
-            "quality": original_quality,
-            "body_reconstruction": {
-                "attempted": False,
-                "selected": False,
-                "reason": "original_slanext_structure_usable",
-            },
-        }
-
     row_boundaries = _infer_axis_boundaries_from_cells(visible_cells, "y", row_count)
     col_boundaries = _infer_axis_boundaries_from_cells(visible_cells, "x", col_count)
     try:
@@ -4013,11 +3984,26 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
             col_boundaries,
             direct_x_tolerance,
         )
+        direct_debug_rows = direct_rows_debug.get("rows") if isinstance(direct_rows_debug.get("rows"), list) else []
+        aligned_body_rows = sum(
+            1
+            for row_debug in direct_debug_rows
+            if isinstance(row_debug, dict) and len(row_debug.get("columns") or []) >= 2
+        )
+        ocr_supported_body_row_count = len(direct_body_rows) if aligned_body_rows >= max(2, int(len(direct_body_rows) * 0.6)) else aligned_body_rows
+        body_row_evidence = {
+            "aligned_body_rows": aligned_body_rows,
+            "alignment_ratio": round(aligned_body_rows / max(1, len(direct_body_rows)), 4),
+            "requires_more_rows_than_original": ocr_supported_body_row_count > body_row_count,
+        }
         body_reconstruction_debug = {
             "attempted": True,
             "ocr_box_count": len(ocr_cells),
             "body_box_count": len(fallback_body_ocr_cells),
             "detected_body_rows": len(body_clusters_from_ocr),
+            "original_body_row_count": body_row_count,
+            "ocr_supported_body_row_count": ocr_supported_body_row_count,
+            "body_row_evidence": body_row_evidence,
             "declared_header_row_count": header_row_count,
             "effective_header_row_count": effective_header_row_count,
             "header_ocr_cluster_count": header_ocr_cluster_count,
@@ -4025,7 +4011,7 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
             "column_count": col_count,
             "reconstructed_row_count": len(direct_body_rows),
             "selected": False,
-            "reason": "candidate_built" if len(direct_body_rows) > body_row_count else "not_enough_body_rows",
+            "reason": "candidate_built" if ocr_supported_body_row_count > body_row_count else "body_rows_match_original",
             "rows": direct_rows_debug,
         }
         if missing_row_boundaries:
@@ -4057,13 +4043,20 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
     x_tolerance = max(4.0, (float(np.median(widths)) if widths else 24.0) * 0.16)
     y_tolerance = max(4.0, (float(np.median(heights)) if heights else 12.0) * 0.35)
     clusters, logical_body_rows_debug = _logical_body_rows_from_y_clusters(raw_y_clusters, col_boundaries, x_tolerance)
-    if direct_body_rows is not None and len(direct_body_rows) > body_row_count:
+    precheck_ocr_supported_body_row_count = int(body_reconstruction_debug.get("ocr_supported_body_row_count") or 0)
+    if direct_body_rows is not None and precheck_ocr_supported_body_row_count > body_row_count:
         clusters = direct_body_rows
         logical_body_rows_debug = body_reconstruction_debug.get("rows") if isinstance(body_reconstruction_debug.get("rows"), dict) else logical_body_rows_debug
     y_cluster_count = len(clusters)
     supporting_columns, row_alignment_score = _row_cluster_alignment_support(clusters, col_boundaries, x_tolerance)
     supporting_rows, column_alignment_score = _column_cluster_alignment_support(column_clusters, row_boundaries, y_tolerance)
-    direct_body_reconstruction = direct_body_rows is not None and len(direct_body_rows) > body_row_count
+    body_reconstruction_evidence = body_reconstruction_debug.get("body_row_evidence") if isinstance(body_reconstruction_debug.get("body_row_evidence"), dict) else {}
+    ocr_supported_body_row_count = int(body_reconstruction_debug.get("ocr_supported_body_row_count") or 0)
+    direct_body_reconstruction = (
+        direct_body_rows is not None
+        and ocr_supported_body_row_count > body_row_count
+        and bool(body_reconstruction_evidence.get("requires_more_rows_than_original"))
+    )
     row_collapse = direct_body_reconstruction or (
         (
             y_cluster_count >= body_row_count + 2
@@ -4083,6 +4076,9 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
         "attempted": True,
         "body_row_count": body_row_count,
         "body_column_count": col_count,
+        "original_body_row_count": body_row_count,
+        "ocr_supported_body_row_count": ocr_supported_body_row_count,
+        "body_row_evidence": body_reconstruction_evidence,
         "y_cluster_count": y_cluster_count,
         "x_cluster_count": x_cluster_count,
         "raw_y_cluster_count": len(raw_y_clusters),
@@ -4096,7 +4092,7 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
         "column_alignment_score": column_alignment_score,
         "row_collapse": row_collapse,
         "column_collapse": column_collapse,
-        "row_collapse_gate_reason": "direct_body_reconstruction" if direct_body_reconstruction else "collapse_evidence_evaluated",
+        "row_collapse_gate_reason": "ocr_body_rows_exceed_original" if direct_body_reconstruction else "body_rows_match_original_or_insufficient_alignment",
         "suspected_row_collapse": row_collapse,
         "suspected_column_collapse": column_collapse,
         "recovery_axis": recovery_axis,
