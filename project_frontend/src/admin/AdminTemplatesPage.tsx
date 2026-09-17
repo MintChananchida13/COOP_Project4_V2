@@ -13,7 +13,7 @@ import {
   updateTemplateStatus,
 } from "./adminApi";
 import { AdminStatusFilter } from "./adminTypes";
-import { ActionButton, EmptyState, InlineState, LoadingState, StatusBadge } from "../shared/ui";
+import { ActionButton, EmptyState, InlineState, LoadingState, StatusBadge, cardClassName } from "../shared/ui";
 
 const statusFilterOptions: { value: AdminStatusFilter; label: string }[] = [
   { value: "all", label: "ทั้งหมด" },
@@ -501,7 +501,7 @@ export default function AdminTemplatesPage() {
         </button>
       </div>
 
-      <div className="space-y-4">
+      <div className={`${cardClassName} space-y-4 p-4`}>
         <div className="grid w-full gap-2 sm:grid-cols-4 lg:max-w-[640px]">
           {statusFilterOptions.map((status) => (
             <button
@@ -548,7 +548,7 @@ export default function AdminTemplatesPage() {
       )}
 
       <div>
-        <label className="flex min-w-0 items-center gap-3 rounded-xl border border-slate-200 bg-white px-3 shadow-sm focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-100">
+        <label className="flex min-w-0 items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 focus-within:border-indigo-500 focus-within:bg-white focus-within:ring-2 focus-within:ring-indigo-100">
           <Search size={17} className="shrink-0 text-slate-400" />
           <input
             type="search"
