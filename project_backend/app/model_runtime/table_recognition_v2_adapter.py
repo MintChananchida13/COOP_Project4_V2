@@ -3606,6 +3606,82 @@ def _row_cluster_alignment_support(
     return (supporting_columns, round(_clamp01(alignment_score), 4))
 
 
+def _logical_body_rows_from_y_clusters(
+    raw_clusters: List[List[Dict[str, Any]]],
+    col_boundaries: List[float],
+    x_tolerance: float,
+) -> tuple[List[List[Dict[str, Any]]], Dict[str, Any]]:
+    if not raw_clusters:
+        return [], {"raw_y_cluster_count": 0, "logical_body_row_count": 0, "merge_count": 0, "rows": []}
+
+    heights = [
+        float(cell.get("height") or 0.0)
+        for cluster in raw_clusters
+        for cell in cluster
+        if float(cell.get("height") or 0.0) > 0
+    ]
+    median_height = float(np.median(heights)) if heights else 12.0
+    y_gap_tolerance = max(5.0, median_height * 1.15)
+
+    def cluster_profile(cluster: List[Dict[str, Any]]) -> Dict[str, Any]:
+        cols: set[int] = set()
+        tops: List[float] = []
+        bottoms: List[float] = []
+        for cell in cluster:
+            left = float(cell.get("x") or 0.0)
+            right = left + float(cell.get("width") or 0.0)
+            top = float(cell.get("y") or 0.0)
+            bottom = top + float(cell.get("height") or 0.0)
+            tops.append(top)
+            bottoms.append(bottom)
+            if len(col_boundaries) >= 2:
+                cols.add(_dominant_interval_index(left, right, col_boundaries, x_tolerance))
+        return {
+            "cols": cols,
+            "top": min(tops) if tops else 0.0,
+            "bottom": max(bottoms) if bottoms else 0.0,
+            "center_y": sum(float(cell.get("center_y") or 0.0) for cell in cluster) / max(1, len(cluster)),
+            "cell_count": len(cluster),
+        }
+
+    logical_rows: List[List[Dict[str, Any]]] = []
+    debug_rows: List[Dict[str, Any]] = []
+    merge_count = 0
+    for cluster in raw_clusters:
+        profile = cluster_profile(cluster)
+        if not logical_rows:
+            logical_rows.append(list(cluster))
+            debug_rows.append({"raw_cluster_count": 1, "columns": sorted(profile["cols"]), "cell_count": len(cluster)})
+            continue
+
+        previous_profile = cluster_profile(logical_rows[-1])
+        gap = profile["top"] - previous_profile["bottom"]
+        shared_columns = previous_profile["cols"].intersection(profile["cols"])
+        combined_columns = previous_profile["cols"].union(profile["cols"])
+        previous_sparse = len(previous_profile["cols"]) <= 1
+        current_sparse = len(profile["cols"]) <= 1
+        same_or_complementary_columns = bool(shared_columns) or (previous_sparse or current_sparse)
+        should_merge = gap <= y_gap_tolerance and same_or_complementary_columns
+        if should_merge:
+            logical_rows[-1].extend(cluster)
+            logical_rows[-1] = sorted(logical_rows[-1], key=lambda item: float(item.get("center_x") or 0.0))
+            debug_rows[-1]["raw_cluster_count"] = int(debug_rows[-1].get("raw_cluster_count") or 1) + 1
+            debug_rows[-1]["columns"] = sorted(combined_columns)
+            debug_rows[-1]["cell_count"] = len(logical_rows[-1])
+            merge_count += 1
+        else:
+            logical_rows.append(list(cluster))
+            debug_rows.append({"raw_cluster_count": 1, "columns": sorted(profile["cols"]), "cell_count": len(cluster)})
+
+    return logical_rows, {
+        "raw_y_cluster_count": len(raw_clusters),
+        "logical_body_row_count": len(logical_rows),
+        "merge_count": merge_count,
+        "y_gap_tolerance": round(y_gap_tolerance, 3),
+        "rows": debug_rows,
+    }
+
+
 def _cluster_ocr_columns_by_x(ocr_cells: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
     if not ocr_cells:
         return []
@@ -3817,14 +3893,16 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
     ]
     if fallback_body_ocr_cells is not None and len(_cluster_ocr_rows_by_y(body_ocr_cells)) <= body_row_count:
         body_ocr_cells = fallback_body_ocr_cells
-    clusters = _cluster_ocr_rows_by_y(body_ocr_cells)
-    y_cluster_count = len(clusters)
+    raw_y_clusters = _cluster_ocr_rows_by_y(body_ocr_cells)
     column_clusters = _cluster_ocr_columns_by_x(body_ocr_cells)
+    raw_x_cluster_count = len(column_clusters)
     x_cluster_count = len(column_clusters)
     widths = [float(cell.get("width") or 0.0) for cell in body_ocr_cells if float(cell.get("width") or 0.0) > 0]
     heights = [float(cell.get("height") or 0.0) for cell in body_ocr_cells if float(cell.get("height") or 0.0) > 0]
     x_tolerance = max(4.0, (float(np.median(widths)) if widths else 24.0) * 0.16)
     y_tolerance = max(4.0, (float(np.median(heights)) if heights else 12.0) * 0.35)
+    clusters, logical_body_rows_debug = _logical_body_rows_from_y_clusters(raw_y_clusters, col_boundaries, x_tolerance)
+    y_cluster_count = len(clusters)
     supporting_columns, row_alignment_score = _row_cluster_alignment_support(clusters, col_boundaries, x_tolerance)
     supporting_rows, column_alignment_score = _column_cluster_alignment_support(column_clusters, row_boundaries, y_tolerance)
     row_collapse = (
@@ -3844,6 +3922,9 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
         "body_column_count": col_count,
         "y_cluster_count": y_cluster_count,
         "x_cluster_count": x_cluster_count,
+        "raw_y_cluster_count": len(raw_y_clusters),
+        "raw_x_cluster_count": raw_x_cluster_count,
+        "logical_body_rows": logical_body_rows_debug,
         "supporting_columns": supporting_columns,
         "supporting_rows": supporting_rows,
         "alignment_score": alignment_score,
