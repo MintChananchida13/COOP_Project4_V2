@@ -3890,6 +3890,7 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
         "summary_cluster_count": 0,
         "declared_header_row_count": header_row_count,
         "effective_header_row_count": effective_header_row_count,
+        "header_ocr_cluster_count": effective_header_row_count,
         "merged_multiline_count": 0,
         "body_region_source": "slanext_boundaries",
     }
@@ -3902,6 +3903,7 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
         "detected_body_rows": 0,
         "declared_header_row_count": header_row_count,
         "effective_header_row_count": effective_header_row_count,
+        "header_ocr_cluster_count": effective_header_row_count,
         "merged_multiline_count": 0,
         "column_count": col_count,
         "reconstructed_row_count": 0,
@@ -3927,7 +3929,7 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
             }
         summary_cluster_count = max(0, row_count - summary_start)
         body_cluster_end = len(all_y_clusters) - summary_cluster_count if summary_cluster_count else len(all_y_clusters)
-        structural_header_cluster_count = effective_header_row_count
+        header_ocr_cluster_count = effective_header_row_count
         header_bottom_values: List[float] = []
         for cell in visible_cells:
             try:
@@ -3946,8 +3948,8 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
         if header_bottom_values:
             header_bottom = max(header_bottom_values)
             header_margin = max(1.0, (float(np.median(ocr_heights)) if ocr_heights else 12.0) * 0.35)
-            structural_header_cluster_count = max(
-                structural_header_cluster_count,
+            header_ocr_cluster_count = max(
+                header_ocr_cluster_count,
                 sum(
                     1
                     for cluster in all_y_clusters
@@ -3958,8 +3960,8 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
                     <= header_bottom + header_margin
                 ),
             )
-        merged_multiline_count = max(0, structural_header_cluster_count - effective_header_row_count)
-        body_clusters_from_ocr = all_y_clusters[structural_header_cluster_count:body_cluster_end]
+        merged_multiline_count = max(0, header_ocr_cluster_count - effective_header_row_count)
+        body_clusters_from_ocr = all_y_clusters[header_ocr_cluster_count:body_cluster_end]
         if not body_clusters_from_ocr and len(all_y_clusters) > body_row_count:
             body_clusters_from_ocr = all_y_clusters
         fallback_body_ocr_cells = [cell for cluster in body_clusters_from_ocr for cell in cluster]
@@ -3967,6 +3969,7 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
         ocr_geometry_fallback["summary_cluster_count"] = summary_cluster_count
         ocr_geometry_fallback["declared_header_row_count"] = header_row_count
         ocr_geometry_fallback["effective_header_row_count"] = effective_header_row_count
+        ocr_geometry_fallback["header_ocr_cluster_count"] = header_ocr_cluster_count
         ocr_geometry_fallback["merged_multiline_count"] = merged_multiline_count
         ocr_geometry_fallback["body_region_source"] = "ocr_y_clusters"
         if missing_col_boundaries:
@@ -3988,6 +3991,7 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
             "detected_body_rows": len(body_clusters_from_ocr),
             "declared_header_row_count": header_row_count,
             "effective_header_row_count": effective_header_row_count,
+            "header_ocr_cluster_count": header_ocr_cluster_count,
             "merged_multiline_count": merged_multiline_count,
             "column_count": col_count,
             "reconstructed_row_count": len(direct_body_rows),
