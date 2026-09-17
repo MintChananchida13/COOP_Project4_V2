@@ -3946,6 +3946,7 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
         header_boundary_source = "ocr_transition_from_structural_header"
         header_bottom_y = None
         header_ocr_cluster_count = 0
+        header_content_ownership_failed = False
         header_bottom_values: List[float] = []
         for cell in visible_cells:
             try:
@@ -3994,13 +3995,104 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
                     columns.add(_dominant_interval_index(left, right, col_boundaries, direct_x_tolerance))
                 return columns
 
+            def normalize_for_match(value: Any) -> str:
+                normalized = normalize_ocr_text(value)
+                return "".join(char.lower() for char in normalized if char.isalnum())
+
+            def cluster_text_by_column(cluster: List[Dict[str, Any]]) -> Dict[int, str]:
+                by_column: Dict[int, List[str]] = {}
+                if len(col_boundaries) < 2:
+                    return {}
+                direct_x_tolerance = max(4.0, median_ocr_height * 0.35)
+                for item in sorted(cluster, key=lambda cell: float(cell.get("center_x") or 0.0)):
+                    text = normalize_ocr_text(item.get("text") or item.get("ocrText") or "")
+                    if not text:
+                        continue
+                    left = float(item.get("x") or 0.0)
+                    right = left + float(item.get("width") or 0.0)
+                    column = _dominant_interval_index(left, right, col_boundaries, direct_x_tolerance)
+                    by_column.setdefault(column, []).append(text)
+                return {column: " ".join(parts) for column, parts in by_column.items()}
+
+            def header_targets_by_column() -> Dict[int, str]:
+                targets: Dict[int, List[str]] = {}
+                for cell in visible_cells:
+                    try:
+                        row = int(cell.get("row") or 0)
+                        col = int(cell.get("col") or 0)
+                        col_span = max(1, int(cell.get("colSpan") or cell.get("colspan") or cell.get("col_span") or 1))
+                    except (TypeError, ValueError):
+                        continue
+                    if row >= effective_header_row_count:
+                        continue
+                    text = _cell_text_value(cell)
+                    if not text:
+                        continue
+                    for column in range(max(0, col), min(col_count, col + col_span)):
+                        targets.setdefault(column, []).append(text)
+                return {column: " ".join(parts) for column, parts in targets.items()}
+
+            def compatible_header_accumulation(accumulated: Dict[int, str], targets: Dict[int, str]) -> tuple[bool, int]:
+                def char_similarity(left: str, right: str) -> float:
+                    if not left or not right:
+                        return 0.0
+                    if len(left) > len(right) * 1.12:
+                        return 0.0
+                    if left in right:
+                        return 1.0
+                    left_units = {left[index : index + 2] for index in range(max(1, len(left) - 1))}
+                    right_units = {right[index : index + 2] for index in range(max(1, len(right) - 1))}
+                    if not left_units or not right_units:
+                        return 0.0
+                    return (2.0 * len(left_units.intersection(right_units))) / (len(left_units) + len(right_units))
+
+                populated = 0
+                matched = 0
+                for column, text in accumulated.items():
+                    compact_text = normalize_for_match(text)
+                    if not compact_text:
+                        continue
+                    populated += 1
+                    compact_target = normalize_for_match(targets.get(column) or "")
+                    if not compact_target:
+                        continue
+                    if char_similarity(compact_text, compact_target) >= 0.72:
+                        matched += 1
+                required = max(2, int(populated * 0.6)) if populated >= 2 else populated
+                return populated > 0 and matched >= required, matched
+
+            header_targets = header_targets_by_column()
+            use_header_content_ownership = source_structure_model == "not_available" and bool(header_targets)
+            accumulated_header_text: Dict[int, str] = {}
+
             for index, cluster in enumerate(all_y_clusters[:body_cluster_end]):
                 current_columns = cluster_columns(cluster)
+                current_text_by_column = cluster_text_by_column(cluster)
                 if index < effective_header_row_count:
+                    if use_header_content_ownership:
+                        candidate_accumulated = dict(accumulated_header_text)
+                        for column, text in current_text_by_column.items():
+                            candidate_accumulated[column] = " ".join([candidate_accumulated.get(column, ""), text]).strip()
+                        compatible, _ = compatible_header_accumulation(candidate_accumulated, header_targets)
+                        if not compatible:
+                            header_content_ownership_failed = True
+                            break
+                        accumulated_header_text = candidate_accumulated
                     header_ocr_cluster_count = index + 1
                     header_bottom_y = cluster_bounds(cluster)[1]
                     continue
                 if header_ocr_cluster_count <= 0:
+                    break
+                if use_header_content_ownership:
+                    candidate_accumulated = dict(accumulated_header_text)
+                    for column, text in current_text_by_column.items():
+                        candidate_accumulated[column] = " ".join([candidate_accumulated.get(column, ""), text]).strip()
+                    compatible, _ = compatible_header_accumulation(candidate_accumulated, header_targets)
+                    if compatible:
+                        header_ocr_cluster_count = index + 1
+                        header_bottom_y = cluster_bounds(cluster)[1]
+                        accumulated_header_text = candidate_accumulated
+                        continue
                     break
                 previous_cluster = all_y_clusters[header_ocr_cluster_count - 1]
                 previous_columns = cluster_columns(previous_cluster)
@@ -4029,6 +4121,22 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
                 break
         header_ocr_cluster_count = min(max(0, header_ocr_cluster_count), body_cluster_end)
         merged_multiline_count = max(0, header_ocr_cluster_count - effective_header_row_count)
+        if header_content_ownership_failed:
+            ocr_geometry_fallback["header_boundary_source"] = "header_content_ownership_failed"
+            ocr_geometry_fallback["header_bottom_y"] = None
+            ocr_geometry_fallback["header_ocr_cluster_count"] = header_ocr_cluster_count
+            ocr_geometry_fallback["merged_multiline_count"] = merged_multiline_count
+            return candidate, {
+                **base_debug,
+                "attempted": True,
+                "body_row_count": body_row_count,
+                "body_column_count": col_count,
+                "recovered_row_count": row_count,
+                "recovered_column_count": col_count,
+                "reason": "header_content_ownership_failed",
+                "ocr": ocr_debug,
+                "ocr_geometry_fallback": ocr_geometry_fallback,
+            }
         body_clusters_from_ocr = all_y_clusters[header_ocr_cluster_count:body_cluster_end]
         if not body_clusters_from_ocr and len(all_y_clusters) > body_row_count:
             body_clusters_from_ocr = all_y_clusters
