@@ -3861,6 +3861,35 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
             "reason": "no_body_region",
         }
 
+    original_rows = (
+        normalize_table_rows(candidate.get("table_rows") or [])
+        or normalize_table_rows(structured.get("rows") or [])
+        or _rows_from_structured_cells_preserve_grid(source_cells)
+    )
+    original_quality = _calculate_table_quality(original_rows, structured, "slanext_original_structure_gate")
+    if (
+        bool(original_quality.get("usable_shape"))
+        and body_row_count > 1
+        and int(original_quality.get("column_count") or 0) == col_count
+        and float(original_quality.get("column_consistency") or 0.0) >= _TABLE_BORDERLESS_COLUMN_CONSISTENCY_THRESHOLD
+    ):
+        return candidate, {
+            **base_debug,
+            "attempted": True,
+            "body_row_count": body_row_count,
+            "body_column_count": col_count,
+            "recovered_row_count": row_count,
+            "recovered_column_count": col_count,
+            "row_collapse_gate_reason": "original_slanext_structure_usable",
+            "reason": "original_structure_usable_no_body_collapse_evidence",
+            "quality": original_quality,
+            "body_reconstruction": {
+                "attempted": False,
+                "selected": False,
+                "reason": "original_slanext_structure_usable",
+            },
+        }
+
     row_boundaries = _infer_axis_boundaries_from_cells(visible_cells, "y", row_count)
     col_boundaries = _infer_axis_boundaries_from_cells(visible_cells, "x", col_count)
     try:
@@ -4067,6 +4096,7 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
         "column_alignment_score": column_alignment_score,
         "row_collapse": row_collapse,
         "column_collapse": column_collapse,
+        "row_collapse_gate_reason": "direct_body_reconstruction" if direct_body_reconstruction else "collapse_evidence_evaluated",
         "suspected_row_collapse": row_collapse,
         "suspected_column_collapse": column_collapse,
         "recovery_axis": recovery_axis,
