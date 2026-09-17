@@ -4351,13 +4351,13 @@ class AdminTemplateService:
                         if boundary_path and not SAVE_DEBUG_ARTIFACTS:
                             Path(boundary_path).unlink(missing_ok=True)
                 elif data_type == "table":
-                    padded_crop_bgr, table_padding_px = pad_table_roi_crop(crop_bgr)
+                    padded_crop_bgr, table_padding = pad_table_roi_crop(crop_bgr)
                     ocr_result = recognize_table_v2(padded_crop_bgr)
                     table_debug = ocr_result.get("table_debug")
                     if isinstance(table_debug, dict):
                         ocr_result["table_debug"] = {
                             **table_debug,
-                            "roi_white_padding_px": table_padding_px,
+                            "roi_white_padding_px": table_padding,
                             "roi_crop_size": {"width": int(crop_bgr.shape[1]), "height": int(crop_bgr.shape[0])},
                             "roi_padded_size": {
                                 "width": int(padded_crop_bgr.shape[1]),
