@@ -12,6 +12,7 @@ const navItems = [
   { href: "/admin", label: "ภาพรวม" },
   { href: "/admin/requests", label: "คำขอ Template" },
   { href: "/admin/templates", label: "คลัง Template" },
+  { href: "/admin/settings", label: "⚙ ตั้งค่าระบบ" },
   { href: "/admin/detection-lab", label: "ทดสอบการค้นหา", badge: "DEV" },
 ];
 

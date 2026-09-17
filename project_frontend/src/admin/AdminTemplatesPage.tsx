@@ -9,14 +9,11 @@ import {
   createTemplateRequest,
   deleteTemplateApi,
   fetchTemplates,
-  fetchVerificationStrategy,
   updateTemplateApi,
   updateTemplateStatus,
-  updateVerificationStrategy,
-  VerificationStrategy,
 } from "./adminApi";
 import { AdminStatusFilter } from "./adminTypes";
-import { ActionButton, EmptyState, InlineState, LoadingState, PageHeader, StatusBadge, cardClassName } from "../shared/ui";
+import { ActionButton, EmptyState, InlineState, LoadingState, StatusBadge } from "../shared/ui";
 
 const statusFilterOptions: { value: AdminStatusFilter; label: string }[] = [
   { value: "all", label: "ทั้งหมด" },
@@ -26,22 +23,6 @@ const statusFilterOptions: { value: AdminStatusFilter; label: string }[] = [
 ];
 
 const manageableStatuses: TemplateStatus[] = ["active", "nonactive", "disabled"];
-const verificationStrategyOptions: {
-  value: VerificationStrategy;
-  label: string;
-  description: string;
-}[] = [
-  {
-    value: "standard",
-    label: "แบบถ่วงน้ำหนัก (Standard)",
-    description: "ประเมินความตรงกันของ Template จากคะแนน Layout, Text และ Image ตามค่าน้ำหนักที่กำหนดไว้ในแต่ละ Template",
-  },
-  {
-    value: "strict",
-    label: "แบบเข้มงวด (Strict)",
-    description: "ประเมินความตรงกันของ Template จากผลการตรวจสอบ Text และ Image เป็นรายเงื่อนไข โดยไม่ใช้คะแนนรวมในการตัดสิน",
-  },
-];
 
 interface PdfJsLib {
   GlobalWorkerOptions: { workerSrc: string };
@@ -147,7 +128,6 @@ export default function AdminTemplatesPage() {
   const [renameMessage, setRenameMessage] = useState("");
   const [renameError, setRenameError] = useState("");
   const [newTemplateName, setNewTemplateName] = useState("");
-  const [newTemplateType, setNewTemplateType] = useState("");
   const [newVersionNameSuffix, setNewVersionNameSuffix] = useState("");
   const [selectedExistingDocumentType, setSelectedExistingDocumentType] = useState("");
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -158,9 +138,6 @@ export default function AdminTemplatesPage() {
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
   const [isCreatingRequest, setIsCreatingRequest] = useState(false);
   const [createRequestError, setCreateRequestError] = useState("");
-  const [verificationStrategy, setVerificationStrategy] = useState<VerificationStrategy>("standard");
-  const [verificationStrategySaveStatus, setVerificationStrategySaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
-  const [verificationStrategyError, setVerificationStrategyError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -168,13 +145,9 @@ export default function AdminTemplatesPage() {
     const loadTemplates = async () => {
       setLoadStatus("loading");
       try {
-        const [persistedTemplates, persistedVerificationStrategy] = await Promise.all([
-          fetchTemplates(),
-          fetchVerificationStrategy(),
-        ]);
+        const persistedTemplates = await fetchTemplates();
         if (cancelled) return;
         setTemplates(persistedTemplates);
-        setVerificationStrategy(persistedVerificationStrategy);
         setLoadStatus("loaded");
       } catch (error) {
         console.warn("Templates load failed.", error);
@@ -190,29 +163,6 @@ export default function AdminTemplatesPage() {
       cancelled = true;
     };
   }, []);
-
-  const selectedVerificationStrategy = verificationStrategyOptions.find((option) => option.value === verificationStrategy) || verificationStrategyOptions[0];
-
-  const handleVerificationStrategyChange = async (nextStrategy: VerificationStrategy) => {
-    if (nextStrategy === verificationStrategy) return;
-    const previousStrategy = verificationStrategy;
-    setVerificationStrategy(nextStrategy);
-    setVerificationStrategySaveStatus("saving");
-    setVerificationStrategyError("");
-    try {
-      const savedStrategy = await updateVerificationStrategy(nextStrategy);
-      setVerificationStrategy(savedStrategy);
-      setVerificationStrategySaveStatus("saved");
-      window.setTimeout(() => {
-        setVerificationStrategySaveStatus((current) => (current === "saved" ? "idle" : current));
-      }, 1800);
-    } catch (error) {
-      console.warn("Verification strategy update failed.", error);
-      setVerificationStrategy(previousStrategy);
-      setVerificationStrategySaveStatus("error");
-      setVerificationStrategyError(error instanceof Error ? error.message : "บันทึกรูปแบบการตรวจสอบ Template ไม่สำเร็จ");
-    }
-  };
 
   const filteredTemplates = templates.filter((template) => {
     if (selectedStatus === "all") return true;
@@ -472,7 +422,6 @@ export default function AdminTemplatesPage() {
         }
       }
 
-      setNewTemplateType("");
       setNewTemplateName("");
       setNewVersionNameSuffix("");
       setSelectedExistingDocumentType("");
@@ -535,12 +484,11 @@ export default function AdminTemplatesPage() {
 
   return (
     <section className="space-y-4">
-      <div className={`${cardClassName} flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between`}>
-        <div>
-          <h2 className="text-base font-black text-slate-900">สร้าง Template หรือ Version ใหม่</h2>
-          <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">
-            เลือกประเภทการสร้างก่อนอัปโหลดไฟล์ ระบบจะใช้ flow เดียวกับ Template Request
-          </p>
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <p className="ui-caption font-semibold text-blue-600">คลัง Template</p>
+          <h2 className="ui-page-title mt-1 text-slate-950">คลัง Template</h2>
+          <p className="ui-body mt-1 text-slate-500">จัดการ Template และ Version ทั้งหมด</p>
         </div>
         <button
           type="button"
@@ -549,108 +497,12 @@ export default function AdminTemplatesPage() {
           className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 text-xs font-black text-white shadow-sm hover:bg-indigo-700 disabled:bg-slate-300"
         >
           <Plus size={16} />
-          Create
+          สร้าง Template
         </button>
       </div>
 
-      <PageHeader
-        eyebrow="คลัง Template"
-        title="รายการ Template เอกสาร"
-        description="จัดการ Template ฉบับร่าง Template ที่ใช้งานจริง และ Template ที่ยังไม่พร้อมใช้งาน การลบข้อมูลจะมีผลกับฐานข้อมูลจริงเท่านั้น"
-      />
-
-      <div className={`${cardClassName} p-4`}>
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="min-w-0">
-            <h2 className="text-sm font-black text-slate-900">รูปแบบการตรวจสอบ Template</h2>
-            <p className="mt-1 text-[11px] font-semibold leading-5 text-slate-500">
-              กำหนดวิธีการตรวจสอบ Template สำหรับเอกสารทั้งหมดในระบบ
-            </p>
-            <p className="mt-1.5 max-w-3xl text-[11px] font-medium leading-5 text-slate-500">
-              {selectedVerificationStrategy.description}
-            </p>
-            {verificationStrategySaveStatus === "saving" && (
-              <p className="mt-2 text-[11px] font-black text-indigo-600">กำลังบันทึก...</p>
-            )}
-            {verificationStrategySaveStatus === "saved" && (
-              <p className="mt-2 text-[11px] font-black text-emerald-600">บันทึกแล้ว</p>
-            )}
-            {verificationStrategySaveStatus === "error" && verificationStrategyError && (
-              <p className="mt-2 text-[11px] font-black text-red-600">{verificationStrategyError}</p>
-            )}
-          </div>
-          <select
-            value={verificationStrategy}
-            onChange={(event) => void handleVerificationStrategyChange(event.target.value as VerificationStrategy)}
-            disabled={verificationStrategySaveStatus === "saving"}
-            className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 outline-none transition-colors focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-100 disabled:text-slate-400 lg:w-64"
-          >
-            {verificationStrategyOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      <div className="hidden">
-        <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_360px]">
-          <div className="space-y-3 p-5">
-            <div>
-              <h2 className="text-base font-black text-slate-900">สร้าง Template ใหม่</h2>
-              <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">
-                อัปโหลดรูปภาพหรือ PDF เพื่อสร้างคำขอ Template ใหม่ จากนั้นระบบจะพาไปหน้า Request Detail เพื่อตรวจไฟล์ ใส่ชื่อ Template และสร้าง Template
-              </p>
-            </div>
-            <div className="grid gap-3">
-              <label className="space-y-1.5">
-                <span className="text-[11px] font-black uppercase tracking-wide text-slate-500">ประเภทเอกสาร</span>
-                <input
-                  type="text"
-                  value={newTemplateType}
-                  onChange={(event) => setNewTemplateType(event.target.value)}
-                  placeholder="เช่น Invoice, ใบสมัคร, ใบรับรอง"
-                  className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none transition-colors focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-                />
-              </label>
-            </div>
-            {createRequestError && <InlineState tone="danger" message={createRequestError} />}
-          </div>
-          <div className="border-t border-slate-100 bg-slate-50 p-5 lg:border-l lg:border-t-0">
-            <label
-              className={`flex h-full min-h-44 cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed px-4 text-center transition-colors ${
-                isCreatingRequest || loadStatus !== "loaded"
-                  ? "cursor-not-allowed border-slate-200 bg-white text-slate-400"
-                  : "border-indigo-200 bg-white text-indigo-700 hover:border-indigo-400 hover:bg-indigo-50"
-              }`}
-            >
-              {isCreatingRequest ? <Loader2 size={28} className="animate-spin" /> : <UploadCloud size={32} />}
-              <span className="mt-3 text-sm font-black">{isCreatingRequest ? "กำลังสร้าง Template Request..." : "เลือกไฟล์เพื่อสร้าง Template"}</span>
-              <span className="mt-1 text-xs font-semibold text-slate-500">รองรับ PNG, JPG, WebP และ PDF หลายหน้า</span>
-              <input
-                type="file"
-                multiple
-                accept="image/*,application/pdf"
-                disabled={isCreatingRequest || loadStatus !== "loaded"}
-                onChange={(event) => {
-                  handleCreateTemplateRequest(event.target.files);
-                  event.currentTarget.value = "";
-                }}
-                className="sr-only"
-              />
-            </label>
-          </div>
-        </div>
-      </div>
-
-      <div className={`${cardClassName} p-4 space-y-4`}>
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h2 className="text-sm font-black uppercase tracking-wide text-slate-800">สถานะ Template</h2>
-          <p className="mt-1 text-xs font-medium text-slate-500">เลือกดู Template ตามสถานะโดยไม่เปลี่ยนข้อมูลจริง</p>
-        </div>
-        <div className="grid w-full gap-2 sm:grid-cols-4 lg:w-auto lg:min-w-[520px]">
+      <div className="space-y-4">
+        <div className="grid w-full gap-2 sm:grid-cols-4 lg:max-w-[640px]">
           {statusFilterOptions.map((status) => (
             <button
               key={status.value}
@@ -671,7 +523,6 @@ export default function AdminTemplatesPage() {
             </button>
           ))}
         </div>
-      </div>
 
       {loadStatus === "loading" && <LoadingState message="กำลังโหลด Template จากฐานข้อมูล..." />}
       {loadStatus === "error" && (
@@ -696,8 +547,8 @@ export default function AdminTemplatesPage() {
         <InlineState tone="danger" message={renameError} />
       )}
 
-      <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-        <label className="flex min-w-0 items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 focus-within:border-indigo-500 focus-within:bg-white focus-within:ring-2 focus-within:ring-indigo-100">
+      <div>
+        <label className="flex min-w-0 items-center gap-3 rounded-xl border border-slate-200 bg-white px-3 shadow-sm focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-100">
           <Search size={17} className="shrink-0 text-slate-400" />
           <input
             type="search"
@@ -715,11 +566,11 @@ export default function AdminTemplatesPage() {
         </label>
       </div>
 
-      <div className="space-y-3">
+      <div className="space-y-2">
         {visibleTemplateFolders.map((folder) => {
           const isExpanded = expandedFolderId === folder.groupId;
           return (
-            <div key={folder.groupId} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div key={folder.groupId} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
               <div
                 role="button"
                 tabIndex={0}
@@ -730,10 +581,10 @@ export default function AdminTemplatesPage() {
                     toggleTemplateFolder(folder.groupId);
                   }
                 }}
-                className="flex w-full cursor-pointer items-center gap-4 p-4 text-left transition-colors hover:bg-slate-50"
+                className="flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-slate-50"
               >
-                <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border border-indigo-100 bg-indigo-50 text-indigo-600">
-                  <Folder size={30} strokeWidth={1.8} />
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-indigo-100 bg-indigo-50 text-indigo-600">
+                  <Folder size={24} strokeWidth={1.8} />
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
@@ -760,7 +611,7 @@ export default function AdminTemplatesPage() {
                       </span>
                     )}
                   </div>
-                  <p className="mt-1 text-xs font-semibold text-slate-500">
+                  <p className="mt-0.5 text-xs font-semibold text-slate-500">
                     ชื่อ Template ปัจจุบัน · {folder.pageCount} หน้า
                   </p>
                 </div>
@@ -812,12 +663,12 @@ export default function AdminTemplatesPage() {
               </div>
 
               {isExpanded && (
-                <div className="border-t border-slate-100 bg-slate-50 p-3">
+                <div className="border-t border-slate-100 bg-slate-50 p-2">
                   <div className="grid gap-3 lg:grid-cols-2">
                     {folder.versions.map((template) => (
-                      <div key={template.id} className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                      <div key={template.id} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                         <div className="flex gap-3">
-                          <div className="relative h-28 w-24 shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
+                          <div className="relative h-24 w-20 shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-slate-100">
                             {template.previewImageUrl ? (
                               <img src={template.previewImageUrl} alt={`${template.name} template preview`} className="h-full w-full bg-white object-contain" />
                             ) : (
