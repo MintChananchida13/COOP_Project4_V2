@@ -453,6 +453,33 @@ _POSTGRES_SCHEMA = [
     "ALTER TABLE verification_anchors ADD COLUMN IF NOT EXISTS roi_points_json JSONB",
     "ALTER TABLE requested_fields ADD COLUMN IF NOT EXISTS roi_points_json JSONB",
     """
+    DELETE FROM requested_fields older
+    USING requested_fields newer
+    WHERE older.template_request_page_id = newer.template_request_page_id
+      AND older.field_name = newer.field_name
+      AND (
+          COALESCE(newer.created_at, TIMESTAMPTZ 'epoch') > COALESCE(older.created_at, TIMESTAMPTZ 'epoch')
+          OR (
+              COALESCE(newer.created_at, TIMESTAMPTZ 'epoch') = COALESCE(older.created_at, TIMESTAMPTZ 'epoch')
+              AND newer.id > older.id
+          )
+      )
+    """,
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'requested_fields_page_field_name_key'
+        ) THEN
+            ALTER TABLE requested_fields
+            ADD CONSTRAINT requested_fields_page_field_name_key
+            UNIQUE (template_request_page_id, field_name);
+        END IF;
+    END $$;
+    """,
+    """
     CREATE TABLE IF NOT EXISTS publish_jobs (
         id TEXT NOT NULL PRIMARY KEY,
         template_version_id TEXT NOT NULL REFERENCES template_versions(id) ON DELETE CASCADE,

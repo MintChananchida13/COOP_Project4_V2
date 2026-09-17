@@ -3624,13 +3624,25 @@ class TemplateRequestService:
                 )
             else:
                 page_id = page_row["id"]
-            conn.execute(
+            saved = conn.execute(
                 """
                 INSERT INTO requested_fields (
                     id, template_request_page_id, field_name, display_label, data_type, extraction_method,
                     roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_points_json, user_note, created_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (template_request_page_id, field_name)
+                DO UPDATE SET
+                    display_label = EXCLUDED.display_label,
+                    data_type = EXCLUDED.data_type,
+                    extraction_method = EXCLUDED.extraction_method,
+                    roi_x_ratio = EXCLUDED.roi_x_ratio,
+                    roi_y_ratio = EXCLUDED.roi_y_ratio,
+                    roi_width_ratio = EXCLUDED.roi_width_ratio,
+                    roi_height_ratio = EXCLUDED.roi_height_ratio,
+                    roi_points_json = EXCLUDED.roi_points_json,
+                    user_note = EXCLUDED.user_note
+                RETURNING id
                 """,
                 (
                     field_id,
@@ -3646,7 +3658,9 @@ class TemplateRequestService:
                     _roi_points_json_from_payload(payload.roi),
                     payload.user_note,
                 ),
-            )
+            ).fetchone()
+            if saved is not None:
+                field_id = saved["id"]
             conn.commit()
             row = self._requested_field_rows(conn, request_id)
         selected = next((item for item in row if item["id"] == field_id), None)
