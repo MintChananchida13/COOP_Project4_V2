@@ -3737,19 +3737,6 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
 
     row_boundaries = _infer_axis_boundaries_from_cells(visible_cells, "y", row_count)
     col_boundaries = _infer_axis_boundaries_from_cells(visible_cells, "x", col_count)
-    if len(row_boundaries) < row_count + 1 or len(col_boundaries) < col_count + 1:
-        return candidate, {
-            **base_debug,
-            "attempted": True,
-            "body_row_count": body_row_count,
-            "body_column_count": col_count,
-            "recovered_row_count": row_count,
-            "recovered_column_count": col_count,
-            "reason": "missing_boundaries",
-        }
-
-    body_top = row_boundaries[header_row_count]
-    body_bottom = row_boundaries[summary_start] if summary_start < len(row_boundaries) else row_boundaries[-1]
     try:
         ocr_cells, _, ocr_debug = _ocr_cells_from_text_detection(image, "slanext_row_collapse")
     except Exception as error:
@@ -3765,11 +3752,60 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
 
     ocr_heights = [float(cell.get("height") or 0.0) for cell in ocr_cells if float(cell.get("height") or 0.0) > 0]
     body_margin = max(2.0, (float(np.median(ocr_heights)) if ocr_heights else 12.0) * 0.85)
+    missing_row_boundaries = len(row_boundaries) < row_count + 1
+    missing_col_boundaries = len(col_boundaries) < col_count + 1
+    ocr_geometry_fallback: Dict[str, Any] = {
+        "enabled": missing_row_boundaries or missing_col_boundaries,
+        "missing_row_boundaries": missing_row_boundaries,
+        "missing_column_boundaries": missing_col_boundaries,
+        "y_cluster_count": 0,
+        "x_cluster_count": 0,
+    }
+    if missing_row_boundaries or missing_col_boundaries:
+        all_y_clusters = _cluster_ocr_rows_by_y(ocr_cells)
+        all_x_clusters = _cluster_ocr_columns_by_x(ocr_cells)
+        ocr_geometry_fallback["y_cluster_count"] = len(all_y_clusters)
+        ocr_geometry_fallback["x_cluster_count"] = len(all_x_clusters)
+        if len(all_y_clusters) <= body_row_count:
+            return candidate, {
+                **base_debug,
+                "attempted": True,
+                "body_row_count": body_row_count,
+                "body_column_count": col_count,
+                "recovered_row_count": row_count,
+                "recovered_column_count": col_count,
+                "reason": "missing_boundaries_without_ocr_row_evidence",
+                "ocr": ocr_debug,
+                "ocr_geometry_fallback": ocr_geometry_fallback,
+            }
+        if missing_row_boundaries:
+            y_centers = [
+                sum(float(item.get("center_y") or 0.0) for item in cluster) / max(1, len(cluster))
+                for cluster in all_y_clusters
+            ]
+            row_boundaries = _boundaries_from_cluster_centers(y_centers, 0.0, float(image.shape[0]))
+        if missing_col_boundaries:
+            x_centers = [
+                sum(float(item.get("center_x") or 0.0) for item in cluster) / max(1, len(cluster))
+                for cluster in all_x_clusters
+            ]
+            col_boundaries = _boundaries_from_cluster_centers(x_centers, 0.0, float(image.shape[1]))
+        if len(row_boundaries) < row_count + 1:
+            row_boundaries = [0.0, *[value for value in row_boundaries[1:-1]], float(image.shape[0])]
+        if len(col_boundaries) < col_count + 1:
+            col_boundaries = [0.0, *[value for value in col_boundaries[1:-1]], float(image.shape[1])]
+
+    body_top = row_boundaries[header_row_count] if header_row_count < len(row_boundaries) else row_boundaries[0]
+    body_bottom = row_boundaries[summary_start] if summary_start < len(row_boundaries) else row_boundaries[-1]
     body_ocr_cells = [
         cell
         for cell in ocr_cells
         if body_top - body_margin <= float(cell.get("center_y") or 0.0) <= body_bottom + body_margin
     ]
+    if (missing_row_boundaries or missing_col_boundaries) and len(_cluster_ocr_rows_by_y(body_ocr_cells)) <= body_row_count:
+        all_clusters = _cluster_ocr_rows_by_y(ocr_cells)
+        body_clusters = all_clusters[header_row_count:] if len(all_clusters) > header_row_count else all_clusters
+        body_ocr_cells = [cell for cluster in body_clusters for cell in cluster]
     clusters = _cluster_ocr_rows_by_y(body_ocr_cells)
     y_cluster_count = len(clusters)
     column_clusters = _cluster_ocr_columns_by_x(body_ocr_cells)
@@ -3812,6 +3848,7 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
         "recovered_column_count": col_count,
         "summary_start_row": summary_start if summary_start < row_count else None,
         "ocr": ocr_debug,
+        "ocr_geometry_fallback": ocr_geometry_fallback,
     }
     if not row_collapse and not column_collapse:
         debug["reason"] = "structure_collapse_not_supported"
