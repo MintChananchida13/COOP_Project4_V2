@@ -502,7 +502,7 @@ export default function AdminTemplatesPage() {
       </div>
 
       <div className={`${cardClassName} space-y-4 p-4`}>
-        <div className="grid w-full gap-2 sm:grid-cols-4 lg:max-w-[640px]">
+        <div className="grid w-full gap-2 sm:grid-cols-4 lg:ml-auto lg:w-auto lg:min-w-[520px]">
           {statusFilterOptions.map((status) => (
             <button
               key={status.value}
