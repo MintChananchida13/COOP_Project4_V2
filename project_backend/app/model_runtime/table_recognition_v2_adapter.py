@@ -1904,6 +1904,45 @@ def _ocr_cells_from_text_detection(image: np.ndarray, status_prefix: str) -> tup
     return (cells, confidence_values, {"status": status_prefix, "detected_boxes": len(regions), "recognized_cells": len(cells), "ocr_core": ocr_core_debug})
 
 
+def _detect_single_row_collapse_risk(image: np.ndarray, candidate: Dict[str, Any]) -> Dict[str, Any]:
+    debug = candidate.get("table_debug") if isinstance(candidate.get("table_debug"), dict) else {}
+    quality = debug.get("quality") if isinstance(debug.get("quality"), dict) else {}
+    row_count = int(quality.get("row_count") or 0)
+    column_count = int(quality.get("column_count") or 0)
+    if row_count != 1 or column_count < 2:
+        return {
+            "suspected": False,
+            "reason": "shape_not_single_row_grid",
+            "row_count": row_count,
+            "column_count": column_count,
+        }
+    try:
+        ocr_cells, _, ocr_debug = _ocr_cells_from_text_detection(image, "single_row_collapse_guard")
+    except Exception as error:
+        return {
+            "suspected": False,
+            "reason": f"ocr_geometry_failed:{error}",
+            "row_count": row_count,
+            "column_count": column_count,
+        }
+    clusters = _cluster_ocr_rows_by_y(ocr_cells)
+    non_empty_clusters = [
+        cluster
+        for cluster in clusters
+        if any(str(cell.get("text") or "").strip() for cell in cluster)
+    ]
+    suspected = len(non_empty_clusters) >= 2 and len(ocr_cells) >= max(4, column_count)
+    return {
+        "suspected": suspected,
+        "reason": "ocr_detected_multiple_text_rows" if suspected else "insufficient_text_row_evidence",
+        "row_count": row_count,
+        "column_count": column_count,
+        "ocr_box_count": len(ocr_cells),
+        "ocr_row_cluster_count": len(non_empty_clusters),
+        "ocr_debug": ocr_debug,
+    }
+
+
 def _ocr_cells_from_grid_boundaries(
     image: np.ndarray,
     rows: List[List[str]],
@@ -4350,13 +4389,17 @@ def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
     slanext_has_structured_grid = bool(slanext_quality.get("has_structured_cells")) and int(slanext_quality.get("row_count") or 0) > 0 and int(slanext_quality.get("column_count") or 0) > 0
     slanext_needs_fallback = _should_try_borderless_candidate(slanext_quality, slanext_confidence)
     slanext_assignment_needs_fallback = bool(slanext_has_structured_grid) and not bool((slanext_assignment.get("quality") or {}).get("passed"))
+    single_row_collapse_risk = _detect_single_row_collapse_risk(image, slanext_candidate)
+    slanext_single_row_collapse_suspected = bool(single_row_collapse_risk.get("suspected"))
+    if isinstance(slanext_candidate.get("table_debug"), dict):
+        slanext_candidate["table_debug"]["single_row_collapse_guard"] = single_row_collapse_risk
     slanext_trace_for_final = (
         slanext_debug.get("table_recognition_trace")
         if _table_debug_trace_enabled() and isinstance(slanext_debug.get("table_recognition_trace"), dict)
         else None
     )
 
-    if slanext_usable and not slanext_needs_fallback and not slanext_assignment_needs_fallback:
+    if slanext_usable and not slanext_needs_fallback and not slanext_assignment_needs_fallback and not slanext_single_row_collapse_suspected:
         selected = _attach_candidate_competition(slanext_candidate, candidates, "slanext_passed_quality_gate")
         selected.setdefault("table_semi_analysis", _whole_roi_semi_analysis(None, merge_status="not_needed_slanext_confident"))
         selected_debug = selected.get("table_debug")
@@ -4404,6 +4447,83 @@ def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
     except Exception as error:
         logger.info("Semi-structured table analysis after SLANeXt fell back to whole ROI: %s", error)
         semi_analysis = {"detected": False, "confidence": 0.0, "regions": [], "reason": str(error)}
+
+    raw_geometry_attempted = False
+    if slanext_single_row_collapse_suspected:
+        try:
+            coordinate_started = time.perf_counter()
+            forced_coordinate_analysis = _forced_whole_roi_semi_analysis(
+                image,
+                semi_analysis,
+            )
+            forced_coordinate_analysis["reason"] = "single_row_collapse_guard"
+            coordinate_result = _recognize_coordinate_based_semi_table(image, forced_coordinate_analysis)
+            logger.info(
+                "Table Recognition phase timing: phase=Single Row Collapse Guard coordinate elapsed=%.3fs used=%s",
+                time.perf_counter() - coordinate_started,
+                bool(coordinate_result),
+            )
+            if coordinate_result:
+                ocr_inference_count += 2
+                coordinate_candidate = _build_table_candidate(
+                    coordinate_result,
+                    "single_row_collapse_coordinate_semi",
+                )
+                candidates.append(coordinate_candidate)
+                coordinate_debug = coordinate_candidate.get("table_debug") if isinstance(coordinate_candidate.get("table_debug"), dict) else {}
+                coordinate_quality = coordinate_debug.get("quality") if isinstance(coordinate_debug.get("quality"), dict) else {}
+                if (
+                    int(coordinate_quality.get("row_count") or 0) > int(slanext_quality.get("row_count") or 0)
+                    and int(coordinate_quality.get("column_count") or 0) >= 2
+                ):
+                    selected = _attach_candidate_competition(
+                        coordinate_candidate,
+                        candidates,
+                        "single_row_collapse_guard_selected_coordinate_semi",
+                    )
+                    selected = _copy_slanext_trace(selected, slanext_trace_for_final)
+                    selected.setdefault("table_semi_analysis", coordinate_result.get("table_semi_analysis") or _whole_roi_semi_analysis(semi_analysis))
+                    selected_debug = selected.get("table_debug")
+                    if isinstance(selected_debug, dict):
+                        selected_debug["single_row_collapse_guard"] = single_row_collapse_risk
+                        selected_debug["timing_total_seconds"] = round(time.perf_counter() - started, 3)
+                        selected_debug["model_inference_count"] = model_inference_count
+                        selected_debug["ocr_inference_count"] = ocr_inference_count
+                    return _set_final_table_trace(selected)
+        except Exception as error:
+            logger.warning("Single-row collapse coordinate guard failed: %s", error)
+        try:
+            raw_geometry_attempted = True
+            raw_started = time.perf_counter()
+            raw_result = _recognize_raw_ocr_geometry_table(image)
+            logger.info(
+                "Table Recognition phase timing: phase=Single Row Collapse Guard raw_ocr elapsed=%.3fs used=%s",
+                time.perf_counter() - raw_started,
+                bool(raw_result),
+            )
+            if raw_result:
+                ocr_inference_count += 2
+                raw_candidate = _build_table_candidate(raw_result, "single_row_collapse_ocr_geometry")
+                candidates.append(raw_candidate)
+                raw_debug = raw_candidate.get("table_debug") if isinstance(raw_candidate.get("table_debug"), dict) else {}
+                raw_quality = raw_debug.get("quality") if isinstance(raw_debug.get("quality"), dict) else {}
+                if int(raw_quality.get("row_count") or 0) > int(slanext_quality.get("row_count") or 0):
+                    selected = _attach_candidate_competition(
+                        raw_candidate,
+                        candidates,
+                        "single_row_collapse_guard_selected_ocr_geometry",
+                    )
+                    selected = _copy_slanext_trace(selected, slanext_trace_for_final)
+                    selected.setdefault("table_semi_analysis", _whole_roi_semi_analysis(semi_analysis))
+                    selected_debug = selected.get("table_debug")
+                    if isinstance(selected_debug, dict):
+                        selected_debug["single_row_collapse_guard"] = single_row_collapse_risk
+                        selected_debug["timing_total_seconds"] = round(time.perf_counter() - started, 3)
+                        selected_debug["model_inference_count"] = model_inference_count
+                        selected_debug["ocr_inference_count"] = ocr_inference_count
+                    return _set_final_table_trace(selected)
+        except Exception as error:
+            logger.warning("Single-row collapse OCR geometry guard failed: %s", error)
 
     if not slanext_usable:
         try:
@@ -4485,7 +4605,7 @@ def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
     selected = _attach_candidate_competition(selected, candidates, selection_reason)
     selected = _copy_slanext_trace(selected, slanext_trace_for_final)
     selected.setdefault("table_semi_analysis", _whole_roi_semi_analysis(semi_analysis))
-    if not _has_usable_table_result(selected):
+    if not _has_usable_table_result(selected) and not raw_geometry_attempted:
         try:
             raw_started = time.perf_counter()
             raw_result = _recognize_raw_ocr_geometry_table(image)
