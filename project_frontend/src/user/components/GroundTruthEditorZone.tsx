@@ -274,7 +274,7 @@ const measureTableTextWidth = (() => {
     canvas = canvas || document.createElement("canvas");
     const ctx = canvas.getContext("2d");
     if (!ctx) return value.length * 8;
-    ctx.font = `${isHeader ? 800 : 500} 12px Arial, sans-serif`;
+    ctx.font = `${isHeader ? 700 : 500} 12px Sarabun, sans-serif`;
     return Math.max(
       0,
       ...String(value || "")

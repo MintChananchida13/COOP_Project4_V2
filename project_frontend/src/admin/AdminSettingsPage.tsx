@@ -46,6 +46,19 @@ const emptyModelDraft: ModelDraft = {
   batchApiPath: "",
 };
 
+const modelFormPlaceholders: Record<OcrModelKind, Record<keyof Omit<ModelDraft, "id">, string>> = {
+  text_detection: {
+    displayName: "PP-OCRv6 Medium",
+    singleApiPath: "/api/v1/text-detections?version=v6",
+    batchApiPath: "/api/v1/text-detection-batches?version=v6",
+  },
+  text_recognition: {
+    displayName: "Thai PP-OCRv5 Mobile",
+    singleApiPath: "/api/v1/text-recognitions",
+    batchApiPath: "/api/v1/text-recognition-batches",
+  },
+};
+
 export default function AdminSettingsPage() {
   const [savedStrategy, setSavedStrategy] = useState<VerificationStrategy>("standard");
   const [draftStrategy, setDraftStrategy] = useState<VerificationStrategy>("standard");
@@ -95,10 +108,21 @@ export default function AdminSettingsPage() {
   const hasModelChanges =
     draftDetectionModelId !== modelSettings.active.text_detection ||
     draftRecognitionModelId !== modelSettings.active.text_recognition;
+  const hasUnsavedChanges = hasStrategyChanges || hasModelChanges;
   const selectedOption = useMemo(
     () => verificationStrategyOptions.find((option) => option.value === draftStrategy) || verificationStrategyOptions[0],
     [draftStrategy]
   );
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedChanges]);
 
   const handleSaveStrategy = async () => {
     if (!hasStrategyChanges || strategySaveStatus === "saving") return;
@@ -233,6 +257,7 @@ export default function AdminSettingsPage() {
                       <input
                         type="text"
                         value={String(editingModel.draft[key as keyof ModelDraft] || "")}
+                        placeholder={modelFormPlaceholders[editingModel.kind][key as keyof Omit<ModelDraft, "id">]}
                         onChange={(event) => setEditingModel((current) => current ? { ...current, draft: { ...current.draft, [key]: event.target.value } } : current)}
                         className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
                       />
@@ -291,6 +316,12 @@ export default function AdminSettingsPage() {
         <h2 className="ui-page-title mt-1 text-slate-950">ตั้งค่าระบบ</h2>
         <p className="ui-body mt-1 text-slate-500">กำหนดค่าที่มีผลกับการทำงานส่วนกลางของระบบผู้ดูแล</p>
       </div>
+      {hasUnsavedChanges && (
+        <InlineState
+          tone="warning"
+          message="มีการเปลี่ยนแปลงที่ยังไม่ได้บันทึก กรุณากดบันทึกในส่วนที่แก้ไขก่อนออกจากหน้านี้"
+        />
+      )}
       {loadStatus === "loading" && <LoadingState message="กำลังโหลดการตั้งค่าระบบ..." />}
       {loadStatus === "error" && <InlineState tone="danger" message={strategyFeedback || "โหลดการตั้งค่าระบบไม่สำเร็จ"} />}
       {loadStatus === "loaded" && (
