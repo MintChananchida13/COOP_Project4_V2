@@ -4402,7 +4402,7 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
             if confidences:
                 confidence_values.extend(confidences)
             recovered_cells.append({
-                "row": header_row_count + recovered_row,
+                "row": effective_header_row_count + recovered_row,
                 "col": col_index,
                 "text": text,
                 "rowSpan": 1,
@@ -4422,14 +4422,15 @@ def _recover_slanext_structure_collapse(candidate: Dict[str, Any], image: np.nda
             col_span = max(1, int(cell.get("colSpan") or cell.get("colspan") or cell.get("col_span") or 1))
         except (TypeError, ValueError):
             continue
-        if row >= header_row_count:
+        if row >= effective_header_row_count:
             continue
         next_cell = dict(cell)
         if column_collapse and col == 0 and col_span >= col_count:
             next_cell["colSpan"] = recovered_col_count
         header_cells.append(next_cell)
     summary_cells: List[Dict[str, Any]] = []
-    row_shift = len(final_row_clusters) - body_row_count
+    original_data_body_row_count = max(0, summary_start - effective_header_row_count)
+    row_shift = len(final_row_clusters) - original_data_body_row_count
     for cell in source_cells:
         try:
             row = int(cell.get("row") or 0)
