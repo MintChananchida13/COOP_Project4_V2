@@ -1,11 +1,13 @@
 import os
 import time
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.core.db import connect as connect_db
 from app.processing.layout_signature_service import compare_layout_signatures, signature_from_json
 
+logger = logging.getLogger(__name__)
 
 def _connect() -> Any:
     return connect_db()
@@ -72,21 +74,7 @@ def search_layout_candidates(
             """,
             (page_number,),
         ).fetchall()
-        print("[LAYOUT] include_template_id =", include_template_id)
-        print("[LAYOUT] rows_count =", len(rows))
-        print(
-            "[LAYOUT] rows =",
-            [
-                {
-                    "template_id": row["template_id"],
-                    "status": row["template_status"],
-                    "page_number": row["page_number"],
-                    "detection_mode": row["detection_mode"],
-                    "has_signature": bool(row["layout_signature_json"]),
-                }
-                for row in rows
-            ],
-        )
+        logger.debug("[LAYOUT] include_template_id=%s rows_count=%s", include_template_id, len(rows))
 
     best_by_template: Dict[str, Dict[str, Any]] = {}
     compared_count = 0
@@ -96,12 +84,10 @@ def search_layout_candidates(
     for row in rows:
         template_id = row["template_id"]
 
-        print(
-            "[LAYOUT] checking:",
+        logger.debug(
+            "[LAYOUT] checking template_id=%s status=%s include=%s",
             template_id,
-            "status=",
             row["template_status"],
-            "include=",
             template_id == include_template_id,
         )
 
@@ -110,13 +96,13 @@ def search_layout_candidates(
             and row["template_status"] != "active"
             and template_id != include_template_id
         ):
-            print("[LAYOUT] skipped by active_only:", template_id)
+            logger.debug("[LAYOUT] skipped by active_only template_id=%s", template_id)
             continue
 
         signature = signature_from_json(row["layout_signature_json"])
 
         if not signature:
-            print("[LAYOUT] skipped invalid signature:", template_id)
+            logger.debug("[LAYOUT] skipped invalid signature template_id=%s", template_id)
             continue
 
         compare_started = time.perf_counter()
@@ -128,27 +114,18 @@ def search_layout_candidates(
         compared_count += 1
         if similarity.get("prefilter_rejected"):
             prefilter_rejected_count += 1
-            print(
-                "[LAYOUT] prefilter rejected:",
+            logger.debug(
+                "[LAYOUT] prefilter rejected template_id=%s label_count_score=%s area_distribution_score=%s count_threshold=%s area_threshold=%s",
                 template_id,
-                "label_count_score=",
                 similarity.get("label_count_score"),
-                "area_distribution_score=",
                 similarity.get("area_distribution_score"),
-                "count_threshold=",
                 similarity.get("count_prefilter_threshold"),
-                "area_threshold=",
                 similarity.get("area_prefilter_threshold"),
             )
             continue
         spatial_evaluated_count += 1
 
-        print(
-            "[LAYOUT] compared:",
-            template_id,
-            "score=",
-            similarity.get("score"),
-        )
+        logger.debug("[LAYOUT] compared template_id=%s score=%s", template_id, similarity.get("score"))
         metadata = {
             "template_id": template_id,
             "template_name": row["template_name"],
@@ -185,15 +162,11 @@ def search_layout_candidates(
 
     ranked = sorted(best_by_template.values(), key=lambda item: item["score"], reverse=True)
     limited = ranked[:limit]
-    print(
-        "[LAYOUT] compare timing:",
-        "compared=",
+    logger.debug(
+        "[LAYOUT] compare timing compared=%s spatial_evaluated=%s prefilter_rejected=%s elapsed=%s",
         compared_count,
-        "spatial_evaluated=",
         spatial_evaluated_count,
-        "prefilter_rejected=",
         prefilter_rejected_count,
-        "elapsed=",
         round(compare_elapsed, 4),
     )
     

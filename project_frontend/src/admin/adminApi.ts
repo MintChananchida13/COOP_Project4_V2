@@ -1698,13 +1698,17 @@ function mapDetectionDevResult(data: Record<string, unknown> | undefined): Detec
   };
 }
 
-export const detectTemplateDev = async (file: File | File[]): Promise<DetectionDevResult> => {
+export const detectTemplateDev = async (
+  file: File | File[],
+  options: { standardTop5?: boolean } = {}
+): Promise<DetectionDevResult> => {
   const formData = new FormData();
   const files = Array.isArray(file) ? file : [file];
   files.forEach((item, index) => {
     formData.append("file", item, item.name || `page-${index + 1}.jpg`);
   });
-  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/api/templates/detect-dev`, {
+  const query = options.standardTop5 ? "?standardTop5=1" : "";
+  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/api/templates/detect-dev${query}`, {
     method: "POST",
     body: formData,
   });
@@ -1721,7 +1725,7 @@ export const detectTemplateDev = async (file: File | File[]): Promise<DetectionD
   }
 
   while (true) {
-    await sleep(2500);
+    await sleep(1000);
     const pollResponse = await fetchWithAuth(`${ADMIN_API_BASE_URL}/api/templates/detect-dev/jobs/${jobId}`, {
       method: "GET",
       cache: "no-store",
@@ -1972,7 +1976,7 @@ export const runPrepublishDetectionTest = async (templateId: string, file: File)
   }
 
   while (true) {
-    await sleep(2500);
+    await sleep(1000);
     const pollResponse = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/templates/${templateId}/prepublish-detection-test/jobs/${jobId}`, {
       method: "GET",
       cache: "no-store",

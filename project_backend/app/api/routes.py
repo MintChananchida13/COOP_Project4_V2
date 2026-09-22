@@ -89,19 +89,21 @@ def _run_prepublish_detection_job(job_id: str, template_id: str, file_bytes: byt
         clear_layout_analysis_cache()
 
 
-def _run_detect_dev_job(job_id: str, image_bytes: bytes) -> None:
+def _run_detect_dev_job(job_id: str, image_bytes: bytes, standard_top5: bool = False) -> None:
     with detect_dev_jobs_lock:
         job = detect_dev_jobs.get(job_id)
         if job is not None:
             job["status"] = "processing"
     try:
-        result = detect_template_dev(
-            image_bytes,
-            verification_strategy_override="standard",
-            retrieval_limit_override=5,
-            verification_candidate_limit_override=5,
-            full_evaluation_limit_override=5,
-        )
+        detect_kwargs: Dict[str, Any] = {}
+        if standard_top5:
+            detect_kwargs = {
+                "verification_strategy_override": "standard",
+                "retrieval_limit_override": 5,
+                "verification_candidate_limit_override": 5,
+                "full_evaluation_limit_override": 5,
+            }
+        result = detect_template_dev(image_bytes, **detect_kwargs)
         with detect_dev_jobs_lock:
             job = detect_dev_jobs.get(job_id)
             if job is not None:
@@ -277,6 +279,7 @@ async def detect_template_dev_route(
     response: Response,
 ) -> dict:
     image_bytes = await _read_dev_detection_image(request)
+    standard_top5 = request.query_params.get("standardTop5") in {"1", "true", "yes"}
     job_id = f"detectdev_{uuid4().hex}"
     with detect_dev_jobs_lock:
         detect_dev_jobs[job_id] = {
@@ -285,7 +288,7 @@ async def detect_template_dev_route(
             "result": None,
             "error": None,
         }
-    background_tasks.add_task(_run_detect_dev_job, job_id, image_bytes)
+    background_tasks.add_task(_run_detect_dev_job, job_id, image_bytes, standard_top5)
     response.status_code = 202
     return {"status": "success", "data": {"job_id": job_id, "status": "processing"}}
 
