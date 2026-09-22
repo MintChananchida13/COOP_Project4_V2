@@ -1473,6 +1473,7 @@ def _detect_page(
         else:
             candidate = _lightweight_candidate_from_result(result, include_template_id=include_template_id)
         if candidate is not None:
+            candidate["verification_strategy"] = verification_strategy
             candidate["query_page_index"] = page_index
             candidate["template_page_number"] = candidate.get("template_page_number") or metadata.get("matched_layout_reference_page_number") or metadata.get("page_number")
             candidate["retrieval_rank"] = index
