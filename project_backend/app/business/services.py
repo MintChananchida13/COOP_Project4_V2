@@ -2013,12 +2013,23 @@ class VerificationService:
     }
 
     def load_verification_fields(self, template_id: str) -> List[Dict[str, Any]]:
-        with _connect() as conn:
-            template_row = conn.execute("SELECT id FROM template_versions WHERE id = ?", (template_id,)).fetchone()
+        fields, _ = self.load_verification_fields_with_db_timing(template_id)
+        return fields
+
+    def load_verification_fields_with_db_timing(self, template_id: str) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        total_started = time.perf_counter()
+        connect_started = time.perf_counter()
+        conn = _connect()
+        connect_elapsed = time.perf_counter() - connect_started
+        with conn:
+            cursor, existence_execute_timing = conn.execute_timed("SELECT id FROM template_versions WHERE id = ?", (template_id,))
+            fetch_started = time.perf_counter()
+            template_row = cursor.fetchone()
+            existence_fetch_elapsed = time.perf_counter() - fetch_started
             if template_row is None:
                 raise HTTPException(status_code=404, detail="Template not found")
 
-            rows = conn.execute(
+            cursor, anchors_execute_timing = conn.execute_timed(
                 """
                 SELECT
                     va.id,
@@ -2057,9 +2068,30 @@ class VerificationService:
                 ORDER BY tp.page_number ASC, va.sort_order ASC, va.created_at ASC
                 """,
                 (template_id,),
-            ).fetchall()
+            )
+            fetch_started = time.perf_counter()
+            rows = cursor.fetchall()
+            anchors_fetch_elapsed = time.perf_counter() - fetch_started
 
-        return [_template_field_row_to_api(row) for row in rows]
+        processing_started = time.perf_counter()
+        fields = [_template_field_row_to_api(row) for row in rows]
+        processing_elapsed = time.perf_counter() - processing_started
+        timing = {
+            "connect": connect_elapsed,
+            "existence_query": {
+                "cursor_create": float(existence_execute_timing.get("cursor_create") or 0.0),
+                "execute": float(existence_execute_timing.get("execute") or 0.0),
+                "fetch": existence_fetch_elapsed,
+            },
+            "anchors_query": {
+                "cursor_create": float(anchors_execute_timing.get("cursor_create") or 0.0),
+                "execute": float(anchors_execute_timing.get("execute") or 0.0),
+                "fetch": anchors_fetch_elapsed,
+            },
+            "processing": processing_elapsed,
+            "total_db_operation": time.perf_counter() - total_started,
+        }
+        return fields, timing
 
     def _normalize_text(self, value: Optional[str]) -> str:
         normalized = unicodedata.normalize("NFKC", value or "")

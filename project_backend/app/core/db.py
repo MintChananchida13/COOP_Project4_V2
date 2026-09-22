@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -79,6 +80,28 @@ class PostgresConnection:
         cursor = self._raw_conn.cursor()
         cursor.execute(translated_sql, tuple(params or ()))
         return cursor
+
+    def execute_timed(self, sql: str, params: Sequence[Any] = ()) -> tuple[Any, Dict[str, float]]:
+        normalized = sql.strip()
+        lowered = normalized.lower()
+        if lowered.startswith("pragma foreign_keys"):
+            return StaticCursor(), {"cursor_create": 0.0, "execute": 0.0}
+        if lowered.startswith("pragma table_info"):
+            started = time.perf_counter()
+            cursor = self._table_info(normalized)
+            return cursor, {"cursor_create": 0.0, "execute": time.perf_counter() - started}
+
+        translated_sql = _translate_sql(normalized)
+        started = time.perf_counter()
+        cursor = self._raw_conn.cursor()
+        cursor_create_elapsed = time.perf_counter() - started
+        started = time.perf_counter()
+        cursor.execute(translated_sql, tuple(params or ()))
+        execute_elapsed = time.perf_counter() - started
+        return cursor, {
+            "cursor_create": cursor_create_elapsed,
+            "execute": execute_elapsed,
+        }
 
     def commit(self) -> None:
         self._raw_conn.commit()

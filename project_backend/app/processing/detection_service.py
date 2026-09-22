@@ -79,11 +79,17 @@ def _ms(value: Optional[float]) -> Optional[float]:
 def _timing_ms_map(timing: Optional[Dict[str, Any]]) -> Dict[str, Optional[float]]:
     if not isinstance(timing, dict):
         return {}
-    return {
-        f"{key}_ms": _ms(float(value))
-        for key, value in timing.items()
-        if isinstance(value, (int, float))
-    }
+    result: Dict[str, Any] = {}
+    for key, value in timing.items():
+        if isinstance(value, (int, float)):
+            result[f"{key}_ms"] = _ms(float(value))
+        elif isinstance(value, dict):
+            result[key] = _timing_ms_map(value)
+    return result
+
+
+def _db_timing_ms(timing: Optional[Dict[str, Any]]) -> Dict[str, Optional[float]]:
+    return _timing_ms_map(timing)
 
 
 def _storage_path() -> Path:
@@ -107,10 +113,19 @@ def _template_id_from_metadata(metadata: Dict[str, Any], vector_id: str) -> Opti
 
 
 def _fetch_template(template_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    template, _ = _fetch_template_with_db_timing(template_id)
+    return template
+
+
+def _fetch_template_with_db_timing(template_id: Optional[str]) -> tuple[Optional[Dict[str, Any]], Dict[str, float]]:
     if not template_id:
-        return None
-    with _connect() as conn:
-        row = conn.execute(
+        return None, {}
+    total_started = time.perf_counter()
+    connect_started = time.perf_counter()
+    conn = _connect()
+    connect_elapsed = time.perf_counter() - connect_started
+    with conn:
+        cursor, execute_timing = conn.execute_timed(
             """
             SELECT
                 tv.id,
@@ -146,29 +161,47 @@ def _fetch_template(template_id: Optional[str]) -> Optional[Dict[str, Any]]:
             WHERE tv.id = ?
             """,
             (template_id,),
-        ).fetchone()
-    return dict(row) if row else None
+        )
+        fetch_started = time.perf_counter()
+        row = cursor.fetchone()
+        fetch_elapsed = time.perf_counter() - fetch_started
+        processing_started = time.perf_counter()
+        template = dict(row) if row else None
+        processing_elapsed = time.perf_counter() - processing_started
+        timing = {
+            "connect": connect_elapsed,
+            "cursor_create": float(execute_timing.get("cursor_create") or 0.0),
+            "execute": float(execute_timing.get("execute") or 0.0),
+            "fetch": fetch_elapsed,
+            "processing": processing_elapsed,
+            "total_db_operation": time.perf_counter() - total_started,
+        }
+    return template, timing
 
 
-def _fetch_template_cached(template_id: Optional[str], request_cache: Optional[DetectionRequestCache]) -> tuple[Optional[Dict[str, Any]], bool]:
+def _fetch_template_cached(template_id: Optional[str], request_cache: Optional[DetectionRequestCache]) -> tuple[Optional[Dict[str, Any]], bool, Dict[str, float]]:
     if not template_id:
-        return None, False
+        return None, False, {}
     if request_cache is not None and template_id in request_cache.templates:
         request_cache.stats["template_cache_hits"] += 1
-        return request_cache.templates[template_id], True
-    template = _fetch_template(template_id)
+        return request_cache.templates[template_id], True, {}
+    template, db_timing = _fetch_template_with_db_timing(template_id)
     if request_cache is not None:
         request_cache.templates[template_id] = template
         request_cache.stats["template_db_fetches"] += 1
-    return template, False
+    return template, False, db_timing
 
 
-def _fetch_field_count_cached(template_id: str, request_cache: Optional[DetectionRequestCache]) -> tuple[Optional[int], bool]:
+def _fetch_field_count_cached(template_id: str, request_cache: Optional[DetectionRequestCache]) -> tuple[Optional[int], bool, Dict[str, float]]:
     if request_cache is not None and template_id in request_cache.field_counts:
         request_cache.stats["field_count_cache_hits"] += 1
-        return request_cache.field_counts[template_id], True
-    with _connect() as conn:
-        count = conn.execute(
+        return request_cache.field_counts[template_id], True, {}
+    total_started = time.perf_counter()
+    connect_started = time.perf_counter()
+    conn = _connect()
+    connect_elapsed = time.perf_counter() - connect_started
+    with conn:
+        cursor, execute_timing = conn.execute_timed(
             """
             SELECT COUNT(*) as count
             FROM extraction_fields ef
@@ -176,22 +209,36 @@ def _fetch_field_count_cached(template_id: str, request_cache: Optional[Detectio
             WHERE tp.template_version_id = ?
             """,
             (template_id,),
-        ).fetchone()["count"]
+        )
+        fetch_started = time.perf_counter()
+        row = cursor.fetchone()
+        fetch_elapsed = time.perf_counter() - fetch_started
+        processing_started = time.perf_counter()
+        count = row["count"]
+        processing_elapsed = time.perf_counter() - processing_started
+        db_timing = {
+            "connect": connect_elapsed,
+            "cursor_create": float(execute_timing.get("cursor_create") or 0.0),
+            "execute": float(execute_timing.get("execute") or 0.0),
+            "fetch": fetch_elapsed,
+            "processing": processing_elapsed,
+            "total_db_operation": time.perf_counter() - total_started,
+        }
     if request_cache is not None:
         request_cache.field_counts[template_id] = count
         request_cache.stats["field_count_db_fetches"] += 1
-    return count, False
+    return count, False, db_timing
 
 
-def _fetch_verification_fields_cached(template_id: str, request_cache: Optional[DetectionRequestCache]) -> tuple[List[Dict[str, Any]], bool]:
+def _fetch_verification_fields_cached(template_id: str, request_cache: Optional[DetectionRequestCache]) -> tuple[List[Dict[str, Any]], bool, Dict[str, Any]]:
     if request_cache is not None and template_id in request_cache.verification_fields:
         request_cache.stats["verification_fields_cache_hits"] += 1
-        return request_cache.verification_fields[template_id], True
-    fields = verification_service.load_verification_fields(template_id)
+        return request_cache.verification_fields[template_id], True, {}
+    fields, db_timing = verification_service.load_verification_fields_with_db_timing(template_id)
     if request_cache is not None:
         request_cache.verification_fields[template_id] = fields
         request_cache.stats["verification_fields_db_fetches"] += 1
-    return fields, False
+    return fields, False, db_timing
 
 
 def _fetch_template_page_image_source(template_id: str, page_number: int) -> Optional[str]:
@@ -1065,9 +1112,11 @@ def _candidate_from_result(
         "verification_fields_preloaded": False,
         "verification_fields_reused_for_aligned": False,
     }
+    candidate_db_debug: Dict[str, Dict[str, Optional[float]]] = {}
     step_started = time.perf_counter()
-    template, template_cache_hit = _fetch_template_cached(template_id, request_cache)
+    template, template_cache_hit, template_db_timing = _fetch_template_cached(template_id, request_cache)
     candidate_cache_debug["template_cache_hit"] = template_cache_hit
+    candidate_db_debug["template_fetch"] = _db_timing_ms(template_db_timing)
     candidate_timing["template_fetch"] = time.perf_counter() - step_started
 
     if template_id and template is None:
@@ -1081,8 +1130,9 @@ def _candidate_from_result(
         final_confidence_threshold = decision_service.final_confidence_threshold(template, metadata)
         candidate_timing["candidate_setup"] = time.perf_counter() - step_started
         step_started = time.perf_counter()
-        field_count, field_count_cache_hit = _fetch_field_count_cached(template_id, request_cache)
+        field_count, field_count_cache_hit, field_count_db_timing = _fetch_field_count_cached(template_id, request_cache)
         candidate_cache_debug["field_count_cache_hit"] = field_count_cache_hit
+        candidate_db_debug["field_count"] = _db_timing_ms(field_count_db_timing)
         candidate_timing["field_count_query"] = time.perf_counter() - step_started
     else:
         template_status = metadata.get("template_status")
@@ -1123,9 +1173,10 @@ def _candidate_from_result(
     verification_fields = None
     if template_id:
         step_started = time.perf_counter()
-        verification_fields, verification_fields_cache_hit = _fetch_verification_fields_cached(template_id, request_cache)
+        verification_fields, verification_fields_cache_hit, verification_fields_db_timing = _fetch_verification_fields_cached(template_id, request_cache)
         candidate_cache_debug["verification_fields_cache_hit"] = verification_fields_cache_hit
         candidate_cache_debug["verification_fields_preloaded"] = True
+        candidate_db_debug["verification_fields"] = _db_timing_ms(verification_fields_db_timing)
         candidate_timing["verification_fields_load"] = time.perf_counter() - step_started
     step_started = time.perf_counter()
     normalized_verification = verify_template_for_strategy(
@@ -1480,6 +1531,7 @@ def _candidate_from_result(
                 "coordinate_debug_ms": _ms(candidate_timing.get("coordinate_debug")),
             },
             "cache": candidate_cache_debug,
+            "db": candidate_db_debug,
         },
     }
 
@@ -2012,7 +2064,7 @@ def detect_template_dev(
         )
         pages: List[Dict[str, Any]] = []
         confirmed_main_page_candidate: Optional[Dict[str, Any]] = None
-        included_template, _ = _fetch_template_cached(include_template_id, request_cache)
+        included_template, _, _ = _fetch_template_cached(include_template_id, request_cache)
         included_template_detection_mode = str((included_template or {}).get("detection_mode") or "all_pages")
         included_template_main_page_only = bool(include_template_id and included_template_detection_mode == "main_page")
         if normalized_pages:
