@@ -502,7 +502,11 @@ class ImageNormalizationService:
         try:
             from app.model_runtime.layout_analysis_service import analyze_layout
 
-            analysis = analyze_layout(image, expand_text_rois=False)
+            analysis = analyze_layout(
+                image,
+                expand_text_rois=False,
+                use_text_detection=False,
+            )
         except Exception as error:
             debug.update(
                 {
