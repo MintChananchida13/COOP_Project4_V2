@@ -2602,6 +2602,11 @@ class VerificationService:
             "required_passed": required_passed,
             "checked_fields": checked_fields,
             "verification_details": checked_fields,
+            "timing": {
+                "total_verification": time.perf_counter() - verify_started,
+                "text_verification": text_verification_elapsed,
+                "image_verification": image_verification_elapsed,
+            },
         }
         logger.info(
             "[TEMPLATE VERIFY] total done: template_id=%s anchors=%s text_anchors=%s image_anchors=%s elapsed=%.2fs status=%s",
@@ -2644,11 +2649,6 @@ class VerificationService:
             "required_passed": required_passed,
             "checked_fields": checked_fields,
             "verification_details": checked_fields,
-            "timing": {
-                "total_verification": time.perf_counter() - verify_started,
-                "text_verification": text_verification_elapsed,
-                "image_verification": image_verification_elapsed,
-            },
         }
 
     def _text_anchor_check(self, field: Dict[str, Any], page_image_paths: Optional[Dict[int, str]]) -> Dict[str, Any]:
