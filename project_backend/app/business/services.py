@@ -2249,9 +2249,16 @@ class VerificationService:
             if cropped:
                 Path(cropped).unlink(missing_ok=True)
 
-    def verify_template(self, template_id: str, page_image_paths: Optional[Dict[int, str]] = None) -> Dict[str, Any]:
+    def verify_template(
+        self,
+        template_id: str,
+        page_image_paths: Optional[Dict[int, str]] = None,
+        verification_fields: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         verify_started = time.perf_counter()
-        fields = self.load_verification_fields(template_id)
+        load_started = time.perf_counter()
+        fields = verification_fields if verification_fields is not None else self.load_verification_fields(template_id)
+        load_fields_elapsed = time.perf_counter() - load_started
         if not fields:
             return {
                 "template_id": template_id,
@@ -2262,6 +2269,7 @@ class VerificationService:
                 "checked_fields": [],
                 "timing": {
                     "total_verification": time.perf_counter() - verify_started,
+                    "load_fields": load_fields_elapsed,
                     "text_verification": 0.0,
                     "image_verification": 0.0,
                 },
@@ -2604,6 +2612,7 @@ class VerificationService:
             "verification_details": checked_fields,
             "timing": {
                 "total_verification": time.perf_counter() - verify_started,
+                "load_fields": load_fields_elapsed,
                 "text_verification": text_verification_elapsed,
                 "image_verification": image_verification_elapsed,
             },
@@ -2870,10 +2879,15 @@ class VerificationService:
             "error": image_match.get("error"),
         }
 
-    def verify_template_strict(self, template_id: str, page_image_paths: Optional[Dict[int, str]] = None) -> Dict[str, Any]:
+    def verify_template_strict(
+        self,
+        template_id: str,
+        page_image_paths: Optional[Dict[int, str]] = None,
+        verification_fields: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         verify_started = time.perf_counter()
         step_started = time.perf_counter()
-        fields = self.load_verification_fields(template_id)
+        fields = verification_fields if verification_fields is not None else self.load_verification_fields(template_id)
         load_fields_elapsed = time.perf_counter() - step_started
         if not fields:
             return {

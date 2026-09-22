@@ -55,6 +55,21 @@ def _connect() -> Any:
     return connect_db()
 
 
+class DetectionRequestCache:
+    def __init__(self) -> None:
+        self.templates: Dict[str, Optional[Dict[str, Any]]] = {}
+        self.field_counts: Dict[str, Optional[int]] = {}
+        self.verification_fields: Dict[str, List[Dict[str, Any]]] = {}
+        self.stats: Dict[str, int] = {
+            "template_cache_hits": 0,
+            "template_db_fetches": 0,
+            "field_count_cache_hits": 0,
+            "field_count_db_fetches": 0,
+            "verification_fields_cache_hits": 0,
+            "verification_fields_db_fetches": 0,
+        }
+
+
 def _ms(value: Optional[float]) -> Optional[float]:
     if value is None:
         return None
@@ -133,6 +148,50 @@ def _fetch_template(template_id: Optional[str]) -> Optional[Dict[str, Any]]:
             (template_id,),
         ).fetchone()
     return dict(row) if row else None
+
+
+def _fetch_template_cached(template_id: Optional[str], request_cache: Optional[DetectionRequestCache]) -> tuple[Optional[Dict[str, Any]], bool]:
+    if not template_id:
+        return None, False
+    if request_cache is not None and template_id in request_cache.templates:
+        request_cache.stats["template_cache_hits"] += 1
+        return request_cache.templates[template_id], True
+    template = _fetch_template(template_id)
+    if request_cache is not None:
+        request_cache.templates[template_id] = template
+        request_cache.stats["template_db_fetches"] += 1
+    return template, False
+
+
+def _fetch_field_count_cached(template_id: str, request_cache: Optional[DetectionRequestCache]) -> tuple[Optional[int], bool]:
+    if request_cache is not None and template_id in request_cache.field_counts:
+        request_cache.stats["field_count_cache_hits"] += 1
+        return request_cache.field_counts[template_id], True
+    with _connect() as conn:
+        count = conn.execute(
+            """
+            SELECT COUNT(*) as count
+            FROM extraction_fields ef
+            JOIN template_pages tp ON tp.id = ef.template_page_id
+            WHERE tp.template_version_id = ?
+            """,
+            (template_id,),
+        ).fetchone()["count"]
+    if request_cache is not None:
+        request_cache.field_counts[template_id] = count
+        request_cache.stats["field_count_db_fetches"] += 1
+    return count, False
+
+
+def _fetch_verification_fields_cached(template_id: str, request_cache: Optional[DetectionRequestCache]) -> tuple[List[Dict[str, Any]], bool]:
+    if request_cache is not None and template_id in request_cache.verification_fields:
+        request_cache.stats["verification_fields_cache_hits"] += 1
+        return request_cache.verification_fields[template_id], True
+    fields = verification_service.load_verification_fields(template_id)
+    if request_cache is not None:
+        request_cache.verification_fields[template_id] = fields
+        request_cache.stats["verification_fields_db_fetches"] += 1
+    return fields, False
 
 
 def _fetch_template_page_image_source(template_id: str, page_number: int) -> Optional[str]:
@@ -977,6 +1036,7 @@ def _candidate_from_result(
     allow_alignment: bool = True,
     include_template_id: Optional[str] = None,
     verification_strategy: str = "standard",
+    request_cache: Optional[DetectionRequestCache] = None,
 ) -> Optional[Dict[str, Any]]:
     metadata = result.get("metadata") or {}
     vector_id = str(result.get("vector_id") or "")
@@ -984,6 +1044,7 @@ def _candidate_from_result(
     candidate_timing: Dict[str, Optional[float]] = {
         "template_fetch": None,
         "field_count_query": None,
+        "verification_fields_load": None,
         "candidate_setup": None,
         "normalized_verification": None,
         "alignment": None,
@@ -997,8 +1058,16 @@ def _candidate_from_result(
         "text_verification": 0.0,
         "image_verification": 0.0,
     }
+    candidate_cache_debug: Dict[str, bool] = {
+        "template_cache_hit": False,
+        "field_count_cache_hit": False,
+        "verification_fields_cache_hit": False,
+        "verification_fields_preloaded": False,
+        "verification_fields_reused_for_aligned": False,
+    }
     step_started = time.perf_counter()
-    template = _fetch_template(template_id)
+    template, template_cache_hit = _fetch_template_cached(template_id, request_cache)
+    candidate_cache_debug["template_cache_hit"] = template_cache_hit
     candidate_timing["template_fetch"] = time.perf_counter() - step_started
 
     if template_id and template is None:
@@ -1012,16 +1081,8 @@ def _candidate_from_result(
         final_confidence_threshold = decision_service.final_confidence_threshold(template, metadata)
         candidate_timing["candidate_setup"] = time.perf_counter() - step_started
         step_started = time.perf_counter()
-        with _connect() as conn:
-            field_count = conn.execute(
-                """
-                SELECT COUNT(*) as count
-                FROM extraction_fields ef
-                JOIN template_pages tp ON tp.id = ef.template_page_id
-                WHERE tp.template_version_id = ?
-                """,
-                (template_id,),
-            ).fetchone()["count"]
+        field_count, field_count_cache_hit = _fetch_field_count_cached(template_id, request_cache)
+        candidate_cache_debug["field_count_cache_hit"] = field_count_cache_hit
         candidate_timing["field_count_query"] = time.perf_counter() - step_started
     else:
         template_status = metadata.get("template_status")
@@ -1059,10 +1120,18 @@ def _candidate_from_result(
         if verification_strategy == VERIFICATION_STRATEGY_STRICT
         else verification_service.verify_template
     )
+    verification_fields = None
+    if template_id:
+        step_started = time.perf_counter()
+        verification_fields, verification_fields_cache_hit = _fetch_verification_fields_cached(template_id, request_cache)
+        candidate_cache_debug["verification_fields_cache_hit"] = verification_fields_cache_hit
+        candidate_cache_debug["verification_fields_preloaded"] = True
+        candidate_timing["verification_fields_load"] = time.perf_counter() - step_started
     step_started = time.perf_counter()
     normalized_verification = verify_template_for_strategy(
         template_id,
         verification_page_image_paths,
+        verification_fields,
     ) if template_id else {
         "status": "failed",
         "passed": False,
@@ -1119,9 +1188,11 @@ def _candidate_from_result(
             )
 
             step_started = time.perf_counter()
+            candidate_cache_debug["verification_fields_reused_for_aligned"] = verification_fields is not None
             aligned_verification = verify_template_for_strategy(
                 template_id,
                 aligned_verification_paths,
+                verification_fields,
             )
             candidate_timing["aligned_verification"] = time.perf_counter() - step_started
             aligned_internal_timing = aligned_verification.get("timing") if isinstance(aligned_verification, dict) else {}
@@ -1399,6 +1470,7 @@ def _candidate_from_result(
             "candidate_overhead_breakdown": {
                 "template_fetch_ms": _ms(candidate_timing.get("template_fetch")),
                 "field_count_query_ms": _ms(candidate_timing.get("field_count_query")),
+                "verification_fields_load_ms": _ms(candidate_timing.get("verification_fields_load")),
                 "candidate_setup_ms": _ms(candidate_timing.get("candidate_setup")),
                 "decision_ms": _ms(candidate_timing.get("decision")),
                 "roi_field_load_ms": _ms(candidate_timing.get("roi_field_load")),
@@ -1407,6 +1479,7 @@ def _candidate_from_result(
                 "extraction_test_ms": _ms(candidate_timing.get("extraction_test")),
                 "coordinate_debug_ms": _ms(candidate_timing.get("coordinate_debug")),
             },
+            "cache": candidate_cache_debug,
         },
     }
 
@@ -1514,6 +1587,7 @@ def _detect_page(
     verification_candidate_limit: int = DETECTION_VERIFICATION_CANDIDATE_LIMIT,
     full_evaluation_limit_override: Optional[int] = None,
     query_page_count: Optional[int] = None,
+    request_cache: Optional[DetectionRequestCache] = None,
 ) -> Dict[str, Any]:
     page_index = int(page_info["page_index"])
     normalized_image_path = str(page_info["normalized_path"])
@@ -1583,6 +1657,7 @@ def _detect_page(
                 allow_alignment=index <= DETECTION_ALIGNMENT_LIMIT,
                 include_template_id=include_template_id,
                 verification_strategy=verification_strategy,
+                request_cache=request_cache,
             )
             verification_elapsed = time.perf_counter() - step_started
             if timing is not None:
@@ -1845,7 +1920,12 @@ def _no_match_message(candidates: List[Dict[str, Any]]) -> str:
     return "ไม่มี Template ที่ผ่านเกณฑ์การตรวจสอบและคะแนนความมั่นใจ"
 
 
-def _detection_timing_debug(timing: Dict[str, float], pages: List[Dict[str, Any]], total_started: float) -> Dict[str, Any]:
+def _detection_timing_debug(
+    timing: Dict[str, float],
+    pages: List[Dict[str, Any]],
+    total_started: float,
+    request_cache: Optional[DetectionRequestCache] = None,
+) -> Dict[str, Any]:
     candidate_timings: List[Dict[str, Any]] = []
     for page in pages:
         for candidate in page.get("candidates", []):
@@ -1884,6 +1964,7 @@ def _detection_timing_debug(timing: Dict[str, float], pages: List[Dict[str, Any]
         "verification_ms": _ms(timing.get("verification")),
         "candidate_aggregation_ms": _ms(timing.get("candidate_aggregation")),
         "auto_roi_ms": _ms(timing.get("auto_roi")),
+        "request_cache": dict(request_cache.stats) if request_cache is not None else {},
         "candidates": candidate_timings,
     }
 
@@ -1901,6 +1982,7 @@ def detect_template_dev(
 ) -> Dict[str, Any]:
     query_id = f"detq_{uuid4().hex[:12]}"
     timing: Dict[str, float] = {}
+    request_cache = DetectionRequestCache()
     total_started = prepublish_total_started or time.perf_counter()
     try:
         source_type = "pdf" if file_bytes.lstrip().startswith(b"%PDF") else "image"
@@ -1930,7 +2012,7 @@ def detect_template_dev(
         )
         pages: List[Dict[str, Any]] = []
         confirmed_main_page_candidate: Optional[Dict[str, Any]] = None
-        included_template = _fetch_template(include_template_id)
+        included_template, _ = _fetch_template_cached(include_template_id, request_cache)
         included_template_detection_mode = str((included_template or {}).get("detection_mode") or "all_pages")
         included_template_main_page_only = bool(include_template_id and included_template_detection_mode == "main_page")
         if normalized_pages:
@@ -1945,6 +2027,7 @@ def detect_template_dev(
                 verification_candidate_limit=verification_candidate_limit,
                 full_evaluation_limit_override=full_evaluation_limit_override,
                 query_page_count=query_page_count,
+                request_cache=request_cache,
             )
             pages.append(first_detected_page)
             first_best_candidate = first_detected_page.get("best_candidate")
@@ -1974,6 +2057,7 @@ def detect_template_dev(
                         verification_candidate_limit=verification_candidate_limit,
                         full_evaluation_limit_override=full_evaluation_limit_override,
                         query_page_count=query_page_count,
+                        request_cache=request_cache,
                     )
                     pages.append(detected_page)
         if prepublish_timing:
@@ -2039,7 +2123,7 @@ def detect_template_dev(
                 "retrieval_limit": retrieval_limit,
                 "verification_candidate_limit": verification_candidate_limit,
                 "full_evaluation_limit_override": full_evaluation_limit_override,
-                "timing": _detection_timing_debug(timing, pages, total_started),
+                "timing": _detection_timing_debug(timing, pages, total_started, request_cache=request_cache),
             },
         }
     finally:
