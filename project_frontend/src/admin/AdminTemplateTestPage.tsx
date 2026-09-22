@@ -947,7 +947,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
             {statusMessage && <p className="mt-2 text-xs font-bold text-emerald-600">{statusMessage}</p>}
             {simulationError && <p className="mt-2 text-xs font-bold text-red-600">{simulationError}</p>}
           </div>
-          <Link href={`/admin/templates/${templateId}/edit`} className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-black text-slate-700">
+          <Link href={`/admin/templates/${templateId}/edit?stage=editor`} className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-black text-slate-700">
             ย้อนกลับไปแก้ไข Template
           </Link>
         </div>

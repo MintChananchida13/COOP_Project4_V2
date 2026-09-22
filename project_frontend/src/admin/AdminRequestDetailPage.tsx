@@ -72,6 +72,19 @@ const creationTypeNote = (value: "new_template" | "new_version") =>
     ? "เพิ่ม Version ให้ Template เดิมจากข้อมูลที่เลือกในคลัง Template"
     : "สร้าง Template ใหม่และเริ่ม Version 1 จากไฟล์ที่อัปโหลด";
 
+const searchParamCreationType = (value: string | null): "new_template" | "new_version" | null =>
+  value === "new_template" || value === "new_version" ? value : null;
+
+const versionSuffixFromName = (versionName: string, baseName: string) => {
+  const cleanVersionName = versionName.trim();
+  const cleanBaseName = baseName.trim();
+  if (!cleanVersionName) return "";
+  if (cleanBaseName && cleanVersionName.startsWith(`${cleanBaseName} - `)) {
+    return cleanVersionName.slice(cleanBaseName.length + 3).trim();
+  }
+  return cleanVersionName;
+};
+
 const getPageSourceFileId = (page: TemplateRequestPage) =>
   page.sourceFileId ||
   (page.imageSource === "admin_upload"
@@ -154,6 +167,17 @@ export default function AdminRequestDetailPage({
           const loadedBaseTemplate = bundle.template.baseTemplateId
             ? templateList.find((template) => template.id === bundle.template.baseTemplateId)
             : undefined;
+          const loadedBaseTemplateName =
+            loadedBaseTemplate?.documentType ||
+            loadedBaseTemplate?.templateGroupName ||
+            bundle.template.templateGroupName ||
+            bundle.template.documentType ||
+            "";
+          const loadedVersionName = bundle.template.versionName || bundle.template.name || "";
+          const loadedVersionSuffix =
+            loadedCreationType === "new_version"
+              ? versionSuffixFromName(loadedVersionName, loadedBaseTemplateName)
+              : "";
 
           const templatePages: TemplateRequestPage[] = bundle.pages.map((page) => ({
             id: page.id,
@@ -171,6 +195,7 @@ export default function AdminRequestDetailPage({
           }));
           const templateRequest: AdminTemplateRequest = {
             id: templateId,
+            requestedBy: "admin",
             requestTitle: bundle.template.versionName || bundle.template.name,
             documentType: bundle.template.documentType,
             requestMode: "image_with_roi",
@@ -188,21 +213,19 @@ export default function AdminRequestDetailPage({
 
           setRequest(templateRequest);
           setPages(templatePages);
-          setTemplateName(bundle.template.versionName || bundle.template.name || "");
+          setTemplateName(
+            loadedCreationType === "new_version" && loadedBaseTemplateName
+              ? `${loadedBaseTemplateName} - ${loadedVersionSuffix}`
+              : loadedVersionName
+          );
           setTemplateDocumentType(bundle.template.documentType || bundle.template.templateGroupName || "");
-          setVersionNameSuffix(bundle.template.versionName || bundle.template.name || "");
+          setVersionNameSuffix(loadedVersionSuffix);
           setTemplateDescription(bundle.template.description || "");
           setAdminNote(bundle.template.description || "");
           setTemplates(templateList);
           setCreationType(loadedCreationType);
           setSelectedBaseTemplateId(bundle.template.baseTemplateId || "");
-          setSelectedExistingTemplateName(
-            loadedBaseTemplate?.documentType ||
-            loadedBaseTemplate?.templateGroupName ||
-            bundle.template.templateGroupName ||
-            bundle.template.documentType ||
-            ""
-          );
+          setSelectedExistingTemplateName(loadedBaseTemplateName);
           setDetectionMode(bundle.template.detectionMode === "main_page" ? "main_page" : "all_pages");
           setMainPageNumber(bundle.template.mainPageNumber || 1);
           setLoadStatus("loaded");
@@ -255,8 +278,9 @@ export default function AdminRequestDetailPage({
   useEffect(() => {
     if (initialCreationParamsAppliedRef.current) return;
     initialCreationParamsAppliedRef.current = true;
-    if (searchParams.get("creationType") === "new_version") {
-      setCreationType("new_version");
+    const selectedCreationType = searchParamCreationType(searchParams.get("creationType"));
+    if (selectedCreationType) {
+      setCreationType(selectedCreationType);
     }
     const baseTemplateId = searchParams.get("baseTemplateId");
     if (baseTemplateId) {
@@ -618,7 +642,11 @@ export default function AdminRequestDetailPage({
     Math.max(workspacePages.length - 1, 0)
   );
   const currentPageFields = fieldsByPage[safeCurrentPage + 1] || [];
-  const isCreationTypeLocked = isTemplateEditMode;
+  const adminSelectedCreationType = searchParamCreationType(searchParams.get("creationType"));
+  const isAdminCreatedRequest =
+    request.requestedBy === "admin" ||
+    isAdminUploadedRequest;
+  const isCreationTypeLocked = isTemplateEditMode || Boolean(isAdminCreatedRequest && adminSelectedCreationType);
   const isBaseTemplateLocked = isTemplateEditMode && creationType === "new_version" && Boolean(selectedBaseTemplateId);
   const hasRequiredCreationInfo =
     creationType === "new_template"
@@ -822,7 +850,7 @@ export default function AdminRequestDetailPage({
                 {isBaseTemplateLocked ? (
                   <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                     <div className="text-[10px] font-black uppercase tracking-wide text-slate-500">
-                      Template เดิม
+                      ประเภทเอกสาร / Template เดิม
                     </div>
                     <div className="mt-1 text-xs font-black text-slate-900">
                       {selectedBaseTemplateName || "Template เดิม"}

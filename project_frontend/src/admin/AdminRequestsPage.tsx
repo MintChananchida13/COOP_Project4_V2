@@ -131,7 +131,7 @@ export default function AdminRequestsPage() {
                 <div className="flex flex-wrap gap-2">
                   {request.status === "converted" && request.convertedTemplateId && (
                     <Link
-                      href={`/admin/templates/${request.convertedTemplateId}/edit`}
+                      href={`/admin/templates/${request.convertedTemplateId}/edit?stage=editor`}
                       className="inline-flex w-fit rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-black text-emerald-700 hover:bg-emerald-100"
                     >
                       เปิด Template

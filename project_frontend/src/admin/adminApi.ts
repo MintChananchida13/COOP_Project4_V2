@@ -685,6 +685,7 @@ export interface TemplateStepTestResult {
 
 export interface ApiTemplateRequest {
   id: string;
+  requested_by?: string | null;
   request_title: string;
   document_type?: string | null;
   request_mode: "image_only" | "image_with_roi";
@@ -739,6 +740,7 @@ const mapEmbeddingJobStatus = (status: string): EmbeddingJobStatus => {
 
 export const mapApiRequest = (request: ApiTemplateRequest): AdminTemplateRequest => ({
   id: request.id,
+  requestedBy: request.requested_by || undefined,
   requestTitle: request.request_title,
   documentType: request.document_type || undefined,
   requestMode: request.request_mode,
@@ -1142,6 +1144,7 @@ export const createTemplateRequest = async (payload: {
       request_mode: payload.requestMode || "image_only",
       page_count: payload.pageCount || 1,
       user_note: payload.userNote,
+      requested_by: payload.requestedBy,
     }),
   });
   const json = await response.json().catch(() => null);

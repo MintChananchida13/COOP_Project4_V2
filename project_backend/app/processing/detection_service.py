@@ -1392,6 +1392,8 @@ def _detect_page(
     timing: Optional[Dict[str, float]] = None,
     retrieval_limit: int = DETECTION_RETRIEVAL_LIMIT,
     verification_strategy: str = "standard",
+    verification_candidate_limit: int = DETECTION_VERIFICATION_CANDIDATE_LIMIT,
+    full_evaluation_limit_override: Optional[int] = None,
     query_page_count: Optional[int] = None,
 ) -> Dict[str, Any]:
     page_index = int(page_info["page_index"])
@@ -1414,7 +1416,13 @@ def _detect_page(
     early_reject_count = 0
     early_accept_rank = None
     early_accept_enabled = verification_strategy == VERIFICATION_STRATEGY_STRICT
-    full_evaluation_limit = min(DETECTION_FULL_EVAL_LIMIT, DETECTION_VERIFICATION_CANDIDATE_LIMIT)
+    candidate_verification_limit = max(1, int(verification_candidate_limit or DETECTION_VERIFICATION_CANDIDATE_LIMIT))
+    configured_full_evaluation_limit = (
+        max(1, int(full_evaluation_limit_override))
+        if full_evaluation_limit_override is not None
+        else DETECTION_FULL_EVAL_LIMIT
+    )
+    full_evaluation_limit = min(configured_full_evaluation_limit, candidate_verification_limit)
     for index, result in enumerate(raw_results, start=1):
         metadata = result.get("metadata") or {}
         result_template_id = str(metadata.get("template_id") or "")
@@ -1437,7 +1445,7 @@ def _detect_page(
             layout_confident
             and not early_rejected
             and not all_pages_page_count_mismatch
-            and index <= DETECTION_VERIFICATION_CANDIDATE_LIMIT
+            and index <= candidate_verification_limit
             and not main_page_auto_roi_only
             and (
                 is_included_template
@@ -1542,14 +1550,14 @@ def _detect_page(
             "top_k_limit": retrieval_limit,
             "retrieval_limit": retrieval_limit,
             "full_evaluation_limit": full_evaluation_limit,
-            "verification_candidate_limit": DETECTION_VERIFICATION_CANDIDATE_LIMIT,
+            "verification_candidate_limit": candidate_verification_limit,
             "full_evaluation_count": full_evaluation_count,
             "early_reject_count": early_reject_count,
             "early_reject_rule": "layout_score_below_template_similarity_threshold",
             "early_accept_enabled": early_accept_enabled,
             "early_accept_rank": early_accept_rank,
             "early_accept_reason": "top_candidate_final_passed" if early_accept_rank else None,
-            "standard_evaluates_all_eligible_top3": verification_strategy != VERIFICATION_STRATEGY_STRICT,
+            "standard_evaluates_all_eligible_top_k": verification_strategy != VERIFICATION_STRATEGY_STRICT,
             "verification_strategy": verification_strategy,
             "alignment_limit": DETECTION_ALIGNMENT_LIMIT,
             "fast_path_enabled": early_accept_rank is not None or full_evaluation_limit < retrieval_limit or DETECTION_ALIGNMENT_LIMIT < full_evaluation_limit,
@@ -1719,6 +1727,10 @@ def detect_template_dev(
     cleanup_generated: bool = True,
     prepublish_timing: bool = False,
     prepublish_total_started: Optional[float] = None,
+    verification_strategy_override: Optional[str] = None,
+    retrieval_limit_override: Optional[int] = None,
+    verification_candidate_limit_override: Optional[int] = None,
+    full_evaluation_limit_override: Optional[int] = None,
 ) -> Dict[str, Any]:
     query_id = f"detq_{uuid4().hex[:12]}"
     timing: Dict[str, float] = {}
@@ -1734,9 +1746,20 @@ def detect_template_dev(
             print(f"[PREPUBLISH] prepare pages done: {timing['prepare_pages']:.2f}s")
         page_image_paths = {page["page_index"]: page["normalized_path"] for page in normalized_pages}
         query_page_count = len(normalized_pages)
-        retrieval_limit = DETECTION_RETRIEVAL_LIMIT if include_template_id else USER_DETECTION_RETRIEVAL_LIMIT
+        retrieval_limit = (
+            max(1, int(retrieval_limit_override))
+            if retrieval_limit_override is not None
+            else DETECTION_RETRIEVAL_LIMIT if include_template_id else USER_DETECTION_RETRIEVAL_LIMIT
+        )
+        verification_candidate_limit = (
+            max(1, int(verification_candidate_limit_override))
+            if verification_candidate_limit_override is not None
+            else DETECTION_VERIFICATION_CANDIDATE_LIMIT
+        )
         verification_strategy = normalize_verification_strategy(
-            global_settings_service.get_verification_strategy().get("verification_strategy")
+            verification_strategy_override
+            if verification_strategy_override is not None
+            else global_settings_service.get_verification_strategy().get("verification_strategy")
         )
         pages: List[Dict[str, Any]] = []
         confirmed_main_page_candidate: Optional[Dict[str, Any]] = None
@@ -1752,6 +1775,8 @@ def detect_template_dev(
                 timing=timing,
                 retrieval_limit=retrieval_limit,
                 verification_strategy=verification_strategy,
+                verification_candidate_limit=verification_candidate_limit,
+                full_evaluation_limit_override=full_evaluation_limit_override,
                 query_page_count=query_page_count,
             )
             pages.append(first_detected_page)
@@ -1779,6 +1804,8 @@ def detect_template_dev(
                         timing=timing,
                         retrieval_limit=retrieval_limit,
                         verification_strategy=verification_strategy,
+                        verification_candidate_limit=verification_candidate_limit,
+                        full_evaluation_limit_override=full_evaluation_limit_override,
                         query_page_count=query_page_count,
                     )
                     pages.append(detected_page)
@@ -1842,6 +1869,9 @@ def detect_template_dev(
                 "normalized_query_page_paths": [page["normalized_path"] for page in normalized_pages] if SAVE_DEBUG_ARTIFACTS else [],
                 "include_template_id": include_template_id,
                 "verification_strategy": verification_strategy,
+                "retrieval_limit": retrieval_limit,
+                "verification_candidate_limit": verification_candidate_limit,
+                "full_evaluation_limit_override": full_evaluation_limit_override,
             },
         }
     finally:

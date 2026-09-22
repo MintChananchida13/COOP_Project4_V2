@@ -254,6 +254,7 @@ export interface TemplateRequestPage {
 
 export interface AdminTemplateRequest {
   id: string;
+  requestedBy?: string;
   requestTitle: string;
   documentType?: string;
   requestMode: TemplateRequestMode;

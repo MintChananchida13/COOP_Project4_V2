@@ -4165,6 +4165,10 @@ class AdminTemplateService:
                 cleanup_generated=False,
                 prepublish_timing=True,
                 prepublish_total_started=total_started,
+                verification_strategy_override=VERIFICATION_STRATEGY_STANDARD,
+                retrieval_limit_override=5,
+                verification_candidate_limit_override=5,
+                full_evaluation_limit_override=5,
             )
             candidates = [
                 {
@@ -4839,11 +4843,111 @@ class AdminTemplateService:
             similarity_threshold = payload.similarity_threshold if payload.similarity_threshold is not None else base["similarity_threshold"]
             final_confidence_threshold = payload.final_confidence_threshold if payload.final_confidence_threshold is not None else base["final_confidence_threshold"]
             conn.execute("INSERT INTO template_versions (id, template_group_id, version_number, version_name, status, detection_mode, main_page_number, similarity_threshold, final_confidence_threshold, layout_weight, text_anchor_weight, image_anchor_weight, created_from_version_id, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (template_id, base["template_group_id"], next_version, payload.version_name or f"Version {next_version}", _normalize_detection_mode(payload.detection_mode), _normalize_main_page_number(payload.main_page_number), similarity_threshold, final_confidence_threshold, base["layout_weight"], base["text_anchor_weight"], base["image_anchor_weight"], payload.base_template_id, created_by))
+            request_page_id_map: Dict[str, str] = {}
+            page_number_id_map: Dict[int, str] = {}
             for index, page in enumerate(pages, start=1):
-                conn.execute("INSERT INTO template_pages (id, template_version_id, page_number, page_name, sample_image_url, normalized_image_url, layout_signature_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (_stub_id("tpl_page"), template_id, index, page.get("page_name") or f"Page {index}", page.get("sample_image_url"), page.get("sample_image_url")))
+                page_id = _stub_id("tpl_page")
+                request_page_id_map[str(page["id"])] = page_id
+                page_number_id_map[index] = page_id
+                conn.execute("INSERT INTO template_pages (id, template_version_id, page_number, page_name, sample_image_url, normalized_image_url, layout_signature_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (page_id, template_id, index, page.get("page_name") or f"Page {index}", page.get("sample_image_url"), page.get("sample_image_url")))
+            request_fields = [
+                _row_to_dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT rf.*, rp.page_number
+                    FROM requested_fields rf
+                    JOIN template_request_pages rp
+                      ON rp.id = rf.template_request_page_id
+                    WHERE rp.template_request_id = ?
+                    ORDER BY rp.page_number ASC, rf.created_at ASC
+                    """,
+                    (request_id,),
+                ).fetchall()
+            ]
+            field_count = 0
+            page_orders: Dict[str, int] = {}
+            for field in request_fields:
+                page_id = request_page_id_map.get(str(field["template_request_page_id"]))
+                if not page_id:
+                    continue
+                page_orders[page_id] = page_orders.get(page_id, 0) + 1
+                order = page_orders[page_id]
+                data_type = _normalize_data_type(field.get("data_type"))
+                extraction_method = _normalize_extraction_method(field.get("extraction_method"))
+                conn.execute(
+                    """
+                    INSERT INTO extraction_fields (
+                        id, template_page_id, field_name, display_label, data_type, extraction_method,
+                        roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_points_json,
+                        roi_mode, expected_content, required, sort_order, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'fix', NULL, FALSE, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """,
+                    (
+                        _stub_id("field"),
+                        page_id,
+                        field.get("field_name") or f"field_{order}",
+                        field.get("display_label") or field.get("field_name") or f"Field {order}",
+                        data_type,
+                        extraction_method,
+                        field["roi_x_ratio"],
+                        field["roi_y_ratio"],
+                        field["roi_width_ratio"],
+                        field["roi_height_ratio"],
+                        field.get("roi_points_json"),
+                        order,
+                    ),
+                )
+                field_count += 1
+            if field_count == 0 and payload.reuse_roi:
+                base_fields = [
+                    _row_to_dict(row)
+                    for row in conn.execute(
+                        """
+                        SELECT ef.*, tp.page_number
+                        FROM extraction_fields ef
+                        JOIN template_pages tp ON tp.id = ef.template_page_id
+                        WHERE tp.template_version_id = ?
+                        ORDER BY tp.page_number ASC, ef.sort_order ASC, ef.created_at ASC
+                        """,
+                        (payload.base_template_id,),
+                    ).fetchall()
+                ]
+                for field in base_fields:
+                    page_id = page_number_id_map.get(int(field.get("page_number") or 1))
+                    if not page_id:
+                        continue
+                    conn.execute(
+                        """
+                        INSERT INTO extraction_fields (
+                            id, template_page_id, field_name, display_label, data_type, extraction_method,
+                            roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_points_json,
+                            roi_mode, expected_content, required, sort_order, created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        """,
+                        (
+                            _stub_id("field"),
+                            page_id,
+                            field.get("field_name"),
+                            field.get("display_label") or field.get("field_name"),
+                            _normalize_data_type(field.get("data_type")),
+                            _normalize_extraction_method(field.get("extraction_method")),
+                            field["roi_x_ratio"],
+                            field["roi_y_ratio"],
+                            field["roi_width_ratio"],
+                            field["roi_height_ratio"],
+                            field.get("roi_points_json"),
+                            _normalize_roi_mode(field.get("roi_mode")),
+                            _normalize_expected_content(field.get("expected_content")),
+                            bool(field.get("required", False)),
+                            int(field.get("sort_order") or 0),
+                        ),
+                    )
+                    field_count += 1
             conn.execute("UPDATE template_requests SET status = 'converted', converted_template_group_id = ?, converted_template_version_id = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ?", (base["template_group_id"], template_id, request_id))
             conn.commit()
-        return {"id": request_id, "status": "converted", "converted_template_id": template_id, "template_id": template_id, "template_group_id": base["template_group_id"], "created_records": {"template_versions": 1, "template_pages": len(pages)}}
+        return {"id": request_id, "status": "converted", "converted_template_id": template_id, "template_id": template_id, "template_group_id": base["template_group_id"], "created_records": {"template_versions": 1, "template_pages": len(pages), "extraction_fields": field_count}}
 
     def convert_request_to_template(
         self,

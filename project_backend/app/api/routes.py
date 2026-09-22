@@ -95,7 +95,13 @@ def _run_detect_dev_job(job_id: str, image_bytes: bytes) -> None:
         if job is not None:
             job["status"] = "processing"
     try:
-        result = detect_template_dev(image_bytes)
+        result = detect_template_dev(
+            image_bytes,
+            verification_strategy_override="standard",
+            retrieval_limit_override=5,
+            verification_candidate_limit_override=5,
+            full_evaluation_limit_override=5,
+        )
         with detect_dev_jobs_lock:
             job = detect_dev_jobs.get(job_id)
             if job is not None:

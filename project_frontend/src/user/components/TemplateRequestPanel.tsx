@@ -573,17 +573,12 @@ export default function TemplateRequestPanel({
               <p className="mt-2 text-sm font-medium leading-6 text-slate-600">
                 ระบบส่ง Template Request ให้ผู้ดูแลตรวจสอบแล้ว
               </p>
-              {submittedRequestId && (
-                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-500">
-                  Request ID: <span className="font-black text-slate-700">{submittedRequestId}</span>
-                </div>
-              )}
               <button
                 type="button"
                 onClick={resetAndClose}
                 className="ui-stable-action mt-5 w-full rounded-xl bg-emerald-600 px-5 py-3 text-xs font-black uppercase tracking-wider text-white shadow-sm hover:bg-emerald-700"
               >
-                Done
+                เสร็จสิ้น
               </button>
             </div>
           </div>
