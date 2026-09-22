@@ -770,7 +770,7 @@ export default function AdminTemplatesPage() {
                             </div>
 
                             <div className="flex flex-wrap gap-2">
-                              <ActionButton href={`/admin/templates/${template.id}/edit?stage=editor`} tone="primary">แก้ไข</ActionButton>
+                              <ActionButton href={`/admin/templates/${template.id}/edit`} tone="primary">แก้ไข</ActionButton>
                               <label className="min-w-[150px]">
                                 <span className="sr-only">Template status</span>
                                 <select
@@ -906,7 +906,7 @@ export default function AdminTemplatesPage() {
               {template.documentType || "No document type"} · Template preview
             </div>
             <div className="flex flex-wrap gap-2">
-              <ActionButton href={`/admin/templates/${template.id}/edit?stage=editor`} tone="primary">แก้ไข</ActionButton>
+              <ActionButton href={`/admin/templates/${template.id}/edit`} tone="primary">แก้ไข</ActionButton>
               <label className="min-w-[170px]">
                 <span className="sr-only">Template status</span>
                 <select

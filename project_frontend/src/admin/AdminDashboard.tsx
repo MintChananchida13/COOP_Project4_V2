@@ -140,7 +140,7 @@ export default function AdminDashboard() {
             meta: `${template.documentType || "ไม่ระบุประเภท"} · ${template.pageCount} หน้า · ${formatDateTime(template.updatedAt || template.createdAt)}`,
             status: template.status,
             tone: "indigo",
-            editHref: `/admin/templates/${template.id}/edit?stage=editor`,
+            editHref: `/admin/templates/${template.id}/edit`,
           }))}
           emptyText="ยังไม่มี Template"
         />
