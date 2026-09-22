@@ -61,6 +61,16 @@ def _ms(value: Optional[float]) -> Optional[float]:
     return round(float(value) * 1000.0, 2)
 
 
+def _timing_ms_map(timing: Optional[Dict[str, Any]]) -> Dict[str, Optional[float]]:
+    if not isinstance(timing, dict):
+        return {}
+    return {
+        f"{key}_ms": _ms(float(value))
+        for key, value in timing.items()
+        if isinstance(value, (int, float))
+    }
+
+
 def _storage_path() -> Path:
     return Path(__file__).resolve().parents[2] / "storage" / "detection_queries"
 
@@ -395,18 +405,34 @@ def _convert_pdf_to_page_images(query_id: str, pdf_bytes: bytes) -> List[Path]:
     return page_paths
 
 
-def _prepare_query_pages(query_id: str, file_bytes: bytes) -> List[Path]:
+def _prepare_query_pages(query_id: str, file_bytes: bytes, timing: Optional[Dict[str, float]] = None) -> List[Path]:
+    step_started = time.perf_counter()
     if file_bytes.lstrip().startswith(b"%PDF"):
-        return _convert_pdf_to_page_images(query_id, file_bytes)
-    return [_save_query_image(query_id, file_bytes, 1)]
+        pages = _convert_pdf_to_page_images(query_id, file_bytes)
+        if timing is not None:
+            timing["prepare_pdf_convert"] = timing.get("prepare_pdf_convert", 0.0) + (time.perf_counter() - step_started)
+        return pages
+    pages = [_save_query_image(query_id, file_bytes, 1)]
+    if timing is not None:
+        timing["prepare_image_save"] = timing.get("prepare_image_save", 0.0) + (time.perf_counter() - step_started)
+    return pages
 
 
-def _normalize_query_pages(query_id: str, page_paths: List[Path], skip_normalization: bool = False) -> List[Dict[str, Any]]:
+def _normalize_query_pages(
+    query_id: str,
+    page_paths: List[Path],
+    skip_normalization: bool = False,
+    timing: Optional[Dict[str, float]] = None,
+) -> List[Dict[str, Any]]:
+    normalize_started = time.perf_counter()
     normalized_dir = _storage_path() / query_id / "normalized"
     normalized_dir.mkdir(parents=True, exist_ok=True)
+    if timing is not None:
+        timing["prepare_normalized_dir"] = timing.get("prepare_normalized_dir", 0.0) + (time.perf_counter() - normalize_started)
     normalized_pages = []
     for index, page_path in enumerate(page_paths, start=1):
         if skip_normalization:
+            step_started = time.perf_counter()
             normalized_pages.append(
                 {
                     "page_index": index,
@@ -422,9 +448,14 @@ def _normalize_query_pages(query_id: str, page_paths: List[Path], skip_normaliza
                     },
                 }
             )
+            if timing is not None:
+                timing["prepare_normalization_skipped"] = timing.get("prepare_normalization_skipped", 0.0) + (time.perf_counter() - step_started)
             continue
         normalized_path = normalized_dir / f"page_{index}_normalized.png"
+        step_started = time.perf_counter()
         info = normalization_service.normalize_document(str(page_path), str(normalized_path))
+        if timing is not None:
+            timing["prepare_normalization"] = timing.get("prepare_normalization", 0.0) + (time.perf_counter() - step_started)
         normalized_pages.append(
             {
                 "page_index": index,
@@ -950,16 +981,37 @@ def _candidate_from_result(
     metadata = result.get("metadata") or {}
     vector_id = str(result.get("vector_id") or "")
     template_id = _template_id_from_metadata(metadata, vector_id)
+    candidate_timing: Dict[str, Optional[float]] = {
+        "template_fetch": None,
+        "field_count_query": None,
+        "candidate_setup": None,
+        "normalized_verification": None,
+        "alignment": None,
+        "aligned_verification": None,
+        "decision": None,
+        "roi_field_load": None,
+        "roi_items": None,
+        "projection": None,
+        "extraction_test": None,
+        "coordinate_debug": None,
+        "text_verification": 0.0,
+        "image_verification": 0.0,
+    }
+    step_started = time.perf_counter()
     template = _fetch_template(template_id)
+    candidate_timing["template_fetch"] = time.perf_counter() - step_started
 
     if template_id and template is None:
         return None
 
+    step_started = time.perf_counter()
     if template:
         template_status = template.get("status")
         template_name = template.get("name")
         page_count = template.get("page_count")
         final_confidence_threshold = decision_service.final_confidence_threshold(template, metadata)
+        candidate_timing["candidate_setup"] = time.perf_counter() - step_started
+        step_started = time.perf_counter()
         with _connect() as conn:
             field_count = conn.execute(
                 """
@@ -970,16 +1022,19 @@ def _candidate_from_result(
                 """,
                 (template_id,),
             ).fetchone()["count"]
+        candidate_timing["field_count_query"] = time.perf_counter() - step_started
     else:
         template_status = metadata.get("template_status")
         template_name = metadata.get("template_name")
         page_count = metadata.get("page_count")
         field_count = metadata.get("field_count")
         final_confidence_threshold = decision_service.final_confidence_threshold(None, metadata)
+        candidate_timing["candidate_setup"] = time.perf_counter() - step_started
 
     if template_status != "active" and template_id != include_template_id:
         return None
 
+    step_started = time.perf_counter()
     verification_strategy = normalize_verification_strategy(verification_strategy)
     matching_weights = decision_service.matching_weights(template, metadata)
     template_page_number = int(
@@ -996,13 +1051,7 @@ def _candidate_from_result(
         if detection_mode == "main_page"
         else candidate_page_image_paths
     )
-    candidate_timing: Dict[str, Optional[float]] = {
-        "normalized_verification": None,
-        "alignment": None,
-        "aligned_verification": None,
-        "text_verification": 0.0,
-        "image_verification": 0.0,
-    }
+    candidate_timing["candidate_setup"] = float(candidate_timing.get("candidate_setup") or 0.0) + (time.perf_counter() - step_started)
 
     # 1) Verify จาก normalized ก่อน
     verify_template_for_strategy = (
@@ -1026,6 +1075,7 @@ def _candidate_from_result(
     if isinstance(normalized_internal_timing, dict):
         candidate_timing["text_verification"] = float(candidate_timing.get("text_verification") or 0.0) + float(normalized_internal_timing.get("text_verification") or 0.0)
         candidate_timing["image_verification"] = float(candidate_timing.get("image_verification") or 0.0) + float(normalized_internal_timing.get("image_verification") or 0.0)
+    normalized_internal_timing_ms = _timing_ms_map(normalized_internal_timing)
 
     normalized_score = float(normalized_verification.get("score") or 0.0)
     verification = normalized_verification
@@ -1040,6 +1090,7 @@ def _candidate_from_result(
 
     aligned_verification = None
     aligned_score = None
+    aligned_internal_timing_ms: Dict[str, Optional[float]] = {}
 
     # 2) Template alignment is part of the production path.
     # The alignment service precheck skips ORB when geometry already matches.
@@ -1077,6 +1128,7 @@ def _candidate_from_result(
             if isinstance(aligned_internal_timing, dict):
                 candidate_timing["text_verification"] = float(candidate_timing.get("text_verification") or 0.0) + float(aligned_internal_timing.get("text_verification") or 0.0)
                 candidate_timing["image_verification"] = float(candidate_timing.get("image_verification") or 0.0) + float(aligned_internal_timing.get("image_verification") or 0.0)
+            aligned_internal_timing_ms = _timing_ms_map(aligned_internal_timing)
             aligned_score = float(aligned_verification.get("score") or 0.0)
 
             # 3) Alignment is optional refinement. Never use a warped image if it
@@ -1122,6 +1174,7 @@ def _candidate_from_result(
     alignment["alignment_status"] = alignment_status
     alignment["alignment_reason"] = alignment_reason
 
+    step_started = time.perf_counter()
     retrieval_score = float(result.get("score", 0.0) or 0.0)
     if verification_strategy == VERIFICATION_STRATEGY_STRICT:
         decision = decision_service.decide_candidate_strict(
@@ -1145,6 +1198,7 @@ def _candidate_from_result(
             "decision_reason": "คะแนนรวมต่ำกว่าเกณฑ์",
             "decision_path": "คะแนนรวมต่ำกว่าเกณฑ์",
         }
+    candidate_timing["decision"] = time.perf_counter() - step_started
     extraction_image_path = str(alignment.get("aligned_image_path") or query_image_path) if verification_source_used == "aligned" else query_image_path
     extraction_image_preview_url = _detection_preview_url(extraction_image_path)
     roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} else "projected"
@@ -1178,8 +1232,13 @@ def _candidate_from_result(
         "extraction_image_preview_url": extraction_image_preview_url,
     }
     if template_id and decision["final_passed"]:
+        step_started = time.perf_counter()
         template_fields = _fetch_template_fields(template_id)
+        candidate_timing["roi_field_load"] = time.perf_counter() - step_started
+        step_started = time.perf_counter()
         template_rois = _template_roi_items(template_fields, template_page_number)
+        candidate_timing["roi_items"] = time.perf_counter() - step_started
+        step_started = time.perf_counter()
         if roi_coordinate_space == "template_canvas":
             projection = _template_canvas_projection(
                 template_id,
@@ -1219,6 +1278,8 @@ def _candidate_from_result(
                     "extraction_image_path": extraction_image_path,
                     "extraction_image_preview_url": extraction_image_preview_url,
                 }
+        candidate_timing["projection"] = time.perf_counter() - step_started
+        step_started = time.perf_counter()
         extraction_test = _run_extraction_test(
             template_id,
             template_fields,
@@ -1227,7 +1288,9 @@ def _candidate_from_result(
             template_page_number,
             str(projection.get("roi_coordinate_space") or roi_coordinate_space),
         )
+        candidate_timing["extraction_test"] = time.perf_counter() - step_started
 
+    step_started = time.perf_counter()
     template_image_source = _fetch_template_page_image_source(template_id, template_page_number) if template_id else None
     first_template_roi = template_rois[0].get("roi") if template_rois else None
     first_projected_field = (projection.get("projected_fields") or [None])[0]
@@ -1243,6 +1306,7 @@ def _candidate_from_result(
         "first_template_roi": first_template_roi,
         "first_projected_roi": first_projected_field.get("projected_roi") if isinstance(first_projected_field, dict) else None,
     }
+    candidate_timing["coordinate_debug"] = time.perf_counter() - step_started
     print(
         "[detection-coordinate] "
         f"template={template_id} query_page={page_index} template_page={template_page_number} space={coordinate_debug['roi_coordinate_space']} "
@@ -1330,6 +1394,19 @@ def _candidate_from_result(
             "aligned_verification_ms": _ms(candidate_timing.get("aligned_verification")),
             "text_verification_ms": _ms(candidate_timing.get("text_verification")),
             "image_verification_ms": _ms(candidate_timing.get("image_verification")),
+            "normalized_verification_breakdown": normalized_internal_timing_ms,
+            "aligned_verification_breakdown": aligned_internal_timing_ms,
+            "candidate_overhead_breakdown": {
+                "template_fetch_ms": _ms(candidate_timing.get("template_fetch")),
+                "field_count_query_ms": _ms(candidate_timing.get("field_count_query")),
+                "candidate_setup_ms": _ms(candidate_timing.get("candidate_setup")),
+                "decision_ms": _ms(candidate_timing.get("decision")),
+                "roi_field_load_ms": _ms(candidate_timing.get("roi_field_load")),
+                "roi_items_ms": _ms(candidate_timing.get("roi_items")),
+                "projection_ms": _ms(candidate_timing.get("projection")),
+                "extraction_test_ms": _ms(candidate_timing.get("extraction_test")),
+                "coordinate_debug_ms": _ms(candidate_timing.get("coordinate_debug")),
+            },
         },
     }
 
@@ -1794,6 +1871,13 @@ def _detection_timing_debug(timing: Dict[str, float], pages: List[Dict[str, Any]
     return {
         "total_detection_ms": _ms(time.perf_counter() - total_started),
         "prepare_pages_ms": _ms(timing.get("prepare_pages")),
+        "prepare_pages_breakdown": {
+            "pdf_convert_ms": _ms(timing.get("prepare_pdf_convert")),
+            "image_save_ms": _ms(timing.get("prepare_image_save")),
+            "normalized_dir_ms": _ms(timing.get("prepare_normalized_dir")),
+            "normalization_ms": _ms(timing.get("prepare_normalization")),
+            "normalization_skipped_ms": _ms(timing.get("prepare_normalization_skipped")),
+        },
         "layout_analysis_ms": _ms(timing.get("layout_analysis")),
         "signature_build_ms": _ms(timing.get("signature_build")),
         "template_matching_ms": _ms(timing.get("template_matching")),
@@ -1821,9 +1905,9 @@ def detect_template_dev(
     try:
         source_type = "pdf" if file_bytes.lstrip().startswith(b"%PDF") else "image"
         step_started = time.perf_counter()
-        page_paths = _prepare_query_pages(query_id, file_bytes)
+        page_paths = _prepare_query_pages(query_id, file_bytes, timing=timing)
         skip_normalization = source_type == "pdf"
-        normalized_pages = _normalize_query_pages(query_id, page_paths, skip_normalization=skip_normalization)
+        normalized_pages = _normalize_query_pages(query_id, page_paths, skip_normalization=skip_normalization, timing=timing)
         timing["prepare_pages"] = time.perf_counter() - step_started
         if prepublish_timing:
             print(f"[PREPUBLISH] prepare pages done: {timing['prepare_pages']:.2f}s")

@@ -2872,7 +2872,9 @@ class VerificationService:
 
     def verify_template_strict(self, template_id: str, page_image_paths: Optional[Dict[int, str]] = None) -> Dict[str, Any]:
         verify_started = time.perf_counter()
+        step_started = time.perf_counter()
         fields = self.load_verification_fields(template_id)
+        load_fields_elapsed = time.perf_counter() - step_started
         if not fields:
             return {
                 "template_id": template_id,
@@ -2887,32 +2889,43 @@ class VerificationService:
                 "verification_strategy": VERIFICATION_STRATEGY_STRICT,
                 "timing": {
                     "total_verification": time.perf_counter() - verify_started,
+                    "load_fields": load_fields_elapsed,
+                    "split_anchors": 0.0,
                     "text_verification": 0.0,
                     "image_verification": 0.0,
+                    "summary": 0.0,
                 },
             }
 
         checked_fields: List[Dict[str, Any]] = []
         text_verification_elapsed = 0.0
         image_verification_elapsed = 0.0
+        step_started = time.perf_counter()
         text_fields = [field for field in fields if field.get("data_type") != "image"]
         image_fields = [field for field in fields if field.get("data_type") == "image"]
+        split_anchors_elapsed = time.perf_counter() - step_started
         for field in text_fields:
             step_started = time.perf_counter()
             checked = self._text_anchor_check(field, page_image_paths)
             text_verification_elapsed += time.perf_counter() - step_started
             checked_fields.append(checked)
             if not checked["passed"]:
+                step_started = time.perf_counter()
+                summary = self._verification_summary(template_id, checked_fields, status="strict_text_failed")
+                summary_elapsed = time.perf_counter() - step_started
                 return {
-                    **self._verification_summary(template_id, checked_fields, status="strict_text_failed"),
+                    **summary,
                     "passed": False,
                     "required_passed": False,
                     "verification_strategy": VERIFICATION_STRATEGY_STRICT,
                     "strict_failed_stage": "text",
                     "timing": {
                         "total_verification": time.perf_counter() - verify_started,
+                        "load_fields": load_fields_elapsed,
+                        "split_anchors": split_anchors_elapsed,
                         "text_verification": text_verification_elapsed,
                         "image_verification": image_verification_elapsed,
+                        "summary": summary_elapsed,
                     },
                 }
 
@@ -2922,29 +2935,41 @@ class VerificationService:
             image_verification_elapsed += time.perf_counter() - step_started
             checked_fields.append(checked)
             if not checked["passed"]:
+                step_started = time.perf_counter()
+                summary = self._verification_summary(template_id, checked_fields, status="strict_image_failed")
+                summary_elapsed = time.perf_counter() - step_started
                 return {
-                    **self._verification_summary(template_id, checked_fields, status="strict_image_failed"),
+                    **summary,
                     "passed": False,
                     "required_passed": False,
                     "verification_strategy": VERIFICATION_STRATEGY_STRICT,
                     "strict_failed_stage": "image",
                     "timing": {
                         "total_verification": time.perf_counter() - verify_started,
+                        "load_fields": load_fields_elapsed,
+                        "split_anchors": split_anchors_elapsed,
                         "text_verification": text_verification_elapsed,
                         "image_verification": image_verification_elapsed,
+                        "summary": summary_elapsed,
                     },
                 }
 
+        step_started = time.perf_counter()
+        summary = self._verification_summary(template_id, checked_fields, status="strict_verified")
+        summary_elapsed = time.perf_counter() - step_started
         return {
-            **self._verification_summary(template_id, checked_fields, status="strict_verified"),
+            **summary,
             "passed": True,
             "required_passed": True,
             "verification_strategy": VERIFICATION_STRATEGY_STRICT,
             "strict_failed_stage": None,
             "timing": {
                 "total_verification": time.perf_counter() - verify_started,
+                "load_fields": load_fields_elapsed,
+                "split_anchors": split_anchors_elapsed,
                 "text_verification": text_verification_elapsed,
                 "image_verification": image_verification_elapsed,
+                "summary": summary_elapsed,
             },
         }
 
