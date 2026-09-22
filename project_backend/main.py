@@ -37,7 +37,7 @@ from app.processing.ocr_adapter import recognize_text_crops_with_detection, reco
 from app.processing.ocr_postprocess import normalize_ocr_text, normalize_table_rows
 from app.model_runtime.paddle_thai_ocr_adapter import PaddleThaiOcrUnavailableError, run_paddle_thai_ocr, run_paddle_thai_ocr_batch
 from app.model_runtime.table_recognition_v2_adapter import TableRecognitionV2UnavailableError, recognize_table_v2
-from app.core.db import connect as db_connect
+from app.core.db import close_postgres_pool, connect as db_connect
 from app.core.json_utils import jsonb_dump, jsonb_load
 from app.core.model_runtime_client import configured_runtimes
 
@@ -149,6 +149,11 @@ def _env_flag(name: str, default: str = "true") -> bool:
 async def startup_warmup() -> None:
     print(f"Using external model runtimes: {configured_runtimes()}")
     print("Main backend model warm-up skipped; backend owns process logic and calls model runtimes via HTTP.")
+
+
+@app.on_event("shutdown")
+async def shutdown_db_pool() -> None:
+    close_postgres_pool()
 
 
 def decode_base64_image(image_str: str) -> Tuple[Image.Image, np.ndarray]:

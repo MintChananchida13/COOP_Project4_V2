@@ -1,5 +1,6 @@
 import os
 import re
+import threading
 import time
 from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional, Sequence
@@ -8,6 +9,9 @@ from app.auth.auth_password import hash_password
 
 
 _POSTGRES_READY = False
+_POSTGRES_POOL = None
+_POSTGRES_POOL_LOCK = threading.Lock()
+_POSTGRES_POOL_DSN = None
 _SEED_USERS = [
     {
         "id": "usr_seed_user",
@@ -55,18 +59,26 @@ class StaticCursor:
 
 
 class PostgresConnection:
-    def __init__(self, raw_conn: Any):
+    def __init__(self, raw_conn: Any, pool: Any = None):
         self._raw_conn = raw_conn
+        self._pool = pool
+        self._returned = False
 
     def __enter__(self) -> "PostgresConnection":
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        if exc_type is None:
-            self.commit()
-        else:
-            self.rollback()
-        self.close()
+        close_broken = False
+        try:
+            if exc_type is None:
+                self.commit()
+            else:
+                self.rollback()
+        except Exception:
+            close_broken = True
+            raise
+        finally:
+            self.close(close_broken=close_broken)
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> Any:
         normalized = sql.strip()
@@ -109,8 +121,28 @@ class PostgresConnection:
     def rollback(self) -> None:
         self._raw_conn.rollback()
 
-    def close(self) -> None:
-        self._raw_conn.close()
+    def close(self, close_broken: bool = False) -> None:
+        if self._returned:
+            return
+        self._returned = True
+        if self._pool is None:
+            self._raw_conn.close()
+            return
+        try:
+            if close_broken or getattr(self._raw_conn, "closed", 0):
+                self._pool.putconn(self._raw_conn, close=True)
+            else:
+                try:
+                    self._raw_conn.rollback()
+                except Exception:
+                    self._pool.putconn(self._raw_conn, close=True)
+                    return
+                self._pool.putconn(self._raw_conn)
+        except Exception:
+            try:
+                self._raw_conn.close()
+            except Exception:
+                pass
 
     def _table_info(self, sql: str) -> StaticCursor:
         match = re.search(r"pragma\s+table_info\((?:\"|')?([^\"')]+)(?:\"|')?\)", sql, re.IGNORECASE)
@@ -135,19 +167,69 @@ def _translate_sql(sql: str) -> str:
     return sql.replace("?", "%s")
 
 
-def _connect_postgres() -> PostgresConnection:
+def _pool_size_from_env(key: str, default: int) -> int:
     try:
-        import psycopg2
-        import psycopg2.extras
-    except ImportError as exc:
-        raise RuntimeError(
-            "PostgreSQL mode requires psycopg2-binary. Install backend requirements first."
-        ) from exc
+        return max(1, int(os.getenv(key, str(default))))
+    except (TypeError, ValueError):
+        return default
 
-    conn = psycopg2.connect(_database_url(), cursor_factory=psycopg2.extras.RealDictCursor)
-    wrapped = PostgresConnection(conn)
-    _ensure_postgres_schema(wrapped)
+
+def _get_postgres_pool() -> Any:
+    global _POSTGRES_POOL, _POSTGRES_POOL_DSN
+    database_url = _database_url()
+    if _POSTGRES_POOL is not None and _POSTGRES_POOL_DSN == database_url:
+        return _POSTGRES_POOL
+
+    with _POSTGRES_POOL_LOCK:
+        if _POSTGRES_POOL is not None and _POSTGRES_POOL_DSN == database_url:
+            return _POSTGRES_POOL
+        if _POSTGRES_POOL is not None:
+            try:
+                _POSTGRES_POOL.closeall()
+            finally:
+                _POSTGRES_POOL = None
+                _POSTGRES_POOL_DSN = None
+
+        try:
+            import psycopg2
+            import psycopg2.extras
+            import psycopg2.pool
+        except ImportError as exc:
+            raise RuntimeError(
+                "PostgreSQL mode requires psycopg2-binary. Install backend requirements first."
+            ) from exc
+
+        min_conn = _pool_size_from_env("DB_POOL_MIN_CONNECTIONS", 1)
+        max_conn = max(min_conn, _pool_size_from_env("DB_POOL_MAX_CONNECTIONS", 10))
+        _POSTGRES_POOL = psycopg2.pool.ThreadedConnectionPool(
+            min_conn,
+            max_conn,
+            database_url,
+            cursor_factory=psycopg2.extras.RealDictCursor,
+        )
+        _POSTGRES_POOL_DSN = database_url
+        return _POSTGRES_POOL
+
+
+def _connect_postgres() -> PostgresConnection:
+    pool = _get_postgres_pool()
+    conn = pool.getconn()
+    wrapped = PostgresConnection(conn, pool=pool)
+    try:
+        _ensure_postgres_schema(wrapped)
+    except Exception:
+        wrapped.close(close_broken=True)
+        raise
     return wrapped
+
+
+def close_postgres_pool() -> None:
+    global _POSTGRES_POOL, _POSTGRES_POOL_DSN
+    with _POSTGRES_POOL_LOCK:
+        if _POSTGRES_POOL is not None:
+            _POSTGRES_POOL.closeall()
+            _POSTGRES_POOL = None
+            _POSTGRES_POOL_DSN = None
 
 
 def connect() -> Any:
