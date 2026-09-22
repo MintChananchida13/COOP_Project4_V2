@@ -2260,10 +2260,17 @@ class VerificationService:
                 "score": 1.0,
                 "required_passed": True,
                 "checked_fields": [],
+                "timing": {
+                    "total_verification": time.perf_counter() - verify_started,
+                    "text_verification": 0.0,
+                    "image_verification": 0.0,
+                },
             }
 
         text_ocr_cache: Dict[str, Dict[str, Any]] = {}
         text_ocr_errors: Dict[str, str] = {}
+        text_verification_elapsed = 0.0
+        image_verification_elapsed = 0.0
         text_fields_by_page: Dict[int, List[Dict[str, Any]]] = {}
         for field in fields:
             if field.get("data_type") == "image":
@@ -2283,6 +2290,7 @@ class VerificationService:
                     image_path,
                     [{"id": field["id"], "roi": field["roi"]} for field in page_fields],
                 )
+                text_verification_elapsed += time.perf_counter() - page_started
                 text_ocr_cache.update(page_results)
                 logger.info(
                     "[TEMPLATE VERIFY] text OCR batch done: template_id=%s page=%s anchors=%s elapsed=%.2fs",
@@ -2292,6 +2300,7 @@ class VerificationService:
                     time.perf_counter() - page_started,
                 )
             except OcrUnavailableError as error:
+                text_verification_elapsed += time.perf_counter() - page_started
                 for field in page_fields:
                     text_ocr_errors[field["id"]] = str(error)
                 logger.info(
@@ -2303,6 +2312,7 @@ class VerificationService:
                     error,
                 )
             except Exception as error:
+                text_verification_elapsed += time.perf_counter() - page_started
                 for field in page_fields:
                     text_ocr_errors[field["id"]] = f"ROI OCR failed: {error}"
                 logger.info(
@@ -2418,12 +2428,14 @@ class VerificationService:
                         "siglip_ui_percentages": [],
                         "error": str(error),
                     }
+                image_elapsed = time.perf_counter() - image_started
+                image_verification_elapsed += image_elapsed
                 logger.info(
                     "[TEMPLATE VERIFY] image anchor done: template_id=%s page=%s anchor_id=%s elapsed=%.2fs status=%s passed=%s",
                     template_id,
                     page_number,
                     field.get("id"),
-                    time.perf_counter() - image_started,
+                    image_elapsed,
                     image_match.get("status"),
                     image_match.get("passed"),
                 )
@@ -2632,6 +2644,11 @@ class VerificationService:
             "required_passed": required_passed,
             "checked_fields": checked_fields,
             "verification_details": checked_fields,
+            "timing": {
+                "total_verification": time.perf_counter() - verify_started,
+                "text_verification": text_verification_elapsed,
+                "image_verification": image_verification_elapsed,
+            },
         }
 
     def _text_anchor_check(self, field: Dict[str, Any], page_image_paths: Optional[Dict[int, str]]) -> Dict[str, Any]:
@@ -2854,6 +2871,7 @@ class VerificationService:
         }
 
     def verify_template_strict(self, template_id: str, page_image_paths: Optional[Dict[int, str]] = None) -> Dict[str, Any]:
+        verify_started = time.perf_counter()
         fields = self.load_verification_fields(template_id)
         if not fields:
             return {
@@ -2867,13 +2885,22 @@ class VerificationService:
                 "checked_fields": [],
                 "verification_details": [],
                 "verification_strategy": VERIFICATION_STRATEGY_STRICT,
+                "timing": {
+                    "total_verification": time.perf_counter() - verify_started,
+                    "text_verification": 0.0,
+                    "image_verification": 0.0,
+                },
             }
 
         checked_fields: List[Dict[str, Any]] = []
+        text_verification_elapsed = 0.0
+        image_verification_elapsed = 0.0
         text_fields = [field for field in fields if field.get("data_type") != "image"]
         image_fields = [field for field in fields if field.get("data_type") == "image"]
         for field in text_fields:
+            step_started = time.perf_counter()
             checked = self._text_anchor_check(field, page_image_paths)
+            text_verification_elapsed += time.perf_counter() - step_started
             checked_fields.append(checked)
             if not checked["passed"]:
                 return {
@@ -2882,10 +2909,17 @@ class VerificationService:
                     "required_passed": False,
                     "verification_strategy": VERIFICATION_STRATEGY_STRICT,
                     "strict_failed_stage": "text",
+                    "timing": {
+                        "total_verification": time.perf_counter() - verify_started,
+                        "text_verification": text_verification_elapsed,
+                        "image_verification": image_verification_elapsed,
+                    },
                 }
 
         for field in image_fields:
+            step_started = time.perf_counter()
             checked = self._image_anchor_check(field, page_image_paths)
+            image_verification_elapsed += time.perf_counter() - step_started
             checked_fields.append(checked)
             if not checked["passed"]:
                 return {
@@ -2894,6 +2928,11 @@ class VerificationService:
                     "required_passed": False,
                     "verification_strategy": VERIFICATION_STRATEGY_STRICT,
                     "strict_failed_stage": "image",
+                    "timing": {
+                        "total_verification": time.perf_counter() - verify_started,
+                        "text_verification": text_verification_elapsed,
+                        "image_verification": image_verification_elapsed,
+                    },
                 }
 
         return {
@@ -2902,6 +2941,11 @@ class VerificationService:
             "required_passed": True,
             "verification_strategy": VERIFICATION_STRATEGY_STRICT,
             "strict_failed_stage": None,
+            "timing": {
+                "total_verification": time.perf_counter() - verify_started,
+                "text_verification": text_verification_elapsed,
+                "image_verification": image_verification_elapsed,
+            },
         }
 
     def verify_candidate(

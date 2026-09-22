@@ -55,6 +55,12 @@ def _connect() -> Any:
     return connect_db()
 
 
+def _ms(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    return round(float(value) * 1000.0, 2)
+
+
 def _storage_path() -> Path:
     return Path(__file__).resolve().parents[2] / "storage" / "detection_queries"
 
@@ -283,7 +289,7 @@ def _image_source_dimensions(source: Optional[str]) -> Optional[List[int]]:
         return None
 
 
-def _layout_signature_for_image_path(image_path: str) -> Dict[str, Any]:
+def _layout_signature_for_image_path(image_path: str, timing: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
     Image = _load_pillow()
     if Image is None:
         raise HTTPException(status_code=500, detail="Layout signature generation requires Pillow")
@@ -292,7 +298,15 @@ def _layout_signature_for_image_path(image_path: str) -> Dict[str, Any]:
         opencv_img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     except Exception as error:
         raise HTTPException(status_code=400, detail="Unable to read image for layout signature") from error
-    return build_layout_signature(analyze_layout_signature(opencv_img))
+    step_started = time.perf_counter()
+    layout_items = analyze_layout_signature(opencv_img)
+    if timing is not None:
+        timing["layout_analysis"] = timing.get("layout_analysis", 0.0) + (time.perf_counter() - step_started)
+    step_started = time.perf_counter()
+    signature = build_layout_signature(layout_items)
+    if timing is not None:
+        timing["signature_build"] = timing.get("signature_build", 0.0) + (time.perf_counter() - step_started)
+    return signature
 
 
 def _detection_debug_url(path_value: Optional[str]) -> Optional[str]:
@@ -982,6 +996,13 @@ def _candidate_from_result(
         if detection_mode == "main_page"
         else candidate_page_image_paths
     )
+    candidate_timing: Dict[str, Optional[float]] = {
+        "normalized_verification": None,
+        "alignment": None,
+        "aligned_verification": None,
+        "text_verification": 0.0,
+        "image_verification": 0.0,
+    }
 
     # 1) Verify จาก normalized ก่อน
     verify_template_for_strategy = (
@@ -989,6 +1010,7 @@ def _candidate_from_result(
         if verification_strategy == VERIFICATION_STRATEGY_STRICT
         else verification_service.verify_template
     )
+    step_started = time.perf_counter()
     normalized_verification = verify_template_for_strategy(
         template_id,
         verification_page_image_paths,
@@ -999,6 +1021,11 @@ def _candidate_from_result(
         "required_passed": False,
         "checked_fields": [],
     }
+    candidate_timing["normalized_verification"] = time.perf_counter() - step_started
+    normalized_internal_timing = normalized_verification.get("timing") if isinstance(normalized_verification, dict) else {}
+    if isinstance(normalized_internal_timing, dict):
+        candidate_timing["text_verification"] = float(candidate_timing.get("text_verification") or 0.0) + float(normalized_internal_timing.get("text_verification") or 0.0)
+        candidate_timing["image_verification"] = float(candidate_timing.get("image_verification") or 0.0) + float(normalized_internal_timing.get("image_verification") or 0.0)
 
     normalized_score = float(normalized_verification.get("score") or 0.0)
     verification = normalized_verification
@@ -1022,12 +1049,14 @@ def _candidate_from_result(
     )
 
     if should_try_alignment:
+        step_started = time.perf_counter()
         alignment = _align_candidate_page(
             template_id,
             template_page_number,
             query_image_path,
             normalization_info,
         )
+        candidate_timing["alignment"] = time.perf_counter() - step_started
 
         if alignment.get("alignment_status") == "aligned" and alignment.get("aligned_image_path"):
             aligned_page_image_paths = dict(candidate_page_image_paths)
@@ -1038,10 +1067,16 @@ def _candidate_from_result(
                 else aligned_page_image_paths
             )
 
+            step_started = time.perf_counter()
             aligned_verification = verify_template_for_strategy(
                 template_id,
                 aligned_verification_paths,
             )
+            candidate_timing["aligned_verification"] = time.perf_counter() - step_started
+            aligned_internal_timing = aligned_verification.get("timing") if isinstance(aligned_verification, dict) else {}
+            if isinstance(aligned_internal_timing, dict):
+                candidate_timing["text_verification"] = float(candidate_timing.get("text_verification") or 0.0) + float(aligned_internal_timing.get("text_verification") or 0.0)
+                candidate_timing["image_verification"] = float(candidate_timing.get("image_verification") or 0.0) + float(aligned_internal_timing.get("image_verification") or 0.0)
             aligned_score = float(aligned_verification.get("score") or 0.0)
 
             # 3) Alignment is optional refinement. Never use a warped image if it
@@ -1289,6 +1324,13 @@ def _candidate_from_result(
         "verification_strategy": verification_strategy,
         "evaluation_status": "full",
         "alignment_evaluated": bool(allow_alignment),
+        "timing": {
+            "normalized_verification_ms": _ms(candidate_timing.get("normalized_verification")),
+            "alignment_ms": _ms(candidate_timing.get("alignment")),
+            "aligned_verification_ms": _ms(candidate_timing.get("aligned_verification")),
+            "text_verification_ms": _ms(candidate_timing.get("text_verification")),
+            "image_verification_ms": _ms(candidate_timing.get("image_verification")),
+        },
     }
 
 
@@ -1398,10 +1440,7 @@ def _detect_page(
 ) -> Dict[str, Any]:
     page_index = int(page_info["page_index"])
     normalized_image_path = str(page_info["normalized_path"])
-    step_started = time.perf_counter()
-    query_signature = _layout_signature_for_image_path(normalized_image_path)
-    if timing is not None:
-        timing["layout_analysis"] = timing.get("layout_analysis", 0.0) + (time.perf_counter() - step_started)
+    query_signature = _layout_signature_for_image_path(normalized_image_path, timing=timing)
     step_started = time.perf_counter()
     raw_results = search_layout_candidates(
         query_signature,
@@ -1468,8 +1507,15 @@ def _detect_page(
                 include_template_id=include_template_id,
                 verification_strategy=verification_strategy,
             )
+            verification_elapsed = time.perf_counter() - step_started
             if timing is not None:
-                timing["verification"] = timing.get("verification", 0.0) + (time.perf_counter() - step_started)
+                timing["verification"] = timing.get("verification", 0.0) + verification_elapsed
+            if isinstance(candidate, dict):
+                candidate_timing = candidate.get("timing") if isinstance(candidate.get("timing"), dict) else {}
+                candidate["timing"] = {
+                    "candidate_total_ms": _ms(verification_elapsed),
+                    **candidate_timing,
+                }
         else:
             candidate = _lightweight_candidate_from_result(result, include_template_id=include_template_id)
         if candidate is not None:
@@ -1722,6 +1768,42 @@ def _no_match_message(candidates: List[Dict[str, Any]]) -> str:
     return "ไม่มี Template ที่ผ่านเกณฑ์การตรวจสอบและคะแนนความมั่นใจ"
 
 
+def _detection_timing_debug(timing: Dict[str, float], pages: List[Dict[str, Any]], total_started: float) -> Dict[str, Any]:
+    candidate_timings: List[Dict[str, Any]] = []
+    for page in pages:
+        for candidate in page.get("candidates", []):
+            if not isinstance(candidate, dict):
+                continue
+            candidate_timing = candidate.get("timing")
+            if not isinstance(candidate_timing, dict):
+                continue
+            candidate_timings.append(
+                {
+                    "page_index": candidate.get("query_page_index") or page.get("page_index"),
+                    "retrieval_rank": candidate.get("retrieval_rank"),
+                    "template_id": candidate.get("template_id"),
+                    "template_name": candidate.get("template_name"),
+                    "evaluation_status": candidate.get("evaluation_status"),
+                    "verification_strategy": candidate.get("verification_strategy"),
+                    "verification_source_used": candidate.get("verification_source_used"),
+                    "alignment_status": candidate.get("alignment_status"),
+                    **candidate_timing,
+                }
+            )
+
+    return {
+        "total_detection_ms": _ms(time.perf_counter() - total_started),
+        "prepare_pages_ms": _ms(timing.get("prepare_pages")),
+        "layout_analysis_ms": _ms(timing.get("layout_analysis")),
+        "signature_build_ms": _ms(timing.get("signature_build")),
+        "template_matching_ms": _ms(timing.get("template_matching")),
+        "verification_ms": _ms(timing.get("verification")),
+        "candidate_aggregation_ms": _ms(timing.get("candidate_aggregation")),
+        "auto_roi_ms": _ms(timing.get("auto_roi")),
+        "candidates": candidate_timings,
+    }
+
+
 def detect_template_dev(
     file_bytes: bytes,
     include_template_id: Optional[str] = None,
@@ -1873,6 +1955,7 @@ def detect_template_dev(
                 "retrieval_limit": retrieval_limit,
                 "verification_candidate_limit": verification_candidate_limit,
                 "full_evaluation_limit_override": full_evaluation_limit_override,
+                "timing": _detection_timing_debug(timing, pages, total_started),
             },
         }
     finally:

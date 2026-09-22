@@ -27,6 +27,7 @@ import {
   fetchTemplateRequestPages,
   fetchTemplates,
   suggestTemplateRequestBaseVersion,
+  updateTemplateApi,
   updateTemplateRequest,
   updateTemplateRequestImage,
 } from "./adminApi";
@@ -160,10 +161,7 @@ export default function AdminRequestDetailPage({
             fetchTemplates(),
           ]);
           if (cancelled) return;
-          const loadedCreationType =
-            bundle.template.creationType === "new_version" || bundle.template.baseTemplateId
-              ? "new_version"
-              : "new_template";
+          const loadedCreationType = "new_version";
           const loadedBaseTemplate = bundle.template.baseTemplateId
             ? templateList.find((template) => template.id === bundle.template.baseTemplateId)
             : undefined;
@@ -174,10 +172,7 @@ export default function AdminRequestDetailPage({
             bundle.template.documentType ||
             "";
           const loadedVersionName = bundle.template.versionName || bundle.template.name || "";
-          const loadedVersionSuffix =
-            loadedCreationType === "new_version"
-              ? versionSuffixFromName(loadedVersionName, loadedBaseTemplateName)
-              : "";
+          const loadedVersionSuffix = versionSuffixFromName(loadedVersionName, loadedBaseTemplateName);
 
           const templatePages: TemplateRequestPage[] = bundle.pages.map((page) => ({
             id: page.id,
@@ -214,7 +209,7 @@ export default function AdminRequestDetailPage({
           setRequest(templateRequest);
           setPages(templatePages);
           setTemplateName(
-            loadedCreationType === "new_version" && loadedBaseTemplateName
+            loadedBaseTemplateName
               ? `${loadedBaseTemplateName} - ${loadedVersionSuffix}`
               : loadedVersionName
           );
@@ -224,7 +219,7 @@ export default function AdminRequestDetailPage({
           setAdminNote(bundle.template.description || "");
           setTemplates(templateList);
           setCreationType(loadedCreationType);
-          setSelectedBaseTemplateId(bundle.template.baseTemplateId || "");
+          setSelectedBaseTemplateId(bundle.template.baseTemplateId || templateId);
           setSelectedExistingTemplateName(loadedBaseTemplateName);
           setDetectionMode(bundle.template.detectionMode === "main_page" ? "main_page" : "all_pages");
           setMainPageNumber(bundle.template.mainPageNumber || 1);
@@ -469,6 +464,37 @@ export default function AdminRequestDetailPage({
       : Math.min(Math.max(mainPageNumber, 1), primaryPages.length || 1);
 
     if (isTemplateEditMode && templateId) {
+      const nextVersionSuffix = versionNameSuffix.trim();
+      if (!nextVersionSuffix) {
+        setActionError("กรุณากรอกชื่อต่อท้าย Version ก่อนเปิดหน้าแก้ไข Template");
+        return;
+      }
+      setIsConverting(true);
+      try {
+        const bundle = await updateTemplateApi(templateId, {
+          versionName: nextVersionSuffix,
+        });
+        setTemplateName(
+          selectedBaseTemplateName
+            ? `${selectedBaseTemplateName} - ${nextVersionSuffix}`
+            : bundle.template.versionName || bundle.template.name || nextVersionSuffix
+        );
+        setVersionNameSuffix(nextVersionSuffix);
+        setRequest((current) =>
+          current
+            ? {
+                ...current,
+                requestTitle: bundle.template.versionName || bundle.template.name || current.requestTitle,
+                updatedAt: bundle.template.updatedAt,
+              }
+            : current
+        );
+      } catch (error) {
+        console.warn("Template version name update failed.", error);
+        setActionError(error instanceof Error ? error.message : "บันทึกชื่อ Version ไม่สำเร็จ");
+        setIsConverting(false);
+        return;
+      }
       const params = new URLSearchParams({
         stage: "editor",
         detectionMode,
