@@ -918,6 +918,21 @@ def _image_path_to_data_url(path_value: Optional[str]) -> Optional[str]:
     return f"data:image/png;base64,{encoded}"
 
 
+def _verification_roi_cache_key(image_path: str, roi: Dict[str, Any], padding: Any = 0, suffix: str = "") -> str:
+    roi_key = jsonb_dump(
+        {
+            "x_ratio": roi.get("x_ratio"),
+            "y_ratio": roi.get("y_ratio"),
+            "width_ratio": roi.get("width_ratio"),
+            "height_ratio": roi.get("height_ratio"),
+            "points": roi.get("points"),
+            "padding": padding,
+            "suffix": suffix,
+        }
+    )
+    return f"{str(image_path)}::{roi_key}"
+
+
 def _pil_image_to_bgr_array(image: Any):
     try:
         import cv2
@@ -2808,7 +2823,13 @@ class VerificationService:
             "verification_details": checked_fields,
         }
 
-    def _text_anchor_check(self, field: Dict[str, Any], page_image_paths: Optional[Dict[int, str]]) -> Dict[str, Any]:
+    def _text_anchor_check(
+        self,
+        field: Dict[str, Any],
+        page_image_paths: Optional[Dict[int, str]],
+        runtime_cache: Optional[Dict[str, Dict[str, Any]]] = None,
+        timing: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         expected_text = field.get("expected_text")
         page_number = int(field["page_number"])
         image_path = (page_image_paths or {}).get(page_number)
@@ -2822,7 +2843,21 @@ class VerificationService:
                 current_crop_preview_data_url = _image_path_to_data_url(cropped)
                 if cropped:
                     Path(cropped).unlink(missing_ok=True)
-                ocr_result = ocr_roi(image_path, field["roi"])
+                cache_key = _verification_roi_cache_key(image_path, field["roi"], 0, "text_ocr")
+                text_cache = runtime_cache.setdefault("text_ocr", {}) if runtime_cache is not None else None
+                if text_cache is not None and cache_key in text_cache:
+                    ocr_result = dict(text_cache[cache_key])
+                    if timing is not None:
+                        timing["text_ocr_cache_hits"] = int(timing.get("text_ocr_cache_hits") or 0) + 1
+                else:
+                    if timing is not None:
+                        timing["text_ocr_cache_misses"] = int(timing.get("text_ocr_cache_misses") or 0) + 1
+                    inference_started = time.perf_counter()
+                    ocr_result = ocr_roi(image_path, field["roi"])
+                    if timing is not None:
+                        timing["text_ocr_inference"] = float(timing.get("text_ocr_inference") or 0.0) + (time.perf_counter() - inference_started)
+                    if text_cache is not None:
+                        text_cache[cache_key] = dict(ocr_result)
                 actual_text = str(ocr_result.get("text") or "")
                 ocr_confidence = float(ocr_result.get("confidence") or 0.0)
                 if ocr_result.get("error"):
@@ -2884,7 +2919,13 @@ class VerificationService:
             "error": field_error,
         }
 
-    def _image_anchor_check(self, field: Dict[str, Any], page_image_paths: Optional[Dict[int, str]]) -> Dict[str, Any]:
+    def _image_anchor_check(
+        self,
+        field: Dict[str, Any],
+        page_image_paths: Optional[Dict[int, str]],
+        runtime_cache: Optional[Dict[str, Dict[str, Any]]] = None,
+        timing: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         page_number = int(field["page_number"])
         image_path = (page_image_paths or {}).get(page_number)
         if not image_path:
@@ -2932,7 +2973,26 @@ class VerificationService:
                 "error": f"No query page image available for page {page_number}",
             }
         try:
-            image_match = self._score_image_anchor(field, image_path)
+            image_cache_key = _verification_roi_cache_key(
+                image_path,
+                field["roi"],
+                field.get("roi_padding") or 6,
+                f"image_model:{field.get('image_category') or ''}",
+            )
+            image_cache = runtime_cache.setdefault("image_model", {}) if runtime_cache is not None else None
+            if image_cache is not None and image_cache_key in image_cache:
+                image_match = dict(image_cache[image_cache_key])
+                if timing is not None:
+                    timing["image_model_cache_hits"] = int(timing.get("image_model_cache_hits") or 0) + 1
+            else:
+                if timing is not None:
+                    timing["image_model_cache_misses"] = int(timing.get("image_model_cache_misses") or 0) + 1
+                inference_started = time.perf_counter()
+                image_match = self._score_image_anchor(field, image_path)
+                if timing is not None:
+                    timing["image_model_inference"] = float(timing.get("image_model_inference") or 0.0) + (time.perf_counter() - inference_started)
+                if image_cache is not None:
+                    image_cache[image_cache_key] = dict(image_match)
         except Exception as error:
             category_values = _image_category_values(field.get("image_category"))
             category_value = category_values[0] if category_values else ""
@@ -3032,6 +3092,7 @@ class VerificationService:
         template_id: str,
         page_image_paths: Optional[Dict[int, str]] = None,
         verification_fields: Optional[List[Dict[str, Any]]] = None,
+        runtime_cache: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         verify_started = time.perf_counter()
         step_started = time.perf_counter()
@@ -3062,13 +3123,21 @@ class VerificationService:
         checked_fields: List[Dict[str, Any]] = []
         text_verification_elapsed = 0.0
         image_verification_elapsed = 0.0
+        runtime_timing: Dict[str, Any] = {
+            "text_ocr_inference": 0.0,
+            "image_model_inference": 0.0,
+            "text_ocr_cache_hits": 0,
+            "text_ocr_cache_misses": 0,
+            "image_model_cache_hits": 0,
+            "image_model_cache_misses": 0,
+        }
         step_started = time.perf_counter()
         text_fields = [field for field in fields if field.get("data_type") != "image"]
         image_fields = [field for field in fields if field.get("data_type") == "image"]
         split_anchors_elapsed = time.perf_counter() - step_started
         for field in text_fields:
             step_started = time.perf_counter()
-            checked = self._text_anchor_check(field, page_image_paths)
+            checked = self._text_anchor_check(field, page_image_paths, runtime_cache, runtime_timing)
             text_verification_elapsed += time.perf_counter() - step_started
             checked_fields.append(checked)
             if not checked["passed"]:
@@ -3087,13 +3156,14 @@ class VerificationService:
                         "split_anchors": split_anchors_elapsed,
                         "text_verification": text_verification_elapsed,
                         "image_verification": image_verification_elapsed,
+                        **runtime_timing,
                         "summary": summary_elapsed,
                     },
                 }
 
         for field in image_fields:
             step_started = time.perf_counter()
-            checked = self._image_anchor_check(field, page_image_paths)
+            checked = self._image_anchor_check(field, page_image_paths, runtime_cache, runtime_timing)
             image_verification_elapsed += time.perf_counter() - step_started
             checked_fields.append(checked)
             if not checked["passed"]:
@@ -3112,6 +3182,7 @@ class VerificationService:
                         "split_anchors": split_anchors_elapsed,
                         "text_verification": text_verification_elapsed,
                         "image_verification": image_verification_elapsed,
+                        **runtime_timing,
                         "summary": summary_elapsed,
                     },
                 }
@@ -3131,6 +3202,7 @@ class VerificationService:
                 "split_anchors": split_anchors_elapsed,
                 "text_verification": text_verification_elapsed,
                 "image_verification": image_verification_elapsed,
+                **runtime_timing,
                 "summary": summary_elapsed,
             },
         }

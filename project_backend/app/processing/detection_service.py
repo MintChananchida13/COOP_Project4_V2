@@ -62,6 +62,7 @@ class DetectionRequestCache:
         self.templates: Dict[str, Optional[Dict[str, Any]]] = {}
         self.field_counts: Dict[str, Optional[int]] = {}
         self.verification_fields: Dict[str, List[Dict[str, Any]]] = {}
+        self.verification_runtime: Dict[str, Dict[str, Any]] = {}
         self.stats: Dict[str, int] = {
             "template_cache_hits": 0,
             "template_db_fetches": 0,
@@ -72,6 +73,10 @@ class DetectionRequestCache:
             "published_template_cache_hits": 0,
             "published_field_count_cache_hits": 0,
             "published_verification_fields_cache_hits": 0,
+            "verification_text_ocr_cache_hits": 0,
+            "verification_text_ocr_cache_misses": 0,
+            "verification_image_model_cache_hits": 0,
+            "verification_image_model_cache_misses": 0,
         }
 
 
@@ -1228,6 +1233,8 @@ def _candidate_from_result(
         "coordinate_debug": None,
         "text_verification": 0.0,
         "image_verification": 0.0,
+        "text_ocr_inference": 0.0,
+        "image_model_inference": 0.0,
     }
     candidate_cache_debug: Dict[str, bool] = {
         "template_cache_hit": False,
@@ -1235,6 +1242,8 @@ def _candidate_from_result(
         "verification_fields_cache_hit": False,
         "verification_fields_preloaded": False,
         "verification_fields_reused_for_aligned": False,
+        "text_ocr_cache_hit": False,
+        "image_model_cache_hit": False,
     }
     candidate_db_debug: Dict[str, Dict[str, Optional[float]]] = {}
     step_started = time.perf_counter()
@@ -1303,22 +1312,41 @@ def _candidate_from_result(
         candidate_db_debug["verification_fields"] = _db_timing_ms(verification_fields_db_timing)
         candidate_timing["verification_fields_load"] = time.perf_counter() - step_started
     step_started = time.perf_counter()
-    normalized_verification = verify_template_for_strategy(
-        template_id,
-        verification_page_image_paths,
-        verification_fields,
-    ) if template_id else {
+    verification_runtime_cache = request_cache.verification_runtime if request_cache is not None else None
+    normalized_verification = (
+        verify_template_for_strategy(
+            template_id,
+            verification_page_image_paths,
+            verification_fields,
+            verification_runtime_cache,
+        )
+        if template_id and verification_strategy == VERIFICATION_STRATEGY_STRICT
+        else verify_template_for_strategy(
+            template_id,
+            verification_page_image_paths,
+            verification_fields,
+        ) if template_id else {
         "status": "failed",
         "passed": False,
         "score": 0.0,
         "required_passed": False,
         "checked_fields": [],
-    }
+        }
+    )
     candidate_timing["normalized_verification"] = time.perf_counter() - step_started
     normalized_internal_timing = normalized_verification.get("timing") if isinstance(normalized_verification, dict) else {}
     if isinstance(normalized_internal_timing, dict):
         candidate_timing["text_verification"] = float(candidate_timing.get("text_verification") or 0.0) + float(normalized_internal_timing.get("text_verification") or 0.0)
         candidate_timing["image_verification"] = float(candidate_timing.get("image_verification") or 0.0) + float(normalized_internal_timing.get("image_verification") or 0.0)
+        candidate_timing["text_ocr_inference"] = float(candidate_timing.get("text_ocr_inference") or 0.0) + float(normalized_internal_timing.get("text_ocr_inference") or 0.0)
+        candidate_timing["image_model_inference"] = float(candidate_timing.get("image_model_inference") or 0.0) + float(normalized_internal_timing.get("image_model_inference") or 0.0)
+        candidate_cache_debug["text_ocr_cache_hit"] = bool(int(normalized_internal_timing.get("text_ocr_cache_hits") or 0))
+        candidate_cache_debug["image_model_cache_hit"] = bool(int(normalized_internal_timing.get("image_model_cache_hits") or 0))
+        if request_cache is not None:
+            request_cache.stats["verification_text_ocr_cache_hits"] += int(normalized_internal_timing.get("text_ocr_cache_hits") or 0)
+            request_cache.stats["verification_text_ocr_cache_misses"] += int(normalized_internal_timing.get("text_ocr_cache_misses") or 0)
+            request_cache.stats["verification_image_model_cache_hits"] += int(normalized_internal_timing.get("image_model_cache_hits") or 0)
+            request_cache.stats["verification_image_model_cache_misses"] += int(normalized_internal_timing.get("image_model_cache_misses") or 0)
     normalized_internal_timing_ms = _timing_ms_map(normalized_internal_timing)
 
     normalized_score = float(normalized_verification.get("score") or 0.0)
@@ -1364,16 +1392,34 @@ def _candidate_from_result(
 
             step_started = time.perf_counter()
             candidate_cache_debug["verification_fields_reused_for_aligned"] = verification_fields is not None
-            aligned_verification = verify_template_for_strategy(
-                template_id,
-                aligned_verification_paths,
-                verification_fields,
+            aligned_verification = (
+                verify_template_for_strategy(
+                    template_id,
+                    aligned_verification_paths,
+                    verification_fields,
+                    verification_runtime_cache,
+                )
+                if verification_strategy == VERIFICATION_STRATEGY_STRICT
+                else verify_template_for_strategy(
+                    template_id,
+                    aligned_verification_paths,
+                    verification_fields,
+                )
             )
             candidate_timing["aligned_verification"] = time.perf_counter() - step_started
             aligned_internal_timing = aligned_verification.get("timing") if isinstance(aligned_verification, dict) else {}
             if isinstance(aligned_internal_timing, dict):
                 candidate_timing["text_verification"] = float(candidate_timing.get("text_verification") or 0.0) + float(aligned_internal_timing.get("text_verification") or 0.0)
                 candidate_timing["image_verification"] = float(candidate_timing.get("image_verification") or 0.0) + float(aligned_internal_timing.get("image_verification") or 0.0)
+                candidate_timing["text_ocr_inference"] = float(candidate_timing.get("text_ocr_inference") or 0.0) + float(aligned_internal_timing.get("text_ocr_inference") or 0.0)
+                candidate_timing["image_model_inference"] = float(candidate_timing.get("image_model_inference") or 0.0) + float(aligned_internal_timing.get("image_model_inference") or 0.0)
+                candidate_cache_debug["text_ocr_cache_hit"] = candidate_cache_debug["text_ocr_cache_hit"] or bool(int(aligned_internal_timing.get("text_ocr_cache_hits") or 0))
+                candidate_cache_debug["image_model_cache_hit"] = candidate_cache_debug["image_model_cache_hit"] or bool(int(aligned_internal_timing.get("image_model_cache_hits") or 0))
+                if request_cache is not None:
+                    request_cache.stats["verification_text_ocr_cache_hits"] += int(aligned_internal_timing.get("text_ocr_cache_hits") or 0)
+                    request_cache.stats["verification_text_ocr_cache_misses"] += int(aligned_internal_timing.get("text_ocr_cache_misses") or 0)
+                    request_cache.stats["verification_image_model_cache_hits"] += int(aligned_internal_timing.get("image_model_cache_hits") or 0)
+                    request_cache.stats["verification_image_model_cache_misses"] += int(aligned_internal_timing.get("image_model_cache_misses") or 0)
             aligned_internal_timing_ms = _timing_ms_map(aligned_internal_timing)
             aligned_score = float(aligned_verification.get("score") or 0.0)
 
@@ -1642,6 +1688,8 @@ def _candidate_from_result(
             "aligned_verification_ms": _ms(candidate_timing.get("aligned_verification")),
             "text_verification_ms": _ms(candidate_timing.get("text_verification")),
             "image_verification_ms": _ms(candidate_timing.get("image_verification")),
+            "text_ocr_inference_ms": _ms(candidate_timing.get("text_ocr_inference")),
+            "image_model_inference_ms": _ms(candidate_timing.get("image_model_inference")),
             "normalized_verification_breakdown": normalized_internal_timing_ms,
             "aligned_verification_breakdown": aligned_internal_timing_ms,
             "candidate_overhead_breakdown": {
