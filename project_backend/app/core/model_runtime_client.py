@@ -267,6 +267,9 @@ def _post_predict(
             result_value = parsed.get("data")
         if isinstance(result_value, dict):
             timing["result_field_sizes"] = _field_size_summary(result_value)
+            raw_value = result_value.get("raw")
+            if isinstance(raw_value, dict):
+                timing["raw_field_sizes"] = _field_size_summary(raw_value)
         timing["model"] = parsed.get("model")
         timing["total_runtime_client_ms"] = round((time.perf_counter() - started) * 1000.0, 2)
 
