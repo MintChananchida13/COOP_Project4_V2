@@ -1422,7 +1422,6 @@ export default function GroundTruthEditorZone({
       {/* Main editor layout */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 xl:h-[720px] items-stretch">
         
-
         <div className="xl:col-span-5 bg-[#edf2f7] border border-slate-200 rounded-xl overflow-hidden flex flex-col min-h-[620px] xl:min-h-0 xl:h-full relative shadow-md">
           {/* Header controls for left canvas */}
           <div className="flex items-center justify-between px-4 py-2.5 bg-white border-b border-slate-200">
