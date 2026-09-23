@@ -2027,6 +2027,7 @@ def _detection_timing_debug(
     total_started: float,
     request_cache: Optional[DetectionRequestCache] = None,
 ) -> Dict[str, Any]:
+    debug_started = time.perf_counter()
     candidate_timings: List[Dict[str, Any]] = []
     for page in pages:
         for candidate in page.get("candidates", []):
@@ -2060,6 +2061,25 @@ def _detection_timing_debug(
         "auto_roi",
     ]
     top_level_measured = sum(float(timing.get(key) or 0.0) for key in top_level_keys)
+    detect_pages_inner_keys = [
+        "layout_analysis",
+        "signature_build",
+        "template_matching",
+        "verification",
+    ]
+    detect_pages_inner_measured = sum(float(timing.get(key) or 0.0) for key in detect_pages_inner_keys)
+    boundary_keys = [
+        "source_type_detection",
+        "post_prepare_setup",
+        "verification_strategy_load",
+        "include_template_lookup",
+        "detect_pages_total",
+        "prepublish_logging",
+        "final_selection",
+        "best_candidate_patch",
+    ]
+    boundary_measured = sum(float(timing.get(key) or 0.0) for key in boundary_keys)
+    detect_pages_overhead = max(0.0, float(timing.get("detect_pages_total") or 0.0) - detect_pages_inner_measured)
 
     return {
         "total_detection_ms": _ms(total_elapsed),
@@ -2078,8 +2098,26 @@ def _detection_timing_debug(
         "verification_ms": _ms(timing.get("verification")),
         "candidate_aggregation_ms": _ms(timing.get("candidate_aggregation")),
         "auto_roi_ms": _ms(timing.get("auto_roi")),
+        "boundary_breakdown": {
+            "source_type_detection_ms": _ms(timing.get("source_type_detection")),
+            "post_prepare_setup_ms": _ms(timing.get("post_prepare_setup")),
+            "verification_strategy_load_ms": _ms(timing.get("verification_strategy_load")),
+            "include_template_lookup_ms": _ms(timing.get("include_template_lookup")),
+            "detect_pages_total_ms": _ms(timing.get("detect_pages_total")),
+            "first_page_detection_total_ms": _ms(timing.get("first_page_detection_total")),
+            "remaining_pages_decision_ms": _ms(timing.get("remaining_pages_decision")),
+            "remaining_pages_detection_total_ms": _ms(timing.get("remaining_pages_detection_total")),
+            "detect_pages_inner_measured_ms": _ms(detect_pages_inner_measured),
+            "detect_pages_overhead_ms": _ms(detect_pages_overhead),
+            "prepublish_logging_ms": _ms(timing.get("prepublish_logging")),
+            "final_selection_ms": _ms(timing.get("final_selection")),
+            "best_candidate_patch_ms": _ms(timing.get("best_candidate_patch")),
+        },
+        "boundary_measured_ms": _ms(boundary_measured),
         "top_level_measured_ms": _ms(top_level_measured),
         "unaccounted_ms": _ms(max(0.0, total_elapsed - top_level_measured)),
+        "unaccounted_after_boundaries_ms": _ms(max(0.0, total_elapsed - top_level_measured - boundary_measured + detect_pages_inner_measured)),
+        "debug_timing_build_ms": _ms(time.perf_counter() - debug_started),
         "request_cache": dict(request_cache.stats) if request_cache is not None else {},
         "candidates": candidate_timings,
     }
@@ -2101,7 +2139,9 @@ def detect_template_dev(
     request_cache = DetectionRequestCache()
     total_started = prepublish_total_started or time.perf_counter()
     try:
+        step_started = time.perf_counter()
         source_type = "pdf" if file_bytes.lstrip().startswith(b"%PDF") else "image"
+        timing["source_type_detection"] = time.perf_counter() - step_started
         step_started = time.perf_counter()
         page_paths = _prepare_query_pages(query_id, file_bytes, timing=timing)
         skip_normalization = source_type == "pdf"
@@ -2109,6 +2149,7 @@ def detect_template_dev(
         timing["prepare_pages"] = time.perf_counter() - step_started
         if prepublish_timing:
             print(f"[PREPUBLISH] prepare pages done: {timing['prepare_pages']:.2f}s")
+        step_started = time.perf_counter()
         page_image_paths = {page["page_index"]: page["normalized_path"] for page in normalized_pages}
         query_page_count = len(normalized_pages)
         retrieval_limit = (
@@ -2121,18 +2162,25 @@ def detect_template_dev(
             if verification_candidate_limit_override is not None
             else DETECTION_VERIFICATION_CANDIDATE_LIMIT
         )
+        timing["post_prepare_setup"] = time.perf_counter() - step_started
+        step_started = time.perf_counter()
         verification_strategy = normalize_verification_strategy(
             verification_strategy_override
             if verification_strategy_override is not None
             else global_settings_service.get_verification_strategy().get("verification_strategy")
         )
+        timing["verification_strategy_load"] = time.perf_counter() - step_started
         pages: List[Dict[str, Any]] = []
         confirmed_main_page_candidate: Optional[Dict[str, Any]] = None
+        step_started = time.perf_counter()
         included_template, _, _ = _fetch_template_cached(include_template_id, request_cache)
         included_template_detection_mode = str((included_template or {}).get("detection_mode") or "all_pages")
         included_template_main_page_only = bool(include_template_id and included_template_detection_mode == "main_page")
+        timing["include_template_lookup"] = time.perf_counter() - step_started
+        detect_pages_started = time.perf_counter()
         if normalized_pages:
             first_page = normalized_pages[0]
+            step_started = time.perf_counter()
             first_detected_page = _detect_page(
                 first_page,
                 page_image_paths,
@@ -2145,7 +2193,9 @@ def detect_template_dev(
                 query_page_count=query_page_count,
                 request_cache=request_cache,
             )
+            timing["first_page_detection_total"] = time.perf_counter() - step_started
             pages.append(first_detected_page)
+            step_started = time.perf_counter()
             first_best_candidate = first_detected_page.get("best_candidate")
             if _is_confirmed_main_page_candidate(first_best_candidate):
                 confirmed_main_page_candidate = first_best_candidate
@@ -2160,8 +2210,10 @@ def detect_template_dev(
                     and first_template_page_count == query_page_count
                     and query_page_count > 1
                 )
+            timing["remaining_pages_decision"] = time.perf_counter() - step_started
 
             if should_detect_remaining_pages:
+                step_started = time.perf_counter()
                 for page in normalized_pages[1:]:
                     detected_page = _detect_page(
                         page,
@@ -2176,10 +2228,14 @@ def detect_template_dev(
                         request_cache=request_cache,
                     )
                     pages.append(detected_page)
+                timing["remaining_pages_detection_total"] = time.perf_counter() - step_started
+        timing["detect_pages_total"] = time.perf_counter() - detect_pages_started
+        step_started = time.perf_counter()
         if prepublish_timing:
             print(f"[PREPUBLISH] layout analysis done: {timing.get('layout_analysis', 0.0):.2f}s")
             print(f"[PREPUBLISH] template matching done: {timing.get('template_matching', 0.0):.2f}s")
             print(f"[PREPUBLISH] verification done: {timing.get('verification', 0.0):.2f}s")
+        timing["prepublish_logging"] = time.perf_counter() - step_started
         step_started = time.perf_counter()
         candidates = _aggregate_candidates(pages)
         timing["candidate_aggregation"] = time.perf_counter() - step_started
@@ -2190,6 +2246,7 @@ def detect_template_dev(
         timing["auto_roi"] = time.perf_counter() - step_started
         if prepublish_timing:
             print(f"[PREPUBLISH] auto roi done: {timing['auto_roi']:.2f}s")
+        step_started = time.perf_counter()
         passing_candidates = sorted(
             [candidate for candidate in candidates if candidate["final_passed"]],
             key=lambda item: (item["final_score"], item["retrieval_score"]),
@@ -2197,6 +2254,8 @@ def detect_template_dev(
         )
         best_candidate = passing_candidates[0] if passing_candidates else None
         matched = best_candidate is not None
+        timing["final_selection"] = time.perf_counter() - step_started
+        step_started = time.perf_counter()
         if best_candidate:
             for page in pages:
                 page_candidate = next(
@@ -2213,6 +2272,7 @@ def detect_template_dev(
                     page_candidate["main_page_auto_roi_total_regions"] = best_candidate.get("main_page_auto_roi_total_regions", 0)
                     if (page.get("best_candidate") or {}).get("template_id") == best_candidate.get("template_id"):
                         page["best_candidate"] = page_candidate
+        timing["best_candidate_patch"] = time.perf_counter() - step_started
 
         return {
             "query_id": query_id,
