@@ -20,6 +20,7 @@ from app.model_runtime.layout_analysis_service import analyze_layout, analyze_la
 from app.processing.layout_alignment_service import LayoutAlignmentService
 from app.processing.layout_signature_service import build_layout_signature
 from app.processing.layout_template_matcher import search_layout_candidates
+from app.processing import published_template_cache
 from app.processing.ocr_adapter import OcrUnavailableError, ocr_rois
 from app.core.pipeline_core import get_pipeline_core_config
 from app.business.services import (
@@ -68,6 +69,9 @@ class DetectionRequestCache:
             "field_count_db_fetches": 0,
             "verification_fields_cache_hits": 0,
             "verification_fields_db_fetches": 0,
+            "published_template_cache_hits": 0,
+            "published_field_count_cache_hits": 0,
+            "published_verification_fields_cache_hits": 0,
         }
 
 
@@ -235,6 +239,12 @@ def _fetch_template_cached(template_id: Optional[str], request_cache: Optional[D
     if request_cache is not None and template_id in request_cache.templates:
         request_cache.stats["template_cache_hits"] += 1
         return request_cache.templates[template_id], True, {}
+    template = published_template_cache.get_template(template_id)
+    if template is not None:
+        if request_cache is not None:
+            request_cache.templates[template_id] = template
+            request_cache.stats["published_template_cache_hits"] += 1
+        return template, True, {}
     template, db_timing = _fetch_template_with_db_timing(template_id)
     if request_cache is not None:
         request_cache.templates[template_id] = template
@@ -246,6 +256,12 @@ def _fetch_field_count_cached(template_id: str, request_cache: Optional[Detectio
     if request_cache is not None and template_id in request_cache.field_counts:
         request_cache.stats["field_count_cache_hits"] += 1
         return request_cache.field_counts[template_id], True, {}
+    cached_count = published_template_cache.get_field_count(template_id)
+    if cached_count is not None:
+        if request_cache is not None:
+            request_cache.field_counts[template_id] = cached_count
+            request_cache.stats["published_field_count_cache_hits"] += 1
+        return cached_count, True, {}
     total_started = time.perf_counter()
     connect_started = time.perf_counter()
     conn = _connect()
@@ -284,6 +300,12 @@ def _fetch_verification_fields_cached(template_id: str, request_cache: Optional[
     if request_cache is not None and template_id in request_cache.verification_fields:
         request_cache.stats["verification_fields_cache_hits"] += 1
         return request_cache.verification_fields[template_id], True, {}
+    cached_fields = published_template_cache.get_verification_fields(template_id)
+    if cached_fields is not None:
+        if request_cache is not None:
+            request_cache.verification_fields[template_id] = cached_fields
+            request_cache.stats["published_verification_fields_cache_hits"] += 1
+        return cached_fields, True, {}
     fields, db_timing = verification_service.load_verification_fields_with_db_timing(template_id)
     if request_cache is not None:
         request_cache.verification_fields[template_id] = fields

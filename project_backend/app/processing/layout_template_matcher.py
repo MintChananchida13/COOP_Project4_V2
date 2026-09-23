@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.core.db import connect as connect_db
+from app.processing import published_template_cache
 from app.processing.layout_signature_service import compare_layout_signatures, signature_from_json
 
 logger = logging.getLogger(__name__)
@@ -66,153 +67,167 @@ def search_layout_candidates(
         "total": 0.0,
     }
 
-    db_started = time.perf_counter()
-    connect_started = time.perf_counter()
-    conn = _connect()
-    breakdown["connect"] = time.perf_counter() - connect_started
-    connect_timing = getattr(conn, "connect_timing", {}) if conn is not None else {}
-    if isinstance(connect_timing, dict):
-        breakdown["pool_getconn"] = connect_timing.get("pool_getconn")
-        breakdown["ensure_schema"] = connect_timing.get("ensure_schema")
-        breakdown["postgres_ready_before"] = connect_timing.get("postgres_ready_before")
-        breakdown["postgres_ready_after"] = connect_timing.get("postgres_ready_after")
-        breakdown["schema_ensure_calls"] = connect_timing.get("schema_ensure_calls")
-        breakdown["pool_before"] = connect_timing.get("pool_before")
-        breakdown["pool_after"] = connect_timing.get("pool_after")
-    with conn:
-        if hasattr(conn, "execute_timed"):
-            query_correlation_id = f"layout_match:{uuid4().hex[:12]}:page:{page_number}"
-            breakdown["query_correlation_id"] = query_correlation_id
-            execute_method = (
-                conn.execute_timed_diagnostics
-                if hasattr(conn, "execute_timed_diagnostics")
-                else conn.execute_timed
-            )
-            cursor, execute_timing = execute_method(
-                """
-                SELECT
-                    tv.id AS template_id,
-                    tg.name AS template_name,
-                    tv.status AS template_status,
-                    (
-                        SELECT COUNT(*)
-                        FROM template_pages count_tp
-                        WHERE count_tp.template_version_id = tv.id
-                    ) AS page_count,
-                    tv.final_confidence_threshold AS final_confidence_threshold,
-                    tv.layout_weight AS layout_weight,
-                    tv.text_anchor_weight AS text_anchor_weight,
-                    tv.image_anchor_weight AS image_anchor_weight,
-                    tv.detection_mode AS detection_mode,
-                    tv.main_page_number AS main_page_number,
-                    tp.id AS template_page_id,
-                    NULL AS layout_reference_id,
-                    tp.page_number AS page_number,
-                    COALESCE(tp.normalized_image_url, tp.sample_image_url) AS layout_reference_image_url,
-                    'template_page' AS layout_reference_source,
-                    CASE
-                        WHEN COALESCE(tv.detection_mode, 'all_pages') = 'main_page'
-                            AND tp.page_number = COALESCE(tv.main_page_number, 1)
-                        THEN 1
-
-                        WHEN COALESCE(tv.detection_mode, 'all_pages') != 'main_page'
-                            AND tp.page_number = 1
-                        THEN 1
-
-                        ELSE 0
-                    END AS layout_reference_is_canonical,
-                    tp.layout_signature_json AS layout_signature_json
-                FROM template_pages tp
-                JOIN template_versions tv ON tv.id = tp.template_version_id
-                JOIN template_groups tg ON tg.id = tv.template_group_id
-                WHERE tp.layout_signature_json IS NOT NULL
-                AND (
-                        (
-                            COALESCE(tv.detection_mode, 'all_pages') = 'main_page'
-                            AND tp.page_number = COALESCE(tv.main_page_number, 1)
-                        )
-                        OR
-                        (
-                            COALESCE(tv.detection_mode, 'all_pages') != 'main_page'
-                            AND tp.page_number = ?
-                        )
+    cache_started = time.perf_counter()
+    rows = published_template_cache.get_layout_candidate_rows(
+        page_number,
+        include_template_id=include_template_id,
+        active_only=active_only,
+    )
+    breakdown["published_template_cache"] = {
+        "hit": rows is not None,
+        "lookup": time.perf_counter() - cache_started,
+    }
+    if rows is None:
+        db_started = time.perf_counter()
+        connect_started = time.perf_counter()
+        conn = _connect()
+        breakdown["connect"] = time.perf_counter() - connect_started
+        connect_timing = getattr(conn, "connect_timing", {}) if conn is not None else {}
+        if isinstance(connect_timing, dict):
+            breakdown["pool_getconn"] = connect_timing.get("pool_getconn")
+            breakdown["ensure_schema"] = connect_timing.get("ensure_schema")
+            breakdown["postgres_ready_before"] = connect_timing.get("postgres_ready_before")
+            breakdown["postgres_ready_after"] = connect_timing.get("postgres_ready_after")
+            breakdown["schema_ensure_calls"] = connect_timing.get("schema_ensure_calls")
+            breakdown["pool_before"] = connect_timing.get("pool_before")
+            breakdown["pool_after"] = connect_timing.get("pool_after")
+        with conn:
+            if hasattr(conn, "execute_timed"):
+                query_correlation_id = f"layout_match:{uuid4().hex[:12]}:page:{page_number}"
+                breakdown["query_correlation_id"] = query_correlation_id
+                execute_method = (
+                    conn.execute_timed_diagnostics
+                    if hasattr(conn, "execute_timed_diagnostics")
+                    else conn.execute_timed
                 )
-                ORDER BY tv.updated_at DESC, tp.page_number ASC
-                """,
-                (page_number,),
-                diagnostics=True,
-                query_comment=query_correlation_id,
-            )
-            breakdown["cursor_create"] = float(execute_timing.get("cursor_create") or 0.0)
-            breakdown["connection_before"] = execute_timing.get("connection_before")
-            breakdown["connection_before_execute"] = execute_timing.get("connection_before_execute")
-            breakdown["connection_after_execute"] = execute_timing.get("connection_after_execute")
-            connection_before = breakdown["connection_before"]
-            if isinstance(connection_before, dict):
-                breakdown["backend_pid"] = connection_before.get("backend_pid")
-            breakdown["execute"] = float(execute_timing.get("execute") or 0.0)
-        else:
-            execute_started = time.perf_counter()
-            cursor = conn.execute(
-                """
-                SELECT
-                    tv.id AS template_id,
-                    tg.name AS template_name,
-                    tv.status AS template_status,
-                    (
-                        SELECT COUNT(*)
-                        FROM template_pages count_tp
-                        WHERE count_tp.template_version_id = tv.id
-                    ) AS page_count,
-                    tv.final_confidence_threshold AS final_confidence_threshold,
-                    tv.layout_weight AS layout_weight,
-                    tv.text_anchor_weight AS text_anchor_weight,
-                    tv.image_anchor_weight AS image_anchor_weight,
-                    tv.detection_mode AS detection_mode,
-                    tv.main_page_number AS main_page_number,
-                    tp.id AS template_page_id,
-                    NULL AS layout_reference_id,
-                    tp.page_number AS page_number,
-                    COALESCE(tp.normalized_image_url, tp.sample_image_url) AS layout_reference_image_url,
-                    'template_page' AS layout_reference_source,
-                    CASE
-                        WHEN COALESCE(tv.detection_mode, 'all_pages') = 'main_page'
-                            AND tp.page_number = COALESCE(tv.main_page_number, 1)
-                        THEN 1
-
-                        WHEN COALESCE(tv.detection_mode, 'all_pages') != 'main_page'
-                            AND tp.page_number = 1
-                        THEN 1
-
-                        ELSE 0
-                    END AS layout_reference_is_canonical,
-                    tp.layout_signature_json AS layout_signature_json
-                FROM template_pages tp
-                JOIN template_versions tv ON tv.id = tp.template_version_id
-                JOIN template_groups tg ON tg.id = tv.template_group_id
-                WHERE tp.layout_signature_json IS NOT NULL
-                AND (
+                cursor, execute_timing = execute_method(
+                    """
+                    SELECT
+                        tv.id AS template_id,
+                        tg.name AS template_name,
+                        tv.status AS template_status,
                         (
-                            COALESCE(tv.detection_mode, 'all_pages') = 'main_page'
-                            AND tp.page_number = COALESCE(tv.main_page_number, 1)
-                        )
-                        OR
-                        (
-                            COALESCE(tv.detection_mode, 'all_pages') != 'main_page'
-                            AND tp.page_number = ?
-                        )
+                            SELECT COUNT(*)
+                            FROM template_pages count_tp
+                            WHERE count_tp.template_version_id = tv.id
+                        ) AS page_count,
+                        tv.final_confidence_threshold AS final_confidence_threshold,
+                        tv.layout_weight AS layout_weight,
+                        tv.text_anchor_weight AS text_anchor_weight,
+                        tv.image_anchor_weight AS image_anchor_weight,
+                        tv.detection_mode AS detection_mode,
+                        tv.main_page_number AS main_page_number,
+                        tp.id AS template_page_id,
+                        NULL AS layout_reference_id,
+                        tp.page_number AS page_number,
+                        COALESCE(tp.normalized_image_url, tp.sample_image_url) AS layout_reference_image_url,
+                        'template_page' AS layout_reference_source,
+                        CASE
+                            WHEN COALESCE(tv.detection_mode, 'all_pages') = 'main_page'
+                                AND tp.page_number = COALESCE(tv.main_page_number, 1)
+                            THEN 1
+
+                            WHEN COALESCE(tv.detection_mode, 'all_pages') != 'main_page'
+                                AND tp.page_number = 1
+                            THEN 1
+
+                            ELSE 0
+                        END AS layout_reference_is_canonical,
+                        tp.layout_signature_json AS layout_signature_json
+                    FROM template_pages tp
+                    JOIN template_versions tv ON tv.id = tp.template_version_id
+                    JOIN template_groups tg ON tg.id = tv.template_group_id
+                    WHERE tp.layout_signature_json IS NOT NULL
+                    AND (
+                            (
+                                COALESCE(tv.detection_mode, 'all_pages') = 'main_page'
+                                AND tp.page_number = COALESCE(tv.main_page_number, 1)
+                            )
+                            OR
+                            (
+                                COALESCE(tv.detection_mode, 'all_pages') != 'main_page'
+                                AND tp.page_number = ?
+                            )
+                    )
+                    ORDER BY tv.updated_at DESC, tp.page_number ASC
+                    """,
+                    (page_number,),
+                    diagnostics=True,
+                    query_comment=query_correlation_id,
                 )
-                ORDER BY tv.updated_at DESC, tp.page_number ASC
-                """,
-                (page_number,),
-            )
-            breakdown["execute"] = time.perf_counter() - execute_started
-        fetch_started = time.perf_counter()
-        rows = cursor.fetchall()
-        breakdown["fetch"] = time.perf_counter() - fetch_started
+                breakdown["cursor_create"] = float(execute_timing.get("cursor_create") or 0.0)
+                breakdown["connection_before"] = execute_timing.get("connection_before")
+                breakdown["connection_before_execute"] = execute_timing.get("connection_before_execute")
+                breakdown["connection_after_execute"] = execute_timing.get("connection_after_execute")
+                connection_before = breakdown["connection_before"]
+                if isinstance(connection_before, dict):
+                    breakdown["backend_pid"] = connection_before.get("backend_pid")
+                breakdown["execute"] = float(execute_timing.get("execute") or 0.0)
+            else:
+                execute_started = time.perf_counter()
+                cursor = conn.execute(
+                    """
+                    SELECT
+                        tv.id AS template_id,
+                        tg.name AS template_name,
+                        tv.status AS template_status,
+                        (
+                            SELECT COUNT(*)
+                            FROM template_pages count_tp
+                            WHERE count_tp.template_version_id = tv.id
+                        ) AS page_count,
+                        tv.final_confidence_threshold AS final_confidence_threshold,
+                        tv.layout_weight AS layout_weight,
+                        tv.text_anchor_weight AS text_anchor_weight,
+                        tv.image_anchor_weight AS image_anchor_weight,
+                        tv.detection_mode AS detection_mode,
+                        tv.main_page_number AS main_page_number,
+                        tp.id AS template_page_id,
+                        NULL AS layout_reference_id,
+                        tp.page_number AS page_number,
+                        COALESCE(tp.normalized_image_url, tp.sample_image_url) AS layout_reference_image_url,
+                        'template_page' AS layout_reference_source,
+                        CASE
+                            WHEN COALESCE(tv.detection_mode, 'all_pages') = 'main_page'
+                                AND tp.page_number = COALESCE(tv.main_page_number, 1)
+                            THEN 1
+
+                            WHEN COALESCE(tv.detection_mode, 'all_pages') != 'main_page'
+                                AND tp.page_number = 1
+                            THEN 1
+
+                            ELSE 0
+                        END AS layout_reference_is_canonical,
+                        tp.layout_signature_json AS layout_signature_json
+                    FROM template_pages tp
+                    JOIN template_versions tv ON tv.id = tp.template_version_id
+                    JOIN template_groups tg ON tg.id = tv.template_group_id
+                    WHERE tp.layout_signature_json IS NOT NULL
+                    AND (
+                            (
+                                COALESCE(tv.detection_mode, 'all_pages') = 'main_page'
+                                AND tp.page_number = COALESCE(tv.main_page_number, 1)
+                            )
+                            OR
+                            (
+                                COALESCE(tv.detection_mode, 'all_pages') != 'main_page'
+                                AND tp.page_number = ?
+                            )
+                    )
+                    ORDER BY tv.updated_at DESC, tp.page_number ASC
+                    """,
+                    (page_number,),
+                )
+                breakdown["execute"] = time.perf_counter() - execute_started
+            fetch_started = time.perf_counter()
+            rows = cursor.fetchall()
+            breakdown["fetch"] = time.perf_counter() - fetch_started
+            breakdown["candidate_rows"] = len(rows)
+            breakdown["db_total"] = time.perf_counter() - db_started
+            logger.debug("[LAYOUT] include_template_id=%s rows_count=%s", include_template_id, len(rows))
+    else:
         breakdown["candidate_rows"] = len(rows)
-        breakdown["db_total"] = time.perf_counter() - db_started
-        logger.debug("[LAYOUT] include_template_id=%s rows_count=%s", include_template_id, len(rows))
+        logger.debug("[LAYOUT] published cache rows_count=%s", len(rows))
 
     best_by_template: Dict[str, Dict[str, Any]] = {}
     compared_count = 0

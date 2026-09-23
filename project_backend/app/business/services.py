@@ -38,6 +38,7 @@ from app.model_runtime.layout_analysis_service import (
 )
 from app.processing.layout_signature_service import build_layout_signature, compare_layout_signatures, signature_from_json, signature_to_json
 from app.processing.layout_template_matcher import search_layout_candidates
+from app.processing import published_template_cache
 from app.processing.ocr_adapter import (
     OcrUnavailableError,
     crop_table_processing_roi_from_image,
@@ -199,6 +200,22 @@ def _connect() -> Any:
     conn.execute("PRAGMA foreign_keys = ON")
     ensure_image_verification_categories_table(conn)
     return conn
+
+
+def _refresh_published_template_cache(template_id: str) -> None:
+    try:
+        published_template_cache.refresh(template_id)
+    except Exception:
+        logger.exception("Published template cache refresh failed for template_id=%s; removing cached entry", template_id)
+        published_template_cache.remove(template_id)
+        published_template_cache.mark_degraded()
+
+
+def _remove_published_template_cache(template_id: str) -> None:
+    try:
+        published_template_cache.remove(template_id)
+    except Exception:
+        logger.exception("Published template cache remove failed for template_id=%s", template_id)
 
 
 def normalize_verification_strategy(value: Optional[str]) -> str:
@@ -1812,6 +1829,7 @@ class EmbeddingService:
                 (template_id,),
             )
             conn.commit()
+            _refresh_published_template_cache(template_id)
             return self._job_with_template(conn, job_id)
 
     def run_job_dev(self, job_id: str) -> Dict[str, Any]:
@@ -1900,6 +1918,7 @@ class EmbeddingService:
                 (template_id,),
             )
             conn.commit()
+            _refresh_published_template_cache(template_id)
             return self._job_with_template(conn, job_id)
 
     def fail_job_dev(self, job_id: str) -> Dict[str, Any]:
@@ -4724,6 +4743,7 @@ class AdminTemplateService:
             if group_updates:
                 conn.execute(f"UPDATE template_groups SET {', '.join(f'{c} = ?' for c, _ in group_updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT template_group_id FROM template_versions WHERE id = ?)", [*(v for _, v in group_updates), template_id])
             conn.commit()
+        _refresh_published_template_cache(template_id)
         return self.get_template(template_id)
 
     def delete_template(self, template_id: str) -> Dict[str, Any]:
@@ -4735,6 +4755,7 @@ class AdminTemplateService:
             conn.execute("DELETE FROM publish_jobs WHERE template_version_id = ?", (template_id,))
             conn.execute("DELETE FROM template_versions WHERE id = ?", (template_id,))
             conn.commit()
+        _remove_published_template_cache(template_id)
         return {"id": template_id, "deleted": True, "deleted_records": counts}
 
     def list_template_pages(self, template_id: str) -> Dict[str, Any]:
@@ -4748,6 +4769,7 @@ class AdminTemplateService:
                 raise HTTPException(status_code=404, detail="Template not found.")
             conn.execute("INSERT INTO template_pages (id, template_version_id, page_number, page_name, sample_image_url, normalized_image_url, layout_signature_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (_stub_id("tpl_page"), template_id, payload.page_number, payload.page_name, payload.sample_image_url, payload.normalized_image_url, payload.layout_signature_json))
             conn.commit()
+        _refresh_published_template_cache(template_id)
         return self.get_template(template_id)
 
     def update_template_page(self, template_id: str, page_id: str, payload: TemplatePageUpdate) -> Dict[str, Any]:
@@ -4758,12 +4780,14 @@ class AdminTemplateService:
             with _connect() as conn:
                 conn.execute(f"UPDATE template_pages SET {', '.join(f'{c} = ?' for c, _ in updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND template_version_id = ?", [*(v for _, v in updates), page_id, template_id])
                 conn.commit()
+            _refresh_published_template_cache(template_id)
         return self.get_template(template_id)
 
     def delete_template_page(self, template_id: str, page_id: str) -> Dict[str, Any]:
         with _connect() as conn:
             conn.execute("DELETE FROM template_pages WHERE id = ? AND template_version_id = ?", (page_id, template_id))
             conn.commit()
+        _refresh_published_template_cache(template_id)
         return self.get_template(template_id)
 
     def create_template_field(self, template_id: str, payload: TemplateFieldCreate) -> Dict[str, Any]:
@@ -4809,6 +4833,7 @@ class AdminTemplateService:
             else:
                 conn.execute("INSERT INTO extraction_fields (id, template_page_id, field_name, display_label, data_type, extraction_method, roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_points_json, roi_mode, expected_content, required, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (field_id, payload.template_page_id, payload.field_name, payload.display_label, _normalize_data_type(payload.data_type), _normalize_extraction_method(payload.extraction_method), payload.roi.x_ratio, payload.roi.y_ratio, payload.roi.width_ratio, payload.roi.height_ratio, _roi_points_json_from_payload(payload.roi), _normalize_roi_mode(payload.roi_mode), _normalize_expected_content(payload.expected_content), payload.sort_order))
             conn.commit()
+        _refresh_published_template_cache(template_id)
         return self.get_template(template_id)
 
     def _get_template_field_for_update(self, conn: Any, template_id: str, field_id: str) -> Optional[Dict[str, Any]]:
@@ -4949,6 +4974,7 @@ class AdminTemplateService:
                         ),
                     )
                 conn.commit()
+            _refresh_published_template_cache(template_id)
             return self.get_template(template_id)
         self.delete_template_field(template_id, field_id)
         return self.create_template_field(template_id, merged_payload)
@@ -4958,6 +4984,7 @@ class AdminTemplateService:
             conn.execute("DELETE FROM extraction_fields WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)", (field_id, template_id))
             conn.execute("DELETE FROM verification_anchors WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)", (field_id, template_id))
             conn.commit()
+        _refresh_published_template_cache(template_id)
         return self.get_template(template_id)
 
     def create_ignore_region(self, template_id: str, payload: IgnoreRegionCreate) -> Dict[str, Any]:
@@ -4970,6 +4997,7 @@ class AdminTemplateService:
                 raise HTTPException(status_code=404, detail="Template page not found.")
             conn.execute("INSERT INTO ignore_regions (id, template_page_id, region_name, roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP)", (_stub_id("ignore_region"), payload.template_page_id, payload.field_name, payload.roi.x_ratio, payload.roi.y_ratio, payload.roi.width_ratio, payload.roi.height_ratio))
             conn.commit()
+        _refresh_published_template_cache(template_id)
         return self.get_template(template_id)
 
     def update_ignore_region(self, template_id: str, region_id: str, payload: IgnoreRegionUpdate) -> Dict[str, Any]:
@@ -5000,6 +5028,7 @@ class AdminTemplateService:
         with _connect() as conn:
             conn.execute("DELETE FROM ignore_regions WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)", (region_id, template_id))
             conn.commit()
+        _refresh_published_template_cache(template_id)
         return self.get_template(template_id)
 
     def start_review(self, request_id: str) -> Dict[str, Any]:

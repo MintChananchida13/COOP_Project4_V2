@@ -41,6 +41,7 @@ from app.core.db import close_postgres_pool, connect as db_connect, ensure_datab
 from app.core.json_utils import jsonb_dump, jsonb_load
 from app.core.model_runtime_client import configured_runtimes
 from app.business.image_verification_category_service import ensure_image_verification_categories_table
+from app.processing import published_template_cache
 
 # Force UTF-8 console output on Windows.
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
@@ -151,6 +152,10 @@ async def startup_warmup() -> None:
     ensure_database_ready()
     with db_connect() as conn:
         ensure_image_verification_categories_table(conn)
+    try:
+        published_template_cache.load_all()
+    except Exception as error:
+        logger.exception("Published template cache startup load failed; detect will fall back to DB: %s", error)
     print(f"Using external model runtimes: {configured_runtimes()}")
     print("Main backend model warm-up skipped; backend owns process logic and calls model runtimes via HTTP.")
 
