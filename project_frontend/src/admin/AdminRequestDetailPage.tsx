@@ -513,7 +513,7 @@ export default function AdminRequestDetailPage({
     const nextVersionSuffix = versionNameSuffix.trim();
     const nextVersionTemplateName =
       creationType === "new_version"
-        ? `${selectedBaseTemplateName.trim() || nextTemplateName} - ${nextVersionSuffix}`
+        ? nextVersionSuffix
         : nextTemplateName;
     if (!nextTemplateName) {
       setActionError("กรุณาระบุชื่อ Template ก่อนสร้าง Template");

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
@@ -84,6 +85,9 @@ DEFAULT_IMAGE_VERIFICATION_CATEGORIES: List[Dict[str, Any]] = [
     },
 ]
 
+_IMAGE_VERIFICATION_CATEGORIES_READY = False
+_IMAGE_VERIFICATION_CATEGORIES_LOCK = threading.Lock()
+
 
 @dataclass(frozen=True)
 class ImageVerificationCategory:
@@ -139,45 +143,52 @@ def _category_to_payload(category: Dict[str, Any] | ImageVerificationCategory) -
 
 
 def ensure_image_verification_categories_table(conn: Any) -> None:
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS image_verification_categories (
-            id TEXT NOT NULL PRIMARY KEY,
-            value TEXT NOT NULL UNIQUE,
-            label TEXT NOT NULL,
-            prompt TEXT NOT NULL,
-            match_threshold REAL NOT NULL DEFAULT 0.70,
-            margin_threshold REAL NOT NULL DEFAULT 0.05,
-            evidence_temperature REAL NOT NULL DEFAULT 1.0,
-            enabled BOOLEAN NOT NULL DEFAULT TRUE,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-    for item in DEFAULT_IMAGE_VERIFICATION_CATEGORIES:
-        payload = _category_to_payload(item)
+    global _IMAGE_VERIFICATION_CATEGORIES_READY
+    if _IMAGE_VERIFICATION_CATEGORIES_READY:
+        return
+    with _IMAGE_VERIFICATION_CATEGORIES_LOCK:
+        if _IMAGE_VERIFICATION_CATEGORIES_READY:
+            return
         conn.execute(
             """
-            INSERT INTO image_verification_categories (
-                id, value, label, prompt, match_threshold, margin_threshold,
-                evidence_temperature, enabled, created_at, updated_at
+            CREATE TABLE IF NOT EXISTS image_verification_categories (
+                id TEXT NOT NULL PRIMARY KEY,
+                value TEXT NOT NULL UNIQUE,
+                label TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                match_threshold REAL NOT NULL DEFAULT 0.70,
+                margin_threshold REAL NOT NULL DEFAULT 0.05,
+                evidence_temperature REAL NOT NULL DEFAULT 1.0,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            ON CONFLICT(value) DO NOTHING
             """,
-            (
-                f"ivc_{payload['value']}",
-                payload["value"],
-                payload["label"],
-                payload["prompt"],
-                payload["match_threshold"],
-                payload["margin_threshold"],
-                payload["evidence_temperature"],
-                bool(payload["enabled"]),
-            ),
         )
-    conn.commit()
+        for item in DEFAULT_IMAGE_VERIFICATION_CATEGORIES:
+            payload = _category_to_payload(item)
+            conn.execute(
+                """
+                INSERT INTO image_verification_categories (
+                    id, value, label, prompt, match_threshold, margin_threshold,
+                    evidence_temperature, enabled, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(value) DO NOTHING
+                """,
+                (
+                    f"ivc_{payload['value']}",
+                    payload["value"],
+                    payload["label"],
+                    payload["prompt"],
+                    payload["match_threshold"],
+                    payload["margin_threshold"],
+                    payload["evidence_temperature"],
+                    bool(payload["enabled"]),
+                ),
+            )
+        conn.commit()
+        _IMAGE_VERIFICATION_CATEGORIES_READY = True
 
 
 def list_image_verification_categories(enabled_only: bool = False) -> List[ImageVerificationCategory]:

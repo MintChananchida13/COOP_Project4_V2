@@ -3,20 +3,9 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ArrowUpRight, BadgeCheck, CircleX, FileClock, FilePenLine } from "lucide-react";
-import { AdminTemplateRequest, Template } from "../types/ocr";
 import { EmptyState, StatusBadge } from "../shared/ui";
-import { fetchTemplateRequests, fetchTemplates } from "./adminApi";
+import { fetchAdminDashboard } from "./adminApi";
 import { AdminDashboardSummary } from "./adminTypes";
-
-const buildDashboardFromLists = (nextRequests: AdminTemplateRequest[], nextTemplates: Template[]): AdminDashboardSummary => ({
-  pendingRequests: nextRequests.filter((request) => request.status === "submitted" || request.status === "in_review").length,
-  draftTemplates: nextTemplates.filter((template) => template.status === "draft").length,
-  activeTemplates: nextTemplates.filter((template) => template.status === "active").length,
-  rejectedRequests: nextRequests.filter((request) => request.status === "rejected").length,
-  templateCount: nextTemplates.length,
-  latestRequests: nextRequests.slice(0, 4),
-  latestTemplates: nextTemplates.slice(0, 4),
-});
 
 const formatDateTime = (value?: string) => {
   if (!value) return "ไม่พบเวลาอัปเดต";
@@ -26,8 +15,6 @@ const formatDateTime = (value?: string) => {
 };
 
 export default function AdminDashboard() {
-  const [requests, setRequests] = useState<AdminTemplateRequest[]>([]);
-  const [templates, setTemplates] = useState<Template[]>([]);
   const [loadStatus, setLoadStatus] = useState<"loading" | "loaded" | "error">("loading");
   const [dashboard, setDashboard] = useState<AdminDashboardSummary>({
     pendingRequests: 0,
@@ -44,22 +31,23 @@ export default function AdminDashboard() {
     const loadDashboard = async () => {
       setLoadStatus("loading");
       try {
-        const [nextRequests, nextTemplates] = await Promise.all([
-          fetchTemplateRequests(),
-          fetchTemplates(),
-        ]);
+        const nextDashboard = await fetchAdminDashboard();
         if (cancelled) return;
 
-        setRequests(nextRequests);
-        setTemplates(nextTemplates);
-        setDashboard(buildDashboardFromLists(nextRequests, nextTemplates));
+        setDashboard(nextDashboard);
         setLoadStatus("loaded");
       } catch (error) {
         console.warn("Admin dashboard load failed.", error);
         if (cancelled) return;
-        setRequests([]);
-        setTemplates([]);
-        setDashboard(buildDashboardFromLists([], []));
+        setDashboard({
+          pendingRequests: 0,
+          draftTemplates: 0,
+          activeTemplates: 0,
+          rejectedRequests: 0,
+          templateCount: 0,
+          latestRequests: [],
+          latestTemplates: [],
+        });
         setLoadStatus("error");
       }
     };
@@ -76,8 +64,8 @@ export default function AdminDashboard() {
     ["คำขอที่ถูกปฏิเสธ", dashboard.rejectedRequests, CircleX, "bg-red-50 text-red-600"],
   ] as const;
 
-  const recentRequests = dashboard.latestRequests.length ? dashboard.latestRequests : requests.slice(0, 4);
-  const recentTemplates = dashboard.latestTemplates.length ? dashboard.latestTemplates : templates.slice(0, 4);
+  const recentRequests = dashboard.latestRequests;
+  const recentTemplates = dashboard.latestTemplates;
 
   return (
     <section className="space-y-4">

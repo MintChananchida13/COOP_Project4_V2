@@ -185,6 +185,15 @@ def _normalize_main_page_number(value: Any) -> int:
     return max(1, page_number)
 
 
+def _strip_name_prefix(value: Optional[str], prefix: Optional[str]) -> str:
+    normalized = str(value or "").strip()
+    clean_prefix = str(prefix or "").strip()
+    prefix_text = f"{clean_prefix} - "
+    while clean_prefix and normalized.startswith(prefix_text):
+        normalized = normalized[len(prefix_text):].strip()
+    return normalized
+
+
 def _connect() -> Any:
     conn = connect_db()
     conn.execute("PRAGMA foreign_keys = ON")
@@ -875,8 +884,7 @@ def _pil_image_to_bgr_array(image: Any):
         return None
 
 
-def _crop_template_field_image(image_source: Optional[str], roi: Dict[str, Any]) -> Optional[Any]:
-    image = _load_image_source(image_source)
+def _crop_template_field_image_from_loaded(image: Any, roi: Dict[str, Any]) -> Optional[Any]:
     if image is None:
         return None
     width, height = image.size
@@ -914,6 +922,11 @@ def _crop_template_field_image(image_source: Optional[str], roi: Dict[str, Any])
         return background
     except Exception:
         return crop
+
+
+def _crop_template_field_image(image_source: Optional[str], roi: Dict[str, Any]) -> Optional[Any]:
+    image = _load_image_source(image_source)
+    return _crop_template_field_image_from_loaded(image, roi)
 
 
 def _pil_image_to_data_url(image: Any) -> Optional[str]:
@@ -1827,8 +1840,7 @@ class EmbeddingService:
 
         try:
             with _connect() as conn:
-                _refresh_template_layout_signatures(conn, template_id)
-                generated_references = _refresh_template_layout_reference_signatures(conn, template_id)
+                generated_references = _refresh_template_layout_signatures(conn, template_id)
                 if not generated_references or any(item.get("status") != "generated" for item in generated_references):
                     failed_pages = [item for item in generated_references if item.get("status") != "generated"]
                     raise RuntimeError(f"Layout reference signature generation failed: {failed_pages or 'no layout references'}")
@@ -4486,11 +4498,21 @@ class AdminTemplateService:
         }
         tested_fields: List[Dict[str, Any]] = []
         pending_text_items: List[Dict[str, Any]] = []
+        image_cache: Dict[str, Any] = {}
+
+        def _load_test_image(image_source: Optional[str]) -> Optional[Any]:
+            if not image_source:
+                return None
+            if image_source not in image_cache:
+                image_cache[image_source] = _load_image_source(image_source)
+            return image_cache[image_source]
+
         for field in fields:
             page_number = int(field.get("page_number") or (field.get("roi") or {}).get("page_number") or 1)
             page = pages_by_number.get(page_number)
             image_source = (page or {}).get("normalized_image_url") or (page or {}).get("sample_image_url")
-            crop_image = _crop_template_field_image(image_source, field.get("roi") or {})
+            source_image = _load_test_image(image_source)
+            crop_image = _crop_template_field_image_from_loaded(source_image, field.get("roi") or {})
             crop_preview_data_url = _pil_image_to_data_url(crop_image)
             data_type = _normalize_data_type(field.get("data_type"))
             result_item: Dict[str, Any] = {
@@ -4539,7 +4561,6 @@ class AdminTemplateService:
                         if boundary_path and not SAVE_DEBUG_ARTIFACTS:
                             Path(boundary_path).unlink(missing_ok=True)
                 elif data_type == "table":
-                    source_image = _load_image_source(image_source)
                     if source_image is None:
                         result_item["failure_reason"] = "template_page_image_or_roi_unavailable"
                         tested_fields.append(result_item)
@@ -5167,6 +5188,8 @@ class AdminTemplateService:
                 if payload and payload.template_name
                 else request_row["request_title"]
             ).strip()
+            template_group_name = str(request_row["document_type"] or template_name).strip() or template_name
+            template_version_name = _strip_name_prefix(template_name, template_group_name) or template_group_name
 
             similarity_threshold = (
                 payload.similarity_threshold
@@ -5201,7 +5224,7 @@ class AdminTemplateService:
                 (
                     group_id,
                     _template_group_code(),
-                    template_name,
+                    template_group_name,
                     request_row["document_type"],
                     payload.description if payload else None,
                     created_by,
@@ -5247,7 +5270,7 @@ class AdminTemplateService:
                 (
                     template_id,
                     group_id,
-                    template_name,
+                    template_version_name,
                     _normalize_detection_mode(
                         payload.detection_mode if payload else None
                     ),

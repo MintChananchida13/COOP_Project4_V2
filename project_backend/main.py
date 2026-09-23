@@ -40,6 +40,7 @@ from app.model_runtime.table_recognition_v2_adapter import TableRecognitionV2Una
 from app.core.db import close_postgres_pool, connect as db_connect, ensure_database_ready
 from app.core.json_utils import jsonb_dump, jsonb_load
 from app.core.model_runtime_client import configured_runtimes
+from app.business.image_verification_category_service import ensure_image_verification_categories_table
 
 # Force UTF-8 console output on Windows.
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
@@ -148,6 +149,8 @@ def _env_flag(name: str, default: str = "true") -> bool:
 @app.on_event("startup")
 async def startup_warmup() -> None:
     ensure_database_ready()
+    with db_connect() as conn:
+        ensure_image_verification_categories_table(conn)
     print(f"Using external model runtimes: {configured_runtimes()}")
     print("Main backend model warm-up skipped; backend owns process logic and calls model runtimes via HTTP.")
 

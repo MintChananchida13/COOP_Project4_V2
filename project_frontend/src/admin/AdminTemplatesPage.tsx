@@ -109,6 +109,24 @@ const detectionModeLabel = (value?: string) => {
   return value || "all pages";
 };
 
+const stripRepeatedNamePrefix = (value: string, prefix: string) => {
+  let nextValue = value.trim();
+  const cleanPrefix = prefix.trim();
+  const prefixText = `${cleanPrefix} - `;
+  while (cleanPrefix && nextValue.startsWith(prefixText)) {
+    nextValue = nextValue.slice(prefixText.length).trim();
+  }
+  return nextValue;
+};
+
+const collapseRepeatedName = (value: string) => {
+  const parts = value.split(" - ").map((part) => part.trim()).filter(Boolean);
+  if (parts.length > 1 && parts.every((part) => part === parts[0])) {
+    return parts[0];
+  }
+  return value.trim();
+};
+
 export default function AdminTemplatesPage() {
   const router = useRouter();
   const [templates, setTemplates] = useState<Template[]>([]);
@@ -195,7 +213,9 @@ export default function AdminTemplatesPage() {
       const sortedVersions = versions.sort((a, b) => (b.versionNumber || b.version) - (a.versionNumber || a.version));
       const latest = sortedVersions[0];
       const baseVersion = sortedVersions.find((template) => !template.baseTemplateId) || sortedVersions[sortedVersions.length - 1] || latest;
-      const folderName = (latest?.templateGroupName || baseVersion?.templateGroupName || baseVersion?.documentType || latest?.documentType || "Template").trim() || "Template";
+      const folderName = collapseRepeatedName(
+        (latest?.templateGroupName || baseVersion?.templateGroupName || baseVersion?.documentType || latest?.documentType || "Template").trim()
+      ) || "Template";
       const activeCount = sortedVersions.filter((template) => template.status === "active").length;
       return {
         groupId,
@@ -251,12 +271,11 @@ export default function AdminTemplatesPage() {
   };
 
   const templateNameSuffix = (templateName: string, folderName: string) => {
-    const prefix = `${folderName.trim()} - `;
-    return templateName.startsWith(prefix) ? templateName.slice(prefix.length).trim() : templateName.trim();
+    return stripRepeatedNamePrefix(templateName, folderName);
   };
 
   const templateVersionSuffix = (template: Template, folderName: string) =>
-    template.versionName || templateNameSuffix(template.name, folderName) || `Version ${template.versionNumber || template.version}`;
+    templateNameSuffix(template.versionName || template.name, folderName) || `Version ${template.versionNumber || template.version}`;
 
   const templateVersionDisplayName = (template: Template, folderName: string) =>
     `${folderName.trim()} - ${templateVersionSuffix(template, folderName)}`;
@@ -391,7 +410,7 @@ export default function AdminTemplatesPage() {
     const requestTitle =
       manualCreationType === "new_template"
         ? newTemplateName.trim()
-        : `${selectedExistingDocumentType.trim()} - ${newVersionNameSuffix.trim()}`;
+        : newVersionNameSuffix.trim();
     if (!documentType || !requestTitle) {
       setCreateRequestError(manualCreationType === "new_template" ? "กรุณากรอกชื่อ Template ก่อนอัปโหลด" : "กรุณาเลือก Template เดิมและกรอกชื่อต่อท้าย Version ก่อนอัปโหลด");
       return;
