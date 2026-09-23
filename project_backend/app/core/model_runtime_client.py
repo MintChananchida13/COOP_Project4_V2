@@ -148,6 +148,7 @@ def _post_predict(
     payload: Dict[str, Any],
     timeout: float = 120.0,
     path_override: Optional[str] = None,
+    timing: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if path_override:
         gateway_url = GATEWAY_URL.strip().rstrip("/")
@@ -158,7 +159,12 @@ def _post_predict(
         raise ModelRuntimeUnavailableError("GATEWAY_URL is not configured.")
 
     started = time.perf_counter()
+    serialize_started = time.perf_counter()
     body = json.dumps(payload).encode("utf-8")
+    if timing is not None:
+        timing["json_serialize_ms"] = round((time.perf_counter() - serialize_started) * 1000.0, 2)
+        timing["payload_bytes"] = len(body)
+        timing["endpoint_path"] = urllib.request.urlparse(endpoint_url).path
     request = urllib.request.Request(
         endpoint_url,
         data=body,
@@ -166,8 +172,19 @@ def _post_predict(
         method="POST",
     )
     try:
+        http_started = time.perf_counter()
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read().decode("utf-8")
+            read_started = time.perf_counter()
+            raw_bytes = response.read()
+            read_elapsed = time.perf_counter() - read_started
+            decode_started = time.perf_counter()
+            raw = raw_bytes.decode("utf-8")
+            decode_elapsed = time.perf_counter() - decode_started
+        if timing is not None:
+            timing["http_request_ms"] = round((time.perf_counter() - http_started) * 1000.0, 2)
+            timing["response_read_ms"] = round(read_elapsed * 1000.0, 2)
+            timing["response_decode_ms"] = round(decode_elapsed * 1000.0, 2)
+            timing["response_bytes"] = len(raw_bytes)
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")
         logger.info(
@@ -189,7 +206,10 @@ def _post_predict(
         raise ModelRuntimeUnavailableError(f"{kind.value} runtime unavailable: {error}") from error
 
     try:
+        parse_started = time.perf_counter()
         parsed = json.loads(raw)
+        if timing is not None:
+            timing["json_parse_ms"] = round((time.perf_counter() - parse_started) * 1000.0, 2)
     except json.JSONDecodeError as error:
         raise ModelRuntimeUnavailableError(f"{kind.value} runtime returned invalid JSON.") from error
 
@@ -205,6 +225,16 @@ def _post_predict(
         time.perf_counter() - started,
     )
 
+    if timing is not None:
+        gateway_timing = parsed.get("timing") or parsed.get("debug_timing")
+        debug = parsed.get("debug")
+        if not gateway_timing and isinstance(debug, dict):
+            gateway_timing = debug.get("timing")
+        if isinstance(gateway_timing, dict):
+            timing["gateway_timing"] = gateway_timing
+        timing["model"] = parsed.get("model")
+        timing["total_runtime_client_ms"] = round((time.perf_counter() - started) * 1000.0, 2)
+
     result = parsed.get("result")
     if result is None and "data" in parsed:
         result = parsed.get("data")
@@ -213,10 +243,19 @@ def _post_predict(
     return result if isinstance(result, dict) else parsed
 
 
-def remote_analyze_layout(image: np.ndarray) -> Optional[Dict[str, Any]]:
+def remote_analyze_layout(image: np.ndarray, timing: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     if not is_runtime_configured(ModelRuntimeKind.LAYOUT):
         return None
-    return _post_predict(ModelRuntimeKind.LAYOUT, {"image": _image_to_data_url(image)})
+    encode_started = time.perf_counter()
+    image_data_url = _image_to_data_url(image)
+    if timing is not None:
+        timing["image_encode_ms"] = round((time.perf_counter() - encode_started) * 1000.0, 2)
+        timing["image_data_url_bytes"] = len(image_data_url)
+        try:
+            timing["image_shape"] = [int(image.shape[1]), int(image.shape[0])]
+        except Exception:
+            pass
+    return _post_predict(ModelRuntimeKind.LAYOUT, {"image": image_data_url}, timing=timing)
 
 
 def remote_detect_text_boxes(image_path: str) -> Optional[Dict[str, Any]]:

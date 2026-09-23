@@ -93,6 +93,14 @@ def _timing_ms_map(timing: Optional[Dict[str, Any]]) -> Dict[str, Optional[float
     return result
 
 
+def _debug_timing_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _debug_timing_value(nested) for key, nested in value.items()}
+    if isinstance(value, list):
+        return [_debug_timing_value(item) for item in value]
+    return value
+
+
 _TEMPLATE_MATCHING_TIMING_KEYS = {
     "connect",
     "pool_getconn",
@@ -481,19 +489,30 @@ def _layout_signature_for_image_path(image_path: str, timing: Optional[Dict[str,
     Image = _load_pillow()
     if Image is None:
         raise HTTPException(status_code=500, detail="Layout signature generation requires Pillow")
+    breakdown: Dict[str, Any] = {"image_path": str(image_path)}
     try:
+        read_started = time.perf_counter()
         image = Image.open(image_path).convert("RGB")
+        breakdown["image_read_ms"] = _ms(time.perf_counter() - read_started)
+        convert_started = time.perf_counter()
         opencv_img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        breakdown["opencv_convert_ms"] = _ms(time.perf_counter() - convert_started)
+        breakdown["image_size"] = [int(image.width), int(image.height)]
     except Exception as error:
         raise HTTPException(status_code=400, detail="Unable to read image for layout signature") from error
     step_started = time.perf_counter()
-    layout_items = analyze_layout_signature(opencv_img)
+    layout_runtime_timing: Dict[str, Any] = {}
+    layout_items = analyze_layout_signature(opencv_img, timing=layout_runtime_timing)
+    breakdown["analyze_layout_signature_ms"] = _ms(time.perf_counter() - step_started)
+    breakdown["analyze_layout_signature"] = layout_runtime_timing
     if timing is not None:
         timing["layout_analysis"] = timing.get("layout_analysis", 0.0) + (time.perf_counter() - step_started)
+        timing.setdefault("layout_analysis_breakdown", []).append(breakdown)
     step_started = time.perf_counter()
     signature = build_layout_signature(layout_items)
     if timing is not None:
         timing["signature_build"] = timing.get("signature_build", 0.0) + (time.perf_counter() - step_started)
+        breakdown["signature_build_ms"] = _ms(time.perf_counter() - step_started)
     return signature
 
 
@@ -2152,6 +2171,7 @@ def _detection_timing_debug(
             "normalization_skipped_ms": _ms(timing.get("prepare_normalization_skipped")),
         },
         "layout_analysis_ms": _ms(timing.get("layout_analysis")),
+        "layout_analysis_breakdown": _debug_timing_value(timing.get("layout_analysis_breakdown") or []),
         "signature_build_ms": _ms(timing.get("signature_build")),
         "template_matching_ms": _ms(timing.get("template_matching")),
         "template_matching_breakdown": _template_matching_timing_ms_list(timing.get("layout_candidate_searches")),

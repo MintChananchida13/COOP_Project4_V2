@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import logging
+import time
 import tempfile
 from dataclasses import dataclass
 import os
@@ -1167,27 +1168,39 @@ def analyze_layout(
     }
 
 
-def analyze_layout_signature(image: np.ndarray) -> Dict[str, Any]:
+def analyze_layout_signature(image: np.ndarray, timing: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if image is None or image.size == 0:
         raise ValueError("Invalid image for layout signature analysis.")
 
     height, width = image.shape[:2]
     source_mode = _RAW_LAYOUT_ONLY_CACHE_MODE
+    cache_started = time.perf_counter()
     raw_items = _get_cached_layout_raw_items(image, source_mode)
+    if timing is not None:
+        timing["raw_cache_lookup_ms"] = round((time.perf_counter() - cache_started) * 1000.0, 2)
+        timing["raw_cache_hit"] = raw_items is not None
     if raw_items is None:
         _require_runtime(ModelRuntimeKind.LAYOUT)
         logger.info("Using remote Layout runtime for layout signature")
         try:
-            layout_result = remote_analyze_layout(image)
+            runtime_timing: Dict[str, Any] = {}
+            layout_result = remote_analyze_layout(image, timing=runtime_timing)
+            if timing is not None:
+                timing["runtime_client"] = runtime_timing
         except ModelRuntimeUnavailableError as error:
             raise LayoutAnalysisUnavailableError(str(error)) from error
         except Exception as error:
             raise LayoutAnalysisUnavailableError(str(error)) from error
         if not isinstance(layout_result, dict):
             raise LayoutAnalysisUnavailableError("Layout runtime returned an invalid response.")
+        postprocess_started = time.perf_counter()
         raw_layout_items = _walk_layout_items(layout_result.get("result", layout_result))
         layout_items = _layout_detection_items_from_response(layout_result.get("result", layout_result))
         raw_items = [{**item, "source": "layout"} for item in layout_items]
+        if timing is not None:
+            timing["response_postprocess_ms"] = round((time.perf_counter() - postprocess_started) * 1000.0, 2)
+            timing["raw_model_item_count"] = len(raw_layout_items)
+            timing["layout_item_count"] = len(raw_items)
         logger.info(
             "Layout signature-only trace: raw_model_items=%s layout_items=%s raw_summary=%s filtered_summary=%s",
             len(raw_layout_items),
@@ -1195,8 +1208,12 @@ def analyze_layout_signature(image: np.ndarray) -> Dict[str, Any]:
             _debug_item_summary(raw_layout_items, width, height),
             _debug_item_summary(raw_items, width, height),
         )
+        cache_set_started = time.perf_counter()
         _set_cached_layout_raw_items(image, raw_items, source_mode)
+        if timing is not None:
+            timing["raw_cache_set_ms"] = round((time.perf_counter() - cache_set_started) * 1000.0, 2)
 
+    region_started = time.perf_counter()
     regions: List[Dict[str, Any]] = []
     for item in raw_items:
         box = _extract_box(item)
@@ -1222,6 +1239,9 @@ def analyze_layout_signature(image: np.ndarray) -> Dict[str, Any]:
         )
 
     regions.sort(key=lambda region: (region["roi"]["y_ratio"], region["roi"]["x_ratio"], -region["roi"]["width_ratio"] * region["roi"]["height_ratio"]))
+    if timing is not None:
+        timing["region_build_ms"] = round((time.perf_counter() - region_started) * 1000.0, 2)
+        timing["region_count"] = len(regions)
     return {
         "engine": "layout_signature_runtime",
         "model": _LAYOUT_MODEL_NAME,
