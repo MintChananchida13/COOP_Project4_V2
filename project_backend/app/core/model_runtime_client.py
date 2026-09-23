@@ -143,6 +143,35 @@ def _path_to_data_url(image_path: str) -> str:
     return f"data:image/{mime};base64," + base64.b64encode(path.read_bytes()).decode("ascii")
 
 
+def _json_size_bytes(value: Any) -> int:
+    try:
+        return len(json.dumps(value).encode("utf-8"))
+    except Exception:
+        return 0
+
+
+def _field_size_summary(value: Any, limit: int = 12) -> List[Dict[str, Any]]:
+    if not isinstance(value, dict):
+        return []
+    items = []
+    for key, field_value in value.items():
+        size_bytes = _json_size_bytes(field_value)
+        item: Dict[str, Any] = {
+            "field": str(key),
+            "bytes": size_bytes,
+            "type": type(field_value).__name__,
+        }
+        if isinstance(field_value, str):
+            item["string_length"] = len(field_value)
+            item["looks_like_base64_image"] = field_value.startswith("data:image") or len(field_value) > 100000
+        elif isinstance(field_value, list):
+            item["item_count"] = len(field_value)
+        elif isinstance(field_value, dict):
+            item["field_count"] = len(field_value)
+        items.append(item)
+    return sorted(items, key=lambda item: int(item.get("bytes") or 0), reverse=True)[:limit]
+
+
 def _post_predict(
     kind: ModelRuntimeKind,
     payload: Dict[str, Any],
@@ -232,6 +261,12 @@ def _post_predict(
             gateway_timing = debug.get("timing")
         if isinstance(gateway_timing, dict):
             timing["gateway_timing"] = gateway_timing
+        timing["response_field_sizes"] = _field_size_summary(parsed)
+        result_value = parsed.get("result")
+        if result_value is None and "data" in parsed:
+            result_value = parsed.get("data")
+        if isinstance(result_value, dict):
+            timing["result_field_sizes"] = _field_size_summary(result_value)
         timing["model"] = parsed.get("model")
         timing["total_runtime_client_ms"] = round((time.perf_counter() - started) * 1000.0, 2)
 
