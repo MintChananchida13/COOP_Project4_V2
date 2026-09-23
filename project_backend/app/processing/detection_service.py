@@ -91,6 +91,8 @@ def _timing_ms_map(timing: Optional[Dict[str, Any]]) -> Dict[str, Optional[float
 
 _TEMPLATE_MATCHING_TIMING_KEYS = {
     "connect",
+    "pool_getconn",
+    "ensure_schema",
     "cursor_create",
     "execute",
     "fetch",

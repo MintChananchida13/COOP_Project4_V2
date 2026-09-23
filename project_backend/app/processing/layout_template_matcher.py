@@ -28,6 +28,13 @@ def search_layout_candidates(
         "include_template_id": include_template_id,
         "active_only": active_only,
         "connect": 0.0,
+        "pool_getconn": None,
+        "ensure_schema": None,
+        "postgres_ready_before": None,
+        "postgres_ready_after": None,
+        "schema_ensure_calls": None,
+        "pool_before": None,
+        "pool_after": None,
         "cursor_create": 0.0,
         "execute": 0.0,
         "fetch": 0.0,
@@ -57,6 +64,15 @@ def search_layout_candidates(
     connect_started = time.perf_counter()
     conn = _connect()
     breakdown["connect"] = time.perf_counter() - connect_started
+    connect_timing = getattr(conn, "connect_timing", {}) if conn is not None else {}
+    if isinstance(connect_timing, dict):
+        breakdown["pool_getconn"] = connect_timing.get("pool_getconn")
+        breakdown["ensure_schema"] = connect_timing.get("ensure_schema")
+        breakdown["postgres_ready_before"] = connect_timing.get("postgres_ready_before")
+        breakdown["postgres_ready_after"] = connect_timing.get("postgres_ready_after")
+        breakdown["schema_ensure_calls"] = connect_timing.get("schema_ensure_calls")
+        breakdown["pool_before"] = connect_timing.get("pool_before")
+        breakdown["pool_after"] = connect_timing.get("pool_after")
     with conn:
         if hasattr(conn, "execute_timed"):
             cursor, execute_timing = conn.execute_timed(

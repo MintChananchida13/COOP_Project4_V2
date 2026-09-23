@@ -2,16 +2,20 @@ import os
 import re
 import threading
 import time
+import logging
 from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional, Sequence
 
 from app.auth.auth_password import hash_password
 
 
+logger = logging.getLogger(__name__)
 _POSTGRES_READY = False
 _POSTGRES_POOL = None
 _POSTGRES_POOL_LOCK = threading.Lock()
 _POSTGRES_POOL_DSN = None
+_POSTGRES_SCHEMA_ENSURE_CALLS = 0
+_POSTGRES_SLOW_SCHEMA_STATEMENT_SECONDS = 0.5
 _SEED_USERS = [
     {
         "id": "usr_seed_user",
@@ -59,10 +63,11 @@ class StaticCursor:
 
 
 class PostgresConnection:
-    def __init__(self, raw_conn: Any, pool: Any = None):
+    def __init__(self, raw_conn: Any, pool: Any = None, connect_timing: Optional[Dict[str, Any]] = None):
         self._raw_conn = raw_conn
         self._pool = pool
         self._returned = False
+        self.connect_timing = connect_timing or {}
 
     def __enter__(self) -> "PostgresConnection":
         return self
@@ -174,6 +179,45 @@ def _pool_size_from_env(key: str, default: int) -> int:
         return default
 
 
+def _pool_snapshot(pool: Any) -> Dict[str, Optional[int]]:
+    snapshot: Dict[str, Optional[int]] = {
+        "available": None,
+        "in_use": None,
+        "min": getattr(pool, "minconn", None),
+        "max": getattr(pool, "maxconn", None),
+    }
+    try:
+        available = getattr(pool, "_pool", None)
+        used = getattr(pool, "_used", None)
+        if available is not None:
+            snapshot["available"] = len(available)
+        if used is not None:
+            snapshot["in_use"] = len(used)
+    except Exception:
+        pass
+    return snapshot
+
+
+def _schema_statement_kind(statement: str) -> str:
+    compact = " ".join(statement.strip().split())
+    upper = compact.upper()
+    if upper.startswith("CREATE INDEX"):
+        return "CREATE INDEX"
+    if upper.startswith("CREATE OR REPLACE VIEW"):
+        return "VIEW"
+    if upper.startswith("CREATE TABLE"):
+        return "CREATE TABLE"
+    if upper.startswith("ALTER TABLE"):
+        return "ALTER"
+    if upper.startswith("UPDATE"):
+        return "UPDATE"
+    if upper.startswith("DELETE"):
+        return "DELETE"
+    if upper.startswith("DO"):
+        return "DO"
+    return upper.split(" ", 1)[0] if upper else "UNKNOWN"
+
+
 def _get_postgres_pool() -> Any:
     global _POSTGRES_POOL, _POSTGRES_POOL_DSN
     database_url = _database_url()
@@ -212,12 +256,32 @@ def _get_postgres_pool() -> Any:
 
 
 def _connect_postgres() -> PostgresConnection:
+    connect_timing: Dict[str, Any] = {
+        "postgres_ready_before": _POSTGRES_READY,
+        "pool_before": None,
+        "pool_after": None,
+        "pool_getconn": 0.0,
+        "ensure_schema": 0.0,
+        "postgres_ready_after": None,
+        "schema_ensure_calls": _POSTGRES_SCHEMA_ENSURE_CALLS,
+    }
     pool = _get_postgres_pool()
+    connect_timing["pool_before"] = _pool_snapshot(pool)
+    started = time.perf_counter()
     conn = pool.getconn()
-    wrapped = PostgresConnection(conn, pool=pool)
+    connect_timing["pool_getconn"] = time.perf_counter() - started
+    connect_timing["pool_after"] = _pool_snapshot(pool)
+    wrapped = PostgresConnection(conn, pool=pool, connect_timing=connect_timing)
     try:
+        started = time.perf_counter()
         _ensure_postgres_schema(wrapped)
+        connect_timing["ensure_schema"] = time.perf_counter() - started
+        connect_timing["postgres_ready_after"] = _POSTGRES_READY
+        connect_timing["schema_ensure_calls"] = _POSTGRES_SCHEMA_ENSURE_CALLS
     except Exception:
+        connect_timing["ensure_schema"] = time.perf_counter() - started
+        connect_timing["postgres_ready_after"] = _POSTGRES_READY
+        connect_timing["schema_ensure_calls"] = _POSTGRES_SCHEMA_ENSURE_CALLS
         wrapped.close(close_broken=True)
         raise
     return wrapped
@@ -241,14 +305,45 @@ def connect() -> Any:
 
 
 def _ensure_postgres_schema(conn: PostgresConnection) -> None:
-    global _POSTGRES_READY
+    global _POSTGRES_READY, _POSTGRES_SCHEMA_ENSURE_CALLS
+    _POSTGRES_SCHEMA_ENSURE_CALLS += 1
+    call_number = _POSTGRES_SCHEMA_ENSURE_CALLS
+    ready_before = _POSTGRES_READY
     if _POSTGRES_READY:
+        logger.debug(
+            "PostgreSQL schema ensure skipped (call=%s ready_before=%s ready_after=%s).",
+            call_number,
+            ready_before,
+            _POSTGRES_READY,
+        )
         return
 
-    for statement in _POSTGRES_SCHEMA:
+    logger.info(
+        "PostgreSQL schema ensure start (call=%s ready_before=%s statements=%s).",
+        call_number,
+        ready_before,
+        len(_POSTGRES_SCHEMA),
+    )
+    for index, statement in enumerate(_POSTGRES_SCHEMA, start=1):
+        started = time.perf_counter()
         conn.execute(statement)
+        elapsed = time.perf_counter() - started
+        if elapsed >= _POSTGRES_SLOW_SCHEMA_STATEMENT_SECONDS:
+            logger.warning(
+                "PostgreSQL schema ensure slow statement (call=%s index=%s kind=%s elapsed_ms=%.2f).",
+                call_number,
+                index,
+                _schema_statement_kind(statement),
+                elapsed * 1000.0,
+            )
     conn.commit()
     _POSTGRES_READY = True
+    logger.info(
+        "PostgreSQL schema ensure done (call=%s ready_before=%s ready_after=%s).",
+        call_number,
+        ready_before,
+        _POSTGRES_READY,
+    )
 
 
 def _seed_default_users(conn: PostgresConnection) -> int:
