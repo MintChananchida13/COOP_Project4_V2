@@ -1794,10 +1794,14 @@ function HomeWorkspace() {
           ];
         }
         if (isMainPageDetection && templateCanvasImages.length > 1) {
+          const detectionAutoRoiPages =
+            detection.bestCandidate?.mainPageAutoRoiPages && detection.bestCandidate.mainPageAutoRoiPages.length > 0
+              ? detection.bestCandidate.mainPageAutoRoiPages
+              : detection.mainPageAutoRoiPages;
           let extraPageAutoRois = await buildDetectionAutoRois(
             templateCanvasImages,
             detectedRois,
-            detection.bestCandidate?.mainPageAutoRoiPages
+            detectionAutoRoiPages
           );
           if (extraPageAutoRois.length === 0) {
             extraPageAutoRois = await buildWholePageAutoRois(

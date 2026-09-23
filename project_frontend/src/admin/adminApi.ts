@@ -456,6 +456,9 @@ export interface DetectionDevResult {
   bestCandidate?: DetectionCandidate | null;
   candidates: DetectionCandidate[];
   pages: DetectionPageResult[];
+  mainPageAutoRoiPages?: Record<string, unknown>[];
+  mainPageAutoRoiTotalPages?: number | null;
+  mainPageAutoRoiTotalRegions?: number | null;
   message?: string | null;
   debug?: Record<string, unknown>;
 }
@@ -1693,6 +1696,11 @@ function mapDetectionDevResult(data: Record<string, unknown> | undefined): Detec
     bestCandidate: data?.best_candidate ? mapDetectionCandidate(data.best_candidate as Record<string, unknown>) : null,
     candidates,
     pages,
+    mainPageAutoRoiPages: Array.isArray(data?.main_page_auto_roi_pages)
+      ? (data.main_page_auto_roi_pages as Record<string, unknown>[])
+      : [],
+    mainPageAutoRoiTotalPages: typeof data?.main_page_auto_roi_total_pages === "number" ? data.main_page_auto_roi_total_pages : null,
+    mainPageAutoRoiTotalRegions: typeof data?.main_page_auto_roi_total_regions === "number" ? data.main_page_auto_roi_total_regions : null,
     message: (data?.message as string | null | undefined) ?? null,
     debug: (data?.debug as Record<string, unknown> | undefined) || {},
   };

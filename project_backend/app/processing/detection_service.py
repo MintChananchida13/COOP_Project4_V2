@@ -1029,8 +1029,12 @@ def _dedupe_overlapping_auto_roi_regions(regions: List[Dict[str, Any]]) -> List[
     return [item["region"] for item in accepted]
 
 
-def _attach_main_page_auto_roi_pages(candidates: List[Dict[str, Any]], pages: List[Dict[str, Any]]) -> None:
-    auto_pages_cache: Dict[int, Dict[str, Any]] = {}
+def _attach_main_page_auto_roi_pages(
+    candidates: List[Dict[str, Any]],
+    pages: List[Dict[str, Any]],
+    auto_pages_cache: Optional[Dict[int, Dict[str, Any]]] = None,
+) -> None:
+    auto_pages_cache = dict(auto_pages_cache or {})
     for candidate in candidates:
         metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
         detection_mode = str(candidate.get("detection_mode") or metadata.get("detection_mode") or "")
@@ -1060,6 +1064,35 @@ def _attach_main_page_auto_roi_pages(candidates: List[Dict[str, Any]], pages: Li
         candidate["main_page_auto_roi_pages"] = auto_pages
         candidate["main_page_auto_roi_total_pages"] = len(auto_pages)
         candidate["main_page_auto_roi_total_regions"] = sum(len(page.get("regions") or []) for page in auto_pages)
+
+
+def _build_request_auto_roi_pages(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    auto_pages: List[Dict[str, Any]] = []
+    for page_info in pages:
+        page_index = int(page_info.get("page_index") or 1)
+        try:
+            auto_pages.append(_auto_roi_region_items(page_info))
+        except Exception as error:
+            auto_pages.append(
+                {
+                    "page_index": page_index,
+                    "page_number": page_index,
+                    "status": "failed",
+                    "reason": f"auto_roi_failed: {error}",
+                    "regions": [],
+                }
+            )
+    return auto_pages
+
+
+def _auto_roi_pages_by_index(auto_pages: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+    result: Dict[int, Dict[str, Any]] = {}
+    for page in auto_pages:
+        try:
+            result[int(page.get("page_index") or page.get("page_number") or 1)] = page
+        except Exception:
+            continue
+    return result
 
 
 def _align_candidate_page(
@@ -2062,6 +2095,7 @@ def _detection_timing_debug(
         "template_matching",
         "verification",
         "candidate_aggregation",
+        "request_auto_roi",
         "auto_roi",
     ]
     top_level_measured = sum(float(timing.get(key) or 0.0) for key in top_level_keys)
@@ -2101,6 +2135,7 @@ def _detection_timing_debug(
         "template_matching_breakdown": _template_matching_timing_ms_list(timing.get("layout_candidate_searches")),
         "verification_ms": _ms(timing.get("verification")),
         "candidate_aggregation_ms": _ms(timing.get("candidate_aggregation")),
+        "request_auto_roi_ms": _ms(timing.get("request_auto_roi")),
         "auto_roi_ms": _ms(timing.get("auto_roi")),
         "boundary_breakdown": {
             "source_type_detection_ms": _ms(timing.get("source_type_detection")),
@@ -2249,7 +2284,10 @@ def detect_template_dev(
         if prepublish_timing:
             print(f"[PREPUBLISH] candidate aggregation done: {timing['candidate_aggregation']:.2f}s")
         step_started = time.perf_counter()
-        _attach_main_page_auto_roi_pages(candidates, normalized_pages)
+        request_auto_roi_pages = _build_request_auto_roi_pages(normalized_pages)
+        timing["request_auto_roi"] = time.perf_counter() - step_started
+        step_started = time.perf_counter()
+        _attach_main_page_auto_roi_pages(candidates, normalized_pages, _auto_roi_pages_by_index(request_auto_roi_pages))
         timing["auto_roi"] = time.perf_counter() - step_started
         if prepublish_timing:
             print(f"[PREPUBLISH] auto roi done: {timing['auto_roi']:.2f}s")
@@ -2290,6 +2328,9 @@ def detect_template_dev(
             "best_candidate": best_candidate,
             "candidates": candidates,
             "pages": pages,
+            "main_page_auto_roi_pages": request_auto_roi_pages,
+            "main_page_auto_roi_total_pages": len(request_auto_roi_pages),
+            "main_page_auto_roi_total_regions": sum(len(page.get("regions") or []) for page in request_auto_roi_pages),
             "message": None if matched else _no_match_message(candidates),
             "debug": {
                 "pipeline_core": PIPELINE_CONFIG.to_debug_dict(),
