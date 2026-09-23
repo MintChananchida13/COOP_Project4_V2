@@ -308,9 +308,10 @@ def _connect_postgres() -> PostgresConnection:
     connect_timing["pool_after"] = _pool_snapshot(pool)
     wrapped = PostgresConnection(conn, pool=pool, connect_timing=connect_timing)
     try:
-        started = time.perf_counter()
-        _ensure_postgres_schema(wrapped)
-        connect_timing["ensure_schema"] = time.perf_counter() - started
+        if not _POSTGRES_READY:
+            started = time.perf_counter()
+            _ensure_postgres_schema(wrapped)
+            connect_timing["ensure_schema"] = time.perf_counter() - started
         connect_timing["postgres_ready_after"] = _POSTGRES_READY
         connect_timing["schema_ensure_calls"] = _POSTGRES_SCHEMA_ENSURE_CALLS
     except Exception:

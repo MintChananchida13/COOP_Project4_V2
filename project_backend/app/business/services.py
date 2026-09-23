@@ -307,12 +307,6 @@ class GlobalSettingsService:
             timing["pool_before"] = connect_timing.get("pool_before")
             timing["pool_after"] = connect_timing.get("pool_after")
         with conn:
-            step_started = time.perf_counter()
-            conn.execute("PRAGMA foreign_keys = ON")
-            timing["pragma_foreign_keys"] = time.perf_counter() - step_started
-            step_started = time.perf_counter()
-            ensure_image_verification_categories_table(conn)
-            timing["image_category_schema_setup"] = time.perf_counter() - step_started
             if hasattr(conn, "execute_timed"):
                 cursor, execute_timing = conn.execute_timed(
                     "SELECT value FROM app_settings WHERE key = ?",
