@@ -37,9 +37,7 @@ def search_layout_candidates(
         "pool_before": None,
         "pool_after": None,
         "cursor_create": 0.0,
-        "backend_pid_query": None,
         "backend_pid": None,
-        "backend_pid_error": None,
         "query_correlation_id": None,
         "connection_before": None,
         "connection_before_execute": None,
@@ -146,12 +144,12 @@ def search_layout_candidates(
                 query_comment=query_correlation_id,
             )
             breakdown["cursor_create"] = float(execute_timing.get("cursor_create") or 0.0)
-            breakdown["backend_pid_query"] = execute_timing.get("backend_pid_query")
-            breakdown["backend_pid"] = execute_timing.get("backend_pid")
-            breakdown["backend_pid_error"] = execute_timing.get("backend_pid_error")
             breakdown["connection_before"] = execute_timing.get("connection_before")
             breakdown["connection_before_execute"] = execute_timing.get("connection_before_execute")
             breakdown["connection_after_execute"] = execute_timing.get("connection_after_execute")
+            connection_before = breakdown["connection_before"]
+            if isinstance(connection_before, dict):
+                breakdown["backend_pid"] = connection_before.get("backend_pid")
             breakdown["execute"] = float(execute_timing.get("execute") or 0.0)
         else:
             execute_started = time.perf_counter()

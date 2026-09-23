@@ -94,7 +94,6 @@ _TEMPLATE_MATCHING_TIMING_KEYS = {
     "pool_getconn",
     "ensure_schema",
     "cursor_create",
-    "backend_pid_query",
     "execute",
     "fetch",
     "db_total",

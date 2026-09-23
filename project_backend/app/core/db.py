@@ -124,16 +124,6 @@ class PostgresConnection:
         timing: Dict[str, Any] = {}
         if diagnostics:
             timing["connection_before"] = self.connection_diagnostics()
-            pid_started = time.perf_counter()
-            try:
-                pid_cursor = self._raw_conn.cursor()
-                pid_cursor.execute("SELECT pg_backend_pid() AS pid")
-                row = pid_cursor.fetchone()
-                timing["backend_pid"] = row["pid"] if isinstance(row, dict) else row[0]
-                pid_cursor.close()
-            except Exception as error:
-                timing["backend_pid_error"] = f"{type(error).__name__}: {error}"
-            timing["backend_pid_query"] = time.perf_counter() - pid_started
             timing["connection_before_execute"] = self.connection_diagnostics()
         started = time.perf_counter()
         cursor = self._raw_conn.cursor()
