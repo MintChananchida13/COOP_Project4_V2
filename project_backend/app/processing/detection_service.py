@@ -42,6 +42,7 @@ DETECTION_VERIFICATION_CANDIDATE_LIMIT = 3
 DETECTION_FULL_EVAL_LIMIT = max(1, int(os.getenv("DETECTION_FULL_EVAL_LIMIT", str(DETECTION_RETRIEVAL_LIMIT))))
 DETECTION_ALIGNMENT_LIMIT = max(0, int(os.getenv("DETECTION_ALIGNMENT_LIMIT", "1")))
 SAVE_DEBUG_ARTIFACTS = os.getenv("SAVE_DEBUG_ARTIFACTS", "false").strip().lower() in {"1", "true", "yes", "on"}
+DETECTION_COORDINATE_DEBUG = os.getenv("DETECTION_COORDINATE_DEBUG", "false").strip().lower() in {"1", "true", "yes", "on"}
 verification_service = VerificationService()
 decision_service = DecisionService()
 global_settings_service = GlobalSettingsService()
@@ -1413,28 +1414,30 @@ def _candidate_from_result(
         candidate_timing["extraction_test"] = time.perf_counter() - step_started
 
     step_started = time.perf_counter()
-    template_image_source = _fetch_template_page_image_source(template_id, template_page_number) if template_id else None
-    first_template_roi = template_rois[0].get("roi") if template_rois else None
-    first_projected_field = (projection.get("projected_fields") or [None])[0]
-    coordinate_debug = {
-        "query_page_index": page_index,
-        "template_page_number": template_page_number,
-        "roi_coordinate_space": projection.get("roi_coordinate_space") or roi_coordinate_space,
-        "verification_source_used": verification_source_used,
-        "template_image_size": _image_source_dimensions(template_image_source),
-        "normalized_image_size": _image_dimensions(query_image_path),
-        "aligned_image_size": _image_dimensions(alignment.get("aligned_image_path")),
-        "extraction_image_size": _image_dimensions(extraction_image_path),
-        "first_template_roi": first_template_roi,
-        "first_projected_roi": first_projected_field.get("projected_roi") if isinstance(first_projected_field, dict) else None,
-    }
+    coordinate_debug = None
+    if DETECTION_COORDINATE_DEBUG:
+        template_image_source = _fetch_template_page_image_source(template_id, template_page_number) if template_id else None
+        first_template_roi = template_rois[0].get("roi") if template_rois else None
+        first_projected_field = (projection.get("projected_fields") or [None])[0]
+        coordinate_debug = {
+            "query_page_index": page_index,
+            "template_page_number": template_page_number,
+            "roi_coordinate_space": projection.get("roi_coordinate_space") or roi_coordinate_space,
+            "verification_source_used": verification_source_used,
+            "template_image_size": _image_source_dimensions(template_image_source),
+            "normalized_image_size": _image_dimensions(query_image_path),
+            "aligned_image_size": _image_dimensions(alignment.get("aligned_image_path")),
+            "extraction_image_size": _image_dimensions(extraction_image_path),
+            "first_template_roi": first_template_roi,
+            "first_projected_roi": first_projected_field.get("projected_roi") if isinstance(first_projected_field, dict) else None,
+        }
+        print(
+            "[detection-coordinate] "
+            f"template={template_id} query_page={page_index} template_page={template_page_number} space={coordinate_debug['roi_coordinate_space']} "
+            f"source={verification_source_used} template_size={coordinate_debug['template_image_size']} "
+            f"extraction_size={coordinate_debug['extraction_image_size']} first_template_roi={first_template_roi}"
+        )
     candidate_timing["coordinate_debug"] = time.perf_counter() - step_started
-    print(
-        "[detection-coordinate] "
-        f"template={template_id} query_page={page_index} template_page={template_page_number} space={coordinate_debug['roi_coordinate_space']} "
-        f"source={verification_source_used} template_size={coordinate_debug['template_image_size']} "
-        f"extraction_size={coordinate_debug['extraction_image_size']} first_template_roi={first_template_roi}"
-    )
 
     return {
         "template_id": template_id,
