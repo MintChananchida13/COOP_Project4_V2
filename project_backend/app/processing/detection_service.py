@@ -93,10 +93,14 @@ _TEMPLATE_MATCHING_TIMING_KEYS = {
     "connect",
     "pool_getconn",
     "ensure_schema",
+    "pragma_foreign_keys",
+    "image_category_schema_setup",
     "cursor_create",
     "execute",
     "fetch",
     "db_total",
+    "processing",
+    "total",
     "active_filter",
     "signature_parse",
     "layout_compare",
@@ -2102,6 +2106,7 @@ def _detection_timing_debug(
             "source_type_detection_ms": _ms(timing.get("source_type_detection")),
             "post_prepare_setup_ms": _ms(timing.get("post_prepare_setup")),
             "verification_strategy_load_ms": _ms(timing.get("verification_strategy_load")),
+            "verification_strategy_load_breakdown": _template_matching_timing_ms(timing.get("verification_strategy_load_breakdown") or {}),
             "include_template_lookup_ms": _ms(timing.get("include_template_lookup")),
             "detect_pages_total_ms": _ms(timing.get("detect_pages_total")),
             "first_page_detection_total_ms": _ms(timing.get("first_page_detection_total")),
@@ -2164,11 +2169,13 @@ def detect_template_dev(
         )
         timing["post_prepare_setup"] = time.perf_counter() - step_started
         step_started = time.perf_counter()
-        verification_strategy = normalize_verification_strategy(
-            verification_strategy_override
-            if verification_strategy_override is not None
-            else global_settings_service.get_verification_strategy().get("verification_strategy")
-        )
+        if verification_strategy_override is not None:
+            verification_strategy_setting = {"verification_strategy": verification_strategy_override}
+            timing["verification_strategy_load_breakdown"] = {"source": "override"}
+        else:
+            verification_strategy_setting, verification_strategy_timing = global_settings_service.get_verification_strategy_with_timing()
+            timing["verification_strategy_load_breakdown"] = verification_strategy_timing
+        verification_strategy = normalize_verification_strategy(verification_strategy_setting.get("verification_strategy"))
         timing["verification_strategy_load"] = time.perf_counter() - step_started
         pages: List[Dict[str, Any]] = []
         confirmed_main_page_candidate: Optional[Dict[str, Any]] = None

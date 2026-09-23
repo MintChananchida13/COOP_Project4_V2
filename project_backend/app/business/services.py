@@ -277,6 +277,67 @@ class GlobalSettingsService:
             conn.commit()
 
     def get_verification_strategy(self) -> Dict[str, Any]:
+        result, _ = self.get_verification_strategy_with_timing()
+        return result
+
+    def get_verification_strategy_with_timing(self) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        timing: Dict[str, Any] = {
+            "connect": 0.0,
+            "pool_getconn": None,
+            "ensure_schema": None,
+            "pragma_foreign_keys": 0.0,
+            "image_category_schema_setup": 0.0,
+            "cursor_create": 0.0,
+            "execute": 0.0,
+            "fetch": 0.0,
+            "processing": 0.0,
+            "total": 0.0,
+        }
+        total_started = time.perf_counter()
+        step_started = time.perf_counter()
+        conn = connect_db()
+        timing["connect"] = time.perf_counter() - step_started
+        connect_timing = getattr(conn, "connect_timing", {}) if conn is not None else {}
+        if isinstance(connect_timing, dict):
+            timing["pool_getconn"] = connect_timing.get("pool_getconn")
+            timing["ensure_schema"] = connect_timing.get("ensure_schema")
+            timing["postgres_ready_before"] = connect_timing.get("postgres_ready_before")
+            timing["postgres_ready_after"] = connect_timing.get("postgres_ready_after")
+            timing["schema_ensure_calls"] = connect_timing.get("schema_ensure_calls")
+            timing["pool_before"] = connect_timing.get("pool_before")
+            timing["pool_after"] = connect_timing.get("pool_after")
+        with conn:
+            step_started = time.perf_counter()
+            conn.execute("PRAGMA foreign_keys = ON")
+            timing["pragma_foreign_keys"] = time.perf_counter() - step_started
+            step_started = time.perf_counter()
+            ensure_image_verification_categories_table(conn)
+            timing["image_category_schema_setup"] = time.perf_counter() - step_started
+            if hasattr(conn, "execute_timed"):
+                cursor, execute_timing = conn.execute_timed(
+                    "SELECT value FROM app_settings WHERE key = ?",
+                    (VERIFICATION_STRATEGY_SETTING_KEY,),
+                )
+                timing["cursor_create"] = float(execute_timing.get("cursor_create") or 0.0)
+                timing["execute"] = float(execute_timing.get("execute") or 0.0)
+            else:
+                step_started = time.perf_counter()
+                cursor = conn.execute(
+                    "SELECT value FROM app_settings WHERE key = ?",
+                    (VERIFICATION_STRATEGY_SETTING_KEY,),
+                )
+                timing["execute"] = time.perf_counter() - step_started
+            step_started = time.perf_counter()
+            row = cursor.fetchone()
+            timing["fetch"] = time.perf_counter() - step_started
+        step_started = time.perf_counter()
+        strategy = normalize_verification_strategy(row["value"] if row else None)
+        result = {"verification_strategy": strategy}
+        timing["processing"] = time.perf_counter() - step_started
+        timing["total"] = time.perf_counter() - total_started
+        return result, timing
+
+    def get_verification_strategy_original(self) -> Dict[str, Any]:
         with _connect() as conn:
             row = conn.execute(
                 "SELECT value FROM app_settings WHERE key = ?",
