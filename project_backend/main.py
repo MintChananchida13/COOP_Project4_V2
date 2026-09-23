@@ -41,6 +41,7 @@ from app.core.db import close_postgres_pool, connect as db_connect, ensure_datab
 from app.core.json_utils import jsonb_dump, jsonb_load
 from app.core.model_runtime_client import configured_runtimes
 from app.business.image_verification_category_service import ensure_image_verification_categories_table
+from app.business.services import GlobalSettingsService
 from app.processing import published_template_cache
 
 # Force UTF-8 console output on Windows.
@@ -152,6 +153,10 @@ async def startup_warmup() -> None:
     ensure_database_ready()
     with db_connect() as conn:
         ensure_image_verification_categories_table(conn)
+    try:
+        GlobalSettingsService().load_verification_strategy_cache()
+    except Exception as error:
+        logger.exception("Verification strategy cache startup load failed; first read will fall back to DB: %s", error)
     try:
         published_template_cache.load_all()
     except Exception as error:

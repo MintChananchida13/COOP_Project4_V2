@@ -2176,6 +2176,9 @@ def _detection_timing_debug(
         "template_matching_ms": _ms(timing.get("template_matching")),
         "template_matching_breakdown": _template_matching_timing_ms_list(timing.get("layout_candidate_searches")),
         "verification_ms": _ms(timing.get("verification")),
+        "verification_strategy_cache_hit": bool(
+            (timing.get("verification_strategy_load_breakdown") or {}).get("verification_strategy_cache_hit")
+        ),
         "candidate_aggregation_ms": _ms(timing.get("candidate_aggregation")),
         "request_auto_roi_ms": _ms(timing.get("request_auto_roi")),
         "auto_roi_ms": _ms(timing.get("auto_roi")),

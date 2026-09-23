@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 import unicodedata
 from datetime import datetime, timezone
@@ -86,6 +87,8 @@ VERIFICATION_STRATEGY_STRICT = "strict"
 VERIFICATION_STRATEGIES = {VERIFICATION_STRATEGY_STANDARD, VERIFICATION_STRATEGY_STRICT}
 OCR_MODEL_SETTINGS_KEY = "ocr_model_settings"
 OCR_MODEL_KINDS = {"text_detection", "text_recognition"}
+_VERIFICATION_STRATEGY_CACHE_LOCK = threading.RLock()
+_VERIFICATION_STRATEGY_CACHE: Optional[str] = None
 
 DEFAULT_OCR_MODEL_SETTINGS: Dict[str, Any] = {
     "active": {
@@ -223,6 +226,18 @@ def normalize_verification_strategy(value: Optional[str]) -> str:
     return normalized if normalized in VERIFICATION_STRATEGIES else VERIFICATION_STRATEGY_STANDARD
 
 
+def _get_cached_verification_strategy() -> Optional[str]:
+    with _VERIFICATION_STRATEGY_CACHE_LOCK:
+        return _VERIFICATION_STRATEGY_CACHE
+
+
+def _set_cached_verification_strategy(value: str) -> None:
+    strategy = normalize_verification_strategy(value)
+    with _VERIFICATION_STRATEGY_CACHE_LOCK:
+        global _VERIFICATION_STRATEGY_CACHE
+        _VERIFICATION_STRATEGY_CACHE = strategy
+
+
 def _normalize_model_kind(kind: str) -> str:
     normalized = str(kind or "").strip().lower().replace("-", "_")
     if normalized not in OCR_MODEL_KINDS:
@@ -308,6 +323,7 @@ class GlobalSettingsService:
 
     def get_verification_strategy_with_timing(self) -> tuple[Dict[str, Any], Dict[str, Any]]:
         timing: Dict[str, Any] = {
+            "verification_strategy_cache_hit": False,
             "connect": 0.0,
             "pool_getconn": None,
             "ensure_schema": None,
@@ -320,6 +336,14 @@ class GlobalSettingsService:
             "total": 0.0,
         }
         total_started = time.perf_counter()
+        cached_strategy = _get_cached_verification_strategy()
+        if cached_strategy is not None:
+            timing["verification_strategy_cache_hit"] = True
+            timing["source"] = "process_cache"
+            timing["total"] = time.perf_counter() - total_started
+            return {"verification_strategy": cached_strategy}, timing
+
+        timing["source"] = "database"
         step_started = time.perf_counter()
         conn = connect_db()
         timing["connect"] = time.perf_counter() - step_started
@@ -352,6 +376,7 @@ class GlobalSettingsService:
             timing["fetch"] = time.perf_counter() - step_started
         step_started = time.perf_counter()
         strategy = normalize_verification_strategy(row["value"] if row else None)
+        _set_cached_verification_strategy(strategy)
         result = {"verification_strategy": strategy}
         timing["processing"] = time.perf_counter() - step_started
         timing["total"] = time.perf_counter() - total_started
@@ -366,11 +391,16 @@ class GlobalSettingsService:
         strategy = normalize_verification_strategy(row["value"] if row else None)
         return {"verification_strategy": strategy}
 
+    def load_verification_strategy_cache(self) -> Dict[str, Any]:
+        result, _ = self.get_verification_strategy_with_timing()
+        return result
+
     def update_verification_strategy(self, value: str) -> Dict[str, Any]:
         strategy = normalize_verification_strategy(value)
         if strategy != str(value or "").strip().lower():
             raise HTTPException(status_code=400, detail="verification_strategy must be standard or strict")
         self._save_setting(VERIFICATION_STRATEGY_SETTING_KEY, strategy)
+        _set_cached_verification_strategy(strategy)
         return {"verification_strategy": strategy}
 
     def get_ocr_model_settings(self) -> Dict[str, Any]:
