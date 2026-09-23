@@ -270,6 +270,13 @@ def _post_predict(
             raw_value = result_value.get("raw")
             if isinstance(raw_value, dict):
                 timing["raw_field_sizes"] = _field_size_summary(raw_value)
+                layout_items = raw_value.get("layout")
+                if (
+                    isinstance(layout_items, list)
+                    and layout_items
+                    and isinstance(layout_items[0], dict)
+                ):
+                    timing["layout_item_field_sizes"] = _field_size_summary(layout_items[0])
         timing["model"] = parsed.get("model")
         timing["total_runtime_client_ms"] = round((time.perf_counter() - started) * 1000.0, 2)
 
