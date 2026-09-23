@@ -14,6 +14,8 @@ _POSTGRES_READY = False
 _POSTGRES_POOL = None
 _POSTGRES_POOL_LOCK = threading.Lock()
 _POSTGRES_POOL_DSN = None
+_POSTGRES_CONNECTION_METADATA: Dict[int, Dict[str, float]] = {}
+_POSTGRES_CONNECTION_METADATA_LOCK = threading.Lock()
 _POSTGRES_SCHEMA_ENSURE_CALLS = 0
 _POSTGRES_SLOW_SCHEMA_STATEMENT_SECONDS = 0.5
 _SEED_USERS = [
@@ -170,19 +172,23 @@ class PostgresConnection:
             return
         try:
             if close_broken or getattr(self._raw_conn, "closed", 0):
+                _drop_connection_metadata(self._raw_conn)
                 self._pool.putconn(self._raw_conn, close=True)
             else:
                 try:
                     self._raw_conn.rollback()
                 except Exception:
+                    _drop_connection_metadata(self._raw_conn)
                     self._pool.putconn(self._raw_conn, close=True)
                     return
+                _mark_connection_returned(self._raw_conn)
                 self._pool.putconn(self._raw_conn)
         except Exception:
             try:
                 self._raw_conn.close()
             except Exception:
                 pass
+            _drop_connection_metadata(self._raw_conn)
 
     def _table_info(self, sql: str) -> StaticCursor:
         match = re.search(r"pragma\s+table_info\((?:\"|')?([^\"')]+)(?:\"|')?\)", sql, re.IGNORECASE)
@@ -212,6 +218,77 @@ def _pool_size_from_env(key: str, default: int) -> int:
         return max(1, int(os.getenv(key, str(default))))
     except (TypeError, ValueError):
         return default
+
+
+def _pool_recycle_seconds_from_env(key: str, default: float) -> float:
+    try:
+        return max(0.0, float(os.getenv(key, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _pool_connection_recycle_seconds() -> float:
+    return _pool_recycle_seconds_from_env("DB_POOL_RECYCLE_SECONDS", 300.0)
+
+
+def _pool_connection_max_idle_seconds() -> float:
+    return _pool_recycle_seconds_from_env("DB_POOL_MAX_IDLE_SECONDS", 60.0)
+
+
+def _connection_metadata(conn: Any, now: Optional[float] = None) -> Dict[str, float]:
+    current = time.monotonic() if now is None else now
+    key = id(conn)
+    with _POSTGRES_CONNECTION_METADATA_LOCK:
+        metadata = _POSTGRES_CONNECTION_METADATA.get(key)
+        if metadata is None:
+            metadata = {
+                "created_at": current,
+                "last_returned_at": current,
+            }
+            _POSTGRES_CONNECTION_METADATA[key] = metadata
+        return dict(metadata)
+
+
+def _mark_connection_returned(conn: Any) -> None:
+    current = time.monotonic()
+    key = id(conn)
+    with _POSTGRES_CONNECTION_METADATA_LOCK:
+        metadata = _POSTGRES_CONNECTION_METADATA.get(key)
+        if metadata is None:
+            metadata = {"created_at": current}
+        metadata["last_returned_at"] = current
+        _POSTGRES_CONNECTION_METADATA[key] = metadata
+
+
+def _drop_connection_metadata(conn: Any) -> None:
+    with _POSTGRES_CONNECTION_METADATA_LOCK:
+        _POSTGRES_CONNECTION_METADATA.pop(id(conn), None)
+
+
+def _mark_pool_connections_created(pool: Any) -> None:
+    available = getattr(pool, "_pool", None)
+    if available is None:
+        return
+    current = time.monotonic()
+    with _POSTGRES_CONNECTION_METADATA_LOCK:
+        for conn in available:
+            _POSTGRES_CONNECTION_METADATA[id(conn)] = {
+                "created_at": current,
+                "last_returned_at": current,
+            }
+
+
+def _connection_recycle_reason(conn: Any, metadata: Dict[str, float], now: Optional[float] = None) -> Optional[str]:
+    if getattr(conn, "closed", 0):
+        return "closed"
+    current = time.monotonic() if now is None else now
+    recycle_seconds = _pool_connection_recycle_seconds()
+    if recycle_seconds > 0 and current - float(metadata.get("created_at") or current) >= recycle_seconds:
+        return "max_age"
+    max_idle_seconds = _pool_connection_max_idle_seconds()
+    if max_idle_seconds > 0 and current - float(metadata.get("last_returned_at") or current) >= max_idle_seconds:
+        return "max_idle"
+    return None
 
 
 def _pool_snapshot(pool: Any) -> Dict[str, Optional[int]]:
@@ -286,6 +363,7 @@ def _get_postgres_pool() -> Any:
             database_url,
             cursor_factory=psycopg2.extras.RealDictCursor,
         )
+        _mark_pool_connections_created(_POSTGRES_POOL)
         _POSTGRES_POOL_DSN = database_url
         return _POSTGRES_POOL
 
@@ -296,6 +374,10 @@ def _connect_postgres() -> PostgresConnection:
         "pool_before": None,
         "pool_after": None,
         "pool_getconn": 0.0,
+        "pool_recycled": False,
+        "pool_recycle_reason": None,
+        "pool_connection_age_seconds": None,
+        "pool_connection_idle_seconds": None,
         "ensure_schema": 0.0,
         "postgres_ready_after": None,
         "schema_ensure_calls": _POSTGRES_SCHEMA_ENSURE_CALLS,
@@ -303,7 +385,26 @@ def _connect_postgres() -> PostgresConnection:
     pool = _get_postgres_pool()
     connect_timing["pool_before"] = _pool_snapshot(pool)
     started = time.perf_counter()
-    conn = pool.getconn()
+    conn = None
+    for attempt in range(3):
+        conn = pool.getconn()
+        now = time.monotonic()
+        metadata = _connection_metadata(conn, now=now)
+        connect_timing["pool_connection_age_seconds"] = round(now - float(metadata.get("created_at") or now), 3)
+        connect_timing["pool_connection_idle_seconds"] = round(now - float(metadata.get("last_returned_at") or now), 3)
+        reason = _connection_recycle_reason(conn, metadata, now=now)
+        if reason is None:
+            break
+        connect_timing["pool_recycled"] = True
+        connect_timing["pool_recycle_reason"] = reason
+        _drop_connection_metadata(conn)
+        pool.putconn(conn, close=True)
+        conn = None
+        if attempt == 2:
+            raise RuntimeError(f"Unable to acquire a reusable PostgreSQL connection after recycling ({reason}).")
+    if conn is None:
+        conn = pool.getconn()
+        _connection_metadata(conn)
     connect_timing["pool_getconn"] = time.perf_counter() - started
     connect_timing["pool_after"] = _pool_snapshot(pool)
     wrapped = PostgresConnection(conn, pool=pool, connect_timing=connect_timing)
@@ -330,6 +431,8 @@ def close_postgres_pool() -> None:
             _POSTGRES_POOL.closeall()
             _POSTGRES_POOL = None
             _POSTGRES_POOL_DSN = None
+    with _POSTGRES_CONNECTION_METADATA_LOCK:
+        _POSTGRES_CONNECTION_METADATA.clear()
 
 
 def connect() -> Any:
