@@ -1,6 +1,7 @@
 import os
 import time
 import logging
+from uuid import uuid4
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -36,6 +37,13 @@ def search_layout_candidates(
         "pool_before": None,
         "pool_after": None,
         "cursor_create": 0.0,
+        "backend_pid_query": None,
+        "backend_pid": None,
+        "backend_pid_error": None,
+        "query_correlation_id": None,
+        "connection_before": None,
+        "connection_before_execute": None,
+        "connection_after_execute": None,
         "execute": 0.0,
         "fetch": 0.0,
         "db_total": 0.0,
@@ -75,7 +83,14 @@ def search_layout_candidates(
         breakdown["pool_after"] = connect_timing.get("pool_after")
     with conn:
         if hasattr(conn, "execute_timed"):
-            cursor, execute_timing = conn.execute_timed(
+            query_correlation_id = f"layout_match:{uuid4().hex[:12]}:page:{page_number}"
+            breakdown["query_correlation_id"] = query_correlation_id
+            execute_method = (
+                conn.execute_timed_diagnostics
+                if hasattr(conn, "execute_timed_diagnostics")
+                else conn.execute_timed
+            )
+            cursor, execute_timing = execute_method(
                 """
                 SELECT
                     tv.id AS template_id,
@@ -127,8 +142,16 @@ def search_layout_candidates(
                 ORDER BY tv.updated_at DESC, tp.page_number ASC
                 """,
                 (page_number,),
+                diagnostics=True,
+                query_comment=query_correlation_id,
             )
             breakdown["cursor_create"] = float(execute_timing.get("cursor_create") or 0.0)
+            breakdown["backend_pid_query"] = execute_timing.get("backend_pid_query")
+            breakdown["backend_pid"] = execute_timing.get("backend_pid")
+            breakdown["backend_pid_error"] = execute_timing.get("backend_pid_error")
+            breakdown["connection_before"] = execute_timing.get("connection_before")
+            breakdown["connection_before_execute"] = execute_timing.get("connection_before_execute")
+            breakdown["connection_after_execute"] = execute_timing.get("connection_after_execute")
             breakdown["execute"] = float(execute_timing.get("execute") or 0.0)
         else:
             execute_started = time.perf_counter()

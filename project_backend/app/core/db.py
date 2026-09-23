@@ -99,6 +99,15 @@ class PostgresConnection:
         return cursor
 
     def execute_timed(self, sql: str, params: Sequence[Any] = ()) -> tuple[Any, Dict[str, float]]:
+        return self.execute_timed_diagnostics(sql, params, diagnostics=False)
+
+    def execute_timed_diagnostics(
+        self,
+        sql: str,
+        params: Sequence[Any] = (),
+        diagnostics: bool = False,
+        query_comment: Optional[str] = None,
+    ) -> tuple[Any, Dict[str, Any]]:
         normalized = sql.strip()
         lowered = normalized.lower()
         if lowered.startswith("pragma foreign_keys"):
@@ -109,15 +118,51 @@ class PostgresConnection:
             return cursor, {"cursor_create": 0.0, "execute": time.perf_counter() - started}
 
         translated_sql = _translate_sql(normalized)
+        if query_comment:
+            safe_comment = re.sub(r"[^A-Za-z0-9_.:-]", "_", query_comment)[:120]
+            translated_sql = f"/* {safe_comment} */\n{translated_sql}"
+        timing: Dict[str, Any] = {}
+        if diagnostics:
+            timing["connection_before"] = self.connection_diagnostics()
+            pid_started = time.perf_counter()
+            try:
+                pid_cursor = self._raw_conn.cursor()
+                pid_cursor.execute("SELECT pg_backend_pid() AS pid")
+                row = pid_cursor.fetchone()
+                timing["backend_pid"] = row["pid"] if isinstance(row, dict) else row[0]
+                pid_cursor.close()
+            except Exception as error:
+                timing["backend_pid_error"] = f"{type(error).__name__}: {error}"
+            timing["backend_pid_query"] = time.perf_counter() - pid_started
+            timing["connection_before_execute"] = self.connection_diagnostics()
         started = time.perf_counter()
         cursor = self._raw_conn.cursor()
         cursor_create_elapsed = time.perf_counter() - started
         started = time.perf_counter()
         cursor.execute(translated_sql, tuple(params or ()))
         execute_elapsed = time.perf_counter() - started
-        return cursor, {
+        timing.update({
             "cursor_create": cursor_create_elapsed,
             "execute": execute_elapsed,
+        })
+        if diagnostics:
+            timing["connection_after_execute"] = self.connection_diagnostics()
+        return cursor, timing
+
+    def connection_diagnostics(self) -> Dict[str, Any]:
+        return {
+            "closed": getattr(self._raw_conn, "closed", None),
+            "status": getattr(self._raw_conn, "status", None),
+            "transaction_status": (
+                self._raw_conn.get_transaction_status()
+                if hasattr(self._raw_conn, "get_transaction_status")
+                else None
+            ),
+            "backend_pid": (
+                self._raw_conn.get_backend_pid()
+                if hasattr(self._raw_conn, "get_backend_pid")
+                else None
+            ),
         }
 
     def commit(self) -> None:
