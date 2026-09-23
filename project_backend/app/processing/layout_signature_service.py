@@ -2,8 +2,9 @@ import json
 import logging
 import math
 import os
+import time
 from collections import Counter, defaultdict
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from app.core.json_utils import jsonb_load
 
@@ -277,9 +278,15 @@ def _spatial_similarity(query: Dict[str, Any], template: Dict[str, Any]) -> floa
     return sum(scores) / len(scores)
 
 
-def compare_layout_signatures(query: Dict[str, Any], template: Dict[str, Any]) -> Dict[str, Any]:
+def compare_layout_signatures(
+    query: Dict[str, Any],
+    template: Dict[str, Any],
+    timing: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
+    total_started = time.perf_counter()
     ignored_regions = template.get("ignored_regions") if isinstance(template.get("ignored_regions"), list) else []
     if ignored_regions:
+        step_started = time.perf_counter()
         query_regions = [
             region for region in query.get("regions", []) if not _region_inside_any_mask(region, ignored_regions)
         ]
@@ -288,12 +295,18 @@ def compare_layout_signatures(query: Dict[str, Any], template: Dict[str, Any]) -
         ]
         query = {**query, **_metrics_for_regions(query_regions), "regions": query_regions}
         template = {**template, **_metrics_for_regions(template_regions), "regions": template_regions}
+        if timing is not None:
+            timing["ignored_region_filter"] = timing.get("ignored_region_filter", 0.0) + (time.perf_counter() - step_started)
 
+    step_started = time.perf_counter()
     aspect_score = _ratio_similarity(
         float(query.get("page_aspect_ratio") or 0.0),
         float(template.get("page_aspect_ratio") or 0.0),
     )
+    if timing is not None:
+        timing["aspect"] = timing.get("aspect", 0.0) + (time.perf_counter() - step_started)
 
+    step_started = time.perf_counter()
     count_scores = []
     area_scores = []
     grid_scores = []
@@ -320,11 +333,19 @@ def compare_layout_signatures(query: Dict[str, Any], template: Dict[str, Any]) -
     label_count_score = sum(count_scores) / len(count_scores)
     area_distribution_score = sum(area_scores) / len(area_scores)
     grid_score = sum(grid_scores) / len(grid_scores)
+    if timing is not None:
+        timing["prefilter_components"] = timing.get("prefilter_components", 0.0) + (time.perf_counter() - step_started)
+
+    step_started = time.perf_counter()
     prefilter_rejected = (
         label_count_score < COUNT_PREFILTER_THRESHOLD
         and area_distribution_score < AREA_PREFILTER_THRESHOLD
     )
+    if timing is not None:
+        timing["prefilter_gate"] = timing.get("prefilter_gate", 0.0) + (time.perf_counter() - step_started)
     if prefilter_rejected:
+        if timing is not None:
+            timing["total"] = timing.get("total", 0.0) + (time.perf_counter() - total_started)
         return {
             "score": 0.0,
             "aspect_score": round(aspect_score, 4),
@@ -339,7 +360,12 @@ def compare_layout_signatures(query: Dict[str, Any], template: Dict[str, Any]) -
             "count_prefilter_threshold": COUNT_PREFILTER_THRESHOLD,
             "area_prefilter_threshold": AREA_PREFILTER_THRESHOLD,
         }
+    step_started = time.perf_counter()
     spatial_score = _spatial_similarity(query, template)
+    if timing is not None:
+        timing["spatial"] = timing.get("spatial", 0.0) + (time.perf_counter() - step_started)
+
+    step_started = time.perf_counter()
     final_score = _clamp(
         (aspect_score * 0.15)
         + (label_count_score * 0.20)
@@ -347,6 +373,9 @@ def compare_layout_signatures(query: Dict[str, Any], template: Dict[str, Any]) -
         + (grid_score * 0.20)
         + (spatial_score * 0.25)
     )
+    if timing is not None:
+        timing["final_score"] = timing.get("final_score", 0.0) + (time.perf_counter() - step_started)
+        timing["total"] = timing.get("total", 0.0) + (time.perf_counter() - total_started)
     return {
         "score": round(final_score, 4),
         "aspect_score": round(aspect_score, 4),

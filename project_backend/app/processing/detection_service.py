@@ -89,6 +89,49 @@ def _timing_ms_map(timing: Optional[Dict[str, Any]]) -> Dict[str, Optional[float
     return result
 
 
+_TEMPLATE_MATCHING_TIMING_KEYS = {
+    "connect",
+    "cursor_create",
+    "execute",
+    "fetch",
+    "db_total",
+    "active_filter",
+    "signature_parse",
+    "layout_compare",
+    "ignored_region_filter",
+    "aspect",
+    "prefilter_components",
+    "prefilter_gate",
+    "spatial",
+    "final_score",
+    "total",
+    "candidate_build",
+    "best_by_template_update",
+    "sort",
+    "top_k_slice",
+    "include_template_append",
+    "serialization",
+}
+
+
+def _template_matching_timing_ms(item: Dict[str, Any]) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    for key, value in item.items():
+        if isinstance(value, dict):
+            result[key] = _template_matching_timing_ms(value)
+        elif key in _TEMPLATE_MATCHING_TIMING_KEYS and isinstance(value, (int, float)) and not isinstance(value, bool):
+            result[f"{key}_ms"] = _ms(float(value))
+        else:
+            result[key] = value
+    return result
+
+
+def _template_matching_timing_ms_list(items: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    return [_template_matching_timing_ms(item) for item in items if isinstance(item, dict)]
+
+
 def _db_timing_ms(timing: Optional[Dict[str, Any]]) -> Dict[str, Optional[float]]:
     return _timing_ms_map(timing)
 
@@ -1653,6 +1696,7 @@ def _detect_page(
         page_number=page_index,
         limit=retrieval_limit,
         include_template_id=include_template_id,
+        timing=timing,
     )
     if timing is not None:
         timing["template_matching"] = timing.get("template_matching", 0.0) + (time.perf_counter() - step_started)
@@ -2003,8 +2047,20 @@ def _detection_timing_debug(
                 }
             )
 
+    total_elapsed = time.perf_counter() - total_started
+    top_level_keys = [
+        "prepare_pages",
+        "layout_analysis",
+        "signature_build",
+        "template_matching",
+        "verification",
+        "candidate_aggregation",
+        "auto_roi",
+    ]
+    top_level_measured = sum(float(timing.get(key) or 0.0) for key in top_level_keys)
+
     return {
-        "total_detection_ms": _ms(time.perf_counter() - total_started),
+        "total_detection_ms": _ms(total_elapsed),
         "prepare_pages_ms": _ms(timing.get("prepare_pages")),
         "prepare_pages_breakdown": {
             "pdf_convert_ms": _ms(timing.get("prepare_pdf_convert")),
@@ -2016,9 +2072,12 @@ def _detection_timing_debug(
         "layout_analysis_ms": _ms(timing.get("layout_analysis")),
         "signature_build_ms": _ms(timing.get("signature_build")),
         "template_matching_ms": _ms(timing.get("template_matching")),
+        "template_matching_breakdown": _template_matching_timing_ms_list(timing.get("layout_candidate_searches")),
         "verification_ms": _ms(timing.get("verification")),
         "candidate_aggregation_ms": _ms(timing.get("candidate_aggregation")),
         "auto_roi_ms": _ms(timing.get("auto_roi")),
+        "top_level_measured_ms": _ms(top_level_measured),
+        "unaccounted_ms": _ms(max(0.0, total_elapsed - top_level_measured)),
         "request_cache": dict(request_cache.stats) if request_cache is not None else {},
         "candidates": candidate_timings,
     }
