@@ -12,8 +12,10 @@ from app.core.json_utils import jsonb_load
 logger = logging.getLogger(__name__)
 LABELS = ("text", "table", "image")
 GRID_SIZE = 4
-COUNT_PREFILTER_THRESHOLD = float(os.getenv("LAYOUT_COUNT_PREFILTER_THRESHOLD", "0.45"))
-AREA_PREFILTER_THRESHOLD = float(os.getenv("LAYOUT_AREA_PREFILTER_THRESHOLD", "0.45"))
+COUNT_PREFILTER_THRESHOLD = float(os.getenv("LAYOUT_COUNT_PREFILTER_THRESHOLD", "0.55"))
+AREA_PREFILTER_THRESHOLD = float(os.getenv("LAYOUT_AREA_PREFILTER_THRESHOLD", "0.55"))
+GRID_PREFILTER_THRESHOLD = float(os.getenv("LAYOUT_GRID_PREFILTER_THRESHOLD", "0.55"))
+ASPECT_PREFILTER_THRESHOLD = float(os.getenv("LAYOUT_ASPECT_PREFILTER_THRESHOLD", "0.70"))
 
 
 def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
@@ -337,10 +339,20 @@ def compare_layout_signatures(
         timing["prefilter_components"] = timing.get("prefilter_components", 0.0) + (time.perf_counter() - step_started)
 
     step_started = time.perf_counter()
-    prefilter_rejected = (
+    count_area_rejected = (
         label_count_score < COUNT_PREFILTER_THRESHOLD
         and area_distribution_score < AREA_PREFILTER_THRESHOLD
     )
+    structural_rejected = (
+        grid_score < GRID_PREFILTER_THRESHOLD
+        and aspect_score < ASPECT_PREFILTER_THRESHOLD
+    )
+    prefilter_reasons = []
+    if count_area_rejected:
+        prefilter_reasons.append("label_count_and_area_distribution_below_threshold")
+    if structural_rejected:
+        prefilter_reasons.append("grid_and_aspect_below_threshold")
+    prefilter_rejected = bool(prefilter_reasons)
     if timing is not None:
         timing["prefilter_gate"] = timing.get("prefilter_gate", 0.0) + (time.perf_counter() - step_started)
     if prefilter_rejected:
@@ -356,9 +368,14 @@ def compare_layout_signatures(
             "query_region_count": int(query.get("region_count") or 0),
             "template_region_count": int(template.get("region_count") or 0),
             "prefilter_rejected": True,
-            "prefilter_reason": "label_count_and_area_distribution_below_threshold",
+            "prefilter_reason": prefilter_reasons[0],
+            "prefilter_reasons": prefilter_reasons,
             "count_prefilter_threshold": COUNT_PREFILTER_THRESHOLD,
             "area_prefilter_threshold": AREA_PREFILTER_THRESHOLD,
+            "grid_prefilter_threshold": GRID_PREFILTER_THRESHOLD,
+            "aspect_prefilter_threshold": ASPECT_PREFILTER_THRESHOLD,
+            "count_area_rejected": count_area_rejected,
+            "structural_rejected": structural_rejected,
         }
     step_started = time.perf_counter()
     spatial_score = _spatial_similarity(query, template)
@@ -386,6 +403,12 @@ def compare_layout_signatures(
         "query_region_count": int(query.get("region_count") or 0),
         "template_region_count": int(template.get("region_count") or 0),
         "prefilter_rejected": False,
+        "prefilter_reason": None,
+        "prefilter_reasons": [],
         "count_prefilter_threshold": COUNT_PREFILTER_THRESHOLD,
         "area_prefilter_threshold": AREA_PREFILTER_THRESHOLD,
+        "grid_prefilter_threshold": GRID_PREFILTER_THRESHOLD,
+        "aspect_prefilter_threshold": ASPECT_PREFILTER_THRESHOLD,
+        "count_area_rejected": count_area_rejected,
+        "structural_rejected": structural_rejected,
     }

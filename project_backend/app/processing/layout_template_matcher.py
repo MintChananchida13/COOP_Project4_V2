@@ -55,6 +55,8 @@ def search_layout_candidates(
         "layout_compare_breakdown": {},
         "compared_count": 0,
         "prefilter_rejected_count": 0,
+        "count_area_rejected_count": 0,
+        "structural_rejected_count": 0,
         "spatial_evaluated_count": 0,
         "candidate_build": 0.0,
         "best_by_template_update": 0.0,
@@ -232,6 +234,8 @@ def search_layout_candidates(
     best_by_template: Dict[str, Dict[str, Any]] = {}
     compared_count = 0
     prefilter_rejected_count = 0
+    count_area_rejected_count = 0
+    structural_rejected_count = 0
     spatial_evaluated_count = 0
     compare_elapsed = 0.0
     for row in rows:
@@ -281,13 +285,22 @@ def search_layout_candidates(
         compared_count += 1
         if similarity.get("prefilter_rejected"):
             prefilter_rejected_count += 1
+            if similarity.get("count_area_rejected"):
+                count_area_rejected_count += 1
+            if similarity.get("structural_rejected"):
+                structural_rejected_count += 1
             logger.debug(
-                "[LAYOUT] prefilter rejected template_id=%s label_count_score=%s area_distribution_score=%s count_threshold=%s area_threshold=%s",
+                "[LAYOUT] prefilter rejected template_id=%s reason=%s label_count_score=%s area_distribution_score=%s grid_score=%s aspect_score=%s count_threshold=%s area_threshold=%s grid_threshold=%s aspect_threshold=%s",
                 template_id,
+                similarity.get("prefilter_reason"),
                 similarity.get("label_count_score"),
                 similarity.get("area_distribution_score"),
+                similarity.get("grid_score"),
+                similarity.get("aspect_score"),
                 similarity.get("count_prefilter_threshold"),
                 similarity.get("area_prefilter_threshold"),
+                similarity.get("grid_prefilter_threshold"),
+                similarity.get("aspect_prefilter_threshold"),
             )
             continue
         spatial_evaluated_count += 1
@@ -368,6 +381,8 @@ def search_layout_candidates(
     breakdown["returned_count"] = len(limited)
     breakdown["compared_count"] = compared_count
     breakdown["prefilter_rejected_count"] = prefilter_rejected_count
+    breakdown["count_area_rejected_count"] = count_area_rejected_count
+    breakdown["structural_rejected_count"] = structural_rejected_count
     breakdown["spatial_evaluated_count"] = spatial_evaluated_count
     breakdown["serialization"] = time.perf_counter() - serialization_started
     breakdown["total"] = time.perf_counter() - total_started
