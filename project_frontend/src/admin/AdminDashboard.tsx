@@ -6,6 +6,7 @@ import { ArrowUpRight, BadgeCheck, CircleX, FileClock, FilePenLine } from "lucid
 import { EmptyState, StatusBadge } from "../shared/ui";
 import { fetchAdminDashboard } from "./adminApi";
 import { AdminDashboardSummary } from "./adminTypes";
+import { formatProcessingLogDateTime, processingLogsMock, ProcessingLog } from "./processingLogsMock";
 
 const formatDateTime = (value?: string) => {
   if (!value) return "ไม่พบเวลาอัปเดต";
@@ -66,6 +67,7 @@ export default function AdminDashboard() {
 
   const recentRequests = dashboard.latestRequests;
   const recentTemplates = dashboard.latestTemplates;
+  const recentProcessingLogs = processingLogsMock.slice(0, 5);
 
   return (
     <section className="space-y-4">
@@ -133,7 +135,66 @@ export default function AdminDashboard() {
           emptyText="ยังไม่มี Template"
         />
       </div>
+
+      <RecentProcessingLogs logs={recentProcessingLogs} />
     </section>
+  );
+}
+
+function RecentProcessingLogs({ logs }: { logs: ProcessingLog[] }) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <h2 className="text-sm font-black tracking-tight text-slate-950">Recent Processing Logs</h2>
+          <p className="text-xs font-semibold text-slate-500">ประวัติการประมวลผลเอกสารล่าสุด</p>
+        </div>
+        <Link href="/admin/logs" className="inline-flex shrink-0 items-center gap-1 text-xs font-black text-slate-600 hover:text-slate-950">
+          ดู Log ทั้งหมด
+          <ArrowUpRight size={12} />
+        </Link>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="min-w-[760px] w-full text-left">
+          <thead className="border-b border-slate-100 text-xs font-black text-slate-500">
+            <tr>
+              <th className="py-2 pr-3">เวลา</th>
+              <th className="px-3 py-2">เอกสาร</th>
+              <th className="px-3 py-2">Template</th>
+              <th className="px-3 py-2">ผลการตรวจจับ</th>
+              <th className="py-2 pl-3">สถานะ</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 text-sm">
+            {logs.map((log) => (
+              <tr key={log.id} className="group hover:bg-slate-50">
+                <td className="whitespace-nowrap py-3 pr-3 text-xs font-bold text-slate-500">
+                  <Link href={`/admin/logs/${log.id}`} className="block">
+                    {formatProcessingLogDateTime(log.createdAt)}
+                  </Link>
+                </td>
+                <td className="px-3 py-3 font-black text-slate-900">
+                  <Link href={`/admin/logs/${log.id}`} className="block group-hover:text-blue-700">
+                    {log.documentName}
+                  </Link>
+                </td>
+                <td className="px-3 py-3 font-semibold text-slate-600">{log.templateDetection.selectedTemplate || "-"}</td>
+                <td className="px-3 py-3">
+                  <StatusBadge
+                    status={log.templateDetection.matched ? "Matched" : "No Match"}
+                    tone={log.templateDetection.matched ? "success" : "warning"}
+                  />
+                </td>
+                <td className="py-3 pl-3">
+                  <StatusBadge status={log.status === "completed" ? "สำเร็จ" : "ล้มเหลว"} tone={log.status === "completed" ? "success" : "danger"} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
