@@ -529,13 +529,37 @@ class AnchorProjectionService:
         ocr_cache = page_detection_cache if page_detection_cache is not None else {}
         refined_count = 0
         fallback_count = 0
+        audit_fields: List[Dict[str, Any]] = []
 
         for projected in projected_fields:
             source = fields_by_id.get(projected.get("field_id")) or {}
             data_type = str(source.get("data_type") or "text").lower()
             extraction_method = str(source.get("extraction_method") or "ocr_text").lower()
+            roi_mode = str(source.get("roi_mode") or "fixed").strip().lower()
+            if roi_mode == "fix":
+                roi_mode = "fixed"
+            if roi_mode not in {"fixed", "flexible"}:
+                roi_mode = "fixed"
             projected_roi = projected.get("projected_roi") or {}
             page_number = int(projected.get("page_number") or projected_roi.get("page_number") or 1)
+            audit_entry: Dict[str, Any] = {
+                "field_id": projected.get("field_id"),
+                "field_name": source.get("field_name") or projected.get("field_name"),
+                "field_type": data_type,
+                "roi_mode": roi_mode,
+                "extraction_method": extraction_method,
+                "page_number": page_number,
+                "roi_before_adaptive": projected_roi,
+                "roi_after_adaptive": projected_roi,
+                "entered_adaptive_refinement": False,
+                "needed_detect_text_boxes": False,
+                "caused_detect_text_boxes": False,
+                "detect_text_boxes_cache_hit": False,
+                "adaptive_status": "not_applicable",
+                "adaptive_fallback_reason": None,
+                "roi_changed_by_adaptive": False,
+                "skip_reason": None,
+            }
             projected["adaptive_status"] = "not_applicable"
             projected["adaptive_roi"] = projected_roi
             projected["adaptive_search_region"] = None
@@ -543,6 +567,8 @@ class AnchorProjectionService:
             projected["adaptive_fallback_reason"] = None
 
             if data_type in {"image", "table"} or extraction_method in {"extract_image", "ocr_table"}:
+                audit_entry["skip_reason"] = "non_text_or_table_image_extraction"
+                audit_fields.append(audit_entry)
                 continue
             if not projected.get("projection_valid", True):
                 validation_result = projected.get("projection_validation_result") or {"passed": False, "errors": ["projected_roi_invalid"]}
@@ -556,6 +582,15 @@ class AnchorProjectionService:
                 projected["adaptive_ocr_confidence"] = 0.0
                 projected["adaptive_validation_result"] = validation_result
                 fallback_count += 1
+                audit_entry.update(
+                    {
+                        "entered_adaptive_refinement": True,
+                        "adaptive_status": "fallback",
+                        "adaptive_fallback_reason": reason,
+                        "skip_reason": "projection_invalid",
+                    }
+                )
+                audit_fields.append(audit_entry)
                 continue
 
             image_path = page_image_paths.get(page_number)
@@ -568,19 +603,33 @@ class AnchorProjectionService:
                 projected["adaptive_ocr_confidence"] = 0.0
                 projected["adaptive_validation_result"] = {"passed": False, "errors": ["query_page_missing"]}
                 fallback_count += 1
+                audit_entry.update(
+                    {
+                        "entered_adaptive_refinement": True,
+                        "adaptive_status": "fallback",
+                        "adaptive_fallback_reason": "query_page_missing",
+                        "skip_reason": "query_page_missing",
+                    }
+                )
+                audit_fields.append(audit_entry)
                 continue
 
             try:
+                audit_entry["entered_adaptive_refinement"] = True
+                audit_entry["needed_detect_text_boxes"] = True
+                cache_hit_before_call = page_number in ocr_cache
                 if page_number not in ocr_cache:
                     step_started = time.perf_counter()
                     detection_timing: Dict[str, Any] = {}
                     ocr_cache[page_number] = detect_text_boxes(image_path, timing=detection_timing)
+                    audit_entry["caused_detect_text_boxes"] = True
                     if timing is not None:
                         timing["adaptive_detect_text_boxes"] = float(timing.get("adaptive_detect_text_boxes") or 0.0) + (time.perf_counter() - step_started)
                         timing["adaptive_detect_text_boxes_misses"] = int(timing.get("adaptive_detect_text_boxes_misses") or 0) + 1
                         timing.setdefault("adaptive_detect_text_boxes_breakdowns", []).append(detection_timing)
                 elif timing is not None:
                     timing["adaptive_detect_text_boxes_cache_hits"] = int(timing.get("adaptive_detect_text_boxes_cache_hits") or 0) + 1
+                audit_entry["detect_text_boxes_cache_hit"] = cache_hit_before_call
                 page_ocr = ocr_cache[page_number]
             except (LayoutAnalysisUnavailableError, ValueError, RuntimeError) as error:
                 projected["adaptive_status"] = "fallback"
@@ -591,6 +640,14 @@ class AnchorProjectionService:
                 projected["adaptive_ocr_confidence"] = 0.0
                 projected["adaptive_validation_result"] = {"passed": False, "errors": ["text_detection_unavailable"]}
                 fallback_count += 1
+                audit_entry.update(
+                    {
+                        "adaptive_status": "fallback",
+                        "adaptive_fallback_reason": f"text_detection_unavailable: {error}",
+                        "skip_reason": "text_detection_unavailable",
+                    }
+                )
+                audit_fields.append(audit_entry)
                 continue
 
             image_width = max(1.0, float(page_ocr.get("image_width") or 1.0))
@@ -621,12 +678,31 @@ class AnchorProjectionService:
             projected["adaptive_ocr_confidence"] = adaptive["ocr_confidence"]
             projected["adaptive_validation_result"] = adaptive["validation_result"]
             projected["adaptive_fallback_reason"] = adaptive["fallback_reason"]
+            audit_entry.update(
+                {
+                    "roi_after_adaptive": adaptive["adaptive_roi"],
+                    "adaptive_status": adaptive["status"],
+                    "adaptive_fallback_reason": adaptive["fallback_reason"],
+                    "adaptive_confidence": adaptive["adaptive_confidence"],
+                    "adaptive_word_count": adaptive["word_count"],
+                    "adaptive_coverage": adaptive["coverage"],
+                    "adaptive_ocr_confidence": adaptive["ocr_confidence"],
+                    "roi_changed_by_adaptive": adaptive["adaptive_roi"] != projected_roi,
+                }
+            )
+            audit_fields.append(audit_entry)
             if adaptive["status"] == "refined":
                 refined_count += 1
             else:
                 fallback_count += 1
 
         adaptive_fields = [field for field in projected_fields if field.get("adaptive_status") in {"refined", "fallback"}]
+        adaptive_audit_candidates = [field for field in audit_fields if field.get("entered_adaptive_refinement")]
+        fixed_audit_candidates = [field for field in adaptive_audit_candidates if field.get("roi_mode") == "fixed"]
+        flexible_audit_candidates = [field for field in adaptive_audit_candidates if field.get("roi_mode") == "flexible"]
+        fixed_changed = [field for field in fixed_audit_candidates if field.get("roi_changed_by_adaptive")]
+        flexible_changed = [field for field in flexible_audit_candidates if field.get("roi_changed_by_adaptive")]
+        det_caused_fields = [field for field in audit_fields if field.get("caused_detect_text_boxes")]
         confidence_values = [float(field.get("adaptive_confidence") or 0.0) for field in adaptive_fields]
         coverage_values = [float(field.get("adaptive_coverage") or 0.0) for field in adaptive_fields]
         ocr_confidence_values = [float(field.get("adaptive_ocr_confidence") or 0.0) for field in adaptive_fields]
@@ -638,6 +714,28 @@ class AnchorProjectionService:
             "average_coverage": round(sum(coverage_values) / len(coverage_values), 4) if coverage_values else 0.0,
             "average_ocr_confidence": round(sum(ocr_confidence_values) / len(ocr_confidence_values), 4) if ocr_confidence_values else 0.0,
             "search_padding_ratio": self.adaptive_roi.search_padding_ratio,
+            "audit": {
+                "field_count": len(audit_fields),
+                "adaptive_candidate_count": len(adaptive_audit_candidates),
+                "fixed_candidate_count": len(fixed_audit_candidates),
+                "flexible_candidate_count": len(flexible_audit_candidates),
+                "fixed_roi_changed_count": len(fixed_changed),
+                "flexible_roi_changed_count": len(flexible_changed),
+                "detect_text_boxes_trigger_count": len(det_caused_fields),
+                "detect_text_boxes_trigger_fields": [
+                    {
+                        "field_id": field.get("field_id"),
+                        "field_name": field.get("field_name"),
+                        "roi_mode": field.get("roi_mode"),
+                        "field_type": field.get("field_type"),
+                        "extraction_method": field.get("extraction_method"),
+                        "page_number": field.get("page_number"),
+                    }
+                    for field in det_caused_fields
+                ],
+                "can_skip_full_page_det_if_no_flexible_fields": len(flexible_audit_candidates) == 0,
+                "fields": audit_fields,
+            },
         }
 
     def refine_projected_fields(
