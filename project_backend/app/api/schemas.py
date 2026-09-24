@@ -175,6 +175,24 @@ class OcrActiveModelsUpdate(BaseModel):
     text_recognition_model_id: str = Field(validation_alias=AliasChoices("text_recognition_model_id", "textRecognitionModelId"))
 
 
+class ProcessingLogUpsertRequest(BaseModel):
+    processing_run_id: str = Field(validation_alias=AliasChoices("processing_run_id", "processingRunId"))
+    document_name: Optional[str] = Field(default=None, validation_alias=AliasChoices("document_name", "documentName"))
+    user_email: Optional[str] = Field(default=None, validation_alias=AliasChoices("user_email", "userEmail"))
+    source_file_id: Optional[str] = Field(default=None, validation_alias=AliasChoices("source_file_id", "sourceFileId"))
+    source_file_name: Optional[str] = Field(default=None, validation_alias=AliasChoices("source_file_name", "sourceFileName"))
+    status: str = "completed"
+    current_step: Optional[str] = Field(default=None, validation_alias=AliasChoices("current_step", "currentStep"))
+    page_count: int = Field(default=0, ge=0, validation_alias=AliasChoices("page_count", "pageCount"))
+    source_pages: List[Dict[str, Any]] = Field(default_factory=list, validation_alias=AliasChoices("source_pages", "sourcePages"))
+    template_detection: Dict[str, Any] = Field(default_factory=dict, validation_alias=AliasChoices("template_detection", "templateDetection"))
+    matched_template: Optional[Dict[str, Any]] = Field(default=None, validation_alias=AliasChoices("matched_template", "matchedTemplate"))
+    roi_snapshot: List[Dict[str, Any]] = Field(default_factory=list, validation_alias=AliasChoices("roi_snapshot", "roiSnapshot"))
+    ocr_original: List[Dict[str, Any]] = Field(default_factory=list, validation_alias=AliasChoices("ocr_original", "ocrOriginal"))
+    ground_truth: List[Dict[str, Any]] = Field(default_factory=list, validation_alias=AliasChoices("ground_truth", "groundTruth"))
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class TemplateVersionCreate(BaseModel):
     request_id: Optional[str] = None
     base_template_id: Optional[str] = None

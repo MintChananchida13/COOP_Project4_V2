@@ -451,6 +451,84 @@ class GlobalSettingsService:
         return settings["models"][normalized_kind][0]
 
 
+class ProcessingLogService:
+    def upsert(self, payload: Any) -> Dict[str, Any]:
+        data = payload.model_dump(by_alias=False) if hasattr(payload, "model_dump") else dict(payload or {})
+        processing_run_id = str(data.get("processing_run_id") or "").strip()
+        if not processing_run_id:
+            raise HTTPException(status_code=400, detail="processing_run_id is required")
+
+        log_id = _stub_id("proc_log")
+        with _connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO processing_logs (
+                    id,
+                    processing_run_id,
+                    document_name,
+                    user_email,
+                    source_file_id,
+                    source_file_name,
+                    status,
+                    current_step,
+                    page_count,
+                    source_pages_json,
+                    template_detection_json,
+                    matched_template_json,
+                    roi_snapshot_json,
+                    ocr_original_json,
+                    ground_truth_json,
+                    metadata_json,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT (processing_run_id) DO UPDATE SET
+                    document_name = EXCLUDED.document_name,
+                    user_email = EXCLUDED.user_email,
+                    source_file_id = EXCLUDED.source_file_id,
+                    source_file_name = EXCLUDED.source_file_name,
+                    status = EXCLUDED.status,
+                    current_step = EXCLUDED.current_step,
+                    page_count = EXCLUDED.page_count,
+                    source_pages_json = EXCLUDED.source_pages_json,
+                    template_detection_json = EXCLUDED.template_detection_json,
+                    matched_template_json = EXCLUDED.matched_template_json,
+                    roi_snapshot_json = EXCLUDED.roi_snapshot_json,
+                    ocr_original_json = EXCLUDED.ocr_original_json,
+                    ground_truth_json = EXCLUDED.ground_truth_json,
+                    metadata_json = EXCLUDED.metadata_json,
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING id, processing_run_id, created_at, updated_at
+                """,
+                (
+                    log_id,
+                    processing_run_id,
+                    data.get("document_name"),
+                    data.get("user_email"),
+                    data.get("source_file_id"),
+                    data.get("source_file_name"),
+                    str(data.get("status") or "completed"),
+                    data.get("current_step"),
+                    int(data.get("page_count") or 0),
+                    jsonb_dump(data.get("source_pages") or []),
+                    jsonb_dump(data.get("template_detection") or {}),
+                    jsonb_dump(data.get("matched_template")) if data.get("matched_template") is not None else None,
+                    jsonb_dump(data.get("roi_snapshot") or []),
+                    jsonb_dump(data.get("ocr_original") or []),
+                    jsonb_dump(data.get("ground_truth") or []),
+                    jsonb_dump(data.get("metadata") or {}),
+                ),
+            )
+            row = cursor.fetchone()
+        return {
+            "id": row["id"] if row else log_id,
+            "processing_run_id": processing_run_id,
+            "created_at": row["created_at"] if row else None,
+            "updated_at": row["updated_at"] if row else None,
+        }
+
+
 def _row_to_dict(row: Any) -> Dict[str, Any]:
     return dict(row)
 

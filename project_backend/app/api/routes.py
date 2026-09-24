@@ -33,6 +33,7 @@ from app.api.schemas import (
     TemplateUpdate,
     OcrActiveModelsUpdate,
     OcrModelPayload,
+    ProcessingLogUpsertRequest,
     VerificationStrategyUpdate,
     TemplateVersionCreate,
     TemplateVersionFromRequestCreate,
@@ -44,6 +45,7 @@ from app.business.services import (
     AdminTemplateService,
     EmbeddingService,
     GlobalSettingsService,
+    ProcessingLogService,
     StorageMaintenanceService,
     TemplateRequestService,
     ImageVerificationCategoryService,
@@ -57,6 +59,7 @@ embeddings = EmbeddingService()
 storage_maintenance = StorageMaintenanceService()
 image_categories = ImageVerificationCategoryService()
 global_settings = GlobalSettingsService()
+processing_logs = ProcessingLogService()
 prepublish_detection_jobs_lock = threading.Lock()
 prepublish_detection_jobs: Dict[str, Dict[str, Any]] = {}
 detect_dev_jobs_lock = threading.Lock()
@@ -308,6 +311,11 @@ def get_detect_template_dev_job(job_id: str) -> dict:
         if job.get("status") == "failed":
             response["error"] = job.get("error") or "Detection job failed."
         return {"status": "success", "data": response}
+
+
+@router.post("/processing-logs", response_model=ApiResponse)
+def upsert_processing_log(payload: ProcessingLogUpsertRequest) -> ApiResponse:
+    return ok(processing_logs.upsert(payload))
 
 
 @router.post("/template-requests", response_model=ApiResponse)

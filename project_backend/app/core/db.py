@@ -845,6 +845,28 @@ _POSTGRES_SCHEMA = [
         completed_at TIMESTAMPTZ
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS processing_logs (
+        id TEXT NOT NULL PRIMARY KEY,
+        processing_run_id TEXT NOT NULL UNIQUE,
+        document_name TEXT,
+        user_email TEXT,
+        source_file_id TEXT,
+        source_file_name TEXT,
+        status TEXT NOT NULL DEFAULT 'completed',
+        current_step TEXT,
+        page_count INTEGER NOT NULL DEFAULT 0,
+        source_pages_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        template_detection_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        matched_template_json JSONB,
+        roi_snapshot_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        ocr_original_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        ground_truth_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
     'CREATE INDEX IF NOT EXISTS template_groups_document_type_idx ON template_groups(document_type)',
     'CREATE INDEX IF NOT EXISTS template_versions_group_status_idx ON template_versions(template_group_id, status)',
     'CREATE INDEX IF NOT EXISTS template_versions_status_updated_at_idx ON template_versions(status, updated_at)',
@@ -859,6 +881,8 @@ _POSTGRES_SCHEMA = [
     'CREATE INDEX IF NOT EXISTS publish_jobs_template_version_step_idx ON publish_jobs(template_version_id, step, status)',
     'CREATE INDEX IF NOT EXISTS ocr_jobs_status_requested_at_idx ON ocr_jobs(status, requested_at)',
     'CREATE INDEX IF NOT EXISTS ocr_jobs_template_version_id_idx ON ocr_jobs(template_version_id)',
+    'CREATE INDEX IF NOT EXISTS processing_logs_updated_at_idx ON processing_logs(updated_at)',
+    'CREATE INDEX IF NOT EXISTS processing_logs_user_email_updated_at_idx ON processing_logs(user_email, updated_at)',
     """
     CREATE OR REPLACE VIEW template_versions_view AS
     SELECT

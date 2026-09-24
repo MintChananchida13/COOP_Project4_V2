@@ -83,6 +83,23 @@ type ImageFieldCrop = {
   width: number;
   height: number;
 };
+type ProcessingLogSnapshot = {
+  processingRunId: string;
+  documentName: string;
+  userEmail?: string;
+  sourceFileId?: string;
+  sourceFileName?: string;
+  status: "completed" | "failed";
+  currentStep: string;
+  pageCount: number;
+  sourcePages: Record<string, unknown>[];
+  templateDetection: Record<string, unknown>;
+  matchedTemplate: Record<string, unknown> | null;
+  roiSnapshot: Record<string, unknown>[];
+  ocrOriginal: Record<string, unknown>[];
+  groundTruth: Record<string, unknown>[];
+  metadata: Record<string, unknown>;
+};
 
 const USER_FLOW_STEPS = [
   {
@@ -1581,6 +1598,8 @@ function HomeWorkspace() {
     alignmentStatus?: string | null;
     verificationStrategy?: "standard" | "strict" | string | null;
   } | null>(null);
+  const [templateDetectionSnapshot, setTemplateDetectionSnapshot] = useState<Record<string, unknown> | null>(null);
+  const activeProcessingRunIdRef = useRef<string>("");
   const tableExportDropdownRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -1592,7 +1611,99 @@ function HomeWorkspace() {
     setAuthSession(session);
   }, [router]);
 
+  const processingLogFieldType = (result: OCRResult & { pageIndex?: number }, roi?: ROI) => {
+    const markers = [result.type, result.dataType, roi?.type, roi?.dataType, roi?.extractionMethod]
+      .map((value) => String(value || "").toLowerCase());
+    if (markers.some((value) => value === "image" || value === "extract_image")) return "image";
+    if (markers.some((value) => value === "table" || value === "table_recognition_v2" || value === "ocr_table")) return "table";
+    return "text";
+  };
+
+  const compactRoiSnapshot = (roi: ROI & { pageIndex?: number }) => ({
+    roiId: roi.id,
+    fieldName: roi.fieldName,
+    pageNumber: Number(roi.pageIndex ?? 0) + 1,
+    roiMode: roi.roiMode === "flexible" ? "flexible" : "fixed",
+    fieldType: roi.type || roi.dataType || "text",
+    extractionMethod: roi.extractionMethod || null,
+    enabled: roi.enabled !== false,
+    isResolvedBlock: Boolean(roi.isResolvedBlock),
+    parentRoiId: roi.parentRoiId ?? null,
+    roi: {
+      x: roi.x,
+      y: roi.y,
+      width: roi.width,
+      height: roi.height,
+      points: roi.points,
+    },
+  });
+
+  const buildProcessingLogSnapshot = (reason: string): ProcessingLogSnapshot | null => {
+    const processingRunId = activeProcessingRunIdRef.current;
+    if (!processingRunId || ocrResults.length === 0) return null;
+    const sourcePages = imagesList.map((src, index) => ({
+      pageNumber: index + 1,
+      imageUrl: src && !src.startsWith("data:") ? src : undefined,
+    }));
+    const ocrOriginal = ocrResults.map((result) => {
+      const roi = findRoiForOcrResult(rois, result);
+      return {
+        fieldId: String(result.roiId ?? roi?.id ?? result.id),
+        fieldName: result.fieldName || roi?.fieldName || "",
+        fieldType: processingLogFieldType(result, roi),
+        pageNumber: Number(result.pageIndex ?? roi?.pageIndex ?? 0) + 1,
+        roiMode: roi?.roiMode === "flexible" ? "flexible" : "fixed",
+        roi: roi ? compactRoiSnapshot(roi).roi : null,
+        value: result.originalText ?? result.extractedText ?? "",
+        confidence: result.confidence,
+      };
+    });
+    const groundTruth = ocrResults.map((result) => {
+      const roi = findRoiForOcrResult(rois, result);
+      return {
+        fieldId: String(result.roiId ?? roi?.id ?? result.id),
+        fieldName: result.fieldName || roi?.fieldName || "",
+        pageNumber: Number(result.pageIndex ?? roi?.pageIndex ?? 0) + 1,
+        value: result.extractedText ?? "",
+      };
+    });
+
+    return {
+      processingRunId,
+      documentName: uploadedSourceFileName || "ไฟล์ต้นทาง",
+      userEmail: authSession?.email,
+      sourceFileId: uploadedSourceFileId || undefined,
+      sourceFileName: uploadedSourceFileName || undefined,
+      status: "completed",
+      currentStep,
+      pageCount: imagesList.length,
+      sourcePages,
+      templateDetection: templateDetectionSnapshot || {},
+      matchedTemplate: matchedTemplate ? { ...matchedTemplate } : null,
+      roiSnapshot: rois.map(compactRoiSnapshot),
+      ocrOriginal,
+      groundTruth,
+      metadata: {
+        snapshotReason: reason,
+        snapshotAt: new Date().toISOString(),
+      },
+    };
+  };
+
+  const queueProcessingLogSave = (reason: string) => {
+    const snapshot = buildProcessingLogSnapshot(reason);
+    if (!snapshot) return;
+    void fetch(`${ADMIN_API_BASE_URL}/processing-logs`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(snapshot),
+    }).catch((error) => {
+      console.warn("Processing log background save failed.", error);
+    });
+  };
+
   const handleLogout = () => {
+    queueProcessingLogSave("logout");
     clearAuthSession();
     router.replace("/login");
   };
@@ -1615,6 +1726,7 @@ function HomeWorkspace() {
   }, [openTableExportDropdown]);
 
   const handleUploadSuccess = (urls: string[], sourceFileName?: string, sourceFileType?: "pdf" | "image", sourceFile?: File) => {
+    activeProcessingRunIdRef.current = "";
     setUploadedSourceFileId(`user_file_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
     setUploadedSourceFileName(sourceFileName || "ไฟล์ต้นทาง");
     setUploadedSourceFileType(sourceFileType || (sourceFileName?.toLowerCase().endsWith(".pdf") ? "pdf" : "image"));
@@ -1633,6 +1745,7 @@ function HomeWorkspace() {
     setIsTemplateDecisionOpen(false);
     setTemplateDecisionStatus("");
     setMatchedTemplate(null);
+    setTemplateDetectionSnapshot(null);
     setPagesConfig(
       urls.map(() => ({
         rotation: 0,
@@ -1654,6 +1767,8 @@ function HomeWorkspace() {
   };
 
   const handleClearAndUploadNew = () => {
+    queueProcessingLogSave("change_document");
+    activeProcessingRunIdRef.current = "";
     setImagesList([]);
     setOriginalImagesList([]);
     setUploadedSourceFileId("");
@@ -1673,11 +1788,13 @@ function HomeWorkspace() {
     setIsTemplateDecisionOpen(false);
     setTemplateDecisionStatus("");
     setMatchedTemplate(null);
+    setTemplateDetectionSnapshot(null);
     setTemplateDetectionNotice(null);
     setCurrentStep("upload");
   };
 
   const handleBatchConfirm = async (finalProcessedImages: string[]) => {
+    activeProcessingRunIdRef.current = "";
     setImagesList(finalProcessedImages);
     setPreviewUrl(finalProcessedImages[currentIndex] || finalProcessedImages[0] || "");
     setImage(finalProcessedImages[currentIndex] || finalProcessedImages[0] || null);
@@ -1685,6 +1802,7 @@ function HomeWorkspace() {
     setSelectedId(null);
     setOcrResults([]);
     setMatchedTemplate(null);
+    setTemplateDetectionSnapshot(null);
     setOperationNotice(null);
     setCurrentStep("studio");
     setIsTemplateDecisionOpen(true);
@@ -1716,6 +1834,29 @@ function HomeWorkspace() {
           ? uploadedSourceFile
           : await Promise.all(finalProcessedImages.map((src, index) => dataUrlToFile(src, `confirmed-document-page-${index + 1}.jpg`)));
         detection = await detectTemplateDev(Array.isArray(detectionInput) && detectionInput.length === 1 ? detectionInput[0] : detectionInput);
+        setTemplateDetectionSnapshot({
+          queryId: detection.queryId,
+          matched: detection.matched,
+          threshold: detection.threshold,
+          bestCandidate: detection.bestCandidate
+            ? {
+                templateId: detection.bestCandidate.templateId,
+                templateName: detection.bestCandidate.templateName,
+                score: detection.bestCandidate.score,
+                finalScore: detection.bestCandidate.finalScore,
+                decisionReason: detection.bestCandidate.decisionReason,
+                verificationStrategy: detection.bestCandidate.verificationStrategy,
+              }
+            : null,
+          candidates: detection.candidates.slice(0, 5).map((candidate) => ({
+            templateId: candidate.templateId,
+            templateName: candidate.templateName,
+            score: candidate.score,
+            finalScore: candidate.finalScore,
+            decisionReason: candidate.decisionReason,
+          })),
+          timing: detection.debug?.timing || null,
+        });
         devTemplateFlowLog("detection completed", {
           matched: detection.matched,
           candidateCount: detection.candidates.length,
@@ -1887,6 +2028,7 @@ function HomeWorkspace() {
   const handleRunOCR = async () => {
     const runId = ocrRunIdRef.current + 1;
     ocrRunIdRef.current = runId;
+    activeProcessingRunIdRef.current = `proc_${Date.now()}_${runId}`;
     const activeRois = rois.filter((roi) => roi.enabled !== false);
     if (activeRois.length === 0) {
       setOperationNotice({
@@ -2116,6 +2258,7 @@ function HomeWorkspace() {
   const handleRunFullPageOCR = async () => {
     const runId = ocrRunIdRef.current + 1;
     ocrRunIdRef.current = runId;
+    activeProcessingRunIdRef.current = `proc_${Date.now()}_${runId}`;
     setIsLoading(true);
     setOcrResults([]);
     setOperationNotice(null);
@@ -3540,7 +3683,10 @@ function HomeWorkspace() {
               rois={rois}
               ocrResults={ocrResults}
               setOcrResults={setOcrResults}
-              onBackToStudio={() => setCurrentStep("studio")}
+              onBackToStudio={() => {
+                queueProcessingLogSave("back_to_roi");
+                setCurrentStep("studio");
+              }}
               imageList={imagesList}
               currentImageIndex={currentIndex}
               onImageIndexChange={(nextIdx) => setCurrentIndex(nextIdx)}
