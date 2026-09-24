@@ -15,6 +15,17 @@ const formatDateTime = (value?: string) => {
   return date.toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" });
 };
 
+const logBadgeClass = (tone: "success" | "warning" | "danger") =>
+  tone === "success"
+    ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100"
+    : tone === "warning"
+      ? "bg-amber-50 text-amber-700 ring-1 ring-amber-100"
+      : "bg-red-50 text-red-700 ring-1 ring-red-100";
+
+function LogBadge({ label, tone }: { label: string; tone: "success" | "warning" | "danger" }) {
+  return <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-black ${logBadgeClass(tone)}`}>{label}</span>;
+}
+
 export default function AdminDashboard() {
   const [loadStatus, setLoadStatus] = useState<"loading" | "loaded" | "error">("loading");
   const [dashboard, setDashboard] = useState<AdminDashboardSummary>({
@@ -168,26 +179,17 @@ function RecentProcessingLogs({ logs }: { logs: ProcessingLog[] }) {
           </thead>
           <tbody className="divide-y divide-slate-100 text-sm">
             {logs.map((log) => (
-              <tr key={log.id} className="group hover:bg-slate-50">
+              <tr key={log.id}>
                 <td className="whitespace-nowrap py-3 pr-3 text-xs font-bold text-slate-500">
-                  <Link href={`/admin/logs/${log.id}`} className="block">
-                    {formatProcessingLogDateTime(log.createdAt)}
-                  </Link>
+                  {formatProcessingLogDateTime(log.createdAt)}
                 </td>
-                <td className="px-3 py-3 font-black text-slate-900">
-                  <Link href={`/admin/logs/${log.id}`} className="block group-hover:text-blue-700">
-                    {log.documentName}
-                  </Link>
-                </td>
+                <td className="px-3 py-3 font-black text-slate-900">{log.documentName}</td>
                 <td className="px-3 py-3 font-semibold text-slate-600">{log.templateDetection.selectedTemplate || "-"}</td>
                 <td className="px-3 py-3">
-                  <StatusBadge
-                    status={log.templateDetection.matched ? "Matched" : "No Match"}
-                    tone={log.templateDetection.matched ? "success" : "warning"}
-                  />
+                  <LogBadge label={log.templateDetection.matched ? "Matched" : "No Match"} tone={log.templateDetection.matched ? "success" : "warning"} />
                 </td>
                 <td className="py-3 pl-3">
-                  <StatusBadge status={log.status === "completed" ? "สำเร็จ" : "ล้มเหลว"} tone={log.status === "completed" ? "success" : "danger"} />
+                  <LogBadge label={log.status === "completed" ? "สำเร็จ" : "ล้มเหลว"} tone={log.status === "completed" ? "success" : "danger"} />
                 </td>
               </tr>
             ))}

@@ -2,21 +2,45 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { Eye, Search, Trash2 } from "lucide-react";
-import { ActionButton, EmptyState, PageHeader, StatusBadge, cardClassName } from "../shared/ui";
+import { Eye, Search } from "lucide-react";
+import { ActionButton, EmptyState, InlineState, PageHeader, cardClassName } from "../shared/ui";
 import { formatProcessingLogDateTime, processingLogsMock, ProcessingLog } from "./processingLogsMock";
 
 const detectionLabel = (log: ProcessingLog) => (log.templateDetection.matched ? "Matched" : "No Match");
-const detectionTone = (log: ProcessingLog) => (log.templateDetection.matched ? "success" : "warning");
 const statusLabel = (status: ProcessingLog["status"]) => (status === "completed" ? "สำเร็จ" : "ล้มเหลว");
+const cleanupCutoffDates: Record<string, string> = {
+  "30": "25/08/2569",
+  "60": "26/07/2569",
+  "90": "26/06/2569",
+  "180": "28/03/2569",
+};
+const cleanupCounts: Record<string, number> = {
+  "30": 12,
+  "60": 8,
+  "90": 5,
+  "180": 2,
+};
+
+const logBadgeClass = (tone: "success" | "warning" | "danger") =>
+  tone === "success"
+    ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100"
+    : tone === "warning"
+      ? "bg-amber-50 text-amber-700 ring-1 ring-amber-100"
+      : "bg-red-50 text-red-700 ring-1 ring-red-100";
+
+function LogBadge({ label, tone }: { label: string; tone: "success" | "warning" | "danger" }) {
+  return <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-black ${logBadgeClass(tone)}`}>{label}</span>;
+}
 
 export default function AdminProcessingLogsPage() {
-  const [logs, setLogs] = useState(processingLogsMock);
   const [search, setSearch] = useState("");
   const [templateFilter, setTemplateFilter] = useState("all");
   const [detectionFilter, setDetectionFilter] = useState("all");
   const [dateFilter, setDateFilter] = useState("all");
-  const [deleteTarget, setDeleteTarget] = useState<ProcessingLog | null>(null);
+  const [isCleanupOpen, setIsCleanupOpen] = useState(false);
+  const [cleanupAge, setCleanupAge] = useState("30");
+  const [cleanupMessage, setCleanupMessage] = useState("");
+  const logs = processingLogsMock;
 
   const templateOptions = useMemo(
     () =>
@@ -42,19 +66,26 @@ export default function AdminProcessingLogsPage() {
     return matchesSearch && matchesTemplate && matchesDetection && matchesDate;
   });
 
-  const confirmDelete = () => {
-    if (!deleteTarget) return;
-    setLogs((current) => current.filter((log) => log.id !== deleteTarget.id));
-    setDeleteTarget(null);
-  };
-
   return (
     <section className="space-y-4">
       <PageHeader
         title="Processing Logs"
         description="ประวัติการประมวลผลเอกสารทั้งหมด"
-        actions={<ActionButton href="/admin">กลับ Dashboard</ActionButton>}
+        actions={
+          <>
+            <button
+              type="button"
+              onClick={() => setIsCleanupOpen(true)}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-slate-700 hover:bg-slate-50"
+            >
+              จัดการ Log
+            </button>
+            <ActionButton href="/admin">กลับ Dashboard</ActionButton>
+          </>
+        }
       />
+
+      {cleanupMessage && <InlineState tone="info" message={cleanupMessage} />}
 
       <section className={`${cardClassName} p-4`}>
         <div className="grid gap-3 lg:grid-cols-[minmax(16rem,1.4fr)_minmax(10rem,0.8fr)_minmax(10rem,0.7fr)_minmax(9rem,0.6fr)]">
@@ -102,7 +133,7 @@ export default function AdminProcessingLogsPage() {
 
       <section className={`${cardClassName} overflow-hidden`}>
         <div className="overflow-x-auto">
-          <table className="min-w-[920px] w-full text-left">
+          <table className="min-w-[860px] w-full text-left">
             <thead className="border-b border-slate-200 bg-slate-50 text-xs font-black text-slate-500">
               <tr>
                 <th className="px-4 py-3">วันที่/เวลา</th>
@@ -111,7 +142,7 @@ export default function AdminProcessingLogsPage() {
                 <th className="px-4 py-3">Template</th>
                 <th className="px-4 py-3">Detection</th>
                 <th className="px-4 py-3">สถานะ</th>
-                <th className="px-4 py-3 text-right">จัดการ</th>
+                <th className="w-36 px-4 py-3 text-right">จัดการ</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-sm">
@@ -122,29 +153,19 @@ export default function AdminProcessingLogsPage() {
                   <td className="px-4 py-3 font-semibold text-slate-600">{log.user}</td>
                   <td className="px-4 py-3 font-semibold text-slate-600">{log.templateDetection.selectedTemplate || "-"}</td>
                   <td className="px-4 py-3">
-                    <StatusBadge status={detectionLabel(log)} tone={detectionTone(log)} />
+                    <LogBadge label={detectionLabel(log)} tone={log.templateDetection.matched ? "success" : "warning"} />
                   </td>
                   <td className="px-4 py-3">
-                    <StatusBadge status={statusLabel(log.status)} tone={log.status === "completed" ? "success" : "danger"} />
+                    <LogBadge label={statusLabel(log.status)} tone={log.status === "completed" ? "success" : "danger"} />
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex justify-end gap-2">
-                      <Link
-                        href={`/admin/logs/${log.id}`}
-                        className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 hover:bg-slate-50"
-                      >
-                        <Eye size={14} />
-                        ดู
-                      </Link>
-                      <button
-                        type="button"
-                        onClick={() => setDeleteTarget(log)}
-                        className="inline-flex h-9 items-center gap-2 rounded-lg border border-red-200 bg-white px-3 text-xs font-black text-red-600 hover:bg-red-50"
-                      >
-                        <Trash2 size={14} />
-                        ลบ
-                      </button>
-                    </div>
+                    <Link
+                      href={`/admin/logs/${log.id}`}
+                      className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 hover:bg-slate-50"
+                    >
+                      <Eye size={14} />
+                      ดูรายละเอียด
+                    </Link>
                   </td>
                 </tr>
               ))}
@@ -158,28 +179,50 @@ export default function AdminProcessingLogsPage() {
         )}
       </section>
 
-      {deleteTarget && (
+      {isCleanupOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4">
           <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-xl">
-            <h2 className="text-base font-black text-slate-950">ลบ Processing Log?</h2>
+            <h2 className="text-base font-black text-slate-950">จัดการ Processing Logs</h2>
             <p className="mt-2 text-sm font-semibold text-slate-500">
-              การดำเนินการนี้จะลบ Log และข้อมูลที่เกี่ยวข้อง เฉพาะ Mock UI เท่านั้นในรอบนี้
+              ใช้สำหรับลบ Log เก่าตามอายุของข้อมูล รอบนี้เป็น UI Mock เท่านั้น
             </p>
-            <p className="mt-3 rounded-xl bg-slate-50 px-3 py-2 text-sm font-black text-slate-800">{deleteTarget.documentName}</p>
+            <label className="mt-4 block">
+              <span className="text-xs font-black text-slate-700">ลบ Log ที่มีอายุมากกว่า</span>
+              <select
+                value={cleanupAge}
+                onChange={(event) => setCleanupAge(event.target.value)}
+                className="mt-2 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+              >
+                <option value="30">30 วัน</option>
+                <option value="60">60 วัน</option>
+                <option value="90">90 วัน</option>
+                <option value="180">180 วัน</option>
+              </select>
+            </label>
+            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+              <p className="text-sm font-black text-slate-800">พบ Log ที่เข้าเงื่อนไข {cleanupCounts[cleanupAge]} รายการ</p>
+              <p className="mt-1 text-xs font-semibold text-slate-500">ข้อมูลก่อนวันที่ {cleanupCutoffDates[cleanupAge]}</p>
+              <p className="mt-3 text-xs font-semibold text-slate-500">
+                เมื่อเชื่อมระบบจริง การลบจะรวมข้อมูล Processing Log และภาพเอกสารที่เกี่ยวข้องบน Server
+              </p>
+            </div>
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setDeleteTarget(null)}
+                onClick={() => setIsCleanupOpen(false)}
                 className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-black text-slate-700 hover:bg-slate-50"
               >
                 ยกเลิก
               </button>
               <button
                 type="button"
-                onClick={confirmDelete}
-                className="rounded-xl bg-red-600 px-4 py-2 text-sm font-black text-white hover:bg-red-700"
+                onClick={() => {
+                  setIsCleanupOpen(false);
+                  setCleanupMessage(`Mock UI: ยังไม่มีการลบข้อมูลจริงสำหรับ Log ที่เก่ากว่า ${cleanupAge} วัน`);
+                }}
+                className="rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-black text-red-600 hover:bg-red-50"
               >
-                ลบ Log
+                ลบ Log ตามเงื่อนไข
               </button>
             </div>
           </div>
