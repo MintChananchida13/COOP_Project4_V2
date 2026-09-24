@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Check, Loader2, Pencil, Plus, Save, Settings, X } from "lucide-react";
+import { CalendarDays, Check, ChevronLeft, ChevronRight, Clock, Loader2, Pencil, Plus, Save, Settings, X } from "lucide-react";
 import {
   fetchOcrModelSettings,
   fetchVerificationStrategy,
@@ -62,22 +62,22 @@ interface ScheduledMaintenance {
   message: string;
 }
 
+const customMaintenanceMessagePreset = "__custom__";
+
+const maintenanceMessageOptions = [
+  "ปรับปรุงระบบและประสิทธิภาพการทำงาน",
+  "อัปเดต Template และปรับปรุงระบบ",
+  "บำรุงรักษาระบบตามรอบ",
+];
+
 const emptyMaintenanceDraft: MaintenanceDraft = {
   startDate: "",
   startTime: "",
   expectedEndDate: "",
   expectedEndTime: "",
-  messagePreset: "",
-  message: "",
+  messagePreset: maintenanceMessageOptions[0],
+  message: maintenanceMessageOptions[0],
 };
-
-const customMaintenanceMessagePreset = "__custom__";
-
-const maintenanceMessageOptions = [
-  "อัปเดต Template และปรับปรุงระบบ",
-  "ปรับปรุงประสิทธิภาพระบบ",
-  "บำรุงรักษาระบบตามรอบ",
-];
 
 const modelFormPlaceholders: Record<OcrModelKind, Record<keyof Omit<ModelDraft, "id">, string>> = {
   text_detection: {
@@ -114,6 +114,24 @@ const getAutoExpectedEndParts = (startDate: string, startTime: string) => {
   return getLocalDateTimeParts(start);
 };
 
+const parseLocalDate = (value: string) => {
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return null;
+  const date = new Date(year, month - 1, day);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const formatDatePickerValue = (value: string) => {
+  const [year, month, day] = value.split("-");
+  return year && month && day ? `${day} / ${month} / ${year}` : "DD / MM / YYYY";
+};
+
+const timeOptions = Array.from({ length: 96 }, (_, index) => {
+  const hour = Math.floor(index / 4);
+  const minute = (index % 4) * 15;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+});
+
 const formatMaintenanceDateTime = (value: string) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
@@ -129,6 +147,175 @@ const formatMaintenanceDateTime = (value: string) => {
   }).format(date);
   return `${datePart} เวลา ${timePart} น.`;
 };
+
+function MaintenanceDatePicker({
+  value,
+  minDate,
+  onChange,
+}: {
+  value: string;
+  minDate: string;
+  onChange: (value: string) => void;
+}) {
+  const initialMonth = parseLocalDate(value) || parseLocalDate(minDate) || new Date();
+  const [isOpen, setIsOpen] = useState(false);
+  const [visibleMonth, setVisibleMonth] = useState(() => new Date(initialMonth.getFullYear(), initialMonth.getMonth(), 1));
+
+  useEffect(() => {
+    const nextMonth = parseLocalDate(value) || parseLocalDate(minDate);
+    if (!nextMonth) return;
+    setVisibleMonth(new Date(nextMonth.getFullYear(), nextMonth.getMonth(), 1));
+  }, [minDate, value]);
+
+  const year = visibleMonth.getFullYear();
+  const month = visibleMonth.getMonth();
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells = [
+    ...Array.from({ length: firstDay }, () => null),
+    ...Array.from({ length: daysInMonth }, (_, index) => new Date(year, month, index + 1)),
+  ];
+  const minMonth = parseLocalDate(minDate);
+  const isPreviousMonthDisabled =
+    minMonth !== null &&
+    new Date(year, month, 0).getTime() < new Date(minMonth.getFullYear(), minMonth.getMonth(), 1).getTime();
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setIsOpen((current) => !current)}
+        className="inline-flex h-11 w-full items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 text-left text-sm font-semibold text-slate-800 outline-none transition-colors hover:bg-slate-50 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+      >
+        <span>{formatDatePickerValue(value)}</span>
+        <CalendarDays size={16} className="shrink-0 text-slate-400" />
+      </button>
+      {isOpen && (
+        <div className="absolute left-0 top-full z-50 mt-2 w-72 rounded-xl border border-slate-200 bg-white p-3 shadow-xl">
+          <div className="flex items-center justify-between">
+            <button
+              type="button"
+              disabled={isPreviousMonthDisabled}
+              onClick={() => setVisibleMonth((current) => new Date(current.getFullYear(), current.getMonth() - 1, 1))}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+              aria-label="เดือนก่อนหน้า"
+            >
+              <ChevronLeft size={15} />
+            </button>
+            <div className="text-xs font-black text-slate-900">
+              {String(month + 1).padStart(2, "0")} / {year}
+            </div>
+            <button
+              type="button"
+              onClick={() => setVisibleMonth((current) => new Date(current.getFullYear(), current.getMonth() + 1, 1))}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
+              aria-label="เดือนถัดไป"
+            >
+              <ChevronRight size={15} />
+            </button>
+          </div>
+          <div className="mt-3 grid grid-cols-7 gap-1 text-center text-[10px] font-black text-slate-400">
+            {["อา", "จ", "อ", "พ", "พฤ", "ศ", "ส"].map((day) => (
+              <div key={day}>{day}</div>
+            ))}
+          </div>
+          <div className="mt-1 grid grid-cols-7 gap-1">
+            {cells.map((date, index) => {
+              if (!date) return <div key={`blank-${index}`} className="h-8" />;
+              const iso = getLocalDateTimeParts(date).date;
+              const disabled = Boolean(minDate && iso < minDate);
+              const selected = iso === value;
+              return (
+                <button
+                  key={iso}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => {
+                    onChange(iso);
+                    setIsOpen(false);
+                  }}
+                  className={`h-8 rounded-lg text-xs font-black transition-colors ${
+                    selected
+                      ? "bg-indigo-600 text-white"
+                      : disabled
+                        ? "cursor-not-allowed text-slate-300"
+                        : "text-slate-700 hover:bg-indigo-50 hover:text-indigo-700"
+                  }`}
+                >
+                  {date.getDate()}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MaintenanceTimePicker({
+  value,
+  minTime,
+  minMode = "inclusive",
+  onChange,
+}: {
+  value: string;
+  minTime?: string;
+  minMode?: "inclusive" | "exclusive";
+  onChange: (value: string) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  return (
+    <div className="relative">
+      <div className="relative">
+        <input
+          type="text"
+          inputMode="numeric"
+          placeholder="HH:mm"
+          value={value}
+          onFocus={() => setIsOpen(true)}
+          onChange={(event) => onChange(event.target.value.replace(/[^\d:]/g, "").slice(0, 5))}
+          className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 pr-9 text-sm font-semibold text-slate-800 outline-none transition-colors placeholder:text-slate-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+        />
+        <button
+          type="button"
+          onClick={() => setIsOpen((current) => !current)}
+          className="absolute inset-y-0 right-0 inline-flex w-9 items-center justify-center text-slate-400 hover:text-slate-600"
+          aria-label="เลือกเวลา"
+        >
+          <Clock size={16} />
+        </button>
+      </div>
+      {isOpen && (
+        <div className="absolute left-0 top-full z-50 mt-2 max-h-56 w-40 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl">
+          {timeOptions.map((option) => {
+            const disabled = Boolean(minTime && (minMode === "exclusive" ? option <= minTime : option < minTime));
+            return (
+              <button
+                key={option}
+                type="button"
+                disabled={disabled}
+                onClick={() => {
+                  onChange(option);
+                  setIsOpen(false);
+                }}
+                className={`block h-9 w-full rounded-lg px-3 text-left text-xs font-black transition-colors ${
+                  option === value
+                    ? "bg-indigo-600 text-white"
+                    : disabled
+                      ? "cursor-not-allowed text-slate-300"
+                      : "text-slate-700 hover:bg-indigo-50 hover:text-indigo-700"
+                }`}
+              >
+                {option}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function AdminSettingsPage() {
   const [savedStrategy, setSavedStrategy] = useState<VerificationStrategy>("standard");
@@ -151,6 +338,7 @@ export default function AdminSettingsPage() {
   const [isMaintenanceEditing, setIsMaintenanceEditing] = useState(true);
   const [maintenanceError, setMaintenanceError] = useState("");
   const [isExpectedEndManual, setIsExpectedEndManual] = useState(false);
+  const [maintenanceNow, setMaintenanceNow] = useState(() => new Date());
 
   useEffect(() => {
     let cancelled = false;
@@ -180,6 +368,13 @@ export default function AdminSettingsPage() {
     };
   }, []);
 
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setMaintenanceNow(new Date());
+    }, 30000);
+    return () => window.clearInterval(interval);
+  }, []);
+
   const hasStrategyChanges = draftStrategy !== savedStrategy;
   const hasModelChanges =
     draftDetectionModelId !== modelSettings.active.text_detection ||
@@ -189,7 +384,7 @@ export default function AdminSettingsPage() {
     () => verificationStrategyOptions.find((option) => option.value === draftStrategy) || verificationStrategyOptions[0],
     [draftStrategy]
   );
-  const currentDateTimeParts = getLocalDateTimeParts(new Date());
+  const currentDateTimeParts = getLocalDateTimeParts(maintenanceNow);
   const expectedEndMinDate = maintenanceDraft.startDate || currentDateTimeParts.date;
   const expectedEndMinTime =
     maintenanceDraft.expectedEndDate && maintenanceDraft.expectedEndDate === maintenanceDraft.startDate
@@ -296,6 +491,8 @@ export default function AdminSettingsPage() {
   const handleScheduleMaintenance = () => {
     const scheduledStartAt = combineDateTime(maintenanceDraft.startDate, maintenanceDraft.startTime);
     const expectedEndAt = combineDateTime(maintenanceDraft.expectedEndDate, maintenanceDraft.expectedEndTime);
+    const scheduledStartDate = new Date(scheduledStartAt);
+    const expectedEndDate = new Date(expectedEndAt);
     const message =
       maintenanceDraft.messagePreset === customMaintenanceMessagePreset
         ? maintenanceDraft.message.trim()
@@ -309,11 +506,19 @@ export default function AdminSettingsPage() {
       setMaintenanceError("กรุณาเลือกวันที่และเวลาที่คาดว่าจะเปิดให้บริการ");
       return;
     }
-    if (new Date(scheduledStartAt).getTime() < Date.now()) {
+    if (Number.isNaN(scheduledStartDate.getTime())) {
+      setMaintenanceError("รูปแบบวันที่หรือเวลาเริ่มปิดปรับปรุงไม่ถูกต้อง");
+      return;
+    }
+    if (Number.isNaN(expectedEndDate.getTime())) {
+      setMaintenanceError("รูปแบบวันที่หรือเวลาที่คาดว่าจะเปิดให้บริการไม่ถูกต้อง");
+      return;
+    }
+    if (scheduledStartDate.getTime() <= new Date().getTime()) {
       setMaintenanceError("เวลาเริ่มปิดปรับปรุงต้องไม่เป็นวันที่หรือเวลาที่ผ่านมาแล้ว");
       return;
     }
-    if (new Date(expectedEndAt).getTime() <= new Date(scheduledStartAt).getTime()) {
+    if (expectedEndDate.getTime() <= scheduledStartDate.getTime()) {
       setMaintenanceError("เวลาที่คาดว่าจะเปิดให้บริการต้องอยู่หลังเวลาเริ่มปิดปรับปรุง");
       return;
     }
@@ -541,23 +746,15 @@ export default function AdminSettingsPage() {
               <div>
                 <p className="text-xs font-black text-slate-900">วันที่และเวลาเริ่มปิดปรับปรุง</p>
                 <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_8rem]">
-                  <input
-                    type="date"
-                    min={currentDateTimeParts.date}
+                  <MaintenanceDatePicker
+                    minDate={currentDateTimeParts.date}
                     value={maintenanceDraft.startDate}
-                    onChange={(event) => {
-                      updateMaintenanceStart({ startDate: event.target.value });
-                    }}
-                    className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none transition-colors focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                    onChange={(value) => updateMaintenanceStart({ startDate: value })}
                   />
-                  <input
-                    type="time"
-                    min={maintenanceDraft.startDate === currentDateTimeParts.date ? currentDateTimeParts.time : undefined}
+                  <MaintenanceTimePicker
+                    minTime={maintenanceDraft.startDate === currentDateTimeParts.date ? currentDateTimeParts.time : undefined}
                     value={maintenanceDraft.startTime}
-                    onChange={(event) => {
-                      updateMaintenanceStart({ startTime: event.target.value });
-                    }}
-                    className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none transition-colors focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                    onChange={(value) => updateMaintenanceStart({ startTime: value })}
                   />
                 </div>
               </div>
@@ -565,27 +762,24 @@ export default function AdminSettingsPage() {
               <div>
                 <p className="text-xs font-black text-slate-900">วันที่และเวลาที่คาดว่าจะเปิดให้บริการ</p>
                 <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_8rem]">
-                  <input
-                    type="date"
-                    min={expectedEndMinDate}
+                  <MaintenanceDatePicker
+                    minDate={expectedEndMinDate}
                     value={maintenanceDraft.expectedEndDate}
-                    onChange={(event) => {
-                      setMaintenanceDraft((current) => ({ ...current, expectedEndDate: event.target.value }));
+                    onChange={(value) => {
+                      setMaintenanceDraft((current) => ({ ...current, expectedEndDate: value }));
                       setIsExpectedEndManual(true);
                       setMaintenanceError("");
                     }}
-                    className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none transition-colors focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
                   />
-                  <input
-                    type="time"
-                    min={expectedEndMinTime}
+                  <MaintenanceTimePicker
+                    minTime={expectedEndMinTime}
+                    minMode={maintenanceDraft.expectedEndDate === maintenanceDraft.startDate ? "exclusive" : "inclusive"}
                     value={maintenanceDraft.expectedEndTime}
-                    onChange={(event) => {
-                      setMaintenanceDraft((current) => ({ ...current, expectedEndTime: event.target.value }));
+                    onChange={(value) => {
+                      setMaintenanceDraft((current) => ({ ...current, expectedEndTime: value }));
                       setIsExpectedEndManual(true);
                       setMaintenanceError("");
                     }}
-                    className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none transition-colors focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
                   />
                 </div>
               </div>
@@ -612,7 +806,6 @@ export default function AdminSettingsPage() {
                   }}
                   className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none transition-colors focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
                 >
-                  <option value="">เลือกข้อความแจ้งผู้ใช้งาน</option>
                   {maintenanceMessageOptions.map((option) => (
                     <option key={option} value={option}>
                       {option}
