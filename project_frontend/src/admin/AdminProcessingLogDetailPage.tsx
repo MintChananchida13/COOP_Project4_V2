@@ -2,12 +2,26 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { ArrowLeft, ChevronLeft, ChevronRight, Download } from "lucide-react";
+import { ArrowLeft, CheckCircle, ChevronLeft, ChevronRight, Download, FileText, Image as ImageIcon, Table } from "lucide-react";
 import { ActionButton, EmptyState, InlineState, PageHeader, cardClassName } from "../shared/ui";
 import { formatProcessingLogDateTime, getProcessingLogById, ProcessingLogField } from "./processingLogsMock";
 
+type FieldKind = "text" | "table" | "image";
+
 const formatSeconds = (ms: number) => `${(ms / 1000).toFixed(2)} s`;
 const formatScore = (value: number | null) => (value === null || value === undefined ? "-" : value.toFixed(2));
+const normalizeFieldKind = (fieldType: string): FieldKind => {
+  const type = fieldType.toLowerCase();
+  if (type.includes("table")) return "table";
+  if (type.includes("image")) return "image";
+  return "text";
+};
+const fieldKindLabel = (kind: FieldKind) => (kind === "table" ? "ตาราง" : kind === "image" ? "รูปภาพ" : "ข้อความ");
+const fieldKindIcon = (kind: FieldKind) => {
+  if (kind === "table") return <Table size={13} className="text-indigo-500" />;
+  if (kind === "image") return <ImageIcon size={13} className="text-sky-500" />;
+  return <FileText size={13} className="text-slate-500" />;
+};
 const logBadgeClass = (tone: "success" | "warning" | "danger") =>
   tone === "success"
     ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100"
@@ -40,16 +54,28 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
     );
   }
 
+  const pageCount = Math.max(log.pageCount, 1);
   const pageFields = log.ocrOriginal.filter((field) => field.pageNumber === currentPage);
-  const visibleFields = selectedField && selectedField.pageNumber === currentPage ? [selectedField] : pageFields;
+  const visibleRoiFields = selectedField && selectedField.pageNumber === currentPage ? [selectedField] : pageFields;
   const groundTruthByField = new Map(log.groundTruth.map((field) => [field.fieldId, field.value]));
+  const currentPageKinds = pageFields.reduce(
+    (acc, field) => {
+      acc[normalizeFieldKind(field.fieldType)] += 1;
+      return acc;
+    },
+    { text: 0, table: 0, image: 0 } as Record<FieldKind, number>
+  );
+  const changedOnPage = pageFields.filter((field) => (groundTruthByField.get(field.fieldId) || "") !== field.value).length;
+
+  const setPage = (page: number) => {
+    setCurrentPage(page);
+    setSelectedFieldId(null);
+  };
 
   const selectField = (field: ProcessingLogField) => {
     setSelectedFieldId(field.fieldId);
     setCurrentPage(field.pageNumber);
   };
-
-  const pageCount = Math.max(log.pageCount, 1);
 
   return (
     <section className="space-y-3">
@@ -66,106 +92,34 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => setMockMessage("Export Log เป็น Mock UI เท่านั้น ยังไม่มีการสร้างไฟล์จริง")}
-            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-slate-700 hover:bg-slate-50"
-          >
-            <Download size={15} />
-            Export Log
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={() => setMockMessage("Export Log เป็น Mock UI เท่านั้น ยังไม่มีการสร้างไฟล์จริง")}
+          className="inline-flex w-fit items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-slate-700 hover:bg-slate-50"
+        >
+          <Download size={15} />
+          Export Log
+        </button>
       </div>
 
       {mockMessage && <InlineState tone="info" message={mockMessage} />}
 
-      <div className="grid gap-3 xl:grid-cols-[minmax(0,1.05fr)_minmax(20rem,0.95fr)]">
-        <section className={`${cardClassName} p-3`}>
-          <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 className="text-sm font-black text-slate-950">เอกสารต้นฉบับ</h2>
-              <p className="text-xs font-semibold text-slate-500">Page {currentPage} / {pageCount}</p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                disabled={currentPage <= 1}
-                onClick={() => {
-                  setCurrentPage((page) => Math.max(1, page - 1));
-                  setSelectedFieldId(null);
-                }}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
-                aria-label="หน้าก่อนหน้า"
-              >
-                <ChevronLeft size={15} />
-              </button>
-              <button
-                type="button"
-                disabled={currentPage >= pageCount}
-                onClick={() => {
-                  setCurrentPage((page) => Math.min(pageCount, page + 1));
-                  setSelectedFieldId(null);
-                }}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
-                aria-label="หน้าถัดไป"
-              >
-                <ChevronRight size={15} />
-              </button>
-              <label className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700">
-                <input type="checkbox" checked={showRoi} onChange={(event) => setShowRoi(event.target.checked)} className="h-4 w-4 rounded border-slate-300" />
-                แสดง ROI
-              </label>
-            </div>
-          </div>
-
-          <div className="mx-auto max-w-[26rem] rounded-xl border border-slate-200 bg-slate-100 p-2">
-            <div className="relative aspect-[3/4] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-inner">
-              <MockDocumentPage pageNumber={currentPage} documentName={log.documentName} />
-              {showRoi &&
-                visibleFields.map((field) => (
-                  <button
-                    key={field.fieldId}
-                    type="button"
-                    onClick={() => selectField(field)}
-                    className={`absolute rounded-md border-2 text-left transition-colors ${
-                      selectedFieldId === field.fieldId
-                        ? "border-blue-600 bg-blue-500/15 shadow-[0_0_0_3px_rgba(37,99,235,0.16)]"
-                        : "border-emerald-500 bg-emerald-400/10"
-                    }`}
-                    style={{
-                      left: `${field.roi.x * 100}%`,
-                      top: `${field.roi.y * 100}%`,
-                      width: `${field.roi.width * 100}%`,
-                      height: `${field.roi.height * 100}%`,
-                    }}
-                  >
-                    <span className="absolute -top-6 left-0 max-w-[12rem] truncate rounded-md bg-slate-950 px-2 py-1 text-[10px] font-black text-white">
-                      {field.fieldName}
-                    </span>
-                  </button>
-                ))}
-            </div>
-          </div>
-        </section>
-
-        <section className={`${cardClassName} p-3`}>
-          <h2 className="text-sm font-black text-slate-950">ข้อมูลทั่วไป</h2>
-          <div className="mt-3 grid gap-1.5">
-            <InfoItem label="ชื่อเอกสาร" value={log.documentName} />
-            <InfoItem label="ผู้ใช้งาน" value={log.user} />
-            <InfoItem label="วันที่/เวลา" value={formatProcessingLogDateTime(log.createdAt)} />
-            <InfoItem label="จำนวนหน้า" value={`${log.pageCount} หน้า`} />
-            <InfoItem
-              label="สถานะ"
-              value={<LogBadge label={log.status === "completed" ? "สำเร็จ" : "ล้มเหลว"} tone={log.status === "completed" ? "success" : "danger"} />}
-            />
-            <InfoItem label="Detection Processing Time" value={formatSeconds(log.detectionProcessingTimeMs)} />
-            <InfoItem label="OCR Processing Time" value={formatSeconds(log.ocrProcessingTimeMs)} />
-            <InfoItem label="Log ID" value={log.id} />
-          </div>
-        </section>
-      </div>
+      <section className={`${cardClassName} p-3`}>
+        <h2 className="text-sm font-black text-slate-950">ข้อมูลทั่วไป</h2>
+        <div className="mt-3 grid gap-x-4 gap-y-2 sm:grid-cols-2 xl:grid-cols-4">
+          <InfoPair label="ชื่อเอกสาร" value={log.documentName} />
+          <InfoPair label="ผู้ใช้งาน" value={log.user} />
+          <InfoPair label="วันที่/เวลา" value={formatProcessingLogDateTime(log.createdAt)} />
+          <InfoPair
+            label="สถานะ"
+            value={<LogBadge label={log.status === "completed" ? "สำเร็จ" : "ล้มเหลว"} tone={log.status === "completed" ? "success" : "danger"} />}
+          />
+          <InfoPair label="จำนวนหน้า" value={`${log.pageCount} หน้า`} />
+          <InfoPair label="Detection Time" value={formatSeconds(log.detectionProcessingTimeMs)} />
+          <InfoPair label="OCR Time" value={formatSeconds(log.ocrProcessingTimeMs)} />
+          <InfoPair label="Log ID" value={log.id} />
+        </div>
+      </section>
 
       <section className={`${cardClassName} p-3`}>
         <h2 className="text-sm font-black text-slate-950">Template Detection</h2>
@@ -223,61 +177,131 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
         </div>
       </section>
 
-      <div className="grid gap-3 xl:grid-cols-2">
-        <section className={`${cardClassName} p-3`}>
-          <h2 className="text-sm font-black text-slate-950">OCR Original Result</h2>
-          <div className="mt-2 divide-y divide-slate-100">
-            {log.ocrOriginal.length === 0 ? (
-              <EmptyState title="ไม่มี OCR Result" message="Mock log นี้ไม่มี field ที่อ่านได้" />
-            ) : (
-              log.ocrOriginal.map((field) => (
+      <section className={`${cardClassName} overflow-hidden`}>
+        <div className="border-b border-slate-200 bg-slate-50/60 px-3 py-2.5">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-sm font-black text-slate-950">Document + Processing Results</h2>
+              <p className="text-xs font-semibold text-slate-500">Read-only historical view · Page {currentPage} / {pageCount}</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setPage(Math.max(1, currentPage - 1))}
+                disabled={currentPage <= 1}
+                className="h-8 w-8 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
+                aria-label="หน้าก่อนหน้า"
+              >
+                <ChevronLeft size={15} className="mx-auto" />
+              </button>
+              {Array.from({ length: pageCount }, (_, index) => (
                 <button
-                  key={field.fieldId}
+                  key={index}
                   type="button"
-                  onClick={() => selectField(field)}
-                  className={`w-full py-2.5 text-left transition-colors ${
-                    selectedFieldId === field.fieldId
-                      ? "rounded-xl bg-blue-50 px-3 ring-1 ring-blue-100"
-                      : "px-1 hover:bg-slate-50"
+                  onClick={() => setPage(index + 1)}
+                  className={`h-8 min-w-8 rounded-lg border px-2 text-xs font-black ${
+                    currentPage === index + 1
+                      ? "border-blue-500 bg-blue-600 text-white"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
                   }`}
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-black text-slate-900">{field.fieldName}</p>
-                      <p className="mt-1 text-[11px] font-bold uppercase text-slate-400">
-                        {field.fieldType} · Page {field.pageNumber} · {field.roiMode === "fixed" ? "Fixed" : "Flexible"}
-                      </p>
-                    </div>
-                    {typeof field.confidence === "number" && (
-                      <span className="text-xs font-black text-slate-500">{Math.round(field.confidence * 100)}%</span>
-                    )}
-                  </div>
-                  <p className="mt-1.5 text-sm font-semibold text-slate-700">{field.value || "-"}</p>
+                  {index + 1}
                 </button>
-              ))
-            )}
+              ))}
+              <button
+                type="button"
+                onClick={() => setPage(Math.min(pageCount, currentPage + 1))}
+                disabled={currentPage >= pageCount}
+                className="h-8 w-8 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
+                aria-label="หน้าถัดไป"
+              >
+                <ChevronRight size={15} className="mx-auto" />
+              </button>
+            </div>
           </div>
-        </section>
+        </div>
 
-        <section className={`${cardClassName} p-3`}>
-          <h2 className="text-sm font-black text-slate-950">Ground Truth</h2>
-          <div className="mt-2 divide-y divide-slate-100">
-            {log.ocrOriginal.length === 0 ? (
-              <EmptyState title="ไม่มี Ground Truth" message="Mock log นี้ไม่มีข้อมูล Ground Truth" />
-            ) : (
-              log.ocrOriginal.map((field) => (
-                <div key={field.fieldId} className="px-1 py-2.5">
-                  <p className="text-sm font-black text-slate-900">{field.fieldName}</p>
-                  <p className="mt-1.5 rounded-lg bg-emerald-50 px-2.5 py-1.5 text-sm font-semibold text-emerald-800">
-                    {groundTruthByField.get(field.fieldId) || "-"}
-                  </p>
+        <div className="grid gap-0 xl:grid-cols-[minmax(22rem,0.92fr)_minmax(0,1.08fr)]">
+          <div className="border-b border-slate-200 bg-[#edf2f7] p-3 xl:border-b-0 xl:border-r">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div>
+                <h3 className="text-xs font-black text-slate-800">ภาพเอกสาร</h3>
+                <p className="text-[10px] font-bold text-slate-500">Documents ({pageCount} files)</p>
+              </div>
+              <label className="inline-flex h-8 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-black text-slate-700">
+                <input type="checkbox" checked={showRoi} onChange={(event) => setShowRoi(event.target.checked)} className="h-3.5 w-3.5 rounded border-slate-300" />
+                แสดง ROI
+              </label>
+            </div>
+
+            <div className="mx-auto max-w-[30rem] rounded-xl border border-slate-200 bg-slate-100 p-2">
+              <div className="relative aspect-[3/4] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-inner">
+                <MockDocumentPage pageNumber={currentPage} documentName={log.documentName} />
+                {showRoi &&
+                  visibleRoiFields.map((field) => (
+                    <button
+                      key={field.fieldId}
+                      type="button"
+                      onClick={() => selectField(field)}
+                      className={`absolute rounded-md border-2 text-left transition-colors ${
+                        selectedFieldId === field.fieldId
+                          ? "border-blue-600 bg-blue-500/15 shadow-[0_0_0_3px_rgba(37,99,235,0.16)]"
+                          : "border-emerald-500 bg-emerald-400/10"
+                      }`}
+                      style={{
+                        left: `${field.roi.x * 100}%`,
+                        top: `${field.roi.y * 100}%`,
+                        width: `${field.roi.width * 100}%`,
+                        height: `${field.roi.height * 100}%`,
+                      }}
+                    >
+                      <span className="absolute -top-6 left-0 max-w-[12rem] truncate rounded-md bg-slate-950 px-2 py-1 text-[10px] font-black text-white">
+                        {field.fieldName}
+                      </span>
+                    </button>
+                  ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex min-h-[34rem] flex-col bg-slate-50/40">
+            <div className="border-b border-slate-200 bg-white px-3 py-2.5">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <CheckCircle size={15} className="text-blue-600" />
+                  <h3 className="text-xs font-black text-slate-800">ผลลัพธ์ของหน้านี้</h3>
                 </div>
-              ))
-            )}
-          </div>
-        </section>
-      </div>
+                <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-500">Read-only</span>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2 lg:grid-cols-5">
+                <SummaryTile label="ทั้งหมด" value={pageFields.length} helper={`หน้า ${currentPage}/${pageCount}`} />
+                <SummaryTile label="ข้อความ" value={currentPageKinds.text} helper="Text" />
+                <SummaryTile label="ตาราง" value={currentPageKinds.table} helper="Table" tone="indigo" />
+                <SummaryTile label="รูปภาพ" value={currentPageKinds.image} helper="Image" tone="sky" />
+                <SummaryTile label="ต่างจาก GT" value={changedOnPage} helper="OCR ≠ GT" tone="amber" />
+              </div>
+            </div>
 
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              {pageFields.length === 0 ? (
+                <EmptyState title="ไม่มีผลลัพธ์ในหน้านี้" message="Mock log นี้ไม่มี field สำหรับหน้าที่เลือก" />
+              ) : (
+                <div className="space-y-3">
+                  {pageFields.map((field) => (
+                    <ReadOnlyFieldResult
+                      key={field.fieldId}
+                      field={field}
+                      groundTruth={groundTruthByField.get(field.fieldId) || "-"}
+                      selected={selectedFieldId === field.fieldId}
+                      onSelect={() => selectField(field)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
     </section>
   );
 }
@@ -313,11 +337,116 @@ function MockDocumentPage({ pageNumber, documentName }: { pageNumber: number; do
   );
 }
 
-function InfoItem({ label, value }: { label: string; value: string | React.ReactNode }) {
+function ReadOnlyFieldResult({
+  field,
+  groundTruth,
+  selected,
+  onSelect,
+}: {
+  field: ProcessingLogField;
+  groundTruth: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const kind = normalizeFieldKind(field.fieldType);
+  const isDifferent = field.value !== groundTruth;
   return (
-    <div className="grid gap-1 rounded-lg bg-slate-50 px-2.5 py-1.5 sm:grid-cols-[8.5rem_minmax(0,1fr)]">
-      <span className="text-xs font-black text-slate-400">{label}</span>
-      <span className="min-w-0 text-sm font-black text-slate-800">{value}</span>
+    <button
+      type="button"
+      onClick={onSelect}
+      className={`w-full rounded-xl border bg-white p-3 text-left transition-colors ${
+        selected ? "border-blue-200 bg-blue-50/60 ring-1 ring-blue-100" : "border-slate-200 hover:bg-white hover:ring-1 hover:ring-slate-200"
+      }`}
+    >
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-black text-slate-900">{field.fieldName}</p>
+          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] font-bold uppercase text-slate-400">
+            {fieldKindIcon(kind)}
+            <span>ประเภท: {fieldKindLabel(kind)}</span>
+            <span>Page {field.pageNumber}</span>
+            <span>{field.roiMode === "fixed" ? "Fixed" : "Flexible"}</span>
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {typeof field.confidence === "number" && (
+            <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-black tabular-nums text-slate-600">
+              {(field.confidence * 100).toFixed(1)}%
+            </span>
+          )}
+          {isDifferent && <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-black text-amber-700">OCR ≠ GT</span>}
+        </div>
+      </div>
+
+      <div className="mt-3 grid gap-2 lg:grid-cols-2">
+        <ReadOnlyValue label={kind === "image" ? "Image Result" : kind === "table" ? "Original table result" : "ข้อความจาก OCR"} value={field.value} kind={kind} />
+        <ReadOnlyValue label="Ground Truth" value={groundTruth} kind={kind} mutedHighlight={isDifferent} />
+      </div>
+    </button>
+  );
+}
+
+function ReadOnlyValue({ label, value, kind, mutedHighlight }: { label: string; value: string; kind: FieldKind; mutedHighlight?: boolean }) {
+  if (kind === "image") {
+    return (
+      <div className="min-w-0">
+        <p className="mb-1 text-[10px] font-black uppercase tracking-wider text-slate-400">{label}</p>
+        <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-center text-xs font-bold text-slate-500">
+          {value || "Image field ไม่มีข้อความ OCR"}
+        </div>
+      </div>
+    );
+  }
+  if (kind === "table") {
+    const rows = value
+      .split(/\r?\n/)
+      .map((row) => row.split("|").map((cell) => cell.trim()).filter(Boolean))
+      .filter((row) => row.length > 0);
+    return (
+      <div className="min-w-0">
+        <p className="mb-1 text-[10px] font-black uppercase tracking-wider text-slate-400">{label}</p>
+        <div className={`overflow-x-auto rounded-xl border ${mutedHighlight ? "border-amber-100 bg-amber-50/40" : "border-slate-200 bg-slate-50"}`}>
+          {rows.length > 0 ? (
+            <table className="min-w-full text-left text-xs">
+              <tbody className="divide-y divide-slate-200">
+                {rows.map((row, rowIndex) => (
+                  <tr key={rowIndex}>
+                    {row.map((cell, cellIndex) => (
+                      <td key={`${rowIndex}-${cellIndex}`} className="px-2 py-1.5 font-semibold text-slate-700">
+                        {cell}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="px-3 py-2 text-xs font-semibold text-slate-500">{value || "-"}</p>
+          )}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="min-w-0">
+      <p className="mb-1 text-[10px] font-black uppercase tracking-wider text-slate-400">{label}</p>
+      <div
+        className={`min-h-10 rounded-xl border px-3 py-2 text-xs font-semibold leading-relaxed text-slate-700 ${
+          mutedHighlight ? "border-amber-100 bg-amber-50/40" : "border-slate-200 bg-slate-50"
+        }`}
+        style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
+      >
+        {value || <span className="italic text-slate-400">(ไม่มีข้อมูล)</span>}
+      </div>
+    </div>
+  );
+}
+
+function InfoPair({ label, value }: { label: string; value: string | React.ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[11px] font-black text-slate-400">{label}</p>
+      <div className="mt-0.5 min-w-0 truncate text-sm font-black text-slate-800">{value}</div>
     </div>
   );
 }
@@ -327,6 +456,34 @@ function InfoTile({ label, value }: { label: string; value: string | React.React
     <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5">
       <p className="text-[11px] font-black text-slate-400">{label}</p>
       <p className="text-sm font-black text-slate-900">{value}</p>
+    </div>
+  );
+}
+
+function SummaryTile({
+  label,
+  value,
+  helper,
+  tone = "slate",
+}: {
+  label: string;
+  value: number;
+  helper: string;
+  tone?: "slate" | "indigo" | "sky" | "amber";
+}) {
+  const toneClass =
+    tone === "indigo"
+      ? "border-indigo-100 bg-indigo-50/60 text-indigo-900"
+      : tone === "sky"
+        ? "border-sky-100 bg-sky-50/70 text-sky-900"
+        : tone === "amber"
+          ? "border-amber-100 bg-amber-50/70 text-amber-900"
+          : "border-slate-200 bg-white text-slate-900";
+  return (
+    <div className={`rounded-xl border p-2 text-left ${toneClass}`}>
+      <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">{label}</p>
+      <p className="mt-0.5 text-base font-black tabular-nums">{value}</p>
+      <p className="text-[9px] font-bold text-slate-400">{helper}</p>
     </div>
   );
 }
