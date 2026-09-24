@@ -31,8 +31,13 @@ class LayoutAlignmentService:
         query_signature: Optional[Dict[str, Any]] = None,
         template_signature: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        function_started = time.perf_counter()
+        query_load_started = time.perf_counter()
         query = cv2.imread(str(query_image_path))
+        query_image_load_ms = round((time.perf_counter() - query_load_started) * 1000.0, 2)
+        template_load_started = time.perf_counter()
         template = self._load_image(template_image_source)
+        template_image_load_ms = round((time.perf_counter() - template_load_started) * 1000.0, 2)
         if output_path is None:
             query_path = Path(query_image_path)
             output_path = str(query_path.with_name(f"{query_path.stem}_layout_aligned.png"))
@@ -50,6 +55,8 @@ class LayoutAlignmentService:
             "template_signature_generation_ms": 0.0,
             "signature_compare_ms": 0.0,
             "aspect_delta_ms": 0.0,
+            "query_image_load_ms": query_image_load_ms,
+            "template_image_load_ms": template_image_load_ms,
         }
         try:
             if query_signature is None:
@@ -71,6 +78,7 @@ class LayoutAlignmentService:
         aspect_delta = self._aspect_delta(query_signature, template_signature)
         signature_debug["aspect_delta_ms"] = round((time.perf_counter() - aspect_started) * 1000.0, 2)
         if before_score >= self.SKIP_SCORE and aspect_delta <= self.SKIP_ASPECT_DELTA:
+            signature_debug["alignment_until_skip_ms"] = round((time.perf_counter() - function_started) * 1000.0, 2)
             return self._result(
                 "skipped",
                 "layout_geometry_already_matches_template",
