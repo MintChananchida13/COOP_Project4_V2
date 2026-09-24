@@ -185,6 +185,7 @@ class ProcessingLogUpsertRequest(BaseModel):
     current_step: Optional[str] = Field(default=None, validation_alias=AliasChoices("current_step", "currentStep"))
     page_count: int = Field(default=0, ge=0, validation_alias=AliasChoices("page_count", "pageCount"))
     source_pages: List[Dict[str, Any]] = Field(default_factory=list, validation_alias=AliasChoices("source_pages", "sourcePages"))
+    page_files: List[Dict[str, Any]] = Field(default_factory=list, validation_alias=AliasChoices("page_files", "pageFiles"))
     template_detection: Dict[str, Any] = Field(default_factory=dict, validation_alias=AliasChoices("template_detection", "templateDetection"))
     matched_template: Optional[Dict[str, Any]] = Field(default=None, validation_alias=AliasChoices("matched_template", "matchedTemplate"))
     roi_snapshot: List[Dict[str, Any]] = Field(default_factory=list, validation_alias=AliasChoices("roi_snapshot", "roiSnapshot"))

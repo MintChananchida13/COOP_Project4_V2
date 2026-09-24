@@ -452,6 +452,70 @@ class GlobalSettingsService:
 
 
 class ProcessingLogService:
+    def _persist_page_files(self, log_id: str, source_pages: List[Dict[str, Any]], page_files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not page_files:
+            return source_pages
+
+        log_dir = _safe_processing_log_dir(log_id)
+        pages_dir = log_dir / "pages"
+        pages_dir.mkdir(parents=True, exist_ok=True)
+
+        pages_by_number: Dict[int, Dict[str, Any]] = {}
+        for page in source_pages:
+            if not isinstance(page, dict):
+                continue
+            try:
+                page_number = int(page.get("pageNumber") or page.get("page_number") or 0)
+            except (TypeError, ValueError):
+                continue
+            if page_number > 0:
+                pages_by_number[page_number] = dict(page)
+
+        for item in page_files:
+            if not isinstance(item, dict):
+                continue
+            try:
+                page_number = int(item.get("pageNumber") or item.get("page_number") or 0)
+            except (TypeError, ValueError):
+                continue
+            if page_number <= 0:
+                continue
+            data_url = item.get("dataUrl") or item.get("data_url")
+            if not data_url:
+                continue
+
+            image_bytes, mime_type = _decode_data_url_image(data_url)
+            extension = _image_extension_from_mime(mime_type)
+            filename = f"page_{page_number}{extension}"
+            destination = (pages_dir / filename).resolve()
+            if pages_dir.resolve() != destination.parent:
+                raise HTTPException(status_code=400, detail="Invalid processing log page path")
+
+            for existing in pages_dir.glob(f"page_{page_number}.*"):
+                if existing.resolve() != destination:
+                    existing.unlink(missing_ok=True)
+            temporary = destination.with_suffix(destination.suffix + ".tmp")
+            temporary.write_bytes(image_bytes)
+            temporary.replace(destination)
+
+            page = pages_by_number.get(page_number, {"pageNumber": page_number})
+            page.update(
+                {
+                    "pageNumber": page_number,
+                    "sourceFileId": item.get("sourceFileId") or page.get("sourceFileId"),
+                    "sourceFileName": item.get("sourceFileName") or page.get("sourceFileName"),
+                    "sourceFileType": item.get("sourceFileType") or page.get("sourceFileType"),
+                    "storageReference": _relative_storage_reference(destination),
+                    "previewUrl": f"/admin/processing-logs/{log_id}/pages/{page_number}",
+                    "mimeType": mime_type,
+                    "imageReferenceStatus": "persisted",
+                }
+            )
+            page.pop("imageUrl", None)
+            pages_by_number[page_number] = page
+
+        return [pages_by_number[key] for key in sorted(pages_by_number)]
+
     def upsert(self, payload: Any) -> Dict[str, Any]:
         data = payload.model_dump(by_alias=False) if hasattr(payload, "model_dump") else dict(payload or {})
         processing_run_id = str(data.get("processing_run_id") or "").strip()
@@ -459,6 +523,7 @@ class ProcessingLogService:
             raise HTTPException(status_code=400, detail="processing_run_id is required")
 
         log_id = _stub_id("proc_log")
+        source_pages = data.get("source_pages") or []
         with _connect() as conn:
             cursor = conn.execute(
                 """
@@ -511,7 +576,7 @@ class ProcessingLogService:
                     str(data.get("status") or "completed"),
                     data.get("current_step"),
                     int(data.get("page_count") or 0),
-                    jsonb_dump(data.get("source_pages") or []),
+                    jsonb_dump(source_pages),
                     jsonb_dump(data.get("template_detection") or {}),
                     jsonb_dump(data.get("matched_template")) if data.get("matched_template") is not None else None,
                     jsonb_dump(data.get("roi_snapshot") or []),
@@ -521,11 +586,87 @@ class ProcessingLogService:
                 ),
             )
             row = cursor.fetchone()
+        stored_id = row["id"] if row else log_id
+        stored_source_pages = self._persist_page_files(stored_id, source_pages, data.get("page_files") or [])
+        if stored_source_pages != source_pages:
+            with _connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE processing_logs
+                    SET source_pages_json = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (jsonb_dump(stored_source_pages), stored_id),
+                )
         return {
-            "id": row["id"] if row else log_id,
+            "id": stored_id,
             "processing_run_id": processing_run_id,
             "created_at": row["created_at"] if row else None,
             "updated_at": row["updated_at"] if row else None,
+            "source_pages": stored_source_pages,
+        }
+
+    def page_image_path(self, log_id: str, page_number: int) -> Path:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT id, source_pages_json FROM processing_logs WHERE id = ?",
+                (log_id,),
+            ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Processing log not found")
+        pages = jsonb_load(row["source_pages_json"], [])
+        if not isinstance(pages, list):
+            raise HTTPException(status_code=404, detail="Processing log page not found")
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            try:
+                current_page = int(page.get("pageNumber") or page.get("page_number") or 0)
+            except (TypeError, ValueError):
+                continue
+            if current_page != int(page_number):
+                continue
+            reference = page.get("storageReference") or page.get("storage_reference")
+            if not reference:
+                break
+            path = _resolve_storage_reference(reference)
+            expected_dir = (_safe_processing_log_dir(str(row["id"])) / "pages").resolve()
+            if expected_dir != path.parent.resolve():
+                raise HTTPException(status_code=400, detail="Processing log page reference is invalid")
+            if not path.exists() or not path.is_file():
+                raise HTTPException(status_code=404, detail="Processing log page image not found")
+            return path
+        raise HTTPException(status_code=404, detail="Processing log page image not found")
+
+    def delete(self, log_id: str) -> Dict[str, Any]:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM processing_logs WHERE id = ?",
+                (log_id,),
+            ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Processing log not found")
+
+        stored_id = str(row["id"])
+        log_dir = _safe_processing_log_dir(stored_id)
+        try:
+            if log_dir.exists():
+                shutil.rmtree(log_dir)
+        except Exception as error:
+            raise HTTPException(status_code=500, detail=f"Processing log file cleanup failed: {error}") from error
+
+        with _connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM processing_logs WHERE id = ? RETURNING id",
+                (stored_id,),
+            )
+            deleted = cursor.fetchone()
+        if not deleted:
+            raise HTTPException(status_code=500, detail="Processing log database delete failed")
+        return {
+            "id": stored_id,
+            "deleted": True,
+            "storage_deleted": True,
         }
 
 
@@ -761,6 +902,59 @@ def _storage_root() -> Path:
 
 def _detection_query_storage_root() -> Path:
     return Path(__file__).resolve().parents[2] / "storage" / "detection_queries"
+
+
+def _processing_log_storage_root() -> Path:
+    return _storage_root() / "processing_logs"
+
+
+def _safe_processing_log_dir(log_id: str) -> Path:
+    normalized = re.sub(r"[^A-Za-z0-9_.-]", "_", str(log_id or "").strip())
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Invalid processing log id")
+    root = _processing_log_storage_root().resolve()
+    path = (root / normalized).resolve()
+    if root != path and root not in path.parents:
+        raise HTTPException(status_code=400, detail="Invalid processing log storage path")
+    return path
+
+
+def _relative_storage_reference(path: Path) -> str:
+    root = _storage_root().resolve()
+    resolved = path.resolve()
+    if root != resolved and root not in resolved.parents:
+        raise HTTPException(status_code=500, detail="Processing log file is outside storage root")
+    return resolved.relative_to(root).as_posix()
+
+
+def _resolve_storage_reference(reference: Any) -> Path:
+    text = str(reference or "").strip().replace("\\", "/")
+    if not text or text.startswith("/") or ".." in Path(text).parts:
+        raise HTTPException(status_code=400, detail="Invalid processing log file reference")
+    root = _storage_root().resolve()
+    path = (root / text).resolve()
+    if root != path and root not in path.parents:
+        raise HTTPException(status_code=400, detail="Invalid processing log file reference")
+    return path
+
+
+def _image_extension_from_mime(mime_type: str) -> str:
+    normalized = str(mime_type or "").split(";", 1)[0].strip().lower()
+    if normalized == "image/png":
+        return ".png"
+    if normalized in {"image/webp", "image/x-webp"}:
+        return ".webp"
+    return ".jpg"
+
+
+def _decode_data_url_image(value: Any) -> tuple[bytes, str]:
+    text = str(value or "")
+    match = re.match(r"^data:(image/[A-Za-z0-9.+-]+);base64,(.*)$", text, re.DOTALL)
+    if not match:
+        raise ValueError("page image must be an image data URL")
+    mime_type = match.group(1)
+    encoded = match.group(2)
+    return base64.b64decode(encoded, validate=True), mime_type
 
 
 def _load_image_source(source: Optional[str]):

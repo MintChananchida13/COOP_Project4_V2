@@ -93,6 +93,7 @@ type ProcessingLogSnapshot = {
   currentStep: string;
   pageCount: number;
   sourcePages: Record<string, unknown>[];
+  pageFiles: Record<string, unknown>[];
   templateDetection: Record<string, unknown>;
   matchedTemplate: Record<string, unknown> | null;
   roiSnapshot: Record<string, unknown>[];
@@ -1600,6 +1601,7 @@ function HomeWorkspace() {
   } | null>(null);
   const [templateDetectionSnapshot, setTemplateDetectionSnapshot] = useState<Record<string, unknown> | null>(null);
   const activeProcessingRunIdRef = useRef<string>("");
+  const ocrProcessingTimeMsRef = useRef<number | null>(null);
   const tableExportDropdownRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -1638,13 +1640,127 @@ function HomeWorkspace() {
     },
   });
 
+  const detectionMetadata = (candidate?: DetectionDevResult["bestCandidate"]) =>
+    candidate?.metadata && typeof candidate.metadata === "object" && !Array.isArray(candidate.metadata)
+      ? candidate.metadata
+      : {};
+
+  const firstTextValue = (...values: unknown[]) => {
+    for (const value of values) {
+      const text = String(value ?? "").trim();
+      if (text) return text;
+    }
+    return null;
+  };
+
+  const firstNumberValue = (...values: unknown[]) => {
+    for (const value of values) {
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+    }
+    return null;
+  };
+
+  const normalizeDetectionCandidateForLog = (
+    candidate: NonNullable<DetectionDevResult["bestCandidate"]>,
+    selectedTemplateId?: string | null
+  ) => {
+    const metadata = detectionMetadata(candidate);
+    const templateId = candidate.templateId ?? null;
+    const selected = Boolean(selectedTemplateId && templateId && selectedTemplateId === templateId);
+    return {
+      templateId,
+      templateName: candidate.templateName ?? null,
+      templateVersion: firstTextValue(
+        metadata.version_name,
+        metadata.template_version,
+        metadata.template_version_name,
+        metadata.version_number
+      ),
+      detectionMode: firstTextValue(metadata.detection_mode),
+      verificationMode: candidate.verificationStrategy ?? null,
+      layoutScore: firstNumberValue(candidate.layoutScore, candidate.retrievalScore, candidate.score),
+      textAnchorScore: candidate.textAnchorScore ?? null,
+      imageAnchorScore: candidate.imageAnchorScore ?? null,
+      verificationScore: candidate.verificationScore ?? null,
+      finalScore: candidate.finalScore ?? candidate.score ?? null,
+      passed: candidate.finalPassed ?? candidate.verificationPassed ?? null,
+      result: selected ? "Selected" : candidate.decisionReason || candidate.decisionPath || (candidate.finalPassed ? "Passed" : "Not selected"),
+      decisionReason: candidate.decisionReason,
+    };
+  };
+
+  const buildTemplateDetectionSnapshot = (
+    detection: DetectionDevResult,
+    overrides: Record<string, unknown> = {}
+  ) => {
+    const bestCandidate = detection.bestCandidate ?? null;
+    const bestMetadata = detectionMetadata(bestCandidate);
+    const selectedTemplateId = bestCandidate?.templateId ?? null;
+    const normalizedCandidates = detection.candidates
+      .slice(0, 5)
+      .map((candidate) => normalizeDetectionCandidateForLog(candidate, detection.matched ? selectedTemplateId : null));
+    const verification = bestCandidate
+      ? {
+          layoutScore: firstNumberValue(bestCandidate.layoutScore, bestCandidate.retrievalScore, bestCandidate.score),
+          textAnchorScore: bestCandidate.textAnchorScore ?? null,
+          imageAnchorScore: bestCandidate.imageAnchorScore ?? null,
+          verificationScore: bestCandidate.verificationScore ?? null,
+          finalScore: bestCandidate.finalScore ?? bestCandidate.score ?? null,
+          passed: bestCandidate.finalPassed ?? bestCandidate.verificationPassed ?? null,
+        }
+      : {
+          layoutScore: null,
+          textAnchorScore: null,
+          imageAnchorScore: null,
+          verificationScore: null,
+          finalScore: null,
+          passed: null,
+        };
+    const timing = detection.debug?.timing && typeof detection.debug.timing === "object" ? detection.debug.timing as Record<string, unknown> : null;
+
+    return {
+      queryId: detection.queryId,
+      matched: detection.matched,
+      threshold: detection.threshold,
+      selectedTemplate: detection.matched ? bestCandidate?.templateName ?? null : null,
+      templateVersion: firstTextValue(
+        bestMetadata.version_name,
+        bestMetadata.template_version,
+        bestMetadata.template_version_name,
+        bestMetadata.version_number
+      ),
+      detectionMode: firstTextValue(bestMetadata.detection_mode),
+      verificationMode: bestCandidate?.verificationStrategy || detection.debug?.verification_strategy || null,
+      bestCandidate: bestCandidate ? normalizeDetectionCandidateForLog(bestCandidate, detection.matched ? selectedTemplateId : null) : null,
+      candidates: normalizedCandidates,
+      verification,
+      detectionProcessingTimeMs: typeof timing?.total_detection_ms === "number" ? timing.total_detection_ms : null,
+      timing,
+      ...overrides,
+    };
+  };
+
   const buildProcessingLogSnapshot = (reason: string): ProcessingLogSnapshot | null => {
     const processingRunId = activeProcessingRunIdRef.current;
     if (!processingRunId || ocrResults.length === 0) return null;
     const sourcePages = imagesList.map((src, index) => ({
       pageNumber: index + 1,
+      sourceFileId: uploadedSourceFileId || undefined,
+      sourceFileName: uploadedSourceFileName || undefined,
+      sourceFileType: uploadedSourceFileType || undefined,
       imageUrl: src && !src.startsWith("data:") ? src : undefined,
+      imageReferenceStatus: src && !src.startsWith("data:") ? "stable_url" : "data_url_omitted",
     }));
+    const pageFiles = imagesList
+      .map((src, index) => ({
+        pageNumber: index + 1,
+        sourceFileId: uploadedSourceFileId || undefined,
+        sourceFileName: uploadedSourceFileName || undefined,
+        sourceFileType: uploadedSourceFileType || undefined,
+        mimeType: src.startsWith("data:") ? dataUrlMimeType(src) : undefined,
+        dataUrl: src.startsWith("data:") ? src : undefined,
+      }))
+      .filter((item) => item.dataUrl);
     const ocrOriginal = ocrResults.map((result) => {
       const roi = findRoiForOcrResult(rois, result);
       return {
@@ -1678,6 +1794,7 @@ function HomeWorkspace() {
       currentStep,
       pageCount: imagesList.length,
       sourcePages,
+      pageFiles,
       templateDetection: templateDetectionSnapshot || {},
       matchedTemplate: matchedTemplate ? { ...matchedTemplate } : null,
       roiSnapshot: rois.map(compactRoiSnapshot),
@@ -1686,6 +1803,14 @@ function HomeWorkspace() {
       metadata: {
         snapshotReason: reason,
         snapshotAt: new Date().toISOString(),
+        ocrProcessingTimeMs: ocrProcessingTimeMsRef.current,
+        documentPreviewReference: {
+          sourceFileId: uploadedSourceFileId || null,
+          sourceFileName: uploadedSourceFileName || null,
+          sourceFileType: uploadedSourceFileType || null,
+          persistedInBackend: false,
+          note: "User upload images are held client-side as data URLs; processing log stores references only and omits data URLs.",
+        },
       },
     };
   };
@@ -1693,13 +1818,16 @@ function HomeWorkspace() {
   const queueProcessingLogSave = (reason: string) => {
     const snapshot = buildProcessingLogSnapshot(reason);
     if (!snapshot) return;
-    void fetch(`${ADMIN_API_BASE_URL}/processing-logs`, {
-      method: "POST",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(snapshot),
-    }).catch((error) => {
-      console.warn("Processing log background save failed.", error);
-    });
+    const headers = authHeaders({ "Content-Type": "application/json" });
+    window.setTimeout(() => {
+      void fetch(`${ADMIN_API_BASE_URL}/processing-logs`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(snapshot),
+      }).catch((error) => {
+        console.warn("Processing log background save failed.", error);
+      });
+    }, 0);
   };
 
   const handleLogout = () => {
@@ -1727,6 +1855,7 @@ function HomeWorkspace() {
 
   const handleUploadSuccess = (urls: string[], sourceFileName?: string, sourceFileType?: "pdf" | "image", sourceFile?: File) => {
     activeProcessingRunIdRef.current = "";
+    ocrProcessingTimeMsRef.current = null;
     setUploadedSourceFileId(`user_file_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
     setUploadedSourceFileName(sourceFileName || "ไฟล์ต้นทาง");
     setUploadedSourceFileType(sourceFileType || (sourceFileName?.toLowerCase().endsWith(".pdf") ? "pdf" : "image"));
@@ -1769,6 +1898,7 @@ function HomeWorkspace() {
   const handleClearAndUploadNew = () => {
     queueProcessingLogSave("change_document");
     activeProcessingRunIdRef.current = "";
+    ocrProcessingTimeMsRef.current = null;
     setImagesList([]);
     setOriginalImagesList([]);
     setUploadedSourceFileId("");
@@ -1795,6 +1925,7 @@ function HomeWorkspace() {
 
   const handleBatchConfirm = async (finalProcessedImages: string[]) => {
     activeProcessingRunIdRef.current = "";
+    ocrProcessingTimeMsRef.current = null;
     setImagesList(finalProcessedImages);
     setPreviewUrl(finalProcessedImages[currentIndex] || finalProcessedImages[0] || "");
     setImage(finalProcessedImages[currentIndex] || finalProcessedImages[0] || null);
@@ -1834,29 +1965,7 @@ function HomeWorkspace() {
           ? uploadedSourceFile
           : await Promise.all(finalProcessedImages.map((src, index) => dataUrlToFile(src, `confirmed-document-page-${index + 1}.jpg`)));
         detection = await detectTemplateDev(Array.isArray(detectionInput) && detectionInput.length === 1 ? detectionInput[0] : detectionInput);
-        setTemplateDetectionSnapshot({
-          queryId: detection.queryId,
-          matched: detection.matched,
-          threshold: detection.threshold,
-          bestCandidate: detection.bestCandidate
-            ? {
-                templateId: detection.bestCandidate.templateId,
-                templateName: detection.bestCandidate.templateName,
-                score: detection.bestCandidate.score,
-                finalScore: detection.bestCandidate.finalScore,
-                decisionReason: detection.bestCandidate.decisionReason,
-                verificationStrategy: detection.bestCandidate.verificationStrategy,
-              }
-            : null,
-          candidates: detection.candidates.slice(0, 5).map((candidate) => ({
-            templateId: candidate.templateId,
-            templateName: candidate.templateName,
-            score: candidate.score,
-            finalScore: candidate.finalScore,
-            decisionReason: candidate.decisionReason,
-          })),
-          timing: detection.debug?.timing || null,
-        });
+        setTemplateDetectionSnapshot(buildTemplateDetectionSnapshot(detection));
         devTemplateFlowLog("detection completed", {
           matched: detection.matched,
           candidateCount: detection.candidates.length,
@@ -1990,6 +2099,17 @@ function HomeWorkspace() {
         !matchedTemplateVersionName.startsWith(`${matchedTemplateGroupName} - `)
           ? `${matchedTemplateGroupName} - ${matchedTemplateVersionName}`
           : matchedTemplateVersionName || matchedTemplateGroupName || bundle.template.name;
+      setTemplateDetectionSnapshot((previous) => ({
+        ...(previous || {}),
+        selectedTemplate: matchedTemplateDisplayName,
+        templateVersion: matchedTemplateVersionName || null,
+        detectionMode: bundle.template.detectionMode || previous?.detectionMode || null,
+        verificationMode:
+          detection.bestCandidate?.verificationStrategy ||
+          (detection.debug?.verification_strategy as string | null | undefined) ||
+          previous?.verificationMode ||
+          null,
+      }));
 
       setMatchedTemplate({
         id: bundle.template.id,
@@ -2028,7 +2148,6 @@ function HomeWorkspace() {
   const handleRunOCR = async () => {
     const runId = ocrRunIdRef.current + 1;
     ocrRunIdRef.current = runId;
-    activeProcessingRunIdRef.current = `proc_${Date.now()}_${runId}`;
     const activeRois = rois.filter((roi) => roi.enabled !== false);
     if (activeRois.length === 0) {
       setOperationNotice({
@@ -2039,6 +2158,9 @@ function HomeWorkspace() {
       return;
     }
 
+    activeProcessingRunIdRef.current = `proc_${Date.now()}_${runId}`;
+    ocrProcessingTimeMsRef.current = null;
+    const ocrStartedAt = performance.now();
     setIsLoading(true);
     setOcrResults([]);
     setOperationNotice(null);
@@ -2230,6 +2352,7 @@ function HomeWorkspace() {
 
       if (combinedResults.length > 0) {
         if (ocrRunIdRef.current !== runId) return;
+        ocrProcessingTimeMsRef.current = performance.now() - ocrStartedAt;
         setOcrResults(combinedResults);
         setCurrentIndex(0);
         setCurrentStep("editor");
@@ -2259,6 +2382,8 @@ function HomeWorkspace() {
     const runId = ocrRunIdRef.current + 1;
     ocrRunIdRef.current = runId;
     activeProcessingRunIdRef.current = `proc_${Date.now()}_${runId}`;
+    ocrProcessingTimeMsRef.current = null;
+    const ocrStartedAt = performance.now();
     setIsLoading(true);
     setOcrResults([]);
     setOperationNotice(null);
@@ -2364,6 +2489,7 @@ function HomeWorkspace() {
 
       if (allOcrResults.length > 0) {
         if (ocrRunIdRef.current !== runId) return;
+        ocrProcessingTimeMsRef.current = performance.now() - ocrStartedAt;
         setRois((prev) => {
           const nonGeneratedRois = prev.filter((r) => !r.fieldName.startsWith("line_"));
           return [...nonGeneratedRois, ...allRoisFromOcr];

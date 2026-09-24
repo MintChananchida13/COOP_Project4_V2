@@ -5,6 +5,7 @@ from uuid import uuid4
 from typing import Any, Dict
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
+from fastapi.responses import FileResponse
 
 from app.auth.auth_service import authenticate_user, create_access_token, create_user
 from app.core.db import connect as connect_db
@@ -316,6 +317,17 @@ def get_detect_template_dev_job(job_id: str) -> dict:
 @router.post("/processing-logs", response_model=ApiResponse)
 def upsert_processing_log(payload: ProcessingLogUpsertRequest) -> ApiResponse:
     return ok(processing_logs.upsert(payload))
+
+
+@router.get("/admin/processing-logs/{log_id}/pages/{page_number}")
+def get_processing_log_page(log_id: str, page_number: int) -> FileResponse:
+    path = processing_logs.page_image_path(log_id, page_number)
+    return FileResponse(path)
+
+
+@router.delete("/admin/processing-logs/{log_id}", response_model=ApiResponse)
+def delete_processing_log(log_id: str) -> ApiResponse:
+    return ok(processing_logs.delete(log_id))
 
 
 @router.post("/template-requests", response_model=ApiResponse)
