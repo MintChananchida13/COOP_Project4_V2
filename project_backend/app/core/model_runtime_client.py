@@ -288,7 +288,11 @@ def _post_predict(
     return result if isinstance(result, dict) else parsed
 
 
-def remote_analyze_layout(image: np.ndarray, timing: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+def remote_analyze_layout(
+    image: np.ndarray,
+    timing: Optional[Dict[str, Any]] = None,
+    layout_only: bool = False,
+) -> Optional[Dict[str, Any]]:
     if not is_runtime_configured(ModelRuntimeKind.LAYOUT):
         return None
     encode_started = time.perf_counter()
@@ -300,7 +304,11 @@ def remote_analyze_layout(image: np.ndarray, timing: Optional[Dict[str, Any]] = 
             timing["image_shape"] = [int(image.shape[1]), int(image.shape[0])]
         except Exception:
             pass
-    return _post_predict(ModelRuntimeKind.LAYOUT, {"image": image_data_url}, timing=timing)
+    return _post_predict(
+        ModelRuntimeKind.LAYOUT,
+        {"image": image_data_url, "layout_only": layout_only},
+        timing=timing,
+    )
 
 
 def remote_detect_text_boxes(image_path: str, timing: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:

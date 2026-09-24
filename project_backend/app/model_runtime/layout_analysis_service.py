@@ -1184,7 +1184,7 @@ def analyze_layout_signature(image: np.ndarray, timing: Optional[Dict[str, Any]]
         logger.info("Using remote Layout runtime for layout signature")
         try:
             runtime_timing: Dict[str, Any] = {}
-            layout_result = remote_analyze_layout(image, timing=runtime_timing)
+            layout_result = remote_analyze_layout(image, timing=runtime_timing, layout_only=True)
             if timing is not None:
                 timing["runtime_client"] = runtime_timing
         except ModelRuntimeUnavailableError as error:
