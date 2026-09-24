@@ -1,6 +1,7 @@
 import logging
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -259,7 +260,9 @@ def _diagnostic_ids(text_items: List[Tuple[str, Any]]) -> List[str]:
 
 
 def _detect_boxes_in_crops_batch(
-    text_items: List[Tuple[str, Any]], source: str = "unknown"
+    text_items: List[Tuple[str, Any]],
+    source: str = "unknown",
+    timing: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Tuple[List[Dict[str, int]], Dict[str, Any]]]:
     if not text_items:
         return {}
@@ -270,7 +273,11 @@ def _detect_boxes_in_crops_batch(
             len(text_items),
             _diagnostic_ids(text_items),
         )
+        step_started = time.perf_counter()
         detections = detect_text_boxes_batch([bgr_crop for _, bgr_crop in text_items])
+        if timing is not None:
+            timing["text_detection_batch"] = float(timing.get("text_detection_batch") or 0.0) + (time.perf_counter() - step_started)
+            timing["text_detection_batch_size"] = int(timing.get("text_detection_batch_size") or 0) + len(text_items)
     except (LayoutAnalysisUnavailableError, RuntimeError, OcrUnavailableError, ValueError) as error:
         logger.info(
             "OCR diagnostic: stage=text_detection_batch_failed source=%s batch_size=%s ids=%s error=%s",
@@ -389,7 +396,9 @@ def _crop_box(bgr_crop, box: Dict[str, Any], official_style: bool = True, allow_
 
 
 def _recognize_text_crops_with_detection(
-    text_items: List[Tuple[str, Any]], source: str = "unknown"
+    text_items: List[Tuple[str, Any]],
+    source: str = "unknown",
+    timing: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Dict[str, Any]]:
     if not text_items:
         return {}
@@ -398,7 +407,7 @@ def _recognize_text_crops_with_detection(
     recognition_crops = []
     recognition_meta: List[Dict[str, Any]] = []
     per_key_detection: Dict[str, Dict[str, Any]] = {}
-    detection_results = _detect_boxes_in_crops_batch(text_items, source=source)
+    detection_results = _detect_boxes_in_crops_batch(text_items, source=source, timing=timing)
     is_table_source = str(source or "").startswith("table:")
     official_crop_style = not is_table_source
 
@@ -447,7 +456,11 @@ def _recognize_text_crops_with_detection(
         len(recognition_crops),
         [str(meta.get("key")) for meta in recognition_meta],
     )
+    step_started = time.perf_counter()
     batch_results = run_paddle_thai_ocr_batch(recognition_crops)
+    if timing is not None:
+        timing["text_recognition_batch"] = float(timing.get("text_recognition_batch") or 0.0) + (time.perf_counter() - step_started)
+        timing["text_recognition_batch_size"] = int(timing.get("text_recognition_batch_size") or 0) + len(recognition_crops)
     grouped: Dict[str, List[Dict[str, Any]]] = {}
     for meta, result in zip(recognition_meta, batch_results):
         text = normalize_ocr_text(result.get("text"))
@@ -503,7 +516,11 @@ def _recognize_text_crops_with_detection(
             len(fallback_requests),
             _diagnostic_ids(fallback_requests),
         )
+        step_started = time.perf_counter()
         fallback_results = run_paddle_thai_ocr_batch([crop for _, crop in fallback_requests])
+        if timing is not None:
+            timing["text_recognition_fallback"] = float(timing.get("text_recognition_fallback") or 0.0) + (time.perf_counter() - step_started)
+            timing["text_recognition_fallback_size"] = int(timing.get("text_recognition_fallback_size") or 0) + len(fallback_requests)
         for (key, full_crop), full_result in zip(fallback_requests, fallback_results):
             pending = pending_results[key]
             segments = pending["segments"]
@@ -751,7 +768,11 @@ def _is_table_item(item: Dict[str, Any]) -> bool:
     return data_type == "table" or extraction_method in {"table_recognition_v2", "ocr_table"}
 
 
-def ocr_rois(image_path: str, roi_items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def ocr_rois(
+    image_path: str,
+    roi_items: List[Dict[str, Any]],
+    timing: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Dict[str, Any]]:
     if not roi_items:
         return {}
 
@@ -760,13 +781,18 @@ def ocr_rois(image_path: str, roi_items: List[Dict[str, Any]]) -> Dict[str, Dict
     if not path.exists():
         raise ValueError(f"Verification image not found: {image_path}")
 
+    step_started = time.perf_counter()
     image = Image.open(path).convert("RGB")
+    if timing is not None:
+        timing["image_load"] = float(timing.get("image_load") or 0.0) + (time.perf_counter() - step_started)
+        timing["roi_count"] = int(timing.get("roi_count") or 0) + len(roi_items)
     text_items: List[Tuple[str, Any]] = []
     failed: Dict[str, Dict[str, Any]] = {}
     for index, item in enumerate(roi_items):
         key = str(item.get("id") or item.get("field_id") or index)
         try:
             if _is_table_item(item):
+                step_started = time.perf_counter()
                 neighbor_rois = [
                     other.get("roi") or other
                     for other_index, other in enumerate(roi_items)
@@ -778,7 +804,13 @@ def ocr_rois(image_path: str, roi_items: List[Dict[str, Any]]) -> Dict[str, Dict
                     neighbor_rois,
                 )
                 bgr_crop = cv2.cvtColor(np.array(crop), cv2.COLOR_RGB2BGR)
+                if timing is not None:
+                    timing["table_crop_prepare"] = float(timing.get("table_crop_prepare") or 0.0) + (time.perf_counter() - step_started)
+                    timing["table_roi_count"] = int(timing.get("table_roi_count") or 0) + 1
+                step_started = time.perf_counter()
                 table_result = recognize_table_v2(bgr_crop)
+                if timing is not None:
+                    timing["table_model"] = float(timing.get("table_model") or 0.0) + (time.perf_counter() - step_started)
                 table_debug = table_result.get("table_debug")
                 if not isinstance(table_debug, dict):
                     table_debug = {}
@@ -801,9 +833,13 @@ def ocr_rois(image_path: str, roi_items: List[Dict[str, Any]]) -> Dict[str, Dict
                     "error": table_result.get("error"),
                 }
             else:
+                step_started = time.perf_counter()
                 crop = _crop_roi_from_image(image, item.get("roi") or item)
                 bgr_crop = cv2.cvtColor(np.array(crop), cv2.COLOR_RGB2BGR)
                 text_items.append((key, bgr_crop))
+                if timing is not None:
+                    timing["text_crop_prepare"] = float(timing.get("text_crop_prepare") or 0.0) + (time.perf_counter() - step_started)
+                    timing["text_roi_count"] = int(timing.get("text_roi_count") or 0) + 1
         except TableRecognitionV2UnavailableError as error:
             failed[key] = {
                 "text": "",
@@ -830,7 +866,7 @@ def ocr_rois(image_path: str, roi_items: List[Dict[str, Any]]) -> Dict[str, Dict
         return results
 
     try:
-        text_results = _recognize_text_crops_with_detection(text_items, source="ocr_rois")
+        text_results = _recognize_text_crops_with_detection(text_items, source="ocr_rois", timing=timing)
     except PaddleThaiOcrUnavailableError as error:
         raise OcrUnavailableError(str(error)) from error
 

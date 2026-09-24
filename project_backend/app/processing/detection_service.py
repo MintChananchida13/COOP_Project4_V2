@@ -92,7 +92,10 @@ def _timing_ms_map(timing: Optional[Dict[str, Any]]) -> Dict[str, Optional[float
     result: Dict[str, Any] = {}
     for key, value in timing.items():
         if isinstance(value, (int, float)):
-            result[f"{key}_ms"] = _ms(float(value))
+            if key.endswith(("_count", "_hits", "_misses", "_size")):
+                result[key] = int(value)
+            else:
+                result[f"{key}_ms"] = _ms(float(value))
         elif isinstance(value, dict):
             result[key] = _timing_ms_map(value)
     return result
@@ -741,11 +744,21 @@ def _template_canvas_projection(
     extraction_image_path: str,
     extraction_image_preview_url: Optional[str],
 ) -> Dict[str, Any]:
+    timing: Dict[str, Any] = {
+        "field_filter": 0.0,
+        "projected_field_build": 0.0,
+        "adaptive_refinement": 0.0,
+        "total": 0.0,
+    }
+    total_started = time.perf_counter()
+    step_started = time.perf_counter()
     extraction_fields = [
         field
         for field in fields
         if not field.get("use_for_verification") and int(field.get("page_number") or 1) == int(page_number)
     ]
+    timing["field_filter"] = time.perf_counter() - step_started
+    step_started = time.perf_counter()
     projected_fields = []
     for field in extraction_fields:
         roi = field.get("roi") or {}
@@ -787,12 +800,17 @@ def _template_canvas_projection(
                 "fallback_used": False,
             }
         )
+    timing["projected_field_build"] = time.perf_counter() - step_started
 
+    step_started = time.perf_counter()
     projected_fields, adaptive_debug = projection_service.refine_projected_fields(
         projected_fields,
         extraction_fields,
         {int(page_number): extraction_image_path},
+        timing=timing,
     )
+    timing["adaptive_refinement"] = time.perf_counter() - step_started
+    timing["total"] = time.perf_counter() - total_started
 
     return {
         "template_id": template_id,
@@ -815,6 +833,7 @@ def _template_canvas_projection(
         "extraction_image_preview_url": extraction_image_preview_url,
         "alignment_status": alignment_status,
         "alignment_reason": alignment_reason,
+        "timing": timing,
     }
 
 
@@ -851,11 +870,22 @@ def _run_extraction_test(
     page_number: int,
     roi_coordinate_space: str,
 ) -> Dict[str, Any]:
+    timing: Dict[str, Any] = {
+        "field_index": 0.0,
+        "roi_item_build": 0.0,
+        "ocr_rois": 0.0,
+        "result_apply": 0.0,
+        "total": 0.0,
+    }
+    total_started = time.perf_counter()
+    step_started = time.perf_counter()
     fields_by_id = {str(field.get("id")): field for field in fields}
+    timing["field_index"] = time.perf_counter() - step_started
     results: List[Dict[str, Any]] = []
     roi_items: List[Dict[str, Any]] = []
     roi_sources: Dict[str, str] = {}
 
+    step_started = time.perf_counter()
     for projected in projected_fields:
         field_id = str(projected.get("field_id") or "")
         source_field = fields_by_id.get(field_id) or {}
@@ -911,10 +941,16 @@ def _run_extraction_test(
         roi_items.append({"id": field_id, "roi": roi, "data_type": data_type, "extraction_method": extraction_method})
         roi_sources[field_id] = roi_source
         results.append(base)
+    timing["roi_item_build"] = time.perf_counter() - step_started
 
     if roi_items:
         try:
-            ocr_results = ocr_rois(image_path, roi_items)
+            ocr_timing: Dict[str, Any] = {}
+            step_started = time.perf_counter()
+            ocr_results = ocr_rois(image_path, roi_items, timing=ocr_timing)
+            timing["ocr_rois"] = time.perf_counter() - step_started
+            timing["ocr_rois_breakdown"] = ocr_timing
+            step_started = time.perf_counter()
             for item in results:
                 field_id = str(item.get("field_id") or "")
                 if field_id not in ocr_results:
@@ -938,6 +974,7 @@ def _run_extraction_test(
                         "roi_source": roi_sources.get(field_id) or item.get("roi_source"),
                     }
                 )
+            timing["result_apply"] = time.perf_counter() - step_started
         except OcrUnavailableError as error:
             for item in results:
                 if item.get("data_type") == "image" or item.get("extraction_method") == "extract_image":
@@ -949,6 +986,7 @@ def _run_extraction_test(
                     continue
                 item.update({"status": "failed", "passed": False, "failure_reason": "ocr_error", "error": str(error)})
 
+    timing["total"] = time.perf_counter() - total_started
     return {
         "template_id": template_id,
         "status": "completed",
@@ -959,6 +997,7 @@ def _run_extraction_test(
         "image_preview_url": _detection_debug_url(image_path),
         "roi_coordinate_space": roi_coordinate_space,
         "fields": results,
+        "timing": timing,
     }
 
 
@@ -1692,6 +1731,8 @@ def _candidate_from_result(
             "image_model_inference_ms": _ms(candidate_timing.get("image_model_inference")),
             "normalized_verification_breakdown": normalized_internal_timing_ms,
             "aligned_verification_breakdown": aligned_internal_timing_ms,
+            "projection_breakdown": _timing_ms_map(projection.get("timing") if isinstance(projection, dict) else {}),
+            "extraction_test_breakdown": _timing_ms_map(extraction_test.get("timing") if isinstance(extraction_test, dict) else {}),
             "candidate_overhead_breakdown": {
                 "template_fetch_ms": _ms(candidate_timing.get("template_fetch")),
                 "field_count_query_ms": _ms(candidate_timing.get("field_count_query")),

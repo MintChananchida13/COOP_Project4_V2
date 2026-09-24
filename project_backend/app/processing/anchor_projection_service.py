@@ -1,6 +1,7 @@
 import re
 import unicodedata
 import logging
+import time
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -77,10 +78,13 @@ class AnchorProjectionService:
         self,
         anchors: List[Dict[str, Any]],
         page_image_paths: Dict[int, str],
+        page_ocr_cache: Optional[Dict[int, Dict[str, Any]]] = None,
+        page_detection_cache: Optional[Dict[int, Dict[str, Any]]] = None,
+        timing: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         matched: List[Dict[str, Any]] = []
         diagnostics: List[Dict[str, Any]] = []
-        ocr_cache: Dict[int, Dict[str, Any]] = {}
+        ocr_cache = page_ocr_cache if page_ocr_cache is not None else {}
 
         for anchor in anchors:
             expected = self._normalize_text(anchor.get("expected_text"))
@@ -113,8 +117,17 @@ class AnchorProjectionService:
 
             try:
                 if page_number not in ocr_cache:
+                    step_started = time.perf_counter()
                     page_detection = detect_text_boxes(image_path)
+                    if page_detection_cache is not None:
+                        page_detection_cache[page_number] = page_detection
+                    if timing is not None:
+                        timing["text_anchor_detect_text_boxes"] = float(timing.get("text_anchor_detect_text_boxes") or 0.0) + (time.perf_counter() - step_started)
+                        timing["text_anchor_detect_text_boxes_misses"] = int(timing.get("text_anchor_detect_text_boxes_misses") or 0) + 1
+                    step_started = time.perf_counter()
                     image = cv2.imread(image_path)
+                    if timing is not None:
+                        timing["text_anchor_image_read"] = float(timing.get("text_anchor_image_read") or 0.0) + (time.perf_counter() - step_started)
                     if image is None:
                         raise ValueError(f"Unable to read image: {image_path}")
                     regions = []
@@ -127,7 +140,11 @@ class AnchorProjectionService:
                         crop = image[y : min(image.shape[0], y + height), x : min(image.shape[1], x + width)]
                         if crop.size == 0:
                             continue
+                        step_started = time.perf_counter()
                         recognized = run_paddle_thai_ocr(crop)
+                        if timing is not None:
+                            timing["text_anchor_recognition"] = float(timing.get("text_anchor_recognition") or 0.0) + (time.perf_counter() - step_started)
+                            timing["text_anchor_recognition_count"] = int(timing.get("text_anchor_recognition_count") or 0) + 1
                         regions.append(
                             {
                                 **region,
@@ -140,6 +157,8 @@ class AnchorProjectionService:
                             }
                         )
                     ocr_cache[page_number] = {**page_detection, "regions": regions}
+                elif timing is not None:
+                    timing["text_anchor_page_ocr_cache_hits"] = int(timing.get("text_anchor_page_ocr_cache_hits") or 0) + 1
                 page_ocr = ocr_cache[page_number]
             except (LayoutAnalysisUnavailableError, PaddleThaiOcrUnavailableError, ValueError, RuntimeError) as error:
                 diagnostics.append(
@@ -475,6 +494,8 @@ class AnchorProjectionService:
         projected_fields: List[Dict[str, Any]],
         source_fields: List[Dict[str, Any]],
         page_image_paths: Dict[int, str],
+        page_detection_cache: Optional[Dict[int, Dict[str, Any]]] = None,
+        timing: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         if not self.adaptive_roi.enabled:
             for projected in projected_fields:
@@ -503,7 +524,7 @@ class AnchorProjectionService:
             }
 
         fields_by_id = {field.get("id"): field for field in source_fields}
-        ocr_cache: Dict[int, Dict[str, Any]] = {}
+        ocr_cache = page_detection_cache if page_detection_cache is not None else {}
         refined_count = 0
         fallback_count = 0
 
@@ -549,7 +570,13 @@ class AnchorProjectionService:
 
             try:
                 if page_number not in ocr_cache:
+                    step_started = time.perf_counter()
                     ocr_cache[page_number] = detect_text_boxes(image_path)
+                    if timing is not None:
+                        timing["adaptive_detect_text_boxes"] = float(timing.get("adaptive_detect_text_boxes") or 0.0) + (time.perf_counter() - step_started)
+                        timing["adaptive_detect_text_boxes_misses"] = int(timing.get("adaptive_detect_text_boxes_misses") or 0) + 1
+                elif timing is not None:
+                    timing["adaptive_detect_text_boxes_cache_hits"] = int(timing.get("adaptive_detect_text_boxes_cache_hits") or 0) + 1
                 page_ocr = ocr_cache[page_number]
             except (LayoutAnalysisUnavailableError, ValueError, RuntimeError) as error:
                 projected["adaptive_status"] = "fallback"
@@ -574,7 +601,10 @@ class AnchorProjectionService:
                     }
                 )
 
+            step_started = time.perf_counter()
             adaptive = self.adaptive_roi.refine_field(projected_roi, word_boxes)
+            if timing is not None:
+                timing["adaptive_geometry"] = float(timing.get("adaptive_geometry") or 0.0) + (time.perf_counter() - step_started)
             projected["adaptive_roi"] = adaptive["adaptive_roi"]
             projected["adaptive_search_region"] = adaptive["search_region"]
             projected["adaptive_word_boxes"] = adaptive["word_boxes"]
@@ -611,8 +641,9 @@ class AnchorProjectionService:
         projected_fields: List[Dict[str, Any]],
         source_fields: List[Dict[str, Any]],
         page_image_paths: Dict[int, str],
+        timing: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        return self._refine_projected_fields(projected_fields, source_fields, page_image_paths)
+        return self._refine_projected_fields(projected_fields, source_fields, page_image_paths, timing=timing)
 
     def project(
         self,
@@ -620,6 +651,22 @@ class AnchorProjectionService:
         fields: List[Dict[str, Any]],
         page_image_paths: Dict[int, str],
     ) -> Dict[str, Any]:
+        timing: Dict[str, Any] = {
+            "text_anchor_detect_text_boxes": 0.0,
+            "text_anchor_image_read": 0.0,
+            "text_anchor_recognition": 0.0,
+            "text_anchor_recognition_count": 0,
+            "text_anchor_detect_text_boxes_misses": 0,
+            "text_anchor_page_ocr_cache_hits": 0,
+            "transform_estimation": 0.0,
+            "field_projection": 0.0,
+            "adaptive_detect_text_boxes": 0.0,
+            "adaptive_detect_text_boxes_misses": 0,
+            "adaptive_detect_text_boxes_cache_hits": 0,
+            "adaptive_geometry": 0.0,
+            "total": 0.0,
+        }
+        total_started = time.perf_counter()
         extraction_fields = [field for field in fields if not field.get("use_for_verification")]
         text_anchors = [
             field
@@ -627,10 +674,23 @@ class AnchorProjectionService:
             if field.get("use_for_verification") and field.get("data_type") != "image"
         ]
 
-        matched_anchors, anchor_diagnostics = self._locate_text_anchors(text_anchors, page_image_paths)
+        page_ocr_cache: Dict[int, Dict[str, Any]] = {}
+        page_detection_cache: Dict[int, Dict[str, Any]] = {}
+        matched_anchors, anchor_diagnostics = self._locate_text_anchors(
+            text_anchors,
+            page_image_paths,
+            page_ocr_cache,
+            page_detection_cache,
+            timing,
+        )
+        step_started = time.perf_counter()
         method, matrix, transform_debug = self._estimate_transform(matched_anchors)
+        timing["transform_estimation"] = time.perf_counter() - step_started
+        step_started = time.perf_counter()
         projected_fields = [self._project_field(field, method, matrix) for field in extraction_fields]
-        projected_fields, adaptive_debug = self._refine_projected_fields(projected_fields, extraction_fields, page_image_paths)
+        timing["field_projection"] = time.perf_counter() - step_started
+        projected_fields, adaptive_debug = self._refine_projected_fields(projected_fields, extraction_fields, page_image_paths, page_detection_cache, timing)
+        timing["total"] = time.perf_counter() - total_started
 
         invalid_fields = [field for field in projected_fields if not field.get("projection_valid")]
         status = "success" if matrix is not None and not invalid_fields else "fallback"
@@ -655,4 +715,5 @@ class AnchorProjectionService:
             "matched_anchors": anchor_diagnostics,
             "adaptive_refinement": adaptive_debug,
             "projected_fields": projected_fields,
+            "timing": timing,
         }
