@@ -274,10 +274,12 @@ def _detect_boxes_in_crops_batch(
             _diagnostic_ids(text_items),
         )
         step_started = time.perf_counter()
-        detections = detect_text_boxes_batch([bgr_crop for _, bgr_crop in text_items])
+        detection_timing: Dict[str, Any] = {}
+        detections = detect_text_boxes_batch([bgr_crop for _, bgr_crop in text_items], timing=detection_timing)
         if timing is not None:
             timing["text_detection_batch"] = float(timing.get("text_detection_batch") or 0.0) + (time.perf_counter() - step_started)
             timing["text_detection_batch_size"] = int(timing.get("text_detection_batch_size") or 0) + len(text_items)
+            timing["text_detection_batch_breakdown"] = detection_timing
     except (LayoutAnalysisUnavailableError, RuntimeError, OcrUnavailableError, ValueError) as error:
         logger.info(
             "OCR diagnostic: stage=text_detection_batch_failed source=%s batch_size=%s ids=%s error=%s",

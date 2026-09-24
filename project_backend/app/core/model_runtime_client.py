@@ -303,24 +303,42 @@ def remote_analyze_layout(image: np.ndarray, timing: Optional[Dict[str, Any]] = 
     return _post_predict(ModelRuntimeKind.LAYOUT, {"image": image_data_url}, timing=timing)
 
 
-def remote_detect_text_boxes(image_path: str) -> Optional[Dict[str, Any]]:
+def remote_detect_text_boxes(image_path: str, timing: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     if not is_runtime_configured(ModelRuntimeKind.TEXT_DETECTION):
         return None
+    encode_started = time.perf_counter()
+    image_data_url = _path_to_data_url(image_path)
+    if timing is not None:
+        timing["image_encode_ms"] = round((time.perf_counter() - encode_started) * 1000.0, 2)
+        timing["image_data_url_bytes"] = len(image_data_url)
     return _post_predict(
         ModelRuntimeKind.TEXT_DETECTION,
-        {"image": _path_to_data_url(image_path)},
+        {"image": image_data_url},
         path_override=_active_ocr_path("text_detection", "single"),
+        timing=timing,
     )
 
 
-def remote_detect_text_boxes_batch(images: List[np.ndarray]) -> Optional[Dict[str, Any]]:
+def remote_detect_text_boxes_batch(images: List[np.ndarray], timing: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     if not is_runtime_configured(ModelRuntimeKind.TEXT_DETECTION):
         return None
+    encode_started = time.perf_counter()
+    image_data_urls = [_image_to_data_url(image) for image in images]
+    if timing is not None:
+        timing["image_encode_ms"] = round((time.perf_counter() - encode_started) * 1000.0, 2)
+        timing["image_count"] = len(images)
+        timing["image_data_url_bytes"] = sum(len(item) for item in image_data_urls)
+        timing["image_shapes"] = [
+            [int(image.shape[1]), int(image.shape[0])]
+            for image in images
+            if getattr(image, "shape", None) is not None and len(image.shape) >= 2
+        ]
     return _post_predict(
         ModelRuntimeKind.TEXT_DETECTION,
-        {"images": [_image_to_data_url(image) for image in images]},
+        {"images": image_data_urls},
         timeout=240.0,
         path_override=_active_ocr_path("text_detection", "batch"),
+        timing=timing,
     )
 
 

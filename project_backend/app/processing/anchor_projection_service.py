@@ -118,12 +118,14 @@ class AnchorProjectionService:
             try:
                 if page_number not in ocr_cache:
                     step_started = time.perf_counter()
-                    page_detection = detect_text_boxes(image_path)
+                    detection_timing: Dict[str, Any] = {}
+                    page_detection = detect_text_boxes(image_path, timing=detection_timing)
                     if page_detection_cache is not None:
                         page_detection_cache[page_number] = page_detection
                     if timing is not None:
                         timing["text_anchor_detect_text_boxes"] = float(timing.get("text_anchor_detect_text_boxes") or 0.0) + (time.perf_counter() - step_started)
                         timing["text_anchor_detect_text_boxes_misses"] = int(timing.get("text_anchor_detect_text_boxes_misses") or 0) + 1
+                        timing.setdefault("text_anchor_detect_text_boxes_breakdowns", []).append(detection_timing)
                     step_started = time.perf_counter()
                     image = cv2.imread(image_path)
                     if timing is not None:
@@ -571,10 +573,12 @@ class AnchorProjectionService:
             try:
                 if page_number not in ocr_cache:
                     step_started = time.perf_counter()
-                    ocr_cache[page_number] = detect_text_boxes(image_path)
+                    detection_timing: Dict[str, Any] = {}
+                    ocr_cache[page_number] = detect_text_boxes(image_path, timing=detection_timing)
                     if timing is not None:
                         timing["adaptive_detect_text_boxes"] = float(timing.get("adaptive_detect_text_boxes") or 0.0) + (time.perf_counter() - step_started)
                         timing["adaptive_detect_text_boxes_misses"] = int(timing.get("adaptive_detect_text_boxes_misses") or 0) + 1
+                        timing.setdefault("adaptive_detect_text_boxes_breakdowns", []).append(detection_timing)
                 elif timing is not None:
                     timing["adaptive_detect_text_boxes_cache_hits"] = int(timing.get("adaptive_detect_text_boxes_cache_hits") or 0) + 1
                 page_ocr = ocr_cache[page_number]

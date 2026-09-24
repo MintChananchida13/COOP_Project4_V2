@@ -98,6 +98,11 @@ def _timing_ms_map(timing: Optional[Dict[str, Any]]) -> Dict[str, Optional[float
                 result[f"{key}_ms"] = _ms(float(value))
         elif isinstance(value, dict):
             result[key] = _timing_ms_map(value)
+        elif isinstance(value, list):
+            result[key] = [
+                _timing_ms_map(item) if isinstance(item, dict) else item
+                for item in value
+            ]
     return result
 
 

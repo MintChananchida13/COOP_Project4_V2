@@ -1309,31 +1309,52 @@ def _text_detection_result_from_remote(remote_result: Dict[str, Any], image: np.
     }
 
 
-def detect_text_boxes(image_path: str) -> Dict[str, Any]:
+def detect_text_boxes(image_path: str, timing: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    total_started = time.perf_counter()
+    step_started = time.perf_counter()
     image = cv2.imread(image_path)
+    if timing is not None:
+        timing["image_read_ms"] = round((time.perf_counter() - step_started) * 1000.0, 2)
     if image is None or image.size == 0:
         raise ValueError("Invalid image for text box detection.")
 
     _require_runtime(ModelRuntimeKind.TEXT_DETECTION)
     logger.info("Using remote TextDetection runtime")
     try:
-        remote_result = remote_detect_text_boxes(image_path)
+        runtime_timing: Dict[str, Any] = {}
+        step_started = time.perf_counter()
+        remote_result = remote_detect_text_boxes(image_path, timing=runtime_timing)
+        if timing is not None:
+            timing["remote_call_ms"] = round((time.perf_counter() - step_started) * 1000.0, 2)
+            timing["runtime_client"] = runtime_timing
     except ModelRuntimeUnavailableError as error:
         raise LayoutAnalysisUnavailableError(str(error)) from error
     except Exception as error:
         raise LayoutAnalysisUnavailableError(str(error)) from error
     if not isinstance(remote_result, dict):
         raise LayoutAnalysisUnavailableError("TextDetection runtime returned an invalid response.")
-    return _text_detection_result_from_remote(remote_result, image)
+    step_started = time.perf_counter()
+    result = _text_detection_result_from_remote(remote_result, image)
+    if timing is not None:
+        timing["postprocess_ms"] = round((time.perf_counter() - step_started) * 1000.0, 2)
+        timing["region_count"] = len(result.get("regions") or [])
+        timing["total_ms"] = round((time.perf_counter() - total_started) * 1000.0, 2)
+    return result
 
 
-def detect_text_boxes_batch(images: List[np.ndarray]) -> List[Dict[str, Any]]:
+def detect_text_boxes_batch(images: List[np.ndarray], timing: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    total_started = time.perf_counter()
     if not images:
         return []
     _require_runtime(ModelRuntimeKind.TEXT_DETECTION)
     logger.info("Using remote TextDetection batch runtime")
     try:
-        remote_result = _remote_detect_text_boxes_batch(images)
+        runtime_timing: Dict[str, Any] = {}
+        step_started = time.perf_counter()
+        remote_result = _remote_detect_text_boxes_batch(images, timing=runtime_timing)
+        if timing is not None:
+            timing["remote_call_ms"] = round((time.perf_counter() - step_started) * 1000.0, 2)
+            timing["runtime_client"] = runtime_timing
     except ModelRuntimeUnavailableError as error:
         raise LayoutAnalysisUnavailableError(str(error)) from error
     except Exception as error:
@@ -1347,7 +1368,8 @@ def detect_text_boxes_batch(images: List[np.ndarray]) -> List[Dict[str, Any]]:
         raw_results[index] if index < len(raw_results) else None
         for index in range(len(images))
     ]
-    return [
+    step_started = time.perf_counter()
+    results = [
         _text_detection_result_from_remote(
             item.get("result") if isinstance(item, dict) and isinstance(item.get("result"), dict) else item,
             image,
@@ -1362,3 +1384,9 @@ def detect_text_boxes_batch(images: List[np.ndarray]) -> List[Dict[str, Any]]:
         }
         for item, image in zip(ordered_results, images)
     ]
+    if timing is not None:
+        timing["postprocess_ms"] = round((time.perf_counter() - step_started) * 1000.0, 2)
+        timing["image_count"] = len(images)
+        timing["region_counts"] = [len(result.get("regions") or []) for result in results]
+        timing["total_ms"] = round((time.perf_counter() - total_started) * 1000.0, 2)
+    return results
