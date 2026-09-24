@@ -93,7 +93,6 @@ type ProcessingLogSnapshot = {
   currentStep: string;
   pageCount: number;
   sourcePages: Record<string, unknown>[];
-  pageFiles: Record<string, unknown>[];
   templateDetection: Record<string, unknown>;
   matchedTemplate: Record<string, unknown> | null;
   roiSnapshot: Record<string, unknown>[];
@@ -1751,16 +1750,6 @@ function HomeWorkspace() {
       imageUrl: src && !src.startsWith("data:") ? src : undefined,
       imageReferenceStatus: src && !src.startsWith("data:") ? "stable_url" : "data_url_omitted",
     }));
-    const pageFiles = imagesList
-      .map((src, index) => ({
-        pageNumber: index + 1,
-        sourceFileId: uploadedSourceFileId || undefined,
-        sourceFileName: uploadedSourceFileName || undefined,
-        sourceFileType: uploadedSourceFileType || undefined,
-        mimeType: src.startsWith("data:") ? dataUrlMimeType(src) : undefined,
-        dataUrl: src.startsWith("data:") ? src : undefined,
-      }))
-      .filter((item) => item.dataUrl);
     const ocrOriginal = ocrResults.map((result) => {
       const roi = findRoiForOcrResult(rois, result);
       return {
@@ -1794,7 +1783,6 @@ function HomeWorkspace() {
       currentStep,
       pageCount: imagesList.length,
       sourcePages,
-      pageFiles,
       templateDetection: templateDetectionSnapshot || {},
       matchedTemplate: matchedTemplate ? { ...matchedTemplate } : null,
       roiSnapshot: rois.map(compactRoiSnapshot),
@@ -1808,8 +1796,8 @@ function HomeWorkspace() {
           sourceFileId: uploadedSourceFileId || null,
           sourceFileName: uploadedSourceFileName || null,
           sourceFileType: uploadedSourceFileType || null,
-          persistedInBackend: false,
-          note: "User upload images are held client-side as data URLs; processing log stores references only and omits data URLs.",
+          persistedInBackend: Boolean(templateDetectionSnapshot?.queryId),
+          note: "Processing Log page images are copied server-side from detection query storage when queryId is available; data URLs are omitted from the log payload.",
         },
       },
     };

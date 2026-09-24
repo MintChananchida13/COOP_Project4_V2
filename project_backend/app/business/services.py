@@ -452,6 +452,69 @@ class GlobalSettingsService:
 
 
 class ProcessingLogService:
+    def _persist_detection_query_pages(
+        self,
+        log_id: str,
+        source_pages: List[Dict[str, Any]],
+        template_detection: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        query_id = str(template_detection.get("queryId") or template_detection.get("query_id") or "").strip()
+        if not query_id:
+            return source_pages
+
+        query_dir = _safe_detection_query_dir(query_id)
+        if not query_dir.exists() or not query_dir.is_dir():
+            return source_pages
+
+        log_dir = _safe_processing_log_dir(log_id)
+        pages_dir = log_dir / "pages"
+        pages_dir.mkdir(parents=True, exist_ok=True)
+
+        pages_by_number: Dict[int, Dict[str, Any]] = {}
+        for page in source_pages:
+            if not isinstance(page, dict):
+                continue
+            try:
+                page_number = int(page.get("pageNumber") or page.get("page_number") or 0)
+            except (TypeError, ValueError):
+                continue
+            if page_number > 0:
+                pages_by_number[page_number] = dict(page)
+
+        copied_any = False
+        for source in sorted(query_dir.glob("page_*.*")):
+            match = re.match(r"^page_(\d+)\.(png|jpg|jpeg|webp)$", source.name, re.IGNORECASE)
+            if not match or not source.is_file():
+                continue
+            page_number = int(match.group(1))
+            extension = source.suffix.lower()
+            destination = (pages_dir / f"page_{page_number}{extension}").resolve()
+            if pages_dir.resolve() != destination.parent:
+                raise HTTPException(status_code=400, detail="Invalid processing log page path")
+
+            for existing in pages_dir.glob(f"page_{page_number}.*"):
+                if existing.resolve() != destination:
+                    existing.unlink(missing_ok=True)
+            shutil.copyfile(source, destination)
+
+            page = pages_by_number.get(page_number, {"pageNumber": page_number})
+            page.update(
+                {
+                    "pageNumber": page_number,
+                    "storageReference": _relative_storage_reference(destination),
+                    "previewUrl": f"/admin/processing-logs/{log_id}/pages/{page_number}",
+                    "mimeType": _mime_type_from_extension(extension),
+                    "imageReferenceStatus": "persisted",
+                    "storageSource": "detection_query",
+                    "detectionQueryId": query_id,
+                }
+            )
+            page.pop("imageUrl", None)
+            pages_by_number[page_number] = page
+            copied_any = True
+
+        return [pages_by_number[key] for key in sorted(pages_by_number)] if copied_any else source_pages
+
     def _persist_page_files(self, log_id: str, source_pages: List[Dict[str, Any]], page_files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not page_files:
             return source_pages
@@ -524,6 +587,7 @@ class ProcessingLogService:
 
         log_id = _stub_id("proc_log")
         source_pages = data.get("source_pages") or []
+        template_detection = data.get("template_detection") or {}
         with _connect() as conn:
             cursor = conn.execute(
                 """
@@ -587,7 +651,24 @@ class ProcessingLogService:
             )
             row = cursor.fetchone()
         stored_id = row["id"] if row else log_id
-        stored_source_pages = self._persist_page_files(stored_id, source_pages, data.get("page_files") or [])
+        stored_source_pages = self._persist_detection_query_pages(stored_id, source_pages, template_detection)
+        existing_page_numbers = {
+            int(page.get("pageNumber") or page.get("page_number") or 0)
+            for page in stored_source_pages
+            if isinstance(page, dict)
+        }
+        fallback_page_files: List[Dict[str, Any]] = []
+        for page_file in data.get("page_files") or []:
+            if not isinstance(page_file, dict):
+                continue
+            try:
+                page_number = int(page_file.get("pageNumber") or page_file.get("page_number") or 0)
+            except (TypeError, ValueError):
+                continue
+            if page_number not in existing_page_numbers:
+                fallback_page_files.append(page_file)
+        if fallback_page_files:
+            stored_source_pages = self._persist_page_files(stored_id, stored_source_pages, fallback_page_files)
         if stored_source_pages != source_pages:
             with _connect() as conn:
                 conn.execute(
@@ -919,6 +1000,17 @@ def _safe_processing_log_dir(log_id: str) -> Path:
     return path
 
 
+def _safe_detection_query_dir(query_id: str) -> Path:
+    normalized = re.sub(r"[^A-Za-z0-9_.-]", "_", str(query_id or "").strip())
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Invalid detection query id")
+    root = _detection_query_storage_root().resolve()
+    path = (root / normalized).resolve()
+    if root != path and root not in path.parents:
+        raise HTTPException(status_code=400, detail="Invalid detection query storage path")
+    return path
+
+
 def _relative_storage_reference(path: Path) -> str:
     root = _storage_root().resolve()
     resolved = path.resolve()
@@ -945,6 +1037,15 @@ def _image_extension_from_mime(mime_type: str) -> str:
     if normalized in {"image/webp", "image/x-webp"}:
         return ".webp"
     return ".jpg"
+
+
+def _mime_type_from_extension(extension: str) -> str:
+    normalized = str(extension or "").strip().lower()
+    if normalized == ".png":
+        return "image/png"
+    if normalized == ".webp":
+        return "image/webp"
+    return "image/jpeg"
 
 
 def _decode_data_url_image(value: Any) -> tuple[bytes, str]:
