@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -27,6 +28,8 @@ class LayoutAlignmentService:
         query_image_path: str,
         template_image_source: str,
         output_path: Optional[str] = None,
+        query_signature: Optional[Dict[str, Any]] = None,
+        template_signature: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         query = cv2.imread(str(query_image_path))
         template = self._load_image(template_image_source)
@@ -40,15 +43,33 @@ class LayoutAlignmentService:
         if template is None:
             return self._result("failed", "template_image_unreadable", output_path, None, error="Unable to read template image")
 
+        signature_debug: Dict[str, Any] = {
+            "query_signature_source": "precomputed" if query_signature is not None else "generated",
+            "template_signature_source": "precomputed" if template_signature is not None else "generated",
+            "query_signature_generation_ms": 0.0,
+            "template_signature_generation_ms": 0.0,
+            "signature_compare_ms": 0.0,
+            "aspect_delta_ms": 0.0,
+        }
         try:
-            query_signature = self._signature_for_image(query)
-            template_signature = self._signature_for_image(template)
+            if query_signature is None:
+                signature_started = time.perf_counter()
+                query_signature = self._signature_for_image(query)
+                signature_debug["query_signature_generation_ms"] = round((time.perf_counter() - signature_started) * 1000.0, 2)
+            if template_signature is None:
+                signature_started = time.perf_counter()
+                template_signature = self._signature_for_image(template)
+                signature_debug["template_signature_generation_ms"] = round((time.perf_counter() - signature_started) * 1000.0, 2)
         except Exception as error:
-            return self._result("failed", "layout_analysis_failed", output_path, None, error=str(error))
+            return self._result("failed", "layout_analysis_failed", output_path, None, error=str(error), signature_debug=signature_debug)
 
+        compare_started = time.perf_counter()
         before_debug = compare_layout_signatures(query_signature, template_signature)
+        signature_debug["signature_compare_ms"] = round((time.perf_counter() - compare_started) * 1000.0, 2)
         before_score = float(before_debug.get("score") or 0.0)
+        aspect_started = time.perf_counter()
         aspect_delta = self._aspect_delta(query_signature, template_signature)
+        signature_debug["aspect_delta_ms"] = round((time.perf_counter() - aspect_started) * 1000.0, 2)
         if before_score >= self.SKIP_SCORE and aspect_delta <= self.SKIP_ASPECT_DELTA:
             return self._result(
                 "skipped",
@@ -63,6 +84,7 @@ class LayoutAlignmentService:
                 layout_box_matches=[],
                 transform_type="none",
                 warp_applied=False,
+                signature_debug=signature_debug,
             )
 
         box_matches = self._match_regions(query_signature.get("regions", []), template_signature.get("regions", []))
@@ -81,6 +103,7 @@ class LayoutAlignmentService:
                 layout_box_matches=box_matches,
                 transform_type="none",
                 warp_applied=False,
+                signature_debug=signature_debug,
             )
 
         query_points, template_points = self._point_pairs(usable_matches, query.shape, template.shape)
@@ -98,6 +121,7 @@ class LayoutAlignmentService:
                 layout_box_matches=usable_matches,
                 transform_type=transform_type,
                 warp_applied=False,
+                signature_debug=signature_debug,
             )
 
         template_height, template_width = template.shape[:2]
@@ -133,6 +157,7 @@ class LayoutAlignmentService:
                 layout_box_matches=usable_matches,
                 transform_type=transform_type,
                 warp_applied=False,
+                signature_debug=signature_debug,
             )
 
         try:
@@ -152,6 +177,7 @@ class LayoutAlignmentService:
                 layout_box_matches=usable_matches,
                 transform_type=transform_type,
                 warp_applied=False,
+                signature_debug=signature_debug,
             )
 
         improvement = round(after_score - before_score, 4)
@@ -173,6 +199,7 @@ class LayoutAlignmentService:
                 warp_applied=False,
                 homography=homography,
                 affine=matrix.tolist() if transform_type != "homography" else None,
+                signature_debug=signature_debug,
             )
 
         target_path = Path(output_path)
@@ -211,6 +238,7 @@ class LayoutAlignmentService:
             homography=homography,
             affine=matrix.tolist() if transform_type != "homography" else None,
             inliers=inliers,
+            signature_debug=signature_debug,
         )
 
     def _load_image(self, source: str):
@@ -416,6 +444,7 @@ class LayoutAlignmentService:
         homography: Optional[List[List[float]]] = None,
         affine: Optional[List[List[float]]] = None,
         inliers: int = 0,
+        signature_debug: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         matches = layout_box_matches or []
         alignment_score = after_layout_score if after_layout_score is not None else before_layout_score or 0.0
@@ -437,6 +466,8 @@ class LayoutAlignmentService:
             "inliers": inliers,
             "alignment_score": round(float(alignment_score), 4),
         }
+        if signature_debug:
+            debug.update(signature_debug)
         return {
             "alignment_status": status,
             "alignment_success": status == "aligned",

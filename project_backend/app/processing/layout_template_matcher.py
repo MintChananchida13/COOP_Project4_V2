@@ -323,6 +323,7 @@ def search_layout_candidates(
             "metadata": metadata,
             "layout_score": similarity["score"],
             "layout_debug": similarity,
+            "_layout_signature": signature,
         }
         breakdown["candidate_build"] += time.perf_counter() - candidate_build_started
         update_started = time.perf_counter()

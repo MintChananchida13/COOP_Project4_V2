@@ -1185,6 +1185,8 @@ def _align_candidate_page(
     page_number: int,
     query_image_path: str,
     normalization_info: Optional[Dict[str, Any]] = None,
+    query_signature: Optional[Dict[str, Any]] = None,
+    template_signature: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     template_image_source = _fetch_template_page_image_source(template_id, page_number)
     if not template_image_source:
@@ -1204,6 +1206,8 @@ def _align_candidate_page(
             query_image_path,
             template_image_source,
             str(output_path),
+            query_signature=query_signature,
+            template_signature=template_signature,
         )
         layout_status = str(layout_alignment.get("alignment_status") or "")
         layout_alignment["aligned_image_preview_url"] = _detection_preview_url(layout_alignment.get("aligned_image_path"))
@@ -1248,12 +1252,18 @@ def _candidate_from_result(
     page_index: int,
     query_image_path: str,
     normalization_info: Optional[Dict[str, Any]] = None,
+    query_signature: Optional[Dict[str, Any]] = None,
     allow_alignment: bool = True,
     include_template_id: Optional[str] = None,
     verification_strategy: str = "standard",
     request_cache: Optional[DetectionRequestCache] = None,
 ) -> Optional[Dict[str, Any]]:
     metadata = result.get("metadata") or {}
+    template_signature = result.get("_layout_signature")
+    if not isinstance(template_signature, dict):
+        template_signature = metadata.get("_layout_signature")
+    if not isinstance(template_signature, dict):
+        template_signature = None
     vector_id = str(result.get("vector_id") or "")
     template_id = _template_id_from_metadata(metadata, vector_id)
     candidate_timing: Dict[str, Optional[float]] = {
@@ -1417,6 +1427,8 @@ def _candidate_from_result(
             template_page_number,
             query_image_path,
             normalization_info,
+            query_signature=query_signature,
+            template_signature=template_signature,
         )
         candidate_timing["alignment"] = time.perf_counter() - step_started
 
@@ -1922,6 +1934,7 @@ def _detect_page(
                 page_index,
                 normalized_image_path,
                 page_info.get("normalization"),
+                query_signature=query_signature,
                 allow_alignment=index <= DETECTION_ALIGNMENT_LIMIT,
                 include_template_id=include_template_id,
                 verification_strategy=verification_strategy,
