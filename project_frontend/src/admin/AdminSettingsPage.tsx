@@ -51,6 +51,7 @@ interface MaintenanceDraft {
   startTime: string;
   expectedEndDate: string;
   expectedEndTime: string;
+  messagePreset: string;
   message: string;
 }
 
@@ -66,8 +67,17 @@ const emptyMaintenanceDraft: MaintenanceDraft = {
   startTime: "",
   expectedEndDate: "",
   expectedEndTime: "",
+  messagePreset: "",
   message: "",
 };
+
+const customMaintenanceMessagePreset = "__custom__";
+
+const maintenanceMessageOptions = [
+  "อัปเดต Template และปรับปรุงระบบ",
+  "ปรับปรุงประสิทธิภาพระบบ",
+  "บำรุงรักษาระบบตามรอบ",
+];
 
 const modelFormPlaceholders: Record<OcrModelKind, Record<keyof Omit<ModelDraft, "id">, string>> = {
   text_detection: {
@@ -83,6 +93,26 @@ const modelFormPlaceholders: Record<OcrModelKind, Record<keyof Omit<ModelDraft, 
 };
 
 const combineDateTime = (date: string, time: string) => (date && time ? `${date}T${time}` : "");
+
+const getLocalDateTimeParts = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return {
+    date: `${year}-${month}-${day}`,
+    time: `${hour}:${minute}`,
+  };
+};
+
+const getAutoExpectedEndParts = (startDate: string, startTime: string) => {
+  if (!startDate || !startTime) return null;
+  const start = new Date(`${startDate}T${startTime}`);
+  if (Number.isNaN(start.getTime())) return null;
+  start.setHours(start.getHours() + 1);
+  return getLocalDateTimeParts(start);
+};
 
 const formatMaintenanceDateTime = (value: string) => {
   const date = new Date(value);
@@ -120,6 +150,7 @@ export default function AdminSettingsPage() {
   const [scheduledMaintenance, setScheduledMaintenance] = useState<ScheduledMaintenance | null>(null);
   const [isMaintenanceEditing, setIsMaintenanceEditing] = useState(true);
   const [maintenanceError, setMaintenanceError] = useState("");
+  const [isExpectedEndManual, setIsExpectedEndManual] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -158,6 +189,14 @@ export default function AdminSettingsPage() {
     () => verificationStrategyOptions.find((option) => option.value === draftStrategy) || verificationStrategyOptions[0],
     [draftStrategy]
   );
+  const currentDateTimeParts = getLocalDateTimeParts(new Date());
+  const expectedEndMinDate = maintenanceDraft.startDate || currentDateTimeParts.date;
+  const expectedEndMinTime =
+    maintenanceDraft.expectedEndDate && maintenanceDraft.expectedEndDate === maintenanceDraft.startDate
+      ? maintenanceDraft.startTime
+      : maintenanceDraft.expectedEndDate === currentDateTimeParts.date
+        ? currentDateTimeParts.time
+        : undefined;
 
   useEffect(() => {
     if (!hasUnsavedChanges) return;
@@ -239,10 +278,28 @@ export default function AdminSettingsPage() {
     }
   };
 
+  const updateMaintenanceStart = (changes: Partial<Pick<MaintenanceDraft, "startDate" | "startTime">>) => {
+    setMaintenanceDraft((current) => {
+      const next = { ...current, ...changes };
+      const autoExpectedEnd = isExpectedEndManual ? null : getAutoExpectedEndParts(next.startDate, next.startTime);
+      return autoExpectedEnd
+        ? {
+            ...next,
+            expectedEndDate: autoExpectedEnd.date,
+            expectedEndTime: autoExpectedEnd.time,
+          }
+        : next;
+    });
+    setMaintenanceError("");
+  };
+
   const handleScheduleMaintenance = () => {
     const scheduledStartAt = combineDateTime(maintenanceDraft.startDate, maintenanceDraft.startTime);
     const expectedEndAt = combineDateTime(maintenanceDraft.expectedEndDate, maintenanceDraft.expectedEndTime);
-    const message = maintenanceDraft.message.trim();
+    const message =
+      maintenanceDraft.messagePreset === customMaintenanceMessagePreset
+        ? maintenanceDraft.message.trim()
+        : maintenanceDraft.messagePreset;
 
     if (!scheduledStartAt) {
       setMaintenanceError("กรุณาเลือกวันที่และเวลาเริ่มปิดปรับปรุง");
@@ -252,8 +309,16 @@ export default function AdminSettingsPage() {
       setMaintenanceError("กรุณาเลือกวันที่และเวลาที่คาดว่าจะเปิดให้บริการ");
       return;
     }
+    if (new Date(scheduledStartAt).getTime() < Date.now()) {
+      setMaintenanceError("เวลาเริ่มปิดปรับปรุงต้องไม่เป็นวันที่หรือเวลาที่ผ่านมาแล้ว");
+      return;
+    }
     if (new Date(expectedEndAt).getTime() <= new Date(scheduledStartAt).getTime()) {
       setMaintenanceError("เวลาที่คาดว่าจะเปิดให้บริการต้องอยู่หลังเวลาเริ่มปิดปรับปรุง");
+      return;
+    }
+    if (!maintenanceDraft.messagePreset) {
+      setMaintenanceError("กรุณาเลือกข้อความแจ้งผู้ใช้งาน");
       return;
     }
     if (!message) {
@@ -276,13 +341,18 @@ export default function AdminSettingsPage() {
     if (scheduledMaintenance) {
       const [startDate, startTime = ""] = scheduledMaintenance.scheduledStartAt.split("T");
       const [expectedEndDate, expectedEndTime = ""] = scheduledMaintenance.expectedEndAt.split("T");
+      const matchedPreset = maintenanceMessageOptions.includes(scheduledMaintenance.message)
+        ? scheduledMaintenance.message
+        : customMaintenanceMessagePreset;
       setMaintenanceDraft({
         startDate,
         startTime,
         expectedEndDate,
         expectedEndTime,
+        messagePreset: matchedPreset,
         message: scheduledMaintenance.message,
       });
+      setIsExpectedEndManual(true);
     }
     setIsMaintenanceEditing(true);
     setMaintenanceError("");
@@ -291,6 +361,7 @@ export default function AdminSettingsPage() {
   const handleCancelMaintenance = () => {
     setScheduledMaintenance(null);
     setMaintenanceDraft(emptyMaintenanceDraft);
+    setIsExpectedEndManual(false);
     setIsMaintenanceEditing(true);
     setMaintenanceError("");
   };
@@ -466,33 +537,25 @@ export default function AdminSettingsPage() {
           </div>
         ) : (
           <div className="mt-5 space-y-4">
-            <div>
-              <p className="text-xs font-black text-slate-900">สถานะระบบ</p>
-              <div className="mt-2 inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1 text-[11px] font-black text-emerald-700">
-                <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                เปิดให้บริการตามปกติ
-              </div>
-            </div>
-
             <div className="grid gap-4 lg:grid-cols-2">
               <div>
                 <p className="text-xs font-black text-slate-900">วันที่และเวลาเริ่มปิดปรับปรุง</p>
                 <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_8rem]">
                   <input
                     type="date"
+                    min={currentDateTimeParts.date}
                     value={maintenanceDraft.startDate}
                     onChange={(event) => {
-                      setMaintenanceDraft((current) => ({ ...current, startDate: event.target.value }));
-                      setMaintenanceError("");
+                      updateMaintenanceStart({ startDate: event.target.value });
                     }}
                     className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none transition-colors focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
                   />
                   <input
                     type="time"
+                    min={maintenanceDraft.startDate === currentDateTimeParts.date ? currentDateTimeParts.time : undefined}
                     value={maintenanceDraft.startTime}
                     onChange={(event) => {
-                      setMaintenanceDraft((current) => ({ ...current, startTime: event.target.value }));
-                      setMaintenanceError("");
+                      updateMaintenanceStart({ startTime: event.target.value });
                     }}
                     className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none transition-colors focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
                   />
@@ -504,18 +567,22 @@ export default function AdminSettingsPage() {
                 <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_8rem]">
                   <input
                     type="date"
+                    min={expectedEndMinDate}
                     value={maintenanceDraft.expectedEndDate}
                     onChange={(event) => {
                       setMaintenanceDraft((current) => ({ ...current, expectedEndDate: event.target.value }));
+                      setIsExpectedEndManual(true);
                       setMaintenanceError("");
                     }}
                     className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none transition-colors focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
                   />
                   <input
                     type="time"
+                    min={expectedEndMinTime}
                     value={maintenanceDraft.expectedEndTime}
                     onChange={(event) => {
                       setMaintenanceDraft((current) => ({ ...current, expectedEndTime: event.target.value }));
+                      setIsExpectedEndManual(true);
                       setMaintenanceError("");
                     }}
                     className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none transition-colors focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
@@ -524,20 +591,50 @@ export default function AdminSettingsPage() {
               </div>
             </div>
 
-            <label className="block space-y-2">
-              <span className="block text-xs font-black text-slate-900">ข้อความแจ้งผู้ใช้งาน</span>
-              <textarea
-                value={maintenanceDraft.message}
-                onChange={(event) => {
-                  setMaintenanceDraft((current) => ({ ...current, message: event.target.value }));
-                  setMaintenanceError("");
-                }}
-                placeholder="อัปเดต Template และปรับปรุงระบบ"
-                rows={3}
-                className="w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none transition-colors placeholder:text-slate-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-              />
+            <div className="space-y-2">
+              <label className="block space-y-2">
+                <span className="block text-xs font-black text-slate-900">ข้อความแจ้งผู้ใช้งาน</span>
+                <select
+                  value={maintenanceDraft.messagePreset}
+                  onChange={(event) => {
+                    const nextPreset = event.target.value;
+                    setMaintenanceDraft((current) => ({
+                      ...current,
+                      messagePreset: nextPreset,
+                      message:
+                        nextPreset && nextPreset !== customMaintenanceMessagePreset
+                          ? nextPreset
+                          : nextPreset === customMaintenanceMessagePreset
+                            ? ""
+                            : current.message,
+                    }));
+                    setMaintenanceError("");
+                  }}
+                  className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none transition-colors focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                >
+                  <option value="">เลือกข้อความแจ้งผู้ใช้งาน</option>
+                  {maintenanceMessageOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                  <option value={customMaintenanceMessagePreset}>อื่น ๆ</option>
+                </select>
+              </label>
+              {maintenanceDraft.messagePreset === customMaintenanceMessagePreset && (
+                <textarea
+                  value={maintenanceDraft.message}
+                  onChange={(event) => {
+                    setMaintenanceDraft((current) => ({ ...current, message: event.target.value }));
+                    setMaintenanceError("");
+                  }}
+                  placeholder="ระบุข้อความแจ้งผู้ใช้งาน"
+                  rows={3}
+                  className="w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none transition-colors placeholder:text-slate-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                />
+              )}
               <span className="block text-xs font-semibold text-slate-500">ข้อความนี้จะแสดงให้ผู้ใช้งานเห็นในการแจ้งเตือน</span>
-            </label>
+            </div>
 
             {maintenanceError && <InlineState tone="danger" message={maintenanceError} />}
 
