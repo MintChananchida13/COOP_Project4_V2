@@ -3380,7 +3380,7 @@ function HomeWorkspace() {
               <Bell size={16} strokeWidth={2.2} />
             </button>
             {authSession && (
-              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600">
+              <div className="inline-flex h-10 items-center rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-600">
                 {authSession.email} / user
               </div>
             )}
@@ -3388,7 +3388,7 @@ function HomeWorkspace() {
               <button
                 type="button"
                 onClick={handleClearAndUploadNew}
-                className="ui-button-text rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-slate-700 transition-colors hover:bg-slate-50"
+                className="ui-button-text inline-flex h-10 items-center rounded-xl border border-slate-200 bg-white px-4 text-slate-700 transition-colors hover:bg-slate-50"
               >
                 เอกสารใหม่
               </button>
@@ -3396,7 +3396,7 @@ function HomeWorkspace() {
             <button
               type="button"
               onClick={handleLogout}
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-black text-slate-700 transition-colors hover:bg-slate-50"
+              className="inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-xs font-black text-slate-700 transition-colors hover:bg-slate-50"
             >
               <LogOut size={14} />
               ออกจากระบบ
