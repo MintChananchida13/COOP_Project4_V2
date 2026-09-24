@@ -1212,14 +1212,21 @@ def _align_candidate_page(
     normalization_info: Optional[Dict[str, Any]] = None,
     query_signature: Optional[Dict[str, Any]] = None,
     template_signature: Optional[Dict[str, Any]] = None,
+    template_image_source: Optional[str] = None,
 ) -> Dict[str, Any]:
     align_candidate_started = time.perf_counter()
     alignment_timing: Dict[str, Any] = {}
     fetch_db_timing: Dict[str, Any] = {}
-    fetch_started = time.perf_counter()
-    template_image_source = _fetch_template_page_image_source(template_id, page_number, timing=fetch_db_timing)
-    alignment_timing["fetch_template_page_image_source_ms"] = _ms(time.perf_counter() - fetch_started)
-    alignment_timing["fetch_template_page_image_source_db"] = fetch_db_timing
+    if template_image_source:
+        alignment_timing["template_image_source_source"] = "candidate_metadata"
+        alignment_timing["fetch_template_page_image_source_ms"] = 0.0
+        alignment_timing["fetch_template_page_image_source_db"] = fetch_db_timing
+    else:
+        alignment_timing["template_image_source_source"] = "db_fallback"
+        fetch_started = time.perf_counter()
+        template_image_source = _fetch_template_page_image_source(template_id, page_number, timing=fetch_db_timing)
+        alignment_timing["fetch_template_page_image_source_ms"] = _ms(time.perf_counter() - fetch_started)
+        alignment_timing["fetch_template_page_image_source_db"] = fetch_db_timing
     if not template_image_source:
         alignment_timing["align_candidate_page_total_ms"] = _ms(time.perf_counter() - align_candidate_started)
         result = _alignment_result(
@@ -1485,6 +1492,7 @@ def _candidate_from_result(
             normalization_info,
             query_signature=query_signature,
             template_signature=template_signature,
+            template_image_source=metadata.get("matched_layout_reference_image_url"),
         )
         candidate_timing["alignment"] = time.perf_counter() - step_started
 
