@@ -35,6 +35,52 @@ class AnchorProjectionService:
     def __init__(self) -> None:
         self.adaptive_roi = AdaptiveRoiService()
 
+    def disable_adaptive_refinement_for_detection(
+        self,
+        projected_fields: List[Dict[str, Any]],
+        reason: str = "disabled_for_user_detection_projection",
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        for projected in projected_fields:
+            projected_roi = projected.get("projected_roi") or projected.get("template_roi") or {}
+            projected["adaptive_status"] = "disabled"
+            projected["adaptive_roi"] = projected_roi
+            projected["adaptive_search_region"] = None
+            projected["adaptive_word_boxes"] = []
+            projected["adaptive_word_groups"] = []
+            projected["adaptive_ranked_word_groups"] = []
+            projected["adaptive_fallback_reason"] = reason
+            projected["adaptive_confidence"] = 0.0
+            projected["adaptive_word_count"] = 0
+            projected["adaptive_coverage"] = 0.0
+            projected["adaptive_ocr_confidence"] = 0.0
+            projected["adaptive_validation_result"] = {
+                "passed": False,
+                "errors": [reason],
+                "warnings": [],
+            }
+        return projected_fields, {
+            "enabled": False,
+            "reason": reason,
+            "text_fields_refined": 0,
+            "text_fields_fallback": 0,
+            "average_adaptive_confidence": 0.0,
+            "average_coverage": 0.0,
+            "average_ocr_confidence": 0.0,
+            "search_padding_ratio": self.adaptive_roi.search_padding_ratio,
+            "audit": {
+                "field_count": len(projected_fields),
+                "adaptive_candidate_count": 0,
+                "fixed_candidate_count": 0,
+                "flexible_candidate_count": 0,
+                "fixed_roi_changed_count": 0,
+                "flexible_roi_changed_count": 0,
+                "detect_text_boxes_trigger_count": 0,
+                "detect_text_boxes_trigger_fields": [],
+                "can_skip_full_page_det_if_no_flexible_fields": True,
+                "fields": [],
+            },
+        }
+
     def _normalize_text(self, value: Optional[str]) -> str:
         normalized = unicodedata.normalize("NFKC", value or "")
         for char in self.ZERO_WIDTH_CHARS:
@@ -791,7 +837,7 @@ class AnchorProjectionService:
         step_started = time.perf_counter()
         projected_fields = [self._project_field(field, method, matrix) for field in extraction_fields]
         timing["field_projection"] = time.perf_counter() - step_started
-        projected_fields, adaptive_debug = self._refine_projected_fields(projected_fields, extraction_fields, page_image_paths, page_detection_cache, timing)
+        projected_fields, adaptive_debug = self.disable_adaptive_refinement_for_detection(projected_fields)
         timing["total"] = time.perf_counter() - total_started
 
         invalid_fields = [field for field in projected_fields if not field.get("projection_valid")]

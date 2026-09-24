@@ -808,12 +808,7 @@ def _template_canvas_projection(
     timing["projected_field_build"] = time.perf_counter() - step_started
 
     step_started = time.perf_counter()
-    projected_fields, adaptive_debug = projection_service.refine_projected_fields(
-        projected_fields,
-        extraction_fields,
-        {int(page_number): extraction_image_path},
-        timing=timing,
-    )
+    projected_fields, adaptive_debug = projection_service.disable_adaptive_refinement_for_detection(projected_fields)
     timing["adaptive_refinement"] = time.perf_counter() - step_started
     timing["total"] = time.perf_counter() - total_started
 
@@ -830,7 +825,7 @@ def _template_canvas_projection(
         "matched_anchors": [],
         "adaptive_refinement": {
             **adaptive_debug,
-            "reason": adaptive_debug.get("reason") or "template_canvas_alignment_refined",
+            "reason": adaptive_debug.get("reason") or "disabled_for_user_detection_projection",
         },
         "projected_fields": projected_fields,
         "roi_coordinate_space": "template_canvas",
