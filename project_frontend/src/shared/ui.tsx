@@ -72,6 +72,34 @@ export function PageHeader({
   );
 }
 
+export function AppHeader({
+  eyebrow,
+  title,
+  description,
+  meta,
+  actions,
+}: {
+  eyebrow?: string;
+  title: string;
+  description?: string;
+  meta?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <header className="border-b border-slate-200 bg-white/95 backdrop-blur">
+      <div className="mx-auto flex max-w-7xl flex-col gap-4 px-6 py-5 lg:flex-row lg:items-center lg:justify-between">
+        <div className="min-w-0">
+          {eyebrow && <p className="ui-caption font-semibold text-blue-600">{eyebrow}</p>}
+          <h1 className="ui-page-title mt-1 text-slate-950">{title}</h1>
+          {description && <p className="ui-body mt-1 text-slate-500">{description}</p>}
+          {meta}
+        </div>
+        {actions && <div className="flex shrink-0 flex-col gap-3 lg:items-end">{actions}</div>}
+      </div>
+    </header>
+  );
+}
+
 export function StatusBadge({ status, tone, label }: { status: string; tone?: Tone; label?: string }) {
   const resolvedTone =
     tone ||

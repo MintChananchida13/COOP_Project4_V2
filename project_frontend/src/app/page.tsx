@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, LogOut } from "lucide-react";
+import { AlertTriangle, Bell, LogOut } from "lucide-react";
 import AdjustZone from "../user/components/AdjustZone";
 import WorkspaceZone from "../user/components/WorkspaceZone";
 import MatchedTemplateWorkspaceZone from "../user/components/MatchedTemplateWorkspaceZone";
@@ -18,6 +18,7 @@ import {
 } from "../admin/adminApi";
 import AuthGate from "../auth/AuthGate";
 import { AuthSession, authHeaders, clearAuthSession, readAuthSession } from "../auth/session";
+import { AppHeader } from "../shared/ui";
 
 interface PageConfig {
   rotation: number;
@@ -3363,43 +3364,47 @@ function HomeWorkspace() {
     exportPreviewPayload?.pages.reduce((sum, page) => sum + Object.keys(page.fields).length, 0) ?? 0;
 
   return (
-    <main className="min-h-screen bg-slate-50 py-6 select-none">
-      <div className="container mx-auto px-6 max-w-7xl space-y-5">
-        <div className="rounded-2xl border border-slate-200 bg-white px-6 py-5 shadow-sm">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <p className="ui-caption font-semibold text-blue-600">พื้นที่ทำงานเอกสารอัจฉริยะ</p>
-              <h1 className="ui-page-title mt-1 text-slate-950">ระบบอ่านเอกสารด้วย OCR</h1>
-              <p className="ui-body mt-1 text-slate-500">
-                อัปโหลดเอกสาร ตรวจขอบเขต ค้นหา Template เลือก Field ที่ต้องการอ่าน และตรวจสอบผล OCR ก่อนนำออกใช้งาน
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {authSession && (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600">
-                  {authSession.email} / user
-                </div>
-              )}
-              {imagesList.length > 0 && (
-                <button
-                  type="button"
-                  onClick={handleClearAndUploadNew}
-                  className="ui-button-text rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-slate-700 transition-colors hover:bg-slate-50"
-                >
-                  เอกสารใหม่
-                </button>
-              )}
+    <main className="min-h-screen bg-slate-50 select-none">
+      <AppHeader
+        eyebrow="พื้นที่ทำงานเอกสารอัจฉริยะ"
+        title="ระบบอ่านเอกสารด้วย OCR"
+        description="อัปโหลดเอกสาร ตรวจขอบเขต ค้นหา Template เลือก Field ที่ต้องการอ่าน และตรวจสอบผล OCR ก่อนนำออกใช้งาน"
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              aria-label="การแจ้งเตือน"
+              title="การแจ้งเตือน"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50 hover:text-blue-700"
+            >
+              <Bell size={16} strokeWidth={2.2} />
+            </button>
+            {authSession && (
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600">
+                {authSession.email} / user
+              </div>
+            )}
+            {imagesList.length > 0 && (
               <button
                 type="button"
-                onClick={handleLogout}
-                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-black text-slate-700 transition-colors hover:bg-slate-50"
+                onClick={handleClearAndUploadNew}
+                className="ui-button-text rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-slate-700 transition-colors hover:bg-slate-50"
               >
-                <LogOut size={14} />
-                ออกจากระบบ
+                เอกสารใหม่
               </button>
-            </div>
+            )}
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-black text-slate-700 transition-colors hover:bg-slate-50"
+            >
+              <LogOut size={14} />
+              ออกจากระบบ
+            </button>
           </div>
-        </div>
+        }
+      />
+      <div className="mx-auto max-w-7xl space-y-5 px-6 py-6">
 
         {currentStep !== "upload" && renderUserWorkflowGuide()}
 

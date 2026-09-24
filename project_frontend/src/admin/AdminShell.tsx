@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { MouseEvent, ReactNode, useEffect, useRef, useState } from "react";
 import { LogOut, Settings } from "lucide-react";
-import { StatusBadge } from "../shared/ui";
+import { AppHeader, StatusBadge } from "../shared/ui";
 import { AuthSession, clearAuthSession, readAuthSession } from "../auth/session";
 import { preloadAdminLists } from "./adminApi";
 
@@ -88,22 +88,20 @@ export default function AdminShell({ children }: { children: ReactNode }) {
         }`}
         aria-hidden="true"
       />
-      <div className="border-b border-slate-200 bg-white/95 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-6 py-5 lg:flex-row lg:items-center lg:justify-between">
-          <div className="min-w-0">
-            <p className="ui-caption font-semibold text-blue-600">ระบบผู้ดูแล</p>
-            <h1 className="ui-page-title mt-1 text-slate-950">จัดการ Template เอกสาร</h1>
-            <p className="ui-body mt-1 text-slate-500">
-              ตรวจคำขอ สร้าง Template ตรวจความพร้อม และทดสอบการค้นหาเอกสารก่อนนำไปใช้งานจริง
-            </p>
-            {session && (
-              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-bold text-slate-500">
-                <span>{session.email}</span>
-                <StatusBadge status="admin" tone="primary" />
-              </div>
-            )}
-          </div>
-          <div className="flex flex-col gap-3 lg:items-end">
+      <AppHeader
+        eyebrow="ระบบผู้ดูแล"
+        title="จัดการ Template เอกสาร"
+        description="ตรวจคำขอ สร้าง Template ตรวจความพร้อม และทดสอบการค้นหาเอกสารก่อนนำไปใช้งานจริง"
+        meta={
+          session ? (
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-bold text-slate-500">
+              <span>{session.email}</span>
+              <StatusBadge status="admin" tone="primary" />
+            </div>
+          ) : null
+        }
+        actions={
+          <>
             <nav className="flex flex-wrap gap-2">
               {navItems.map((item) => (
                 <Link
@@ -137,9 +135,9 @@ export default function AdminShell({ children }: { children: ReactNode }) {
               <LogOut size={14} />
               ออกจากระบบ
             </button>
-          </div>
-        </div>
-      </div>
+          </>
+        }
+      />
       <div
         className={`mx-auto max-w-7xl space-y-6 px-6 py-6 transition-opacity duration-150 ${
           isRoutePending ? "opacity-80" : "opacity-100"
