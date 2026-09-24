@@ -256,15 +256,23 @@ def _post_predict(
 
     if timing is not None:
         gateway_timing = parsed.get("timing") or parsed.get("debug_timing")
+
         debug = parsed.get("debug")
         if not gateway_timing and isinstance(debug, dict):
             gateway_timing = debug.get("timing")
-        if isinstance(gateway_timing, dict):
-            timing["gateway_timing"] = gateway_timing
-        timing["response_field_sizes"] = _field_size_summary(parsed)
+
         result_value = parsed.get("result")
         if result_value is None and "data" in parsed:
             result_value = parsed.get("data")
+
+        if not gateway_timing and isinstance(result_value, dict):
+            gateway_timing = result_value.get("timing")
+
+        if isinstance(gateway_timing, dict):
+            timing["gateway_timing"] = gateway_timing
+
+        timing["response_field_sizes"] = _field_size_summary(parsed)
+
         if isinstance(result_value, dict):
             timing["result_field_sizes"] = _field_size_summary(result_value)
             raw_value = result_value.get("raw")
@@ -277,8 +285,11 @@ def _post_predict(
                     and isinstance(layout_items[0], dict)
                 ):
                     timing["layout_item_field_sizes"] = _field_size_summary(layout_items[0])
+
         timing["model"] = parsed.get("model")
-        timing["total_runtime_client_ms"] = round((time.perf_counter() - started) * 1000.0, 2)
+        timing["total_runtime_client_ms"] = round(
+            (time.perf_counter() - started) * 1000.0, 2
+        )
 
     result = parsed.get("result")
     if result is None and "data" in parsed:
