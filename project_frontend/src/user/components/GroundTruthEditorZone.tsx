@@ -62,6 +62,9 @@ const loadCanvasSafeImage = async (src: string) =>
 const getRawOcrText = (result: OCRResult & { pageIndex?: number }) =>
   result.originalText !== undefined ? result.originalText : result.extractedText;
 
+const isEditedResult = (result: OCRResult & { pageIndex?: number }) =>
+  getRawOcrText(result) !== result.extractedText;
+
 const parseMarkdownTable = (value: string): string[][] | null => {
   const rows = value
     .split(/\r?\n/)
@@ -1228,6 +1231,7 @@ export default function GroundTruthEditorZone({
   
   const [activeFieldId, setActiveFieldId] = useState<number | null>(null);
   const [showLabels, setShowLabels] = useState<boolean>(true);
+  const [showEditedOnly, setShowEditedOnly] = useState<boolean>(false);
 
   // Keep the original OCR text for comparison while edits change extractedText.
   useEffect(() => {
@@ -1315,11 +1319,25 @@ export default function GroundTruthEditorZone({
     });
 
     return {
+      all: typedResults,
       text: typedResults.filter(item => item.fieldType === "text"),
       table: typedResults.filter(item => item.fieldType === "table"),
       image: typedResults.filter(item => item.fieldType === "image"),
+      edited: typedResults.filter(item => isEditedResult(item.res)),
     };
   }, [currentPageOcrResults, currentPageRois, rois]);
+
+  const visiblePageResultGroups = useMemo(() => {
+    if (!showEditedOnly) return currentPageResultGroups;
+    const edited = currentPageResultGroups.edited;
+    return {
+      all: edited,
+      text: edited.filter(item => item.fieldType === "text"),
+      table: edited.filter(item => item.fieldType === "table"),
+      image: edited.filter(item => item.fieldType === "image"),
+      edited,
+    };
+  }, [currentPageResultGroups, showEditedOnly]);
 
   const allPageResultGroups = useMemo(() => {
     const typedResults = ocrResults.map((res) => {
@@ -1334,12 +1352,12 @@ export default function GroundTruthEditorZone({
       text: typedResults.filter(item => item.fieldType === "text"),
       table: typedResults.filter(item => item.fieldType === "table"),
       image: typedResults.filter(item => item.fieldType === "image"),
-      edited: typedResults.filter(item => getRawOcrText(item.res) !== item.res.extractedText),
+      edited: typedResults.filter(item => isEditedResult(item.res)),
     };
   }, [ocrResults, rois]);
 
   const currentPageEditedFieldCount = useMemo(() => {
-    return currentPageOcrResults.filter((res) => getRawOcrText(res) !== res.extractedText).length;
+    return currentPageOcrResults.filter(isEditedResult).length;
   }, [currentPageOcrResults]);
 
   const scrollInsideResultsPanel = (target: HTMLElement | null, block: "start" | "center" = "start") => {
@@ -1381,18 +1399,21 @@ export default function GroundTruthEditorZone({
 
   const scrollToSection = (type: "all" | DisplayFieldType | "edited") => {
     if (type === "all") {
+      setShowEditedOnly(false);
       const firstResult = allPageResultGroups.all[0];
       if (firstResult) scrollToResult(firstResult.res.id, firstResult.pageIndex);
       return;
     }
 
     if (type === "edited") {
-      const firstEdited = currentPageOcrResults.find((res) => getRawOcrText(res) !== res.extractedText);
+      const nextShowEditedOnly = !showEditedOnly;
+      setShowEditedOnly(nextShowEditedOnly);
+      const firstEdited = currentPageResultGroups.edited[0]?.res;
       if (firstEdited) scrollToResult(firstEdited.id, currentImageIndex);
       return;
     }
 
-    const firstResult = currentPageResultGroups[type][0];
+    const firstResult = visiblePageResultGroups[type][0];
     if (firstResult) scrollToResult(firstResult.res.id, currentImageIndex);
   };
 
@@ -1654,38 +1675,42 @@ export default function GroundTruthEditorZone({
                 <button
                   type="button"
                   onClick={() => scrollToSection("text")}
-                  disabled={currentPageResultGroups.text.length === 0}
+                  disabled={visiblePageResultGroups.text.length === 0}
                   className="rounded-xl border border-slate-200 bg-white p-2.5 text-left transition-all hover:border-indigo-200 hover:bg-indigo-50/40 focus:outline-none focus:ring-2 focus:ring-indigo-200 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">ข้อความ</p>
-                  <p className="mt-0.5 text-base font-black tabular-nums text-slate-900">{currentPageResultGroups.text.length}</p>
+                  <p className="mt-0.5 text-base font-black tabular-nums text-slate-900">{visiblePageResultGroups.text.length}</p>
                   <p className="mt-0.5 text-[9px] font-bold text-slate-400">หน้า {currentImageIndex + 1}/{imageList.length}</p>
                 </button>
                 <button
                   type="button"
                   onClick={() => scrollToSection("table")}
-                  disabled={currentPageResultGroups.table.length === 0}
+                  disabled={visiblePageResultGroups.table.length === 0}
                   className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-2.5 text-left transition-all hover:border-indigo-300 hover:bg-indigo-100/60 focus:outline-none focus:ring-2 focus:ring-indigo-200 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <p className="text-[10px] font-black uppercase tracking-wider text-indigo-500">ตาราง</p>
-                  <p className="mt-0.5 text-base font-black tabular-nums text-indigo-900">{currentPageResultGroups.table.length}</p>
+                  <p className="mt-0.5 text-base font-black tabular-nums text-indigo-900">{visiblePageResultGroups.table.length}</p>
                   <p className="mt-0.5 text-[9px] font-bold text-indigo-400">หน้า {currentImageIndex + 1}/{imageList.length}</p>
                 </button>
                 <button
                   type="button"
                   onClick={() => scrollToSection("image")}
-                  disabled={currentPageResultGroups.image.length === 0}
+                  disabled={visiblePageResultGroups.image.length === 0}
                   className="rounded-xl border border-sky-100 bg-sky-50/70 p-2.5 text-left transition-all hover:border-sky-300 hover:bg-sky-100/70 focus:outline-none focus:ring-2 focus:ring-sky-200 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <p className="text-[10px] font-black uppercase tracking-wider text-sky-600">รูปภาพ</p>
-                  <p className="mt-0.5 text-base font-black tabular-nums text-sky-900">{currentPageResultGroups.image.length}</p>
+                  <p className="mt-0.5 text-base font-black tabular-nums text-sky-900">{visiblePageResultGroups.image.length}</p>
                   <p className="mt-0.5 text-[9px] font-bold text-sky-500">หน้า {currentImageIndex + 1}/{imageList.length}</p>
                 </button>
                 <button
                   type="button"
                   onClick={() => scrollToSection("edited")}
-                  disabled={currentPageEditedFieldCount === 0}
-                  className="rounded-xl border border-amber-100 bg-amber-50/70 p-2.5 text-left transition-all hover:border-amber-300 hover:bg-amber-100/70 focus:outline-none focus:ring-2 focus:ring-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={currentPageEditedFieldCount === 0 && !showEditedOnly}
+                  className={`rounded-xl border p-2.5 text-left transition-all focus:outline-none focus:ring-2 focus:ring-amber-200 disabled:cursor-not-allowed disabled:opacity-50 ${
+                    showEditedOnly
+                      ? "border-amber-400 bg-amber-100 shadow-sm ring-1 ring-amber-200"
+                      : "border-amber-100 bg-amber-50/70 hover:border-amber-300 hover:bg-amber-100/70"
+                  }`}
                 >
                   <p className="text-[10px] font-black uppercase tracking-wider text-amber-600">แก้ไขแล้ว</p>
                   <p className="mt-0.5 text-base font-black tabular-nums text-amber-900">{currentPageEditedFieldCount}</p>
@@ -1700,7 +1725,12 @@ export default function GroundTruthEditorZone({
               </div>
             ) : (
               <div className="space-y-5">
-                {currentPageResultGroups.text.length > 0 && (
+                {showEditedOnly && visiblePageResultGroups.all.length === 0 && (
+                  <div className="rounded-2xl border border-dashed border-amber-200 bg-amber-50/50 py-14 text-center text-sm font-bold text-amber-700">
+                    ไม่มี field ที่แก้ไขแล้วในหน้านี้
+                  </div>
+                )}
+                {visiblePageResultGroups.text.length > 0 && (
                   <section ref={textSectionRef} className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden scroll-mt-4">
                     <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-white px-3.5 py-2.5">
                       <div className="flex items-center gap-2">
@@ -1708,12 +1738,12 @@ export default function GroundTruthEditorZone({
                         <h4 className="text-xs font-black text-slate-800">ข้อความ</h4>
                       </div>
                       <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-500">
-                        {currentPageResultGroups.text.length} รายการ
+                        {visiblePageResultGroups.text.length} รายการ
                       </span>
                     </div>
 
                     <div className="divide-y divide-slate-100">
-                      {currentPageResultGroups.text.map(({ res, matchedRoi, fieldType }) => {
+                      {visiblePageResultGroups.text.map(({ res, matchedRoi, fieldType }) => {
                         const isSelected = activeFieldId === res.id;
                         return (
                           <div
@@ -1793,7 +1823,7 @@ export default function GroundTruthEditorZone({
                   </section>
                 )}
 
-                {currentPageResultGroups.table.length > 0 && (
+                {visiblePageResultGroups.table.length > 0 && (
                   <section ref={tableSectionRef} className="rounded-2xl border border-indigo-200 bg-white shadow-sm overflow-hidden scroll-mt-4">
                     <div className="flex items-center justify-between gap-3 border-b border-indigo-100 bg-indigo-50/60 px-3.5 py-2.5">
                       <div className="flex items-center gap-2">
@@ -1801,12 +1831,12 @@ export default function GroundTruthEditorZone({
                         <h4 className="text-xs font-black text-slate-900">ตาราง</h4>
                       </div>
                       <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-indigo-600 ring-1 ring-indigo-100">
-                        {currentPageResultGroups.table.length} รายการ
+                        {visiblePageResultGroups.table.length} รายการ
                       </span>
                     </div>
 
                     <div className="space-y-3 p-3">
-                      {currentPageResultGroups.table.map(({ res, matchedRoi, fieldType }) => {
+                      {visiblePageResultGroups.table.map(({ res, matchedRoi, fieldType }) => {
                         const isSelected = activeFieldId === res.id;
                         const normalizedTable = normalizeResultTableForEditor(res);
                         const editableRows = normalizedTable.rows || [["Column 1"], [""]];
@@ -1878,7 +1908,7 @@ export default function GroundTruthEditorZone({
                   </section>
                 )}
 
-                {currentPageResultGroups.image.length > 0 && (
+                {visiblePageResultGroups.image.length > 0 && (
                   <section ref={imageSectionRef} className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden scroll-mt-4">
                     <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-white px-3.5 py-2.5">
                       <div className="flex items-center gap-2">
@@ -1886,12 +1916,12 @@ export default function GroundTruthEditorZone({
                         <h4 className="text-xs font-black text-slate-800">รูปภาพ</h4>
                       </div>
                       <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-500">
-                        {currentPageResultGroups.image.length} รายการ
+                        {visiblePageResultGroups.image.length} รายการ
                       </span>
                     </div>
 
                     <div className="grid grid-cols-1 gap-3 p-3 sm:grid-cols-2">
-                      {currentPageResultGroups.image.map(({ res, matchedRoi, fieldType }) => {
+                      {visiblePageResultGroups.image.map(({ res, matchedRoi, fieldType }) => {
                         const isSelected = activeFieldId === res.id;
                         return (
                           <article
