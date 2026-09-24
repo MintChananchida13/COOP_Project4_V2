@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from typing import Any, Dict
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 
 from app.auth.auth_service import authenticate_user, create_access_token, create_user
@@ -320,8 +320,8 @@ def upsert_processing_log(payload: ProcessingLogUpsertRequest) -> ApiResponse:
 
 
 @router.get("/admin/processing-logs/{log_id}/pages/{page_number}")
-def get_processing_log_page(log_id: str, page_number: int) -> FileResponse:
-    path = processing_logs.page_image_path(log_id, page_number)
+def get_processing_log_page(log_id: str, page_number: int, kind: str = Query("source")) -> FileResponse:
+    path = processing_logs.page_image_path(log_id, page_number, kind=kind)
     return FileResponse(path)
 
 

@@ -3,6 +3,7 @@ import os
 import base64
 import json
 import cv2
+import re
 import shutil
 import time
 import numpy as np
@@ -651,6 +652,101 @@ def _prepare_query_pages(query_id: str, file_bytes: bytes, timing: Optional[Dict
     if timing is not None:
         timing["prepare_image_save"] = timing.get("prepare_image_save", 0.0) + (time.perf_counter() - step_started)
     return pages
+
+
+def _is_persisted_query_page(path: Path) -> bool:
+    return bool(re.match(r"^(?:page|processing_page)_\d+\.(png|jpg|jpeg|webp)$", path.name, re.IGNORECASE))
+
+
+def _cleanup_transient_query_artifacts(query_id: str) -> None:
+    query_dir = _storage_path() / query_id
+    if not query_dir.exists():
+        return
+    for child in query_dir.iterdir():
+        try:
+            if child.is_file() and _is_persisted_query_page(child):
+                continue
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _persist_selected_processing_pages(
+    query_id: str,
+    pages: List[Dict[str, Any]],
+    best_candidate: Optional[Dict[str, Any]],
+    normalized_pages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    if not isinstance(best_candidate, dict) or not best_candidate.get("final_passed"):
+        return []
+    template_id = best_candidate.get("template_id")
+    if not template_id:
+        return []
+
+    original_paths = {
+        int(page.get("page_index") or 0): str(page.get("original_path") or "")
+        for page in normalized_pages
+        if isinstance(page, dict)
+    }
+    query_dir = _storage_path() / query_id
+    query_dir.mkdir(parents=True, exist_ok=True)
+    processing_pages: List[Dict[str, Any]] = []
+
+    for page in pages:
+        page_index = int(page.get("page_index") or 0)
+        page_candidate = next(
+            (
+                candidate
+                for candidate in page.get("candidates", [])
+                if isinstance(candidate, dict)
+                and candidate.get("template_id") == template_id
+                and candidate.get("final_passed")
+            ),
+            None,
+        )
+        if page_candidate is None:
+            continue
+
+        candidate_page_index = int(page_candidate.get("query_page_index") or page_index or 0)
+        if candidate_page_index <= 0:
+            continue
+
+        source_path_text = original_paths.get(candidate_page_index) or ""
+        source_path = Path(source_path_text).resolve() if source_path_text else None
+        source_reference = source_path.name if source_path and source_path.exists() else f"page_{candidate_page_index}.png"
+        extraction_path_text = str(page_candidate.get("extraction_image_path") or "").strip()
+        extraction_path = Path(extraction_path_text).resolve() if extraction_path_text else None
+        processing_reference: Optional[str] = None
+        requires_processing_page = False
+
+        if extraction_path and extraction_path.exists() and (source_path is None or extraction_path != source_path):
+            suffix = extraction_path.suffix.lower() if extraction_path.suffix else ".png"
+            if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+                suffix = ".png"
+            destination = (query_dir / f"processing_page_{candidate_page_index}{suffix}").resolve()
+            if query_dir.resolve() == destination.parent:
+                shutil.copyfile(extraction_path, destination)
+                processing_reference = destination.name
+                requires_processing_page = True
+
+        roi_storage_space = "processing" if processing_reference else "source"
+        page_metadata = {
+            "pageNumber": candidate_page_index,
+            "sourceImageReference": source_reference,
+            "processingImageReference": processing_reference,
+            "roiCoordinateSpace": roi_storage_space,
+            "detectionRoiCoordinateSpace": page_candidate.get("roi_coordinate_space"),
+        }
+        page_candidate["source_image_query_reference"] = source_reference
+        page_candidate["processing_image_query_reference"] = processing_reference
+        page_candidate["processing_page_required"] = requires_processing_page
+        page_candidate["processing_log_roi_coordinate_space"] = roi_storage_space
+        processing_pages.append(page_metadata)
+
+    return processing_pages
 
 
 def _normalize_query_pages(
@@ -2512,6 +2608,21 @@ def detect_template_dev(
         matched = best_candidate is not None
         timing["final_selection"] = time.perf_counter() - step_started
         step_started = time.perf_counter()
+        processing_pages = _persist_selected_processing_pages(query_id, pages, best_candidate, normalized_pages)
+        if best_candidate is not None:
+            best_candidate["processing_pages"] = processing_pages
+            if processing_pages:
+                best_page_number = int(best_candidate.get("query_page_index") or 0)
+                best_page_metadata = next(
+                    (item for item in processing_pages if int(item.get("pageNumber") or 0) == best_page_number),
+                    processing_pages[0],
+                )
+                best_candidate["source_image_query_reference"] = best_page_metadata.get("sourceImageReference")
+                best_candidate["processing_image_query_reference"] = best_page_metadata.get("processingImageReference")
+                best_candidate["processing_page_required"] = bool(best_page_metadata.get("processingImageReference"))
+                best_candidate["processing_log_roi_coordinate_space"] = best_page_metadata.get("roiCoordinateSpace")
+        timing["processing_page_persist"] = time.perf_counter() - step_started
+        step_started = time.perf_counter()
         if best_candidate:
             for page in pages:
                 page_candidate = next(
@@ -2563,4 +2674,4 @@ def detect_template_dev(
         }
     finally:
         if cleanup_generated and not SAVE_DEBUG_ARTIFACTS:
-            shutil.rmtree(_storage_path() / query_id, ignore_errors=True)
+            _cleanup_transient_query_artifacts(query_id)

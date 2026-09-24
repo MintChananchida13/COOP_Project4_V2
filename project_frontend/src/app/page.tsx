@@ -1683,6 +1683,14 @@ function HomeWorkspace() {
       verificationScore: candidate.verificationScore ?? null,
       finalScore: candidate.finalScore ?? candidate.score ?? null,
       passed: candidate.finalPassed ?? candidate.verificationPassed ?? null,
+      queryPageIndex: candidate.queryPageIndex ?? null,
+      templatePageNumber: candidate.templatePageNumber ?? null,
+      roiCoordinateSpace: candidate.roiCoordinateSpace ?? null,
+      sourceImageQueryReference: candidate.sourceImageQueryReference ?? null,
+      processingImageQueryReference: candidate.processingImageQueryReference ?? null,
+      processingPageRequired: candidate.processingPageRequired ?? null,
+      processingLogRoiCoordinateSpace: candidate.processingLogRoiCoordinateSpace ?? null,
+      processingPages: Array.isArray(candidate.processingPages) ? candidate.processingPages : [],
       result: selected ? "Selected" : candidate.decisionReason || candidate.decisionPath || (candidate.finalPassed ? "Passed" : "Not selected"),
       decisionReason: candidate.decisionReason,
     };
@@ -1716,6 +1724,23 @@ function HomeWorkspace() {
           passed: null,
         };
     const timing = detection.debug?.timing && typeof detection.debug.timing === "object" ? detection.debug.timing as Record<string, unknown> : null;
+    const processingPages = bestCandidate?.processingPages && bestCandidate.processingPages.length > 0
+      ? bestCandidate.processingPages
+      : detection.pages
+          .map((page) => {
+            const candidate =
+              page.candidates?.find((item) => selectedTemplateId && item.templateId === selectedTemplateId) ||
+              (page.bestCandidate?.templateId === selectedTemplateId ? page.bestCandidate : null);
+            if (!candidate) return null;
+            return {
+              pageNumber: candidate.queryPageIndex || page.pageIndex,
+              sourceImageReference: candidate.sourceImageQueryReference || null,
+              processingImageReference: candidate.processingImageQueryReference || null,
+              roiCoordinateSpace: candidate.processingLogRoiCoordinateSpace || (candidate.processingImageQueryReference ? "processing" : "source"),
+              detectionRoiCoordinateSpace: candidate.roiCoordinateSpace || null,
+            };
+          })
+          .filter((item): item is NonNullable<typeof item> => Boolean(item));
 
     return {
       queryId: detection.queryId,
@@ -1732,6 +1757,7 @@ function HomeWorkspace() {
       verificationMode: bestCandidate?.verificationStrategy || detection.debug?.verification_strategy || null,
       bestCandidate: bestCandidate ? normalizeDetectionCandidateForLog(bestCandidate, detection.matched ? selectedTemplateId : null) : null,
       candidates: normalizedCandidates,
+      processingPages,
       verification,
       detectionProcessingTimeMs: typeof timing?.total_detection_ms === "number" ? timing.total_detection_ms : null,
       timing,

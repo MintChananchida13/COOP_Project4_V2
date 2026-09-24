@@ -452,6 +452,19 @@ class GlobalSettingsService:
 
 
 class ProcessingLogService:
+    def _copy_processing_log_image(
+        self,
+        source: Path,
+        destination_dir: Path,
+        filename: str,
+    ) -> tuple[str, str]:
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        destination = (destination_dir / filename).resolve()
+        if destination_dir.resolve() != destination.parent:
+            raise HTTPException(status_code=400, detail="Invalid processing log page path")
+        shutil.copyfile(source, destination)
+        return _relative_storage_reference(destination), _mime_type_from_extension(destination.suffix.lower())
+
     def _persist_detection_query_pages(
         self,
         log_id: str,
@@ -467,8 +480,8 @@ class ProcessingLogService:
             return source_pages
 
         log_dir = _safe_processing_log_dir(log_id)
-        pages_dir = log_dir / "pages"
-        pages_dir.mkdir(parents=True, exist_ok=True)
+        source_pages_dir = log_dir / "source_pages"
+        processing_pages_dir = log_dir / "processing_pages"
 
         pages_by_number: Dict[int, Dict[str, Any]] = {}
         for page in source_pages:
@@ -488,30 +501,94 @@ class ProcessingLogService:
                 continue
             page_number = int(match.group(1))
             extension = source.suffix.lower()
-            destination = (pages_dir / f"page_{page_number}{extension}").resolve()
-            if pages_dir.resolve() != destination.parent:
-                raise HTTPException(status_code=400, detail="Invalid processing log page path")
-
-            for existing in pages_dir.glob(f"page_{page_number}.*"):
-                if existing.resolve() != destination:
-                    existing.unlink(missing_ok=True)
-            shutil.copyfile(source, destination)
+            for existing in source_pages_dir.glob(f"page_{page_number}.*"):
+                existing.unlink(missing_ok=True)
+            source_reference, mime_type = self._copy_processing_log_image(
+                source,
+                source_pages_dir,
+                f"page_{page_number}{extension}",
+            )
 
             page = pages_by_number.get(page_number, {"pageNumber": page_number})
             page.update(
                 {
                     "pageNumber": page_number,
-                    "storageReference": _relative_storage_reference(destination),
-                    "previewUrl": f"/admin/processing-logs/{log_id}/pages/{page_number}",
-                    "mimeType": _mime_type_from_extension(extension),
+                    "sourceReference": source_reference,
+                    "storageReference": source_reference,
+                    "previewUrl": f"/admin/processing-logs/{log_id}/pages/{page_number}?kind=source",
+                    "sourcePreviewUrl": f"/admin/processing-logs/{log_id}/pages/{page_number}?kind=source",
+                    "mimeType": mime_type,
+                    "sourceMimeType": mime_type,
                     "imageReferenceStatus": "persisted",
                     "storageSource": "detection_query",
                     "detectionQueryId": query_id,
+                    "processingReference": page.get("processingReference"),
+                    "processingPreviewUrl": page.get("processingPreviewUrl"),
+                    "roiCoordinateSpace": page.get("roiCoordinateSpace") or "source",
                 }
             )
             page.pop("imageUrl", None)
             pages_by_number[page_number] = page
             copied_any = True
+
+        best_candidate = template_detection.get("bestCandidate") or template_detection.get("best_candidate") or {}
+        processing_pages = (
+            template_detection.get("processingPages")
+            or template_detection.get("processing_pages")
+            or (best_candidate.get("processingPages") if isinstance(best_candidate, dict) else None)
+            or (best_candidate.get("processing_pages") if isinstance(best_candidate, dict) else None)
+            or []
+        )
+        if isinstance(processing_pages, list):
+            for item in processing_pages:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    page_number = int(item.get("pageNumber") or item.get("page_number") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if page_number <= 0:
+                    continue
+                processing_reference = str(
+                    item.get("processingImageReference")
+                    or item.get("processing_image_reference")
+                    or ""
+                ).strip()
+                page = pages_by_number.get(page_number, {"pageNumber": page_number})
+                if not processing_reference:
+                    page.setdefault("processingReference", None)
+                    page.setdefault("processingPreviewUrl", None)
+                    page["roiCoordinateSpace"] = page.get("roiCoordinateSpace") or "source"
+                    pages_by_number[page_number] = page
+                    continue
+                if processing_reference.startswith("/") or ".." in Path(processing_reference.replace("\\", "/")).parts:
+                    continue
+                source = (query_dir / processing_reference).resolve()
+                if query_dir.resolve() != source.parent or not source.exists() or not source.is_file():
+                    continue
+                match = re.match(r"^processing_page_(\d+)\.(png|jpg|jpeg|webp)$", source.name, re.IGNORECASE)
+                if not match:
+                    continue
+                extension = source.suffix.lower()
+                for existing in processing_pages_dir.glob(f"page_{page_number}.*"):
+                    existing.unlink(missing_ok=True)
+                stored_reference, mime_type = self._copy_processing_log_image(
+                    source,
+                    processing_pages_dir,
+                    f"page_{page_number}{extension}",
+                )
+                page.update(
+                    {
+                        "pageNumber": page_number,
+                        "processingReference": stored_reference,
+                        "processingPreviewUrl": f"/admin/processing-logs/{log_id}/pages/{page_number}?kind=processing",
+                        "processingMimeType": mime_type,
+                        "roiCoordinateSpace": "processing",
+                        "processingStorageSource": "detection_query",
+                    }
+                )
+                pages_by_number[page_number] = page
+                copied_any = True
 
         return [pages_by_number[key] for key in sorted(pages_by_number)] if copied_any else source_pages
 
@@ -520,7 +597,7 @@ class ProcessingLogService:
             return source_pages
 
         log_dir = _safe_processing_log_dir(log_id)
-        pages_dir = log_dir / "pages"
+        pages_dir = log_dir / "source_pages"
         pages_dir.mkdir(parents=True, exist_ok=True)
 
         pages_by_number: Dict[int, Dict[str, Any]] = {}
@@ -568,10 +645,14 @@ class ProcessingLogService:
                     "sourceFileId": item.get("sourceFileId") or page.get("sourceFileId"),
                     "sourceFileName": item.get("sourceFileName") or page.get("sourceFileName"),
                     "sourceFileType": item.get("sourceFileType") or page.get("sourceFileType"),
+                    "sourceReference": _relative_storage_reference(destination),
                     "storageReference": _relative_storage_reference(destination),
-                    "previewUrl": f"/admin/processing-logs/{log_id}/pages/{page_number}",
+                    "previewUrl": f"/admin/processing-logs/{log_id}/pages/{page_number}?kind=source",
+                    "sourcePreviewUrl": f"/admin/processing-logs/{log_id}/pages/{page_number}?kind=source",
                     "mimeType": mime_type,
+                    "sourceMimeType": mime_type,
                     "imageReferenceStatus": "persisted",
+                    "roiCoordinateSpace": page.get("roiCoordinateSpace") or "source",
                 }
             )
             page.pop("imageUrl", None)
@@ -687,7 +768,8 @@ class ProcessingLogService:
             "source_pages": stored_source_pages,
         }
 
-    def page_image_path(self, log_id: str, page_number: int) -> Path:
+    def page_image_path(self, log_id: str, page_number: int, kind: str = "source") -> Path:
+        normalized_kind = "processing" if str(kind or "").strip().lower() == "processing" else "source"
         with _connect() as conn:
             row = conn.execute(
                 "SELECT id, source_pages_json FROM processing_logs WHERE id = ?",
@@ -707,12 +789,24 @@ class ProcessingLogService:
                 continue
             if current_page != int(page_number):
                 continue
-            reference = page.get("storageReference") or page.get("storage_reference")
+            if normalized_kind == "processing":
+                reference = page.get("processingReference") or page.get("processing_reference")
+                expected_dir_name = "processing_pages"
+            else:
+                reference = (
+                    page.get("sourceReference")
+                    or page.get("source_reference")
+                    or page.get("storageReference")
+                    or page.get("storage_reference")
+                )
+                expected_dir_name = "source_pages"
             if not reference:
                 break
             path = _resolve_storage_reference(reference)
-            expected_dir = (_safe_processing_log_dir(str(row["id"])) / "pages").resolve()
-            if expected_dir != path.parent.resolve():
+            log_dir = _safe_processing_log_dir(str(row["id"]))
+            expected_dir = (log_dir / expected_dir_name).resolve()
+            legacy_dir = (log_dir / "pages").resolve()
+            if expected_dir != path.parent.resolve() and not (normalized_kind == "source" and legacy_dir == path.parent.resolve()):
                 raise HTTPException(status_code=400, detail="Processing log page reference is invalid")
             if not path.exists() or not path.is_file():
                 raise HTTPException(status_code=404, detail="Processing log page image not found")

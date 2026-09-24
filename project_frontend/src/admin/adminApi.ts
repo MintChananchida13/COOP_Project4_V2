@@ -348,6 +348,11 @@ export interface DetectionCandidate {
   normalizedImagePreviewUrl?: string | null;
   extractionImagePreviewUrl?: string | null;
   roiCoordinateSpace?: "template_canvas" | "projected" | string | null;
+  sourceImageQueryReference?: string | null;
+  processingImageQueryReference?: string | null;
+  processingPageRequired?: boolean | null;
+  processingLogRoiCoordinateSpace?: "source" | "processing" | string | null;
+  processingPages?: Record<string, unknown>[];
   templateRois?: DetectionTemplateRoi[];
   projection?: Record<string, unknown>;
   projectedFields?: DetectionProjectedField[];
@@ -948,6 +953,11 @@ function mapDetectionCandidate(candidate: Record<string, unknown>): DetectionCan
     normalizedImagePreviewUrl: (candidate.normalized_image_preview_url as string | null | undefined) ?? null,
     extractionImagePreviewUrl: (candidate.extraction_image_preview_url as string | null | undefined) ?? null,
     roiCoordinateSpace: (candidate.roi_coordinate_space as string | null | undefined) ?? null,
+    sourceImageQueryReference: (candidate.source_image_query_reference as string | null | undefined) ?? null,
+    processingImageQueryReference: (candidate.processing_image_query_reference as string | null | undefined) ?? null,
+    processingPageRequired: typeof candidate.processing_page_required === "boolean" ? candidate.processing_page_required : null,
+    processingLogRoiCoordinateSpace: (candidate.processing_log_roi_coordinate_space as string | null | undefined) ?? null,
+    processingPages: Array.isArray(candidate.processing_pages) ? (candidate.processing_pages as Record<string, unknown>[]) : [],
     templateRois: Array.isArray(candidate.template_rois)
       ? (candidate.template_rois as Record<string, unknown>[]).map(mapDetectionTemplateRoi)
       : [],
