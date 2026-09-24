@@ -334,17 +334,42 @@ def _fetch_verification_fields_cached(template_id: str, request_cache: Optional[
     return fields, False, db_timing
 
 
-def _fetch_template_page_image_source(template_id: str, page_number: int) -> Optional[str]:
-    with _connect() as conn:
-        row = conn.execute(
-            """
-            SELECT normalized_image_url, sample_image_url
-            FROM template_pages
-            WHERE template_version_id = ? AND page_number = ?
-            LIMIT 1
-            """,
-            (template_id, page_number),
-        ).fetchone()
+def _fetch_template_page_image_source(
+    template_id: str,
+    page_number: int,
+    timing: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    total_started = time.perf_counter()
+    connect_started = time.perf_counter()
+    conn = _connect()
+    connect_elapsed = time.perf_counter() - connect_started
+    if timing is not None:
+        timing["connect_ms"] = _ms(connect_elapsed)
+    with conn:
+        sql = """
+        SELECT normalized_image_url, sample_image_url
+        FROM template_pages
+        WHERE template_version_id = ? AND page_number = ?
+        LIMIT 1
+        """
+        params = (template_id, page_number)
+        if hasattr(conn, "execute_timed"):
+            cursor, execute_timing = conn.execute_timed(sql, params)
+            if timing is not None:
+                timing["cursor_create_ms"] = _ms(execute_timing.get("cursor_create"))
+                timing["execute_ms"] = _ms(execute_timing.get("execute"))
+        else:
+            execute_started = time.perf_counter()
+            cursor = conn.execute(sql, params)
+            if timing is not None:
+                timing["cursor_create_ms"] = None
+                timing["execute_ms"] = _ms(time.perf_counter() - execute_started)
+        fetch_started = time.perf_counter()
+        row = cursor.fetchone()
+        if timing is not None:
+            timing["fetch_ms"] = _ms(time.perf_counter() - fetch_started)
+    if timing is not None:
+        timing["total_ms"] = _ms(time.perf_counter() - total_started)
     if row is None:
         return None
     return row["normalized_image_url"] or row["sample_image_url"]
@@ -1188,13 +1213,24 @@ def _align_candidate_page(
     query_signature: Optional[Dict[str, Any]] = None,
     template_signature: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    template_image_source = _fetch_template_page_image_source(template_id, page_number)
+    align_candidate_started = time.perf_counter()
+    alignment_timing: Dict[str, Any] = {}
+    fetch_db_timing: Dict[str, Any] = {}
+    fetch_started = time.perf_counter()
+    template_image_source = _fetch_template_page_image_source(template_id, page_number, timing=fetch_db_timing)
+    alignment_timing["fetch_template_page_image_source_ms"] = _ms(time.perf_counter() - fetch_started)
+    alignment_timing["fetch_template_page_image_source_db"] = fetch_db_timing
     if not template_image_source:
-        return _alignment_result(
+        alignment_timing["align_candidate_page_total_ms"] = _ms(time.perf_counter() - align_candidate_started)
+        result = _alignment_result(
             "fallback",
             f"template_page_image_unavailable_page_{page_number}",
             error=f"Template page image is unavailable for page {page_number}",
         )
+        result_debug = result.get("alignment_debug") or {}
+        result_debug.update(alignment_timing)
+        result["alignment_debug"] = result_debug
+        return result
 
     query_path = Path(query_image_path)
     output_root = query_path.parent.parent if query_path.parent.name == "normalized" else query_path.parent
@@ -1202,6 +1238,7 @@ def _align_candidate_page(
     output_path = output_dir / f"{_safe_file_token(template_id)}_page_{page_number}_aligned.png"
 
     try:
+        align_started = time.perf_counter()
         layout_alignment = layout_alignment_service.align_to_template(
             query_image_path,
             template_image_source,
@@ -1209,6 +1246,8 @@ def _align_candidate_page(
             query_signature=query_signature,
             template_signature=template_signature,
         )
+        alignment_timing["align_to_template_ms"] = _ms(time.perf_counter() - align_started)
+        post_started = time.perf_counter()
         layout_status = str(layout_alignment.get("alignment_status") or "")
         layout_alignment["aligned_image_preview_url"] = _detection_preview_url(layout_alignment.get("aligned_image_path"))
         layout_alignment["alignment_match_image_preview_url"] = _detection_preview_url(layout_alignment.get("alignment_match_image_path"))
@@ -1216,16 +1255,26 @@ def _align_candidate_page(
         layout_debug["layout_alignment_executed"] = layout_status != "skipped"
         layout_debug["orb_executed"] = False
         layout_debug["verification_source_used"] = "aligned" if layout_status == "aligned" else "normalized"
+        alignment_timing["post_layout_alignment_ms"] = _ms(time.perf_counter() - post_started)
+        layout_debug.update(alignment_timing)
         layout_alignment["alignment_debug"] = layout_debug
         if layout_status in {"aligned", "skipped"}:
+            layout_debug["align_candidate_page_total_ms"] = _ms(time.perf_counter() - align_candidate_started)
+            layout_alignment["alignment_debug"] = layout_debug
             return layout_alignment
 
         precheck = alignment_service.alignment_precheck(query_image_path, template_image_source, normalization_info)
         if not precheck.get("should_run_orb"):
             precheck["layout_alignment"] = layout_debug
             if precheck.get("reason") == "normalized_geometry_matches_template":
-                return _alignment_result("skipped", str(precheck["reason"]), precheck=precheck)
-            return _alignment_result("fallback", str(precheck.get("reason") or "alignment_precheck_unavailable"), precheck=precheck)
+                result = _alignment_result("skipped", str(precheck["reason"]), precheck=precheck)
+            else:
+                result = _alignment_result("fallback", str(precheck.get("reason") or "alignment_precheck_unavailable"), precheck=precheck)
+            result_debug = result.get("alignment_debug") or {}
+            result_debug.update(alignment_timing)
+            result_debug["align_candidate_page_total_ms"] = _ms(time.perf_counter() - align_candidate_started)
+            result["alignment_debug"] = result_debug
+            return result
 
         alignment = alignment_service.align_to_template(query_image_path, template_image_source, str(output_path))
         service_status = str(alignment.get("alignment_status") or "")
@@ -1240,10 +1289,17 @@ def _align_candidate_page(
         alignment_debug["layout_alignment_status"] = layout_status
         if alignment_status == "fallback" and alignment_debug.get("reason") == "aligned":
             alignment_debug["reason"] = "alignment_output_unavailable"
+        alignment_debug.update(alignment_timing)
+        alignment_debug["align_candidate_page_total_ms"] = _ms(time.perf_counter() - align_candidate_started)
         alignment["alignment_debug"] = alignment_debug
         return alignment
     except Exception as error:
-        return _alignment_result("failed", "alignment_runtime_error", error=f"Alignment failed: {error}")
+        alignment_timing["align_candidate_page_total_ms"] = _ms(time.perf_counter() - align_candidate_started)
+        result = _alignment_result("failed", "alignment_runtime_error", error=f"Alignment failed: {error}")
+        result_debug = result.get("alignment_debug") or {}
+        result_debug.update(alignment_timing)
+        result["alignment_debug"] = result_debug
+        return result
 
 
 def _candidate_from_result(
