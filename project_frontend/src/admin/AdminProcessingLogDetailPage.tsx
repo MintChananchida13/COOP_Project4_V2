@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, CheckCircle, ChevronLeft, ChevronRight, Download, FileText, Image as ImageIcon, Table } from "lucide-react";
 import { ActionButton, EmptyState, InlineState, PageHeader, cardClassName } from "../shared/ui";
+import { authHeaders } from "../auth/session";
 import {
   ADMIN_API_BASE_URL,
   fetchProcessingLog,
@@ -14,7 +15,7 @@ import {
 
 type FieldKind = "text" | "table" | "image";
 
-const formatSeconds = (ms: number) => `${(ms / 1000).toFixed(2)} s`;
+const formatSeconds = (ms?: number | null) => (typeof ms === "number" && Number.isFinite(ms) ? `${(ms / 1000).toFixed(2)} s` : "-");
 const formatScore = (value: number | null) => (value === null || value === undefined ? "-" : value.toFixed(2));
 const backendPreviewSrc = (value?: string | null) => {
   const text = String(value || "").trim();
@@ -33,6 +34,10 @@ const fieldKindIcon = (kind: FieldKind) => {
   if (kind === "table") return <Table size={13} className="text-indigo-500" />;
   if (kind === "image") return <ImageIcon size={13} className="text-sky-500" />;
   return <FileText size={13} className="text-slate-500" />;
+};
+const supportsOcrGroundTruthComparison = (fieldType: string) => {
+  const kind = normalizeFieldKind(fieldType);
+  return kind === "text" || kind === "table";
 };
 const logBadgeClass = (tone: "success" | "warning" | "danger") =>
   tone === "success"
@@ -120,7 +125,9 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
     },
     { text: 0, table: 0, image: 0 } as Record<FieldKind, number>
   );
-  const changedOnPage = pageFields.filter((field) => (groundTruthByField.get(field.fieldId) || "") !== field.value).length;
+  const changedOnPage = pageFields.filter(
+    (field) => supportsOcrGroundTruthComparison(field.fieldType) && (groundTruthByField.get(field.fieldId) || "") !== field.value
+  ).length;
 
   const setPage = (page: number) => {
     setCurrentPage(page);
@@ -281,7 +288,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
             <div className="mb-2 flex items-center justify-between gap-2">
               <div>
                 <h3 className="text-xs font-black text-slate-800">ภาพเอกสาร</h3>
-                <p className="text-[10px] font-bold text-slate-500">Documents ({pageCount} files)</p>
+                <p className="text-[10px] font-bold text-slate-500">Document Pages ({pageCount} pages)</p>
               </div>
               <label className="inline-flex h-8 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-black text-slate-700">
                 <input type="checkbox" checked={showRoi} onChange={(event) => setShowRoi(event.target.checked)} className="h-3.5 w-3.5 rounded border-slate-300" />
@@ -367,8 +374,57 @@ function ProcessingLogDocumentPage({ log, pageNumber }: { log: ProcessingLog; pa
     ? page.processingPreviewUrl || `/admin/processing-logs/${log.id}/pages/${pageNumber}?kind=processing`
     : page?.sourcePreviewUrl || page?.previewUrl || `/admin/processing-logs/${log.id}/pages/${pageNumber}?kind=source`;
   const imageSrc = backendPreviewSrc(previewUrl);
+  const [objectUrl, setObjectUrl] = useState("");
+  const [imageError, setImageError] = useState("");
+  useEffect(() => {
+    if (!imageSrc) {
+      setObjectUrl("");
+      setImageError("");
+      return;
+    }
+    if (/^(data:|blob:)/i.test(imageSrc)) {
+      setObjectUrl(imageSrc);
+      setImageError("");
+      return;
+    }
+    let cancelled = false;
+    let nextObjectUrl = "";
+    setObjectUrl("");
+    setImageError("");
+    fetch(imageSrc, { headers: authHeaders(), credentials: "include" })
+      .then((response) => {
+        if (!response.ok) throw new Error(`Preview image failed with ${response.status}`);
+        return response.blob();
+      })
+      .then((blob) => {
+        if (cancelled) return;
+        nextObjectUrl = URL.createObjectURL(blob);
+        setObjectUrl(nextObjectUrl);
+      })
+      .catch((error) => {
+        if (!cancelled) setImageError(error instanceof Error ? error.message : "Preview image load failed.");
+      });
+    return () => {
+      cancelled = true;
+      if (nextObjectUrl) URL.revokeObjectURL(nextObjectUrl);
+    };
+  }, [imageSrc]);
+  if (objectUrl) {
+    return <img src={objectUrl} alt={`${log.documentName} page ${pageNumber}`} className="absolute inset-0 h-full w-full object-contain" />;
+  }
+  if (imageError) {
+    return (
+      <div className="absolute inset-0 flex items-center justify-center p-6 text-center text-xs font-bold text-red-600">
+        {imageError}
+      </div>
+    );
+  }
   if (imageSrc) {
-    return <img src={imageSrc} alt={`${log.documentName} page ${pageNumber}`} className="absolute inset-0 h-full w-full object-contain" />;
+    return (
+      <div className="absolute inset-0 flex items-center justify-center p-6 text-center text-xs font-bold text-slate-500">
+        กำลังโหลดภาพเอกสาร...
+      </div>
+    );
   }
   return (
     <div className="absolute inset-0 p-[8%]">
@@ -412,7 +468,7 @@ function ReadOnlyFieldResult({
   onSelect: () => void;
 }) {
   const kind = normalizeFieldKind(field.fieldType);
-  const isDifferent = field.value !== groundTruth;
+  const isDifferent = supportsOcrGroundTruthComparison(field.fieldType) && field.value !== groundTruth;
   return (
     <button
       type="button"

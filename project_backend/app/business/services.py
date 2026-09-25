@@ -551,7 +551,7 @@ class ProcessingLogService:
             field_type = self._field_type(field)
             summary[field_type if field_type in {"text", "table", "image"} else "text"] += 1
             field_id = str(field.get("fieldId") or "")
-            if field_id in gt_by_id and str(field.get("value") or "") != gt_by_id[field_id]:
+            if field_type in {"text", "table"} and field_id in gt_by_id and str(field.get("value") or "") != gt_by_id[field_id]:
                 summary["ocrDiffersFromGroundTruth"] += 1
         return summary
 
@@ -580,9 +580,17 @@ class ProcessingLogService:
             if isinstance(field, dict)
         ] if isinstance(ground_truth_raw, list) else []
         template_detection = self._map_template_detection(template_detection_raw if isinstance(template_detection_raw, dict) else {})
-        ocr_processing_time = 0.0
+        detection_timing = template_detection_raw.get("timing") if isinstance(template_detection_raw, dict) else {}
+        if not isinstance(detection_timing, dict):
+            detection_timing = {}
+        detection_processing_time = self._float_or_none(
+            template_detection.get("detectionProcessingTimeMs"),
+            template_detection.get("detection_processing_time_ms"),
+            detection_timing.get("total_detection_ms"),
+        )
+        ocr_processing_time = None
         if isinstance(metadata, dict):
-            ocr_processing_time = self._float_or_none(metadata.get("ocrProcessingTimeMs"), metadata.get("ocr_processing_time_ms")) or 0.0
+            ocr_processing_time = self._float_or_none(metadata.get("ocrProcessingTimeMs"), metadata.get("ocr_processing_time_ms"))
         result = {
             "id": item.get("id"),
             "logId": item.get("id"),
@@ -595,7 +603,7 @@ class ProcessingLogService:
             "createdAt": self._iso_value(item.get("created_at")),
             "updatedAt": self._iso_value(item.get("updated_at")),
             "pageCount": int(item.get("page_count") or len(source_pages) or 0),
-            "detectionProcessingTimeMs": self._float_or_none(template_detection.get("detectionProcessingTimeMs"), template_detection.get("detection_processing_time_ms")) or 0.0,
+            "detectionProcessingTimeMs": detection_processing_time,
             "ocrProcessingTimeMs": ocr_processing_time,
             "sourcePages": source_pages if isinstance(source_pages, list) else [],
             "templateDetection": template_detection,

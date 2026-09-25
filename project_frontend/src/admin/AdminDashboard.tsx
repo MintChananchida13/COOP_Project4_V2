@@ -84,6 +84,22 @@ export default function AdminDashboard() {
   const recentRequests = dashboard.latestRequests;
   const recentTemplates = dashboard.latestTemplates;
 
+  if (loadStatus === "loading") {
+    return (
+      <section className="space-y-4">
+        <div className="border-b border-slate-200 pb-4">
+          <div>
+            <h1 className="text-xl font-black tracking-tight text-slate-950">Admin Dashboard</h1>
+            <p className="mt-1 text-sm font-semibold text-slate-500">กำลังโหลดข้อมูลล่าสุดจากฐานข้อมูล</p>
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm font-semibold text-slate-500 shadow-sm">
+          กำลังโหลดข้อมูล Dashboard...
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section className="space-y-4">
       <div className="border-b border-slate-200 pb-4">
@@ -109,11 +125,6 @@ export default function AdminDashboard() {
         ))}
       </div>
 
-      {loadStatus === "loading" && (
-        <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm font-semibold text-slate-500 shadow-sm">
-          กำลังโหลดข้อมูลล่าสุดจาก Backend...
-        </div>
-      )}
       {loadStatus === "error" && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm font-bold text-amber-700 shadow-sm">
           โหลดข้อมูล Dashboard ไม่สำเร็จ กรุณาตรวจสอบการเชื่อมต่อ Backend แล้วลองใหม่

@@ -79,8 +79,8 @@ export interface ProcessingLog {
   updatedAt?: string | null;
   pageCount: number;
   status: ProcessingLogStatus;
-  detectionProcessingTimeMs: number;
-  ocrProcessingTimeMs: number;
+  detectionProcessingTimeMs: number | null;
+  ocrProcessingTimeMs: number | null;
   sourcePages: ProcessingLogPage[];
   templateDetection: {
     matched: boolean;
@@ -129,7 +129,8 @@ function asRecordArray(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item))) : [];
 }
 
-const numberOrZero = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+const numberOrNull = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+const numberOrZero = (value: unknown) => numberOrNull(value) ?? 0;
 
 const mapProcessingLog = (value: unknown): ProcessingLog => {
   const item = asRecord(value);
@@ -146,8 +147,8 @@ const mapProcessingLog = (value: unknown): ProcessingLog => {
     updatedAt: (item.updatedAt as string | null | undefined) ?? (item.updated_at as string | null | undefined) ?? null,
     pageCount: Number(item.pageCount ?? item.page_count ?? 0),
     status: item.status === "failed" ? "failed" : "completed",
-    detectionProcessingTimeMs: numberOrZero(item.detectionProcessingTimeMs ?? item.detection_processing_time_ms),
-    ocrProcessingTimeMs: numberOrZero(item.ocrProcessingTimeMs ?? item.ocr_processing_time_ms),
+    detectionProcessingTimeMs: numberOrNull(item.detectionProcessingTimeMs ?? item.detection_processing_time_ms),
+    ocrProcessingTimeMs: numberOrNull(item.ocrProcessingTimeMs ?? item.ocr_processing_time_ms),
     sourcePages: asRecordArray(item.sourcePages ?? item.source_pages).map((page) => ({
       ...page,
       pageNumber: Number(page.pageNumber ?? page.page_number ?? 1),
