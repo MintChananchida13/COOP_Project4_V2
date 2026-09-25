@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, CheckCircle, ChevronLeft, ChevronRight, Download, FileText, Image as ImageIcon, Table } from "lucide-react";
 import { ActionButton, EmptyState, InlineState, PageHeader, cardClassName } from "../shared/ui";
 import { authHeaders } from "../auth/session";
@@ -14,6 +14,20 @@ import {
 } from "./adminApi";
 
 type FieldKind = "text" | "table" | "image";
+type ImageRenderMetrics = {
+  offsetX: number;
+  offsetY: number;
+  width: number;
+  height: number;
+  naturalWidth: number;
+  naturalHeight: number;
+};
+type RenderedRoiBox = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
 
 const formatSeconds = (ms?: number | null) => (typeof ms === "number" && Number.isFinite(ms) ? `${(ms / 1000).toFixed(2)} s` : "-");
 const formatScore = (value: number | null) => (value === null || value === undefined ? "-" : value.toFixed(2));
@@ -38,6 +52,28 @@ const fieldKindIcon = (kind: FieldKind) => {
 const supportsOcrGroundTruthComparison = (fieldType: string) => {
   const kind = normalizeFieldKind(fieldType);
   return kind === "text" || kind === "table";
+};
+const looksNormalizedRoi = (roi: ProcessingLogField["roi"]) =>
+  roi.x >= 0 &&
+  roi.y >= 0 &&
+  roi.width >= 0 &&
+  roi.height >= 0 &&
+  roi.x <= 1.5 &&
+  roi.y <= 1.5 &&
+  roi.width <= 1.5 &&
+  roi.height <= 1.5;
+const renderedRoiBox = (roi: ProcessingLogField["roi"], metrics: ImageRenderMetrics): RenderedRoiBox | null => {
+  if (!metrics.width || !metrics.height || !metrics.naturalWidth || !metrics.naturalHeight) return null;
+  if (![roi.x, roi.y, roi.width, roi.height].every((value) => Number.isFinite(value))) return null;
+  const normalized = looksNormalizedRoi(roi);
+  const scaleX = normalized ? metrics.width : metrics.width / metrics.naturalWidth;
+  const scaleY = normalized ? metrics.height : metrics.height / metrics.naturalHeight;
+  const left = metrics.offsetX + roi.x * scaleX;
+  const top = metrics.offsetY + roi.y * scaleY;
+  const width = roi.width * scaleX;
+  const height = roi.height * scaleY;
+  if (width <= 0 || height <= 0) return null;
+  return { left, top, width, height };
 };
 const logBadgeClass = (tone: "success" | "warning" | "danger") =>
   tone === "success"
@@ -298,30 +334,13 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
 
             <div className="mx-auto max-w-[30rem] rounded-xl border border-slate-200 bg-slate-100 p-2">
               <div className="relative aspect-[3/4] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-inner">
-                <ProcessingLogDocumentPage log={log} pageNumber={currentPage} />
-                {showRoi &&
-                  visibleRoiFields.map((field) => (
-                    <button
-                      key={field.fieldId}
-                      type="button"
-                      onClick={() => selectField(field)}
-                      className={`absolute rounded-md border-2 text-left transition-colors ${
-                        selectedFieldId === field.fieldId
-                          ? "border-blue-600 bg-blue-500/15 shadow-[0_0_0_3px_rgba(37,99,235,0.16)]"
-                          : "border-emerald-500 bg-emerald-400/10"
-                      }`}
-                      style={{
-                        left: `${field.roi.x * 100}%`,
-                        top: `${field.roi.y * 100}%`,
-                        width: `${field.roi.width * 100}%`,
-                        height: `${field.roi.height * 100}%`,
-                      }}
-                    >
-                      <span className="absolute -top-6 left-0 max-w-[12rem] truncate rounded-md bg-slate-950 px-2 py-1 text-[10px] font-black text-white">
-                        {field.fieldName}
-                      </span>
-                    </button>
-                  ))}
+                <ProcessingLogDocumentPage
+                  log={log}
+                  pageNumber={currentPage}
+                  roiFields={showRoi ? visibleRoiFields : []}
+                  selectedFieldId={selectedFieldId}
+                  onSelectField={selectField}
+                />
               </div>
             </div>
           </div>
@@ -368,23 +387,61 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
   );
 }
 
-function ProcessingLogDocumentPage({ log, pageNumber }: { log: ProcessingLog; pageNumber: number }) {
+function ProcessingLogDocumentPage({
+  log,
+  pageNumber,
+  roiFields,
+  selectedFieldId,
+  onSelectField,
+}: {
+  log: ProcessingLog;
+  pageNumber: number;
+  roiFields: ProcessingLogField[];
+  selectedFieldId: string | null;
+  onSelectField: (field: ProcessingLogField) => void;
+}) {
   const page = log.sourcePages.find((item) => item.pageNumber === pageNumber);
   const previewUrl = page?.processingReference
     ? page.processingPreviewUrl || `/admin/processing-logs/${log.id}/pages/${pageNumber}?kind=processing`
     : page?.sourcePreviewUrl || page?.previewUrl || `/admin/processing-logs/${log.id}/pages/${pageNumber}?kind=source`;
   const imageSrc = backendPreviewSrc(previewUrl);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
   const [objectUrl, setObjectUrl] = useState("");
   const [imageError, setImageError] = useState("");
+  const [imageMetrics, setImageMetrics] = useState<ImageRenderMetrics | null>(null);
+  const updateImageMetrics = useCallback(() => {
+    const container = containerRef.current;
+    const image = imageRef.current;
+    if (!container || !image || !image.naturalWidth || !image.naturalHeight) {
+      setImageMetrics(null);
+      return;
+    }
+    const containerRect = container.getBoundingClientRect();
+    const naturalRatio = image.naturalWidth / image.naturalHeight;
+    const containerRatio = containerRect.width / Math.max(containerRect.height, 1);
+    const renderedHeight = containerRatio > naturalRatio ? containerRect.height : containerRect.width / naturalRatio;
+    const renderedWidth = containerRatio > naturalRatio ? renderedHeight * naturalRatio : containerRect.width;
+    setImageMetrics({
+      offsetX: (containerRect.width - renderedWidth) / 2,
+      offsetY: (containerRect.height - renderedHeight) / 2,
+      width: renderedWidth,
+      height: renderedHeight,
+      naturalWidth: image.naturalWidth,
+      naturalHeight: image.naturalHeight,
+    });
+  }, []);
   useEffect(() => {
     if (!imageSrc) {
       setObjectUrl("");
       setImageError("");
+      setImageMetrics(null);
       return;
     }
     if (/^(data:|blob:)/i.test(imageSrc)) {
       setObjectUrl(imageSrc);
       setImageError("");
+      setImageMetrics(null);
       return;
     }
     let cancelled = false;
@@ -409,8 +466,52 @@ function ProcessingLogDocumentPage({ log, pageNumber }: { log: ProcessingLog; pa
       if (nextObjectUrl) URL.revokeObjectURL(nextObjectUrl);
     };
   }, [imageSrc]);
+  useEffect(() => {
+    updateImageMetrics();
+    window.addEventListener("resize", updateImageMetrics);
+    return () => window.removeEventListener("resize", updateImageMetrics);
+  }, [objectUrl, updateImageMetrics]);
+
+  const overlay = imageMetrics
+    ? roiFields
+        .map((field) => ({ field, box: renderedRoiBox(field.roi, imageMetrics) }))
+        .filter((item): item is { field: ProcessingLogField; box: RenderedRoiBox } => item.box !== null)
+    : [];
+
   if (objectUrl) {
-    return <img src={objectUrl} alt={`${log.documentName} page ${pageNumber}`} className="absolute inset-0 h-full w-full object-contain" />;
+    return (
+      <div ref={containerRef} className="absolute inset-0">
+        <img
+          ref={imageRef}
+          src={objectUrl}
+          alt={`${log.documentName} page ${pageNumber}`}
+          className="absolute inset-0 h-full w-full object-contain"
+          onLoad={updateImageMetrics}
+        />
+        {overlay.map(({ field, box }) => (
+          <button
+            key={field.fieldId}
+            type="button"
+            onClick={() => onSelectField(field)}
+            className={`absolute z-10 rounded-md border-2 text-left transition-colors ${
+              selectedFieldId === field.fieldId
+                ? "border-blue-600 bg-blue-500/15 shadow-[0_0_0_3px_rgba(37,99,235,0.16)]"
+                : "border-emerald-500 bg-emerald-400/10"
+            }`}
+            style={{
+              left: `${box.left}px`,
+              top: `${box.top}px`,
+              width: `${box.width}px`,
+              height: `${box.height}px`,
+            }}
+          >
+            <span className="absolute -top-6 left-0 max-w-[12rem] truncate rounded-md bg-slate-950 px-2 py-1 text-[10px] font-black text-white">
+              {field.fieldName}
+            </span>
+          </button>
+        ))}
+      </div>
+    );
   }
   if (imageError) {
     return (

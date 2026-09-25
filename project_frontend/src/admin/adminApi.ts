@@ -131,6 +131,32 @@ function asRecordArray(value: unknown): Record<string, unknown>[] {
 
 const numberOrNull = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
 const numberOrZero = (value: unknown) => numberOrNull(value) ?? 0;
+const finiteNumber = (...values: unknown[]) => {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return 0;
+};
+
+const mapProcessingLogRoi = (value: unknown): ProcessingLogRoi => {
+  const roi = asRecord(value);
+  const x1 = finiteNumber(roi.x1, roi.left);
+  const y1 = finiteNumber(roi.y1, roi.top);
+  const x2 = finiteNumber(roi.x2, roi.right);
+  const y2 = finiteNumber(roi.y2, roi.bottom);
+  const hasCorners = Number.isFinite(x2) && Number.isFinite(y2) && (x2 > x1 || y2 > y1);
+  return {
+    x: finiteNumber(roi.x, roi.xRatio, roi.x_ratio, roi.left, roi.x1),
+    y: finiteNumber(roi.y, roi.yRatio, roi.y_ratio, roi.top, roi.y1),
+    width: hasCorners ? Math.max(0, x2 - x1) : finiteNumber(roi.width, roi.widthRatio, roi.width_ratio, roi.w),
+    height: hasCorners ? Math.max(0, y2 - y1) : finiteNumber(roi.height, roi.heightRatio, roi.height_ratio, roi.h),
+    points: roi.points,
+  };
+};
 
 const mapProcessingLog = (value: unknown): ProcessingLog => {
   const item = asRecord(value);
@@ -187,7 +213,7 @@ const mapProcessingLog = (value: unknown): ProcessingLog => {
       fieldType: String(field.fieldType || field.field_type || "text"),
       pageNumber: Number(field.pageNumber ?? field.page_number ?? 1),
       roiMode: field.roiMode === "flexible" || field.roi_mode === "flexible" ? "flexible" : "fixed",
-      roi: asRecord(field.roi) as unknown as ProcessingLogRoi,
+      roi: mapProcessingLogRoi(field.roi),
       value: String(field.value ?? ""),
       confidence: typeof field.confidence === "number" ? field.confidence : null,
     })),
