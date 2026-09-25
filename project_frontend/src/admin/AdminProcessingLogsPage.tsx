@@ -2,23 +2,27 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { Eye, Search } from "lucide-react";
+import { Eye, Search, Trash2 } from "lucide-react";
 import { ActionButton, EmptyState, InlineState, PageHeader, cardClassName } from "../shared/ui";
-import { fetchProcessingLogs, formatProcessingLogDateTime, type ProcessingLog } from "./adminApi";
+import { deleteProcessingLog, fetchProcessingLogs, formatProcessingLogDateTime, type ProcessingLog } from "./adminApi";
 
 const detectionLabel = (log: ProcessingLog) => (log.templateDetection.matched ? "Matched" : "No Match");
 const statusLabel = (status: ProcessingLog["status"]) => (status === "completed" ? "สำเร็จ" : "ล้มเหลว");
-const cleanupCutoffDates: Record<string, string> = {
-  "30": "25/08/2569",
-  "60": "26/07/2569",
-  "90": "26/06/2569",
-  "180": "28/03/2569",
+const cleanupAges = [30, 60, 90, 180] as const;
+const cleanupCutoffDate = (ageDays: string) => {
+  const days = Number(ageDays);
+  const cutoff = new Date();
+  cutoff.setHours(0, 0, 0, 0);
+  cutoff.setDate(cutoff.getDate() - (Number.isFinite(days) ? days : 30));
+  return cutoff;
 };
-const cleanupCounts: Record<string, number> = {
-  "30": 12,
-  "60": 8,
-  "90": 5,
-  "180": 2,
+const logCreatedDate = (log: ProcessingLog) => {
+  const date = new Date(log.createdAt);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+const isLogOlderThan = (log: ProcessingLog, ageDays: string) => {
+  const createdAt = logCreatedDate(log);
+  return Boolean(createdAt && createdAt < cleanupCutoffDate(ageDays));
 };
 
 const logBadgeClass = (tone: "success" | "warning" | "danger") =>
@@ -40,6 +44,7 @@ export default function AdminProcessingLogsPage() {
   const [isCleanupOpen, setIsCleanupOpen] = useState(false);
   const [cleanupAge, setCleanupAge] = useState("30");
   const [cleanupMessage, setCleanupMessage] = useState("");
+  const [isCleanupRunning, setIsCleanupRunning] = useState(false);
   const [logs, setLogs] = useState<ProcessingLog[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -86,6 +91,27 @@ export default function AdminProcessingLogsPage() {
       (dateFilter === "older" && logDate < today);
     return matchesSearch && matchesTemplate && matchesDetection && matchesDate;
   });
+  const cleanupTargets = logs.filter((log) => isLogOlderThan(log, cleanupAge));
+  const cleanupCutoff = cleanupCutoffDate(cleanupAge);
+
+  const handleCleanupLogs = async () => {
+    if (cleanupTargets.length === 0 || isCleanupRunning) return;
+    const confirmed = window.confirm(`ยืนยันลบ Processing Log ${cleanupTargets.length} รายการที่เก่ากว่า ${cleanupAge} วัน?`);
+    if (!confirmed) return;
+    setIsCleanupRunning(true);
+    setCleanupMessage("");
+    try {
+      const targetIds = cleanupTargets.map((log) => log.id);
+      await Promise.all(targetIds.map((id) => deleteProcessingLog(id)));
+      setLogs((previous) => previous.filter((log) => !targetIds.includes(log.id)));
+      setCleanupMessage(`ลบ Processing Log สำเร็จ ${targetIds.length} รายการ`);
+      setIsCleanupOpen(false);
+    } catch (error) {
+      setCleanupMessage(error instanceof Error ? error.message : "ลบ Processing Log ไม่สำเร็จ");
+    } finally {
+      setIsCleanupRunning(false);
+    }
+  };
 
   return (
     <section className="space-y-4">
@@ -211,7 +237,7 @@ export default function AdminProcessingLogsPage() {
           <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-xl">
             <h2 className="text-base font-black text-slate-950">จัดการ Processing Logs</h2>
             <p className="mt-2 text-sm font-semibold text-slate-500">
-              ใช้สำหรับลบ Log เก่าตามอายุของข้อมูล รอบนี้เป็น UI Mock เท่านั้น
+              ใช้สำหรับลบ Log เก่าตามอายุของข้อมูล รวมถึงไฟล์ภาพเอกสารที่ผูกกับ Log นั้นบน Server
             </p>
             <label className="mt-4 block">
               <span className="text-xs font-black text-slate-700">ลบ Log ที่มีอายุมากกว่า</span>
@@ -220,17 +246,18 @@ export default function AdminProcessingLogsPage() {
                 onChange={(event) => setCleanupAge(event.target.value)}
                 className="mt-2 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
               >
-                <option value="30">30 วัน</option>
-                <option value="60">60 วัน</option>
-                <option value="90">90 วัน</option>
-                <option value="180">180 วัน</option>
+                {cleanupAges.map((age) => (
+                  <option key={age} value={String(age)}>
+                    {age} วัน
+                  </option>
+                ))}
               </select>
             </label>
             <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
-              <p className="text-sm font-black text-slate-800">พบ Log ที่เข้าเงื่อนไข {cleanupCounts[cleanupAge]} รายการ</p>
-              <p className="mt-1 text-xs font-semibold text-slate-500">ข้อมูลก่อนวันที่ {cleanupCutoffDates[cleanupAge]}</p>
+              <p className="text-sm font-black text-slate-800">พบ Log ที่เข้าเงื่อนไข {cleanupTargets.length} รายการ</p>
+              <p className="mt-1 text-xs font-semibold text-slate-500">ข้อมูลก่อนวันที่ {formatProcessingLogDateTime(cleanupCutoff.toISOString())}</p>
               <p className="mt-3 text-xs font-semibold text-slate-500">
-                เมื่อเชื่อมระบบจริง การลบจะรวมข้อมูล Processing Log และภาพเอกสารที่เกี่ยวข้องบน Server
+                การลบจะเรียก API จริงและลบ storage ของ Processing Log ตาม backend lifecycle ปัจจุบัน
               </p>
             </div>
             <div className="mt-5 flex justify-end gap-2">
@@ -243,13 +270,12 @@ export default function AdminProcessingLogsPage() {
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setIsCleanupOpen(false);
-                  setCleanupMessage(`Mock UI: ยังไม่มีการลบข้อมูลจริงสำหรับ Log ที่เก่ากว่า ${cleanupAge} วัน`);
-                }}
-                className="rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-black text-red-600 hover:bg-red-50"
+                onClick={handleCleanupLogs}
+                disabled={cleanupTargets.length === 0 || isCleanupRunning}
+                className="inline-flex items-center gap-2 rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-black text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-45"
               >
-                ลบ Log ตามเงื่อนไข
+                <Trash2 size={14} />
+                {isCleanupRunning ? "กำลังลบ..." : "ลบ Log ตามเงื่อนไข"}
               </button>
             </div>
           </div>
