@@ -4,9 +4,8 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ArrowUpRight, BadgeCheck, CircleX, FileClock, FilePenLine } from "lucide-react";
 import { EmptyState, StatusBadge } from "../shared/ui";
-import { fetchAdminDashboard } from "./adminApi";
+import { fetchAdminDashboard, fetchProcessingLogs, formatProcessingLogDateTime, type ProcessingLog } from "./adminApi";
 import { AdminDashboardSummary } from "./adminTypes";
-import { formatProcessingLogDateTime, processingLogsMock, ProcessingLog } from "./processingLogsMock";
 
 const formatDateTime = (value?: string) => {
   if (!value) return "ไม่พบเวลาอัปเดต";
@@ -37,16 +36,21 @@ export default function AdminDashboard() {
     latestRequests: [],
     latestTemplates: [],
   });
+  const [recentProcessingLogs, setRecentProcessingLogs] = useState<ProcessingLog[]>([]);
 
   useEffect(() => {
     let cancelled = false;
     const loadDashboard = async () => {
       setLoadStatus("loading");
       try {
-        const nextDashboard = await fetchAdminDashboard();
+        const [nextDashboard, nextProcessingLogs] = await Promise.all([
+          fetchAdminDashboard(),
+          fetchProcessingLogs(),
+        ]);
         if (cancelled) return;
 
         setDashboard(nextDashboard);
+        setRecentProcessingLogs(nextProcessingLogs.slice(0, 5));
         setLoadStatus("loaded");
       } catch (error) {
         console.warn("Admin dashboard load failed.", error);
@@ -60,6 +64,7 @@ export default function AdminDashboard() {
           latestRequests: [],
           latestTemplates: [],
         });
+        setRecentProcessingLogs([]);
         setLoadStatus("error");
       }
     };
@@ -78,7 +83,6 @@ export default function AdminDashboard() {
 
   const recentRequests = dashboard.latestRequests;
   const recentTemplates = dashboard.latestTemplates;
-  const recentProcessingLogs = processingLogsMock.slice(0, 5);
 
   return (
     <section className="space-y-4">

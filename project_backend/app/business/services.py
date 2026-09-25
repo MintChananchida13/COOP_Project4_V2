@@ -452,6 +452,201 @@ class GlobalSettingsService:
 
 
 class ProcessingLogService:
+    def _json_value(self, value: Any, default: Any) -> Any:
+        return jsonb_load(value, default) if isinstance(value, str) else (value if value is not None else default)
+
+    def _iso_value(self, value: Any) -> Optional[str]:
+        return value.isoformat() if hasattr(value, "isoformat") else (str(value) if value is not None else None)
+
+    def _float_or_none(self, *values: Any) -> Optional[float]:
+        for value in values:
+            if isinstance(value, bool) or value is None:
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _text_or_none(self, *values: Any) -> Optional[str]:
+        for value in values:
+            text = str(value or "").strip()
+            if text:
+                return text
+        return None
+
+    def _field_type(self, item: Dict[str, Any]) -> str:
+        raw = str(item.get("fieldType") or item.get("field_type") or item.get("dataType") or item.get("data_type") or "").lower()
+        method = str(item.get("extractionMethod") or item.get("extraction_method") or "").lower()
+        if "table" in raw or "table" in method:
+            return "table"
+        if "image" in raw or method == "extract_image":
+            return "image"
+        return "text"
+
+    def _map_processing_field(
+        self,
+        item: Dict[str, Any],
+        roi_by_field_id: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        field_id = str(item.get("fieldId") or item.get("field_id") or item.get("roiId") or item.get("roi_id") or "").strip()
+        roi_snapshot = roi_by_field_id.get(field_id) or {}
+        roi = item.get("roi") or roi_snapshot.get("roi") or {"x": 0, "y": 0, "width": 0, "height": 0}
+        return {
+            "fieldId": field_id,
+            "fieldName": self._text_or_none(item.get("fieldName"), item.get("field_name"), roi_snapshot.get("fieldName"), roi_snapshot.get("field_name")) or field_id or "-",
+            "fieldType": self._field_type({**roi_snapshot, **item}),
+            "pageNumber": int(item.get("pageNumber") or item.get("page_number") or roi_snapshot.get("pageNumber") or roi_snapshot.get("page_number") or 1),
+            "roiMode": "flexible" if str(item.get("roiMode") or item.get("roi_mode") or roi_snapshot.get("roiMode") or roi_snapshot.get("roi_mode") or "").lower() == "flexible" else "fixed",
+            "roi": roi,
+            "value": str(item.get("value") if item.get("value") is not None else item.get("ocr_text") if item.get("ocr_text") is not None else ""),
+            "confidence": self._float_or_none(item.get("confidence")),
+        }
+
+    def _map_ground_truth(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "fieldId": str(item.get("fieldId") or item.get("field_id") or item.get("roiId") or item.get("roi_id") or "").strip(),
+            "value": str(item.get("value") if item.get("value") is not None else ""),
+        }
+
+    def _map_template_detection(self, template_detection: Dict[str, Any]) -> Dict[str, Any]:
+        best_candidate = template_detection.get("bestCandidate") or template_detection.get("best_candidate") or {}
+        if not isinstance(best_candidate, dict):
+            best_candidate = {}
+        candidates = template_detection.get("candidates") or []
+        mapped_candidates: List[Dict[str, Any]] = []
+        if isinstance(candidates, list):
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                mapped_candidates.append(
+                    {
+                        "template": self._text_or_none(candidate.get("template"), candidate.get("templateName"), candidate.get("template_name")) or "-",
+                        "layoutScore": self._float_or_none(candidate.get("layoutScore"), candidate.get("layout_score"), candidate.get("retrievalScore"), candidate.get("retrieval_score"), candidate.get("score")) or 0.0,
+                        "result": self._text_or_none(candidate.get("result"), candidate.get("decisionReason"), candidate.get("decision_reason"), candidate.get("decisionPath"), candidate.get("decision_path")) or ("Selected" if candidate.get("finalPassed") or candidate.get("final_passed") else "-"),
+                    }
+                )
+        verification = template_detection.get("verification") if isinstance(template_detection.get("verification"), dict) else {}
+        return {
+            **template_detection,
+            "matched": bool(template_detection.get("matched")),
+            "selectedTemplate": self._text_or_none(template_detection.get("selectedTemplate"), template_detection.get("selected_template"), best_candidate.get("templateName"), best_candidate.get("template_name")),
+            "templateVersion": self._text_or_none(template_detection.get("templateVersion"), template_detection.get("template_version"), best_candidate.get("templateVersion"), best_candidate.get("template_version")),
+            "detectionMode": self._text_or_none(template_detection.get("detectionMode"), template_detection.get("detection_mode"), best_candidate.get("detectionMode"), best_candidate.get("detection_mode")) or "-",
+            "verificationMode": self._text_or_none(template_detection.get("verificationMode"), template_detection.get("verification_mode"), best_candidate.get("verificationStrategy"), best_candidate.get("verification_strategy")) or "-",
+            "candidates": mapped_candidates,
+            "verification": {
+                "layoutScore": self._float_or_none(verification.get("layoutScore"), verification.get("layout_score"), best_candidate.get("layoutScore"), best_candidate.get("layout_score"), best_candidate.get("retrievalScore"), best_candidate.get("retrieval_score")),
+                "textAnchorScore": self._float_or_none(verification.get("textAnchorScore"), verification.get("text_anchor_score"), best_candidate.get("textAnchorScore"), best_candidate.get("text_anchor_score")),
+                "imageAnchorScore": self._float_or_none(verification.get("imageAnchorScore"), verification.get("image_anchor_score"), best_candidate.get("imageAnchorScore"), best_candidate.get("image_anchor_score")),
+                "finalScore": self._float_or_none(verification.get("finalScore"), verification.get("final_score"), best_candidate.get("finalScore"), best_candidate.get("final_score"), best_candidate.get("score")),
+                "passed": verification.get("passed") if isinstance(verification.get("passed"), bool) else best_candidate.get("passed") if isinstance(best_candidate.get("passed"), bool) else best_candidate.get("finalPassed") if isinstance(best_candidate.get("finalPassed"), bool) else None,
+            },
+        }
+
+    def _processing_summary(self, fields: List[Dict[str, Any]], ground_truth: List[Dict[str, Any]]) -> Dict[str, int]:
+        gt_by_id = {str(item.get("fieldId") or ""): str(item.get("value") or "") for item in ground_truth}
+        summary = {"total": len(fields), "text": 0, "table": 0, "image": 0, "ocrDiffersFromGroundTruth": 0}
+        for field in fields:
+            field_type = self._field_type(field)
+            summary[field_type if field_type in {"text", "table", "image"} else "text"] += 1
+            field_id = str(field.get("fieldId") or "")
+            if field_id in gt_by_id and str(field.get("value") or "") != gt_by_id[field_id]:
+                summary["ocrDiffersFromGroundTruth"] += 1
+        return summary
+
+    def _map_processing_log_row(self, row: Any, include_detail: bool = False) -> Dict[str, Any]:
+        item = dict(row)
+        source_pages = self._json_value(item.get("source_pages_json"), [])
+        template_detection_raw = self._json_value(item.get("template_detection_json"), {})
+        matched_template = self._json_value(item.get("matched_template_json"), None)
+        roi_snapshot = self._json_value(item.get("roi_snapshot_json"), [])
+        ocr_original_raw = self._json_value(item.get("ocr_original_json"), [])
+        ground_truth_raw = self._json_value(item.get("ground_truth_json"), [])
+        metadata = self._json_value(item.get("metadata_json"), {})
+        roi_by_field_id = {
+            str(roi.get("roiId") or roi.get("roi_id") or roi.get("fieldId") or roi.get("field_id") or ""): roi
+            for roi in roi_snapshot
+            if isinstance(roi, dict)
+        } if isinstance(roi_snapshot, list) else {}
+        ocr_original = [
+            self._map_processing_field(field, roi_by_field_id)
+            for field in ocr_original_raw
+            if isinstance(field, dict)
+        ] if isinstance(ocr_original_raw, list) else []
+        ground_truth = [
+            self._map_ground_truth(field)
+            for field in ground_truth_raw
+            if isinstance(field, dict)
+        ] if isinstance(ground_truth_raw, list) else []
+        template_detection = self._map_template_detection(template_detection_raw if isinstance(template_detection_raw, dict) else {})
+        ocr_processing_time = 0.0
+        if isinstance(metadata, dict):
+            ocr_processing_time = self._float_or_none(metadata.get("ocrProcessingTimeMs"), metadata.get("ocr_processing_time_ms")) or 0.0
+        result = {
+            "id": item.get("id"),
+            "logId": item.get("id"),
+            "processingRunId": item.get("processing_run_id"),
+            "documentName": item.get("document_name") or item.get("source_file_name") or "ไฟล์ต้นทาง",
+            "user": item.get("user_email") or "-",
+            "userEmail": item.get("user_email"),
+            "status": item.get("status") or "completed",
+            "currentStep": item.get("current_step"),
+            "createdAt": self._iso_value(item.get("created_at")),
+            "updatedAt": self._iso_value(item.get("updated_at")),
+            "pageCount": int(item.get("page_count") or len(source_pages) or 0),
+            "detectionProcessingTimeMs": self._float_or_none(template_detection.get("detectionProcessingTimeMs"), template_detection.get("detection_processing_time_ms")) or 0.0,
+            "ocrProcessingTimeMs": ocr_processing_time,
+            "sourcePages": source_pages if isinstance(source_pages, list) else [],
+            "templateDetection": template_detection,
+            "matchedTemplate": matched_template,
+            "processingResultsSummary": self._processing_summary(ocr_original, ground_truth),
+        }
+        if include_detail:
+            result.update(
+                {
+                    "roiSnapshot": roi_snapshot if isinstance(roi_snapshot, list) else [],
+                    "ocrOriginal": ocr_original,
+                    "groundTruth": ground_truth,
+                    "metadata": metadata if isinstance(metadata, dict) else {},
+                }
+            )
+        return result
+
+    def list(self, limit: int = 100) -> Dict[str, Any]:
+        safe_limit = max(1, min(int(limit or 100), 500))
+        with _connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, processing_run_id, document_name, user_email, source_file_name, status,
+                       current_step, page_count, source_pages_json, template_detection_json,
+                       matched_template_json, roi_snapshot_json, ocr_original_json, ground_truth_json,
+                       metadata_json, created_at, updated_at
+                FROM processing_logs
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT ?
+                """,
+                (safe_limit,),
+            ).fetchall()
+        return {"logs": [self._map_processing_log_row(row, include_detail=False) for row in rows]}
+
+    def get(self, log_id: str) -> Dict[str, Any]:
+        with _connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, processing_run_id, document_name, user_email, source_file_name, status,
+                       current_step, page_count, source_pages_json, template_detection_json,
+                       matched_template_json, roi_snapshot_json, ocr_original_json, ground_truth_json,
+                       metadata_json, created_at, updated_at
+                FROM processing_logs
+                WHERE id = ?
+                """,
+                (log_id,),
+            ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Processing log not found")
+        return {"log": self._map_processing_log_row(row, include_detail=True)}
+
     def _copy_processing_log_image(
         self,
         source: Path,

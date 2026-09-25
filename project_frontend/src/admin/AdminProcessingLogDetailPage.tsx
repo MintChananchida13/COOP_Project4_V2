@@ -1,15 +1,27 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, CheckCircle, ChevronLeft, ChevronRight, Download, FileText, Image as ImageIcon, Table } from "lucide-react";
 import { ActionButton, EmptyState, InlineState, PageHeader, cardClassName } from "../shared/ui";
-import { formatProcessingLogDateTime, getProcessingLogById, ProcessingLogField } from "./processingLogsMock";
+import {
+  ADMIN_API_BASE_URL,
+  fetchProcessingLog,
+  formatProcessingLogDateTime,
+  type ProcessingLog,
+  type ProcessingLogField,
+} from "./adminApi";
 
 type FieldKind = "text" | "table" | "image";
 
 const formatSeconds = (ms: number) => `${(ms / 1000).toFixed(2)} s`;
 const formatScore = (value: number | null) => (value === null || value === undefined ? "-" : value.toFixed(2));
+const backendPreviewSrc = (value?: string | null) => {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/^(https?:|data:|blob:)/i.test(text)) return text;
+  return `${ADMIN_API_BASE_URL}${text.startsWith("/") ? text : `/${text}`}`;
+};
 const normalizeFieldKind = (fieldType: string): FieldKind => {
   const type = fieldType.toLowerCase();
   if (type.includes("table")) return "table";
@@ -34,22 +46,65 @@ function LogBadge({ label, tone }: { label: string; tone: "success" | "warning" 
 }
 
 export default function AdminProcessingLogDetailPage({ logId }: { logId: string }) {
-  const log = getProcessingLogById(logId);
+  const [log, setLog] = useState<ProcessingLog | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const [showRoi, setShowRoi] = useState(true);
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
-  const [mockMessage, setMockMessage] = useState("");
+  const [infoMessage, setInfoMessage] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setIsLoading(true);
+    setLoadError("");
+    fetchProcessingLog(logId)
+      .then((item) => {
+        if (!cancelled) {
+          setLog(item);
+          setCurrentPage(1);
+          setSelectedFieldId(null);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) setLoadError(error instanceof Error ? error.message : "Processing log load failed.");
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [logId]);
 
   const selectedField = useMemo(
     () => log?.ocrOriginal.find((field) => field.fieldId === selectedFieldId) || null,
     [log, selectedFieldId]
   );
 
+  if (isLoading) {
+    return (
+      <section className="space-y-4">
+        <PageHeader title="Processing Log Detail" description={logId} actions={<ActionButton href="/admin/logs">กลับไป Processing Logs</ActionButton>} />
+        <InlineState tone="info" message="กำลังโหลด Processing Log..." />
+      </section>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <section className="space-y-4">
+        <PageHeader title="Processing Log Detail" description={logId} actions={<ActionButton href="/admin/logs">กลับไป Processing Logs</ActionButton>} />
+        <InlineState tone="danger" message={loadError} />
+      </section>
+    );
+  }
+
   if (!log) {
     return (
       <section className="space-y-4">
         <PageHeader title="Processing Log Detail" description={logId} actions={<ActionButton href="/admin/logs">กลับไป Processing Logs</ActionButton>} />
-        <EmptyState title="ไม่พบ Processing Log" message="Mock data ไม่มี Log ID นี้" />
+        <EmptyState title="ไม่พบ Processing Log" message="ไม่พบ Log ID นี้จาก backend" />
       </section>
     );
   }
@@ -94,7 +149,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
         </div>
         <button
           type="button"
-          onClick={() => setMockMessage("Export Log เป็น Mock UI เท่านั้น ยังไม่มีการสร้างไฟล์จริง")}
+          onClick={() => setInfoMessage("Export Log ยังไม่ได้เชื่อมต่อในรอบนี้")}
           className="inline-flex w-fit items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-slate-700 hover:bg-slate-50"
         >
           <Download size={15} />
@@ -102,7 +157,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
         </button>
       </div>
 
-      {mockMessage && <InlineState tone="info" message={mockMessage} />}
+      {infoMessage && <InlineState tone="info" message={infoMessage} />}
 
       <section className={`${cardClassName} p-3`}>
         <h2 className="text-sm font-black text-slate-950">ข้อมูลทั่วไป</h2>
@@ -236,7 +291,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
 
             <div className="mx-auto max-w-[30rem] rounded-xl border border-slate-200 bg-slate-100 p-2">
               <div className="relative aspect-[3/4] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-inner">
-                <MockDocumentPage pageNumber={currentPage} documentName={log.documentName} />
+                <ProcessingLogDocumentPage log={log} pageNumber={currentPage} />
                 {showRoi &&
                   visibleRoiFields.map((field) => (
                     <button
@@ -284,7 +339,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
 
             <div className="min-h-0 flex-1 overflow-y-auto p-3">
               {pageFields.length === 0 ? (
-                <EmptyState title="ไม่มีผลลัพธ์ในหน้านี้" message="Mock log นี้ไม่มี field สำหรับหน้าที่เลือก" />
+                <EmptyState title="ไม่มีผลลัพธ์ในหน้านี้" message="Log นี้ไม่มี field สำหรับหน้าที่เลือก" />
               ) : (
                 <div className="space-y-3">
                   {pageFields.map((field) => (
@@ -306,7 +361,15 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
   );
 }
 
-function MockDocumentPage({ pageNumber, documentName }: { pageNumber: number; documentName: string }) {
+function ProcessingLogDocumentPage({ log, pageNumber }: { log: ProcessingLog; pageNumber: number }) {
+  const page = log.sourcePages.find((item) => item.pageNumber === pageNumber);
+  const previewUrl = page?.processingReference
+    ? page.processingPreviewUrl || `/admin/processing-logs/${log.id}/pages/${pageNumber}?kind=processing`
+    : page?.sourcePreviewUrl || page?.previewUrl || `/admin/processing-logs/${log.id}/pages/${pageNumber}?kind=source`;
+  const imageSrc = backendPreviewSrc(previewUrl);
+  if (imageSrc) {
+    return <img src={imageSrc} alt={`${log.documentName} page ${pageNumber}`} className="absolute inset-0 h-full w-full object-contain" />;
+  }
   return (
     <div className="absolute inset-0 p-[8%]">
       <div className="flex h-full flex-col">
@@ -330,7 +393,7 @@ function MockDocumentPage({ pageNumber, documentName }: { pageNumber: number; do
           ))}
         </div>
         <div className="mt-auto border-t border-slate-100 pt-3 text-[10px] font-black text-slate-300">
-          {documentName} · Page {pageNumber}
+          {log.documentName} · Page {pageNumber}
         </div>
       </div>
     </div>

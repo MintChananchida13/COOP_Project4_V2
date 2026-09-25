@@ -31,6 +31,96 @@ type TemplateBundleData = {
 const templateBundleCache = new Map<string, TemplateBundleData>();
 const templateBundlePromises = new Map<string, Promise<TemplateBundleData>>();
 
+export type ProcessingLogStatus = "completed" | "failed";
+export type ProcessingRoiMode = "fixed" | "flexible";
+
+export interface ProcessingLogRoi {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  points?: unknown;
+}
+
+export interface ProcessingLogPage {
+  pageNumber: number;
+  sourceReference?: string | null;
+  processingReference?: string | null;
+  previewUrl?: string | null;
+  sourcePreviewUrl?: string | null;
+  processingPreviewUrl?: string | null;
+  roiCoordinateSpace?: "source" | "processing" | string | null;
+}
+
+export interface ProcessingLogField {
+  fieldId: string;
+  fieldName: string;
+  fieldType: string;
+  pageNumber: number;
+  roiMode: ProcessingRoiMode;
+  roi: ProcessingLogRoi;
+  value: string;
+  confidence?: number | null;
+}
+
+export interface ProcessingGroundTruthField {
+  fieldId: string;
+  value: string;
+}
+
+export interface ProcessingLog {
+  id: string;
+  logId?: string;
+  processingRunId?: string;
+  documentName: string;
+  user: string;
+  userEmail?: string | null;
+  createdAt: string;
+  updatedAt?: string | null;
+  pageCount: number;
+  status: ProcessingLogStatus;
+  detectionProcessingTimeMs: number;
+  ocrProcessingTimeMs: number;
+  sourcePages: ProcessingLogPage[];
+  templateDetection: {
+    matched: boolean;
+    selectedTemplate: string | null;
+    templateVersion: string | null;
+    detectionMode: string;
+    verificationMode: string;
+    candidates: { template: string; layoutScore: number; result: string }[];
+    verification: {
+      layoutScore: number | null;
+      textAnchorScore: number | null;
+      imageAnchorScore: number | null;
+      finalScore: number | null;
+      passed: boolean | null;
+    };
+  };
+  matchedTemplate?: Record<string, unknown> | null;
+  processingResultsSummary?: Record<string, number>;
+  roiSnapshot?: Record<string, unknown>[];
+  ocrOriginal: ProcessingLogField[];
+  groundTruth: ProcessingGroundTruthField[];
+  metadata?: Record<string, unknown>;
+}
+
+export const formatProcessingLogDateTime = (value: string) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const datePart = new Intl.DateTimeFormat("th-TH", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+  }).format(date);
+  const timePart = new Intl.DateTimeFormat("th-TH", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+  return `${datePart} ${timePart}`;
+};
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
@@ -38,6 +128,75 @@ function asRecord(value: unknown): Record<string, unknown> {
 function asRecordArray(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item))) : [];
 }
+
+const numberOrZero = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+
+const mapProcessingLog = (value: unknown): ProcessingLog => {
+  const item = asRecord(value);
+  const templateDetection = asRecord(item.templateDetection ?? item.template_detection);
+  const verification = asRecord(templateDetection.verification);
+  return {
+    id: String(item.id || item.logId || ""),
+    logId: String(item.logId || item.id || ""),
+    processingRunId: String(item.processingRunId || item.processing_run_id || ""),
+    documentName: String(item.documentName || item.document_name || "ไฟล์ต้นทาง"),
+    user: String(item.user || item.userEmail || item.user_email || "-"),
+    userEmail: (item.userEmail as string | null | undefined) ?? (item.user_email as string | null | undefined) ?? null,
+    createdAt: String(item.createdAt || item.created_at || ""),
+    updatedAt: (item.updatedAt as string | null | undefined) ?? (item.updated_at as string | null | undefined) ?? null,
+    pageCount: Number(item.pageCount ?? item.page_count ?? 0),
+    status: item.status === "failed" ? "failed" : "completed",
+    detectionProcessingTimeMs: numberOrZero(item.detectionProcessingTimeMs ?? item.detection_processing_time_ms),
+    ocrProcessingTimeMs: numberOrZero(item.ocrProcessingTimeMs ?? item.ocr_processing_time_ms),
+    sourcePages: asRecordArray(item.sourcePages ?? item.source_pages).map((page) => ({
+      ...page,
+      pageNumber: Number(page.pageNumber ?? page.page_number ?? 1),
+      sourceReference: (page.sourceReference as string | null | undefined) ?? (page.source_reference as string | null | undefined) ?? null,
+      processingReference: (page.processingReference as string | null | undefined) ?? (page.processing_reference as string | null | undefined) ?? null,
+      previewUrl: (page.previewUrl as string | null | undefined) ?? (page.preview_url as string | null | undefined) ?? null,
+      sourcePreviewUrl: (page.sourcePreviewUrl as string | null | undefined) ?? (page.source_preview_url as string | null | undefined) ?? null,
+      processingPreviewUrl: (page.processingPreviewUrl as string | null | undefined) ?? (page.processing_preview_url as string | null | undefined) ?? null,
+      roiCoordinateSpace: (page.roiCoordinateSpace as string | null | undefined) ?? (page.roi_coordinate_space as string | null | undefined) ?? null,
+    })),
+    templateDetection: {
+      matched: Boolean(templateDetection.matched),
+      selectedTemplate: (templateDetection.selectedTemplate as string | null | undefined) ?? null,
+      templateVersion: (templateDetection.templateVersion as string | null | undefined) ?? null,
+      detectionMode: String(templateDetection.detectionMode || "-"),
+      verificationMode: String(templateDetection.verificationMode || "-"),
+      candidates: asRecordArray(templateDetection.candidates).map((candidate) => ({
+        template: String(candidate.template || "-"),
+        layoutScore: numberOrZero(candidate.layoutScore),
+        result: String(candidate.result || "-"),
+      })),
+      verification: {
+        layoutScore: typeof verification.layoutScore === "number" ? verification.layoutScore : null,
+        textAnchorScore: typeof verification.textAnchorScore === "number" ? verification.textAnchorScore : null,
+        imageAnchorScore: typeof verification.imageAnchorScore === "number" ? verification.imageAnchorScore : null,
+        finalScore: typeof verification.finalScore === "number" ? verification.finalScore : null,
+        passed: typeof verification.passed === "boolean" ? verification.passed : null,
+      },
+    },
+    matchedTemplate: asRecord(item.matchedTemplate ?? item.matched_template),
+    processingResultsSummary: asRecord(item.processingResultsSummary ?? item.processing_results_summary) as Record<string, number>,
+    roiSnapshot: asRecordArray(item.roiSnapshot ?? item.roi_snapshot),
+    ocrOriginal: asRecordArray(item.ocrOriginal ?? item.ocr_original).map((field) => ({
+      fieldId: String(field.fieldId || field.field_id || ""),
+      fieldName: String(field.fieldName || field.field_name || "-"),
+      fieldType: String(field.fieldType || field.field_type || "text"),
+      pageNumber: Number(field.pageNumber ?? field.page_number ?? 1),
+      roiMode: field.roiMode === "flexible" || field.roi_mode === "flexible" ? "flexible" : "fixed",
+      roi: asRecord(field.roi) as unknown as ProcessingLogRoi,
+      value: String(field.value ?? ""),
+      confidence: typeof field.confidence === "number" ? field.confidence : null,
+    })),
+    groundTruth: asRecordArray(item.groundTruth ?? item.ground_truth).map((field) => ({
+      fieldId: String(field.fieldId || field.field_id || ""),
+      value: String(field.value ?? ""),
+    })),
+    metadata: asRecord(item.metadata),
+  };
+};
 
 const mapRoiPoints = (points: unknown) =>
   asRecordArray(points)
@@ -1129,6 +1288,35 @@ export const fetchAdminDashboard = async () => {
     latestRequests: (latestRequests || []).map(mapApiRequest),
     latestTemplates: (latestTemplates || []).map((template) => mapApiTemplate(template)),
   };
+};
+
+export const fetchProcessingLogs = async (): Promise<ProcessingLog[]> => {
+  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/processing-logs`, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`Processing logs fetch failed with ${response.status}`);
+  }
+  const json = await response.json();
+  return asRecordArray(json?.data?.logs).map(mapProcessingLog);
+};
+
+export const fetchProcessingLog = async (logId: string): Promise<ProcessingLog> => {
+  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/processing-logs/${encodeURIComponent(logId)}`, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`Processing log fetch failed with ${response.status}`);
+  }
+  const json = await response.json();
+  return mapProcessingLog(json?.data?.log);
+};
+
+export const deleteProcessingLog = async (logId: string) => {
+  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/processing-logs/${encodeURIComponent(logId)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw new Error(`Processing log delete failed with ${response.status}`);
+  }
+  const json = await response.json();
+  return json.data as { id: string; deleted: boolean; storage_deleted: boolean };
 };
 
 export const preloadAdminLists = () => {

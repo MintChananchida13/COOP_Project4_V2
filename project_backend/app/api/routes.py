@@ -319,6 +319,16 @@ def upsert_processing_log(payload: ProcessingLogUpsertRequest) -> ApiResponse:
     return ok(processing_logs.upsert(payload))
 
 
+@router.get("/admin/processing-logs", response_model=ApiResponse)
+def list_processing_logs(limit: int = Query(100, ge=1, le=500)) -> ApiResponse:
+    return ok(processing_logs.list(limit=limit))
+
+
+@router.get("/admin/processing-logs/{log_id}", response_model=ApiResponse)
+def get_processing_log(log_id: str) -> ApiResponse:
+    return ok(processing_logs.get(log_id))
+
+
 @router.get("/admin/processing-logs/{log_id}/pages/{page_number}")
 def get_processing_log_page(log_id: str, page_number: int, kind: str = Query("source")) -> FileResponse:
     path = processing_logs.page_image_path(log_id, page_number, kind=kind)

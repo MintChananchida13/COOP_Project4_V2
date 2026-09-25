@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Eye, Search } from "lucide-react";
 import { ActionButton, EmptyState, InlineState, PageHeader, cardClassName } from "../shared/ui";
-import { formatProcessingLogDateTime, processingLogsMock, ProcessingLog } from "./processingLogsMock";
+import { fetchProcessingLogs, formatProcessingLogDateTime, type ProcessingLog } from "./adminApi";
 
 const detectionLabel = (log: ProcessingLog) => (log.templateDetection.matched ? "Matched" : "No Match");
 const statusLabel = (status: ProcessingLog["status"]) => (status === "completed" ? "สำเร็จ" : "ล้มเหลว");
@@ -40,7 +40,28 @@ export default function AdminProcessingLogsPage() {
   const [isCleanupOpen, setIsCleanupOpen] = useState(false);
   const [cleanupAge, setCleanupAge] = useState("30");
   const [cleanupMessage, setCleanupMessage] = useState("");
-  const logs = processingLogsMock;
+  const [logs, setLogs] = useState<ProcessingLog[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setIsLoading(true);
+    setLoadError("");
+    fetchProcessingLogs()
+      .then((items) => {
+        if (!cancelled) setLogs(items);
+      })
+      .catch((error) => {
+        if (!cancelled) setLoadError(error instanceof Error ? error.message : "Processing logs load failed.");
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const templateOptions = useMemo(
     () =>
@@ -58,7 +79,7 @@ export default function AdminProcessingLogsPage() {
       (detectionFilter === "matched" && log.templateDetection.matched) ||
       (detectionFilter === "no_match" && !log.templateDetection.matched);
     const logDate = log.createdAt.slice(0, 10);
-    const today = "2026-09-24";
+    const today = new Date().toISOString().slice(0, 10);
     const matchesDate =
       dateFilter === "all" ||
       (dateFilter === "today" && logDate === today) ||
@@ -86,6 +107,7 @@ export default function AdminProcessingLogsPage() {
       />
 
       {cleanupMessage && <InlineState tone="info" message={cleanupMessage} />}
+      {loadError && <InlineState tone="danger" message={loadError} />}
 
       <section className={`${cardClassName} p-4`}>
         <div className="grid gap-3 lg:grid-cols-[minmax(16rem,1.4fr)_minmax(10rem,0.8fr)_minmax(10rem,0.7fr)_minmax(9rem,0.6fr)]">
@@ -146,7 +168,7 @@ export default function AdminProcessingLogsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-sm">
-              {filteredLogs.map((log) => (
+              {!isLoading && filteredLogs.map((log) => (
                 <tr key={log.id} className="hover:bg-slate-50">
                   <td className="whitespace-nowrap px-4 py-3 font-bold text-slate-600">{formatProcessingLogDateTime(log.createdAt)}</td>
                   <td className="px-4 py-3 font-black text-slate-900">{log.documentName}</td>
@@ -172,7 +194,12 @@ export default function AdminProcessingLogsPage() {
             </tbody>
           </table>
         </div>
-        {filteredLogs.length === 0 && (
+        {isLoading && (
+          <div className="p-4">
+            <InlineState tone="info" message="กำลังโหลด Processing Logs..." />
+          </div>
+        )}
+        {!isLoading && !loadError && filteredLogs.length === 0 && (
           <div className="p-4">
             <EmptyState title="ไม่พบ Processing Log" message="ลองปรับคำค้นหาหรือตัวกรองอีกครั้ง" />
           </div>
