@@ -386,7 +386,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
                   disabled={!showRoi}
                   className="h-3.5 w-3.5 rounded border-slate-300 disabled:opacity-40"
                 />
-                à¸Šà¸·à¹ˆà¸­ Field
+                ชื่อ­ Field
               </label>
             </div>
 
