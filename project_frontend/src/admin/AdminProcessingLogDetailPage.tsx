@@ -432,8 +432,8 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
           </div>
         </div>
 
-        <div className="grid gap-0 xl:grid-cols-[minmax(22rem,0.92fr)_minmax(0,1.08fr)]">
-          <div className="flex min-h-[34rem] flex-col border-b border-slate-200 bg-[#edf2f7] p-3 xl:border-b-0 xl:border-r">
+        <div className="grid items-stretch gap-0 xl:grid-cols-[minmax(22rem,0.92fr)_minmax(0,1.08fr)]">
+          <div className="flex min-h-[34rem] flex-col border-b border-slate-200 bg-[#edf2f7] p-3 xl:h-full xl:border-b-0 xl:border-r">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="text-xs font-black text-slate-800">ภาพเอกสาร</h3>
@@ -474,7 +474,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
             </div>
           </div>
 
-          <div className="flex min-h-[34rem] flex-col bg-slate-50/40">
+          <div className="flex min-h-[34rem] flex-col bg-slate-50/40 xl:h-full xl:min-h-0 xl:overflow-hidden">
             <div className="border-b border-slate-200 bg-white px-3 py-2.5">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
@@ -492,7 +492,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto p-3 xl:max-h-[calc(100vh-22rem)]">
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
               {pageFields.length === 0 ? (
                 <EmptyState title="ไม่มีผลลัพธ์ในหน้านี้" message="Log นี้ไม่มี field สำหรับหน้าที่เลือก" />
               ) : (
