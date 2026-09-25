@@ -27,6 +27,7 @@ type RenderedRoiBox = {
   top: number;
   width: number;
   height: number;
+  points?: { x: number; y: number }[];
 };
 
 const formatSeconds = (ms?: number | null) => (typeof ms === "number" && Number.isFinite(ms) ? `${(ms / 1000).toFixed(2)} s` : "-");
@@ -54,6 +55,14 @@ const supportsOcrGroundTruthComparison = (fieldType: string) => {
   return kind === "text" || kind === "table";
 };
 const LEGACY_PROCESSING_LOG_ROI_REFERENCE_WIDTH = 750;
+const roiPointValue = (value: unknown) => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
 const renderedRoiBox = (
   roi: ProcessingLogField["roi"],
   metrics: ImageRenderMetrics,
@@ -85,15 +94,36 @@ const renderedRoiBox = (
   const width = roi.width * scaleX;
   const height = roi.height * scaleY;
   if (width <= 0 || height <= 0) return null;
-  return { left, top, width, height };
+  const points = Array.isArray(roi.points)
+    ? roi.points
+        .map((point) => {
+          if (!point || typeof point !== "object" || Array.isArray(point)) return null;
+          const rawPoint = point as Record<string, unknown>;
+          const x = roiPointValue(rawPoint.x ?? rawPoint.xRatio ?? rawPoint.x_ratio);
+          const y = roiPointValue(rawPoint.y ?? rawPoint.yRatio ?? rawPoint.y_ratio);
+          if (x === null || y === null) return null;
+          return {
+            x: metrics.offsetX + x * scaleX,
+            y: metrics.offsetY + y * scaleY,
+          };
+        })
+        .filter((point): point is { x: number; y: number } => point !== null)
+    : [];
+  return { left, top, width, height, points: points.length > 2 ? points : undefined };
 };
-const roiOverlayClassName = (isSelected: boolean, hasSelection: boolean) =>
-  `absolute z-10 rounded-md border-2 text-left transition-colors ${
+const roiOverlayClassName = (isSelected: boolean, hasPoints: boolean) =>
+  `absolute cursor-pointer border text-left transition-all duration-300 ${
+    hasPoints
+      ? "border-transparent bg-transparent shadow-none"
+      : isSelected
+        ? "z-30 border-orange-500 bg-orange-500/15 shadow-lg ring-4 ring-orange-500/20"
+        : "z-10 border-slate-300 bg-slate-100/5 hover:border-slate-400 hover:bg-slate-100/10"
+  }`;
+const roiLabelClassName = (isSelected: boolean) =>
+  `absolute -top-5 left-0 z-40 max-w-[12rem] truncate rounded border px-1.5 py-0.5 text-[9px] font-sans shadow transition-all ${
     isSelected
-      ? "border-blue-600 bg-blue-500/15 shadow-[0_0_0_3px_rgba(37,99,235,0.16)]"
-      : hasSelection
-        ? "border-emerald-500/45 bg-emerald-400/5 opacity-45 hover:opacity-80"
-        : "border-emerald-500 bg-emerald-400/10 hover:bg-emerald-400/15"
+      ? "border-orange-600 bg-orange-600 font-extrabold text-white"
+      : "border-slate-300 bg-white font-semibold text-slate-500"
   }`;
 const logBadgeClass = (tone: "success" | "warning" | "danger") =>
   tone === "success"
@@ -112,6 +142,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
   const [loadError, setLoadError] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const [showRoi, setShowRoi] = useState(true);
+  const [showRoiLabels, setShowRoiLabels] = useState(true);
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState("");
 
@@ -335,7 +366,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
 
         <div className="grid gap-0 xl:h-[calc(100vh-14rem)] xl:min-h-[34rem] xl:max-h-[48rem] xl:grid-cols-[minmax(22rem,0.92fr)_minmax(0,1.08fr)]">
           <div className="border-b border-slate-200 bg-[#edf2f7] p-3 xl:border-b-0 xl:border-r">
-            <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="text-xs font-black text-slate-800">ภาพเอกสาร</h3>
                 <p className="text-[10px] font-bold text-slate-500">Document Pages ({pageCount} pages)</p>
@@ -346,12 +377,26 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
               </label>
             </div>
 
+            <div className="-mt-1 mb-2 flex justify-end">
+              <label className="inline-flex h-8 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-black text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={showRoiLabels}
+                  onChange={(event) => setShowRoiLabels(event.target.checked)}
+                  disabled={!showRoi}
+                  className="h-3.5 w-3.5 rounded border-slate-300 disabled:opacity-40"
+                />
+                à¸Šà¸·à¹ˆà¸­ Field
+              </label>
+            </div>
+
             <div className="mx-auto max-w-[30rem] rounded-xl border border-slate-200 bg-slate-100 p-2">
               <div className="relative aspect-[3/4] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-inner">
                 <ProcessingLogDocumentPage
                   log={log}
                   pageNumber={currentPage}
                   roiFields={showRoi ? pageFields : []}
+                  showRoiLabels={showRoiLabels}
                   selectedFieldId={selectedFieldId}
                   onSelectField={selectField}
                 />
@@ -405,12 +450,14 @@ function ProcessingLogDocumentPage({
   log,
   pageNumber,
   roiFields,
+  showRoiLabels,
   selectedFieldId,
   onSelectField,
 }: {
   log: ProcessingLog;
   pageNumber: number;
   roiFields: ProcessingLogField[];
+  showRoiLabels: boolean;
   selectedFieldId: string | null;
   onSelectField: (field: ProcessingLogField) => void;
 }) {
@@ -504,12 +551,13 @@ function ProcessingLogDocumentPage({
         />
         {overlay.map(({ field, box }) => {
           const isSelected = selectedFieldId === field.fieldId;
+          const hasPoints = Boolean(box.points?.length);
           return (
           <button
             key={field.fieldId}
             type="button"
             onClick={() => onSelectField(field)}
-            className={roiOverlayClassName(isSelected, Boolean(selectedFieldId))}
+            className={roiOverlayClassName(isSelected, hasPoints)}
             style={{
               left: `${box.left}px`,
               top: `${box.top}px`,
@@ -517,9 +565,18 @@ function ProcessingLogDocumentPage({
               height: `${box.height}px`,
             }}
           >
-            <span className="absolute -top-6 left-0 max-w-[12rem] truncate rounded-md bg-slate-950 px-2 py-1 text-[10px] font-black text-white">
-              {field.fieldName}
-            </span>
+            {box.points && (
+              <svg className="absolute inset-0 z-10 h-full w-full overflow-visible">
+                <polygon
+                  points={box.points.map((point) => `${point.x - box.left},${point.y - box.top}`).join(" ")}
+                  fill={isSelected ? "rgba(249, 115, 22, 0.16)" : "rgba(148, 163, 184, 0.05)"}
+                  stroke={isSelected ? "#f97316" : "#94a3b8"}
+                  strokeWidth="2"
+                  strokeDasharray={isSelected ? "0" : "3,3"}
+                />
+              </svg>
+            )}
+            {showRoiLabels && isSelected && <span className={roiLabelClassName(isSelected)}>{field.fieldName}</span>}
           </button>
           );
         })}
