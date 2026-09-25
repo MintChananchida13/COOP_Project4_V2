@@ -53,21 +53,33 @@ const supportsOcrGroundTruthComparison = (fieldType: string) => {
   const kind = normalizeFieldKind(fieldType);
   return kind === "text" || kind === "table";
 };
-const looksNormalizedRoi = (roi: ProcessingLogField["roi"]) =>
-  roi.x >= 0 &&
-  roi.y >= 0 &&
-  roi.width >= 0 &&
-  roi.height >= 0 &&
-  roi.x <= 1.5 &&
-  roi.y <= 1.5 &&
-  roi.width <= 1.5 &&
-  roi.height <= 1.5;
-const renderedRoiBox = (roi: ProcessingLogField["roi"], metrics: ImageRenderMetrics): RenderedRoiBox | null => {
+const LEGACY_PROCESSING_LOG_ROI_REFERENCE_WIDTH = 750;
+const renderedRoiBox = (
+  roi: ProcessingLogField["roi"],
+  metrics: ImageRenderMetrics,
+  page?: ProcessingLog["sourcePages"][number]
+): RenderedRoiBox | null => {
   if (!metrics.width || !metrics.height || !metrics.naturalWidth || !metrics.naturalHeight) return null;
   if (![roi.x, roi.y, roi.width, roi.height].every((value) => Number.isFinite(value))) return null;
-  const normalized = looksNormalizedRoi(roi);
-  const scaleX = normalized ? metrics.width : metrics.width / metrics.naturalWidth;
-  const scaleY = normalized ? metrics.height : metrics.height / metrics.naturalHeight;
+  const referenceWidth =
+    roi.coordinateUnit === "ratio"
+      ? 1
+      : roi.roiReferenceWidth ||
+        page?.roiReferenceWidth ||
+        roi.roiDisplayReferenceWidth ||
+        page?.roiDisplayReferenceWidth ||
+        LEGACY_PROCESSING_LOG_ROI_REFERENCE_WIDTH;
+  const referenceHeight =
+    roi.coordinateUnit === "ratio"
+      ? 1
+      : roi.roiReferenceHeight ||
+        page?.roiReferenceHeight ||
+        roi.roiDisplayReferenceHeight ||
+        page?.roiDisplayReferenceHeight ||
+        (metrics.naturalHeight / Math.max(metrics.naturalWidth, 1)) * LEGACY_PROCESSING_LOG_ROI_REFERENCE_WIDTH;
+  if (!referenceWidth || !referenceHeight) return null;
+  const scaleX = metrics.width / referenceWidth;
+  const scaleY = metrics.height / referenceHeight;
   const left = metrics.offsetX + roi.x * scaleX;
   const top = metrics.offsetY + roi.y * scaleY;
   const width = roi.width * scaleX;
@@ -474,7 +486,7 @@ function ProcessingLogDocumentPage({
 
   const overlay = imageMetrics
     ? roiFields
-        .map((field) => ({ field, box: renderedRoiBox(field.roi, imageMetrics) }))
+        .map((field) => ({ field, box: renderedRoiBox(field.roi, imageMetrics, page) }))
         .filter((item): item is { field: ProcessingLogField; box: RenderedRoiBox } => item.box !== null)
     : [];
 

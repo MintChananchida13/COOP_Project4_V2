@@ -83,6 +83,12 @@ type ImageFieldCrop = {
   width: number;
   height: number;
 };
+type RoiReferenceDimensions = {
+  width: number;
+  height: number;
+  naturalWidth: number;
+  naturalHeight: number;
+};
 type ProcessingLogSnapshot = {
   processingRunId: string;
   documentName: string;
@@ -1602,6 +1608,7 @@ function HomeWorkspace() {
   const activeProcessingRunIdRef = useRef<string>("");
   const ocrProcessingTimeMsRef = useRef<number | null>(null);
   const tableExportDropdownRef = useRef<HTMLDivElement | null>(null);
+  const ocrPageReferenceDimensionsRef = useRef<Record<number, RoiReferenceDimensions>>({});
 
   useEffect(() => {
     const session = readAuthSession();
@@ -1620,7 +1627,7 @@ function HomeWorkspace() {
     return "text";
   };
 
-  const compactRoiSnapshot = (roi: ROI & { pageIndex?: number }) => ({
+  const compactRoiSnapshot = (roi: ROI & { pageIndex?: number }, referenceDimensions?: RoiReferenceDimensions | null) => ({
     roiId: roi.id,
     fieldName: roi.fieldName,
     pageNumber: Number(roi.pageIndex ?? 0) + 1,
@@ -1631,11 +1638,20 @@ function HomeWorkspace() {
     isResolvedBlock: Boolean(roi.isResolvedBlock),
     parentRoiId: roi.parentRoiId ?? null,
     roi: {
-      x: roi.x,
-      y: roi.y,
-      width: roi.width,
-      height: roi.height,
-      points: roi.points,
+      x: referenceDimensions ? roi.x * (referenceDimensions.naturalWidth / referenceDimensions.width) : roi.x,
+      y: referenceDimensions ? roi.y * (referenceDimensions.naturalHeight / referenceDimensions.height) : roi.y,
+      width: referenceDimensions ? roi.width * (referenceDimensions.naturalWidth / referenceDimensions.width) : roi.width,
+      height: referenceDimensions ? roi.height * (referenceDimensions.naturalHeight / referenceDimensions.height) : roi.height,
+      points: roi.points && referenceDimensions
+        ? roi.points.map((point) => ({
+            x: point.x * (referenceDimensions.naturalWidth / referenceDimensions.width),
+            y: point.y * (referenceDimensions.naturalHeight / referenceDimensions.height),
+          }))
+        : roi.points,
+      roiReferenceWidth: referenceDimensions?.naturalWidth,
+      roiReferenceHeight: referenceDimensions?.naturalHeight,
+      roiDisplayReferenceWidth: referenceDimensions?.width,
+      roiDisplayReferenceHeight: referenceDimensions?.height,
     },
   });
 
@@ -1769,6 +1785,14 @@ function HomeWorkspace() {
     const processingRunId = activeProcessingRunIdRef.current;
     if (!processingRunId || ocrResults.length === 0) return null;
     const sourcePages = imagesList.map((src, index) => ({
+      ...(ocrPageReferenceDimensionsRef.current[index]
+        ? {
+            roiReferenceWidth: ocrPageReferenceDimensionsRef.current[index].naturalWidth,
+            roiReferenceHeight: ocrPageReferenceDimensionsRef.current[index].naturalHeight,
+            roiDisplayReferenceWidth: ocrPageReferenceDimensionsRef.current[index].width,
+            roiDisplayReferenceHeight: ocrPageReferenceDimensionsRef.current[index].height,
+          }
+        : {}),
       pageNumber: index + 1,
       sourceFileId: uploadedSourceFileId || undefined,
       sourceFileName: uploadedSourceFileName || undefined,
@@ -1778,13 +1802,15 @@ function HomeWorkspace() {
     }));
     const ocrOriginal = ocrResults.map((result) => {
       const roi = findRoiForOcrResult(rois, result);
+      const pageIndex = Number(result.pageIndex ?? roi?.pageIndex ?? 0);
+      const referenceDimensions = ocrPageReferenceDimensionsRef.current[pageIndex] || null;
       return {
         fieldId: String(result.roiId ?? roi?.id ?? result.id),
         fieldName: result.fieldName || roi?.fieldName || "",
         fieldType: processingLogFieldType(result, roi),
-        pageNumber: Number(result.pageIndex ?? roi?.pageIndex ?? 0) + 1,
+        pageNumber: pageIndex + 1,
         roiMode: roi?.roiMode === "flexible" ? "flexible" : "fixed",
-        roi: roi ? compactRoiSnapshot(roi).roi : null,
+        roi: roi ? compactRoiSnapshot(roi, referenceDimensions).roi : null,
         value: result.originalText ?? result.extractedText ?? "",
         confidence: result.confidence,
       };
@@ -1811,7 +1837,7 @@ function HomeWorkspace() {
       sourcePages,
       templateDetection: templateDetectionSnapshot || {},
       matchedTemplate: matchedTemplate ? { ...matchedTemplate } : null,
-      roiSnapshot: rois.map(compactRoiSnapshot),
+      roiSnapshot: rois.map((roi) => compactRoiSnapshot(roi, ocrPageReferenceDimensionsRef.current[Number(roi.pageIndex ?? 0)] || null)),
       ocrOriginal,
       groundTruth,
       metadata: {
@@ -2174,6 +2200,7 @@ function HomeWorkspace() {
 
     activeProcessingRunIdRef.current = `proc_${Date.now()}_${runId}`;
     ocrProcessingTimeMsRef.current = null;
+    ocrPageReferenceDimensionsRef.current = {};
     const ocrStartedAt = performance.now();
     setIsLoading(true);
     setOcrResults([]);
@@ -2200,6 +2227,12 @@ function HomeWorkspace() {
 
         const renderedWidth = 750;
         const renderedHeight = (img.naturalHeight / img.naturalWidth) * renderedWidth;
+        ocrPageReferenceDimensionsRef.current[pageIdx] = {
+          width: renderedWidth,
+          height: renderedHeight,
+          naturalWidth: img.naturalWidth,
+          naturalHeight: img.naturalHeight,
+        };
 
         const scaleX = img.naturalWidth / renderedWidth;
         const scaleY = img.naturalHeight / renderedHeight;

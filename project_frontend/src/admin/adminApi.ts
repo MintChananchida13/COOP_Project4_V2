@@ -40,6 +40,11 @@ export interface ProcessingLogRoi {
   width: number;
   height: number;
   points?: unknown;
+  coordinateUnit?: "ratio" | "pixel";
+  roiReferenceWidth?: number | null;
+  roiReferenceHeight?: number | null;
+  roiDisplayReferenceWidth?: number | null;
+  roiDisplayReferenceHeight?: number | null;
 }
 
 export interface ProcessingLogPage {
@@ -50,6 +55,10 @@ export interface ProcessingLogPage {
   sourcePreviewUrl?: string | null;
   processingPreviewUrl?: string | null;
   roiCoordinateSpace?: "source" | "processing" | string | null;
+  roiReferenceWidth?: number | null;
+  roiReferenceHeight?: number | null;
+  roiDisplayReferenceWidth?: number | null;
+  roiDisplayReferenceHeight?: number | null;
 }
 
 export interface ProcessingLogField {
@@ -144,6 +153,15 @@ const finiteNumber = (...values: unknown[]) => {
 
 const mapProcessingLogRoi = (value: unknown): ProcessingLogRoi => {
   const roi = asRecord(value);
+  const hasRatioKeys =
+    roi.xRatio !== undefined ||
+    roi.x_ratio !== undefined ||
+    roi.yRatio !== undefined ||
+    roi.y_ratio !== undefined ||
+    roi.widthRatio !== undefined ||
+    roi.width_ratio !== undefined ||
+    roi.heightRatio !== undefined ||
+    roi.height_ratio !== undefined;
   const x1 = finiteNumber(roi.x1, roi.left);
   const y1 = finiteNumber(roi.y1, roi.top);
   const x2 = finiteNumber(roi.x2, roi.right);
@@ -155,6 +173,11 @@ const mapProcessingLogRoi = (value: unknown): ProcessingLogRoi => {
     width: hasCorners ? Math.max(0, x2 - x1) : finiteNumber(roi.width, roi.widthRatio, roi.width_ratio, roi.w),
     height: hasCorners ? Math.max(0, y2 - y1) : finiteNumber(roi.height, roi.heightRatio, roi.height_ratio, roi.h),
     points: roi.points,
+    coordinateUnit: hasRatioKeys ? "ratio" : "pixel",
+    roiReferenceWidth: numberOrNull(roi.roiReferenceWidth ?? roi.roi_reference_width),
+    roiReferenceHeight: numberOrNull(roi.roiReferenceHeight ?? roi.roi_reference_height),
+    roiDisplayReferenceWidth: numberOrNull(roi.roiDisplayReferenceWidth ?? roi.roi_display_reference_width),
+    roiDisplayReferenceHeight: numberOrNull(roi.roiDisplayReferenceHeight ?? roi.roi_display_reference_height),
   };
 };
 
@@ -184,6 +207,10 @@ const mapProcessingLog = (value: unknown): ProcessingLog => {
       sourcePreviewUrl: (page.sourcePreviewUrl as string | null | undefined) ?? (page.source_preview_url as string | null | undefined) ?? null,
       processingPreviewUrl: (page.processingPreviewUrl as string | null | undefined) ?? (page.processing_preview_url as string | null | undefined) ?? null,
       roiCoordinateSpace: (page.roiCoordinateSpace as string | null | undefined) ?? (page.roi_coordinate_space as string | null | undefined) ?? null,
+      roiReferenceWidth: numberOrNull(page.roiReferenceWidth ?? page.roi_reference_width),
+      roiReferenceHeight: numberOrNull(page.roiReferenceHeight ?? page.roi_reference_height),
+      roiDisplayReferenceWidth: numberOrNull(page.roiDisplayReferenceWidth ?? page.roi_display_reference_width),
+      roiDisplayReferenceHeight: numberOrNull(page.roiDisplayReferenceHeight ?? page.roi_display_reference_height),
     })),
     templateDetection: {
       matched: Boolean(templateDetection.matched),
