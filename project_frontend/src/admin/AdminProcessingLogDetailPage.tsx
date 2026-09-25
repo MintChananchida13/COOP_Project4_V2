@@ -87,6 +87,14 @@ const renderedRoiBox = (
   if (width <= 0 || height <= 0) return null;
   return { left, top, width, height };
 };
+const roiOverlayClassName = (isSelected: boolean, hasSelection: boolean) =>
+  `absolute z-10 rounded-md border-2 text-left transition-colors ${
+    isSelected
+      ? "border-blue-600 bg-blue-500/15 shadow-[0_0_0_3px_rgba(37,99,235,0.16)]"
+      : hasSelection
+        ? "border-emerald-500/45 bg-emerald-400/5 opacity-45 hover:opacity-80"
+        : "border-emerald-500 bg-emerald-400/10 hover:bg-emerald-400/15"
+  }`;
 const logBadgeClass = (tone: "success" | "warning" | "danger") =>
   tone === "success"
     ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100"
@@ -130,11 +138,6 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
     };
   }, [logId]);
 
-  const selectedField = useMemo(
-    () => log?.ocrOriginal.find((field) => field.fieldId === selectedFieldId) || null,
-    [log, selectedFieldId]
-  );
-
   if (isLoading) {
     return (
       <section className="space-y-4">
@@ -164,7 +167,6 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
 
   const pageCount = Math.max(log.pageCount, 1);
   const pageFields = log.ocrOriginal.filter((field) => field.pageNumber === currentPage);
-  const visibleRoiFields = selectedField && selectedField.pageNumber === currentPage ? [selectedField] : pageFields;
   const groundTruthByField = new Map(log.groundTruth.map((field) => [field.fieldId, field.value]));
   const currentPageKinds = pageFields.reduce(
     (acc, field) => {
@@ -331,7 +333,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
           </div>
         </div>
 
-        <div className="grid gap-0 xl:grid-cols-[minmax(22rem,0.92fr)_minmax(0,1.08fr)]">
+        <div className="grid gap-0 xl:h-[calc(100vh-14rem)] xl:min-h-[34rem] xl:max-h-[48rem] xl:grid-cols-[minmax(22rem,0.92fr)_minmax(0,1.08fr)]">
           <div className="border-b border-slate-200 bg-[#edf2f7] p-3 xl:border-b-0 xl:border-r">
             <div className="mb-2 flex items-center justify-between gap-2">
               <div>
@@ -349,7 +351,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
                 <ProcessingLogDocumentPage
                   log={log}
                   pageNumber={currentPage}
-                  roiFields={showRoi ? visibleRoiFields : []}
+                  roiFields={showRoi ? pageFields : []}
                   selectedFieldId={selectedFieldId}
                   onSelectField={selectField}
                 />
@@ -357,7 +359,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
             </div>
           </div>
 
-          <div className="flex min-h-[34rem] flex-col bg-slate-50/40">
+          <div className="flex min-h-[34rem] flex-col bg-slate-50/40 xl:min-h-0 xl:h-full">
             <div className="border-b border-slate-200 bg-white px-3 py-2.5">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
@@ -500,16 +502,14 @@ function ProcessingLogDocumentPage({
           className="absolute inset-0 h-full w-full object-contain"
           onLoad={updateImageMetrics}
         />
-        {overlay.map(({ field, box }) => (
+        {overlay.map(({ field, box }) => {
+          const isSelected = selectedFieldId === field.fieldId;
+          return (
           <button
             key={field.fieldId}
             type="button"
             onClick={() => onSelectField(field)}
-            className={`absolute z-10 rounded-md border-2 text-left transition-colors ${
-              selectedFieldId === field.fieldId
-                ? "border-blue-600 bg-blue-500/15 shadow-[0_0_0_3px_rgba(37,99,235,0.16)]"
-                : "border-emerald-500 bg-emerald-400/10"
-            }`}
+            className={roiOverlayClassName(isSelected, Boolean(selectedFieldId))}
             style={{
               left: `${box.left}px`,
               top: `${box.top}px`,
@@ -521,7 +521,8 @@ function ProcessingLogDocumentPage({
               {field.fieldName}
             </span>
           </button>
-        ))}
+          );
+        })}
       </div>
     );
   }
