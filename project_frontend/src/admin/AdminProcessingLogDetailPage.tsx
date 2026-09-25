@@ -432,7 +432,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
           </div>
         </div>
 
-        <div className="grid items-stretch gap-0 xl:grid-cols-[minmax(22rem,0.92fr)_minmax(0,1.08fr)]">
+        <div className="grid items-stretch gap-0 xl:h-[46rem] xl:grid-cols-[minmax(22rem,0.92fr)_minmax(0,1.08fr)]">
           <div className="flex min-h-[34rem] flex-col border-b border-slate-200 bg-[#edf2f7] p-3 xl:h-full xl:border-b-0 xl:border-r">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <div>
