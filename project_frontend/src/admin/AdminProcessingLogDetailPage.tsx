@@ -432,8 +432,8 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
           </div>
         </div>
 
-        <div className="grid gap-0 xl:h-[calc(100vh-7rem)] xl:min-h-[48rem] xl:max-h-[72rem] xl:grid-cols-[minmax(22rem,0.92fr)_minmax(0,1.08fr)]">
-          <div className="border-b border-slate-200 bg-[#edf2f7] p-3 xl:border-b-0 xl:border-r">
+        <div className="grid gap-0 xl:grid-cols-[minmax(22rem,0.92fr)_minmax(0,1.08fr)]">
+          <div className="flex min-h-[34rem] flex-col border-b border-slate-200 bg-[#edf2f7] p-3 xl:border-b-0 xl:border-r">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="text-xs font-black text-slate-800">ภาพเอกสาร</h3>
@@ -458,8 +458,9 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
               </label>
             </div>
 
-            <div className="mx-auto w-full max-w-[38rem] rounded-xl border border-slate-200 bg-slate-100 p-2">
-              <div className="relative aspect-[3/4] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-inner">
+            <div className="flex flex-1 items-center justify-center py-2">
+              <div className="w-full max-w-[30rem] rounded-xl border border-slate-200 bg-slate-100 p-2">
+                <div className="relative aspect-[3/4] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-inner">
                 <ProcessingLogDocumentPage
                   log={log}
                   pageNumber={currentPage}
@@ -468,11 +469,12 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
                   selectedFieldId={selectedFieldId}
                   onSelectField={selectField}
                 />
+                </div>
               </div>
             </div>
           </div>
 
-          <div className="flex min-h-[34rem] flex-col bg-slate-50/40 xl:min-h-0 xl:h-full">
+          <div className="flex min-h-[34rem] flex-col bg-slate-50/40">
             <div className="border-b border-slate-200 bg-white px-3 py-2.5">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
@@ -490,7 +492,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+            <div className="min-h-0 flex-1 overflow-y-auto p-3 xl:max-h-[calc(100vh-22rem)]">
               {pageFields.length === 0 ? (
                 <EmptyState title="ไม่มีผลลัพธ์ในหน้านี้" message="Log นี้ไม่มี field สำหรับหน้าที่เลือก" />
               ) : (
