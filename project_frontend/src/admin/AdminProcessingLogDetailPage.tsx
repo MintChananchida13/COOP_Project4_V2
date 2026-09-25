@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, CheckCircle, ChevronLeft, ChevronRight, Download, FileText, Image as ImageIcon, Table } from "lucide-react";
 import { ActionButton, EmptyState, InlineState, PageHeader, cardClassName } from "../shared/ui";
 import { authHeaders } from "../auth/session";
@@ -32,6 +32,18 @@ type RenderedRoiBox = {
 
 const formatSeconds = (ms?: number | null) => (typeof ms === "number" && Number.isFinite(ms) ? `${(ms / 1000).toFixed(2)} s` : "-");
 const formatScore = (value: number | null) => (value === null || value === undefined ? "-" : value.toFixed(2));
+const safeExportFilename = (value: string) => value.replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "") || "processing-log";
+const downloadJsonFile = (filename: string, payload: unknown) => {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+};
 const backendPreviewSrc = (value?: string | null) => {
   const text = String(value || "").trim();
   if (!text) return "";
@@ -136,6 +148,56 @@ function LogBadge({ label, tone }: { label: string; tone: "success" | "warning" 
   return <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-black ${logBadgeClass(tone)}`}>{label}</span>;
 }
 
+const buildProcessingLogExport = (log: ProcessingLog) => {
+  const groundTruthByField = new Map(log.groundTruth.map((field) => [field.fieldId, field.value]));
+  const fields = log.ocrOriginal.map((field) => {
+    const kind = normalizeFieldKind(field.fieldType);
+    const groundTruth = groundTruthByField.get(field.fieldId) ?? "";
+    const supportsComparison = supportsOcrGroundTruthComparison(field.fieldType);
+    return {
+      fieldId: field.fieldId,
+      fieldName: field.fieldName,
+      fieldType: field.fieldType,
+      fieldKind: kind,
+      pageNumber: field.pageNumber,
+      roiMode: field.roiMode,
+      roi: field.roi,
+      ocrOriginal: field.value,
+      groundTruth,
+      confidence: field.confidence ?? null,
+      ocrDiffersFromGroundTruth: supportsComparison ? field.value !== groundTruth : null,
+    };
+  });
+  return {
+    exportedAt: new Date().toISOString(),
+    exportFormat: "processing_log_detail_json_v1",
+    generalInformation: {
+      id: log.id,
+      processingRunId: log.processingRunId ?? null,
+      documentName: log.documentName,
+      user: log.user,
+      userEmail: log.userEmail ?? null,
+      status: log.status,
+      createdAt: log.createdAt,
+      updatedAt: log.updatedAt ?? null,
+      pageCount: log.pageCount,
+    },
+    timing: {
+      detectionProcessingTimeMs: log.detectionProcessingTimeMs,
+      ocrProcessingTimeMs: log.ocrProcessingTimeMs,
+    },
+    templateDetection: log.templateDetection,
+    documentPages: log.sourcePages,
+    matchedTemplate: log.matchedTemplate ?? null,
+    roiSnapshot: log.roiSnapshot ?? [],
+    fields,
+    groundTruth: log.groundTruth,
+    processingResultsSummary: log.processingResultsSummary ?? null,
+    metadata: log.metadata ?? {},
+    raw: log,
+  };
+};
+
 export default function AdminProcessingLogDetailPage({ logId }: { logId: string }) {
   const [log, setLog] = useState<ProcessingLog | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -220,6 +282,12 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
     setCurrentPage(field.pageNumber);
   };
 
+  const handleExportLog = () => {
+    const payload = buildProcessingLogExport(log);
+    downloadJsonFile(`${safeExportFilename(`processing-log-${log.id}`)}.json`, payload);
+    setInfoMessage(`Exported ${log.id} as JSON.`);
+  };
+
   return (
     <section className="space-y-3">
       <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
@@ -237,7 +305,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
         </div>
         <button
           type="button"
-          onClick={() => setInfoMessage("Export Log ยังไม่ได้เชื่อมต่อในรอบนี้")}
+          onClick={handleExportLog}
           className="inline-flex w-fit items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-slate-700 hover:bg-slate-50"
         >
           <Download size={15} />
@@ -364,7 +432,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
           </div>
         </div>
 
-        <div className="grid gap-0 xl:h-[calc(100vh-14rem)] xl:min-h-[34rem] xl:max-h-[48rem] xl:grid-cols-[minmax(22rem,0.92fr)_minmax(0,1.08fr)]">
+        <div className="grid gap-0 xl:h-[calc(100vh-7rem)] xl:min-h-[48rem] xl:max-h-[72rem] xl:grid-cols-[minmax(22rem,0.92fr)_minmax(0,1.08fr)]">
           <div className="border-b border-slate-200 bg-[#edf2f7] p-3 xl:border-b-0 xl:border-r">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <div>
@@ -390,7 +458,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
               </label>
             </div>
 
-            <div className="mx-auto max-w-[30rem] rounded-xl border border-slate-200 bg-slate-100 p-2">
+            <div className="mx-auto w-full max-w-[38rem] rounded-xl border border-slate-200 bg-slate-100 p-2">
               <div className="relative aspect-[3/4] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-inner">
                 <ProcessingLogDocumentPage
                   log={log}
