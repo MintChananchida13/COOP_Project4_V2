@@ -145,6 +145,8 @@ const formatDatePickerValue = (value: string) => {
 };
 
 const normalizeTimeInput = (value: string) => value.replace(/[^\d:]/g, "").slice(0, 5);
+const hourOptions = Array.from({ length: 24 }, (_, index) => String(index).padStart(2, "0"));
+const minuteOptions = Array.from({ length: 60 }, (_, index) => String(index).padStart(2, "0"));
 
 const formatMaintenanceDateTime = (value: string) => {
   const date = new Date(value);
@@ -278,23 +280,97 @@ function MaintenanceTimePicker({
   minMode?: "inclusive" | "exclusive";
   onChange: (value: string) => void;
 }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [selectedHour = "", selectedMinute = ""] = value.split(":");
+  const isTimeDisabled = (time: string) => Boolean(minTime && (minMode === "exclusive" ? time <= minTime : time < minTime));
+  const selectTimePart = (part: "hour" | "minute", nextValue: string) => {
+    const nextHour = part === "hour" ? nextValue : selectedHour || "00";
+    const nextMinute = part === "minute" ? nextValue : selectedMinute || "00";
+    const nextTime = `${nextHour}:${nextMinute}`;
+    if (isTimeDisabled(nextTime)) return;
+    onChange(nextTime);
+  };
+
   return (
     <div className="relative">
       <div className="relative">
         <input
-          type="time"
+          type="text"
           inputMode="numeric"
           placeholder="HH:mm"
-          step={60}
-          min={minTime}
           value={value}
+          onFocus={() => setIsOpen(true)}
           onChange={(event) => onChange(normalizeTimeInput(event.target.value))}
-          className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 pr-9 text-sm font-semibold text-slate-800 outline-none transition-colors placeholder:text-slate-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+          className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none transition-colors placeholder:text-slate-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
         />
-        <div className="pointer-events-none absolute inset-y-0 right-0 inline-flex w-9 items-center justify-center text-slate-400">
-          <Clock size={16} />
-        </div>
       </div>
+      {isOpen && (
+        <div className="absolute left-0 top-full z-50 mt-2 w-44 rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <p className="mb-1 px-1 text-[10px] font-black uppercase text-slate-400">HH</p>
+              <div className="max-h-48 overflow-y-auto pr-1">
+                {hourOptions.map((hour) => {
+                  const previewTime = `${hour}:${selectedMinute || "00"}`;
+                  const disabled = isTimeDisabled(previewTime);
+                  return (
+                    <button
+                      key={hour}
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => selectTimePart("hour", hour)}
+                      className={`block h-8 w-full rounded-lg px-2 text-left text-xs font-black transition-colors ${
+                        selectedHour === hour
+                          ? "bg-indigo-600 text-white"
+                          : disabled
+                            ? "cursor-not-allowed text-slate-300"
+                            : "text-slate-700 hover:bg-indigo-50 hover:text-indigo-700"
+                      }`}
+                    >
+                      {hour}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div>
+              <p className="mb-1 px-1 text-[10px] font-black uppercase text-slate-400">MM</p>
+              <div className="max-h-48 overflow-y-auto pr-1">
+                {minuteOptions.map((minute) => {
+                  const previewTime = `${selectedHour || "00"}:${minute}`;
+                  const disabled = isTimeDisabled(previewTime);
+                  return (
+                    <button
+                      key={minute}
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => selectTimePart("minute", minute)}
+                      className={`block h-8 w-full rounded-lg px-2 text-left text-xs font-black transition-colors ${
+                        selectedMinute === minute
+                          ? "bg-indigo-600 text-white"
+                          : disabled
+                            ? "cursor-not-allowed text-slate-300"
+                            : "text-slate-700 hover:bg-indigo-50 hover:text-indigo-700"
+                      }`}
+                    >
+                      {minute}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+          <div className="mt-2 flex justify-end border-t border-slate-100 pt-2">
+            <button
+              type="button"
+              onClick={() => setIsOpen(false)}
+              className="rounded-lg bg-slate-900 px-3 py-1.5 text-[11px] font-black text-white hover:bg-slate-800"
+            >
+              ตกลง
+            </button>
+          </div>
+        </div>
+      )}
       {minTime && minMode === "exclusive" && value && value <= minTime && (
         <p className="mt-1 text-[10px] font-bold text-amber-600">Must be after {minTime}</p>
       )}
