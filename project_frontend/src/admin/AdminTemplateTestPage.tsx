@@ -715,6 +715,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
           method: "POST",
           headers: authHeaders({ "Content-Type": "application/json" }),
           body: JSON.stringify({
+            context: "admin",
             image: roiPreviewUrl,
             rois: [{ fieldName: field.fieldName, x: 0, y: 0, width: 9999, height: 9999 }],
           }),

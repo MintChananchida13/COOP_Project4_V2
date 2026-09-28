@@ -13,8 +13,10 @@ import { ROI, OCRResult, StructuredTableResult, TableExportConfig, TemplateField
 import {
   ADMIN_API_BASE_URL,
   detectTemplateDev,
+  fetchSystemMaintenance,
   fetchTemplateBundle,
   type DetectionDevResult,
+  type SystemMaintenanceState,
 } from "../admin/adminApi";
 import AuthGate from "../auth/AuthGate";
 import { AuthSession, authHeaders, clearAuthSession, readAuthSession } from "../auth/session";
@@ -42,6 +44,52 @@ interface PageConfig {
   isCropped: boolean;
   croppedLocalUrl: string | null;
 }
+
+class SystemMaintenanceError extends Error {
+  maintenance?: Partial<SystemMaintenanceState>;
+
+  constructor(message: string, maintenance?: Partial<SystemMaintenanceState>) {
+    super(message);
+    this.name = "SystemMaintenanceError";
+    this.maintenance = maintenance;
+  }
+}
+
+const extractMaintenancePayload = (data: any) => {
+  const detail = data?.detail;
+  const error = detail?.error || data?.error;
+  if (error?.code !== "SYSTEM_MAINTENANCE") return null;
+  return {
+    message: String(error.message || "ระบบอยู่ระหว่างการปิดปรับปรุง"),
+    scheduledStartAt: (error.scheduledStartAt as string | null | undefined) ?? null,
+    expectedEndAt: (error.expectedEndAt as string | null | undefined) ?? null,
+  };
+};
+
+const throwIfMaintenanceResponse = (data: any): never | void => {
+  const maintenance = extractMaintenancePayload(data);
+  if (!maintenance) return;
+  throw new SystemMaintenanceError(maintenance.message, {
+    active: true,
+    status: "active",
+    enforcementEnabled: true,
+    ...maintenance,
+  });
+};
+
+const formatMaintenanceDateTime = (value?: string | null) => {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("th-TH", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+};
 
 interface TemplateDetectionNotice {
   title: string;
@@ -329,7 +377,10 @@ async function analyzeLayoutForUserImage(imageDataUrl: string) {
     }),
   });
   const data = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(data?.detail || data?.message || "Layout analysis failed.");
+  if (!response.ok) {
+    throwIfMaintenanceResponse(data);
+    throw new Error(data?.detail || data?.message || "Layout analysis failed.");
+  }
   const regions = data?.pages?.[0]?.regions;
   return Array.isArray(regions) ? (regions as Record<string, any>[]) : [];
 }
@@ -1518,6 +1569,7 @@ async function runAiProcessJob(
   });
   const created = await response.json();
   if (!response.ok || !created.success) {
+    throwIfMaintenanceResponse(created);
     throw new Error(created?.detail || created?.error || "สร้าง OCR Job ไม่สำเร็จ");
   }
   if (!created.job_id) {
@@ -1578,6 +1630,8 @@ function HomeWorkspace() {
   const [ocrResults, setOcrResults] = useState<(OCRResult & { pageIndex?: number })[]>([]);
   const ocrRunIdRef = useRef(0);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [maintenanceState, setMaintenanceState] = useState<SystemMaintenanceState | null>(null);
+  const [maintenanceStatus, setMaintenanceStatus] = useState<"loading" | "ready" | "error">("loading");
   const [isTemplateRequestOpen, setIsTemplateRequestOpen] = useState<boolean>(false);
   const [ocrProgress, setOcrProgress] = useState<{ currentPage: number; totalPages: number; completedPages?: number } | null>(null);
   const [classificationStatus, setClassificationStatus] = useState<string>("");
@@ -1618,6 +1672,77 @@ function HomeWorkspace() {
     }
     setAuthSession(session);
   }, [router]);
+
+  const refreshMaintenanceState = async () => {
+    try {
+      const state = await fetchSystemMaintenance();
+      setMaintenanceState(state);
+      setMaintenanceStatus("ready");
+      return state;
+    } catch (error) {
+      console.warn("System maintenance state load failed.", error);
+      setMaintenanceStatus("error");
+      return null;
+    }
+  };
+
+  useEffect(() => {
+    void refreshMaintenanceState();
+  }, []);
+
+  const handleSystemMaintenanceError = async (error: unknown) => {
+    let currentError = error as
+      | (Error & {
+          code?: string;
+          maintenance?: Partial<SystemMaintenanceState> & { message?: string };
+          cause?: unknown;
+        })
+      | undefined;
+    while (currentError) {
+      if (currentError instanceof SystemMaintenanceError || currentError.code === "SYSTEM_MAINTENANCE") break;
+      currentError = currentError.cause as typeof currentError;
+    }
+    if (!currentError) {
+      return false;
+    }
+    const errorWithMaintenance = currentError as Error & {
+      code?: string;
+      maintenance?: Partial<SystemMaintenanceState> & { message?: string };
+    };
+    if (!(error instanceof SystemMaintenanceError) && errorWithMaintenance?.code !== "SYSTEM_MAINTENANCE") {
+      return false;
+    }
+    const state = await refreshMaintenanceState();
+    setMaintenanceState((current) => ({
+      enforcementEnabled: true,
+      status: "active",
+      active: true,
+      scheduledStartAt:
+        state?.scheduledStartAt ??
+        errorWithMaintenance.maintenance?.scheduledStartAt ??
+        null,
+      expectedEndAt:
+        state?.expectedEndAt ??
+        errorWithMaintenance.maintenance?.expectedEndAt ??
+        null,
+      message:
+        state?.message ||
+        errorWithMaintenance.maintenance?.message ||
+        errorWithMaintenance.message ||
+        "ระบบอยู่ระหว่างการปิดปรับปรุง",
+      updatedAt: state?.updatedAt ?? null,
+      updatedBy: state?.updatedBy ?? null,
+      ...(state || {}),
+    }));
+    setOperationNotice({
+      tone: "warning",
+      title: "ระบบอยู่ระหว่างการปิดปรับปรุง",
+      message: errorWithMaintenance.message || "ระบบปิดการประมวลผลชั่วคราว กรุณาลองใหม่ภายหลัง",
+    });
+    setIsTemplateDecisionOpen(false);
+    setTemplateDecisionStatus("");
+    return true;
+  };
 
   const processingLogFieldType = (result: OCRResult & { pageIndex?: number }, roi?: ROI) => {
     const markers = [result.type, result.dataType, roi?.type, roi?.dataType, roi?.extractionMethod]
@@ -2172,6 +2297,7 @@ function HomeWorkspace() {
       setSelectedId(detectedRois[0]?.id ?? null);
       setClassificationStatus(`ตรวจพบ Template: ${matchedTemplateDisplayName} และโหลด ROI สำหรับ OCR แล้ว`);
     } catch (error) {
+      if (await handleSystemMaintenanceError(error)) return;
       console.warn("Document classification after boundary confirmation failed.", error);
       setClassificationStatus("ตรวจจับ Template ไม่สำเร็จ ระบบเปิด Custom OCR ให้ใช้งานต่อ");
       setTemplateDetectionNotice({
@@ -2383,6 +2509,7 @@ function HomeWorkspace() {
           if (ocrRunIdRef.current !== runId) return;
           combinedResults.push(...(roiResults.filter((r) => r !== null) as (OCRResult & { pageIndex?: number })[]));
         } catch (pageError) {
+          if (await handleSystemMaintenanceError(pageError)) return;
           console.error(`Error processing page ${pageIdx + 1}:`, pageError);
           const tablePlaceholders = pageRois
             .map((roi, rIdx) =>
@@ -2411,6 +2538,7 @@ function HomeWorkspace() {
         });
       }
     } catch (err) {
+      if (await handleSystemMaintenanceError(err)) return;
       console.error(err);
       setOperationNotice({
         tone: "danger",
@@ -2553,6 +2681,7 @@ function HomeWorkspace() {
         });
       }
     } catch (err) {
+      if (await handleSystemMaintenanceError(err)) return;
       console.error(err);
       setOperationNotice({
         tone: "danger",
@@ -3675,9 +3804,37 @@ function HomeWorkspace() {
       </p>
     </section>
   );
+
+  const renderMaintenanceNotice = () => (
+    <section className="rounded-xl border border-amber-200 bg-amber-50 p-6 shadow-sm">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <p className="text-xs font-black uppercase tracking-wide text-amber-700">System Maintenance</p>
+          <h2 className="mt-1 text-lg font-black text-amber-950">ระบบอยู่ระหว่างการปิดปรับปรุง</h2>
+          <p className="mt-2 max-w-3xl text-sm font-semibold leading-6 text-amber-800">
+            {maintenanceState?.message || "ขณะนี้ระบบปิดการประมวลผลเอกสารชั่วคราว กรุณาลองใหม่อีกครั้งภายหลัง"}
+          </p>
+          {maintenanceState?.expectedEndAt && (
+            <p className="mt-3 text-xs font-bold text-amber-700">
+              คาดว่าจะเปิดให้บริการ: {formatMaintenanceDateTime(maintenanceState.expectedEndAt)}
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => void refreshMaintenanceState()}
+          className="inline-flex h-10 shrink-0 items-center justify-center rounded-xl border border-amber-300 bg-white px-4 text-xs font-black text-amber-800 transition-colors hover:bg-amber-100"
+        >
+          ตรวจสอบสถานะอีกครั้ง
+        </button>
+      </div>
+    </section>
+  );
+
   const exportPreviewPayload = exportJson || exportText ? buildExportPayload() : null;
   const exportFieldCount =
     exportPreviewPayload?.pages.reduce((sum, page) => sum + Object.keys(page.fields).length, 0) ?? 0;
+  const isMaintenanceActive = Boolean(maintenanceState?.active);
 
   return (
     <main className="min-h-screen bg-slate-50 select-none">
@@ -3721,6 +3878,8 @@ function HomeWorkspace() {
         }
       />
       <div className="mx-auto max-w-7xl space-y-5 px-6 py-6">
+        {isMaintenanceActive ? renderMaintenanceNotice() : (
+          <>
 
         {currentStep !== "upload" && renderUserWorkflowGuide()}
 
@@ -4233,6 +4392,9 @@ function HomeWorkspace() {
                 </section>
               </div>
             )}
+          </>
+        )}
+
           </>
         )}
 

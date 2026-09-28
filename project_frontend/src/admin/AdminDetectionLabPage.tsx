@@ -500,7 +500,7 @@ export default function AdminDetectionLabPage() {
     setResult(null);
     setPageIndex(0);
     try {
-      setResult(await detectTemplateDev(file, { standardTop5: true }));
+      setResult(await detectTemplateDev(file, { standardTop5: true, context: "admin" }));
     } catch (err) {
       console.warn("Detection lab failed.", err);
       setError(err instanceof Error ? err.message : "ค้นหา Template ไม่สำเร็จ");

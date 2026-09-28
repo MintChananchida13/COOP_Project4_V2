@@ -35,6 +35,7 @@ from app.api.schemas import (
     OcrActiveModelsUpdate,
     OcrModelPayload,
     ProcessingLogUpsertRequest,
+    SystemMaintenanceUpdate,
     VerificationStrategyUpdate,
     TemplateVersionCreate,
     TemplateVersionFromRequestCreate,
@@ -69,6 +70,31 @@ detect_dev_jobs: Dict[str, Dict[str, Any]] = {}
 
 def ok(data: dict) -> ApiResponse:
     return ApiResponse(data=data)
+
+
+def _is_admin_processing_context(request: Request) -> bool:
+    return str(request.query_params.get("context") or "").strip().lower() == "admin"
+
+
+def _ensure_processing_available_for_request(request: Request) -> None:
+    if _is_admin_processing_context(request):
+        return
+    global_settings.ensure_processing_available()
+
+
+@router.get("/system/maintenance", response_model=ApiResponse)
+def get_public_system_maintenance() -> ApiResponse:
+    maintenance = global_settings.get_system_maintenance()
+    return ok(
+        {
+            "enforcementEnabled": maintenance.get("enforcementEnabled"),
+            "status": maintenance.get("status"),
+            "active": maintenance.get("active"),
+            "message": maintenance.get("message"),
+            "scheduledStartAt": maintenance.get("scheduledStartAt"),
+            "expectedEndAt": maintenance.get("expectedEndAt"),
+        }
+    )
 
 
 def _run_prepublish_detection_job(job_id: str, template_id: str, file_bytes: bytes) -> None:
@@ -282,6 +308,7 @@ async def detect_template_dev_route(
     background_tasks: BackgroundTasks,
     response: Response,
 ) -> dict:
+    _ensure_processing_available_for_request(request)
     image_bytes = await _read_dev_detection_image(request)
     standard_top5 = request.query_params.get("standardTop5") in {"1", "true", "yes"}
     job_id = f"detectdev_{uuid4().hex}"
@@ -566,6 +593,16 @@ def get_verification_strategy() -> ApiResponse:
 @router.put("/admin/settings/verification-strategy", response_model=ApiResponse)
 def update_verification_strategy(payload: VerificationStrategyUpdate) -> ApiResponse:
     return ok(global_settings.update_verification_strategy(payload.verification_strategy))
+
+
+@router.get("/admin/system/maintenance", response_model=ApiResponse)
+def get_admin_system_maintenance() -> ApiResponse:
+    return ok(global_settings.get_system_maintenance())
+
+
+@router.put("/admin/system/maintenance", response_model=ApiResponse)
+def update_admin_system_maintenance(payload: SystemMaintenanceUpdate) -> ApiResponse:
+    return ok(global_settings.update_system_maintenance(payload, updated_by="admin"))
 
 
 @router.get("/admin/settings/ocr-models", response_model=ApiResponse)

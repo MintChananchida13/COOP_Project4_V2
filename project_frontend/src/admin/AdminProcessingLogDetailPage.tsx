@@ -14,6 +14,7 @@ import {
 } from "./adminApi";
 
 type FieldKind = "text" | "table" | "image";
+type ResultFilter = "all" | FieldKind | "changed";
 type ImageRenderMetrics = {
   offsetX: number;
   offsetY: number;
@@ -123,6 +124,43 @@ const renderedRoiBox = (
     : [];
   return { left, top, width, height, points: points.length > 2 ? points : undefined };
 };
+const cropRoiFromImage = (
+  image: HTMLImageElement,
+  roi: ProcessingLogField["roi"],
+  page?: ProcessingLog["sourcePages"][number]
+) => {
+  const referenceWidth =
+    roi.coordinateUnit === "ratio"
+      ? 1
+      : roi.roiReferenceWidth ||
+        page?.roiReferenceWidth ||
+        roi.roiDisplayReferenceWidth ||
+        page?.roiDisplayReferenceWidth ||
+        image.naturalWidth;
+  const referenceHeight =
+    roi.coordinateUnit === "ratio"
+      ? 1
+      : roi.roiReferenceHeight ||
+        page?.roiReferenceHeight ||
+        roi.roiDisplayReferenceHeight ||
+        page?.roiDisplayReferenceHeight ||
+        image.naturalHeight;
+  if (!referenceWidth || !referenceHeight || roi.width <= 0 || roi.height <= 0) return "";
+  const scaleX = image.naturalWidth / referenceWidth;
+  const scaleY = image.naturalHeight / referenceHeight;
+  const sourceX = Math.max(0, Math.round(roi.x * scaleX));
+  const sourceY = Math.max(0, Math.round(roi.y * scaleY));
+  const sourceWidth = Math.min(image.naturalWidth - sourceX, Math.round(roi.width * scaleX));
+  const sourceHeight = Math.min(image.naturalHeight - sourceY, Math.round(roi.height * scaleY));
+  if (sourceWidth <= 0 || sourceHeight <= 0) return "";
+  const canvas = document.createElement("canvas");
+  canvas.width = sourceWidth;
+  canvas.height = sourceHeight;
+  const context = canvas.getContext("2d");
+  if (!context) return "";
+  context.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, sourceWidth, sourceHeight);
+  return canvas.toDataURL("image/png");
+};
 const roiOverlayClassName = (isSelected: boolean, hasPoints: boolean) =>
   `absolute cursor-pointer border text-left transition-all duration-300 ${
     hasPoints
@@ -206,6 +244,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
   const [showRoi, setShowRoi] = useState(true);
   const [showRoiLabels, setShowRoiLabels] = useState(true);
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
+  const [resultFilter, setResultFilter] = useState<ResultFilter>("all");
   const [infoMessage, setInfoMessage] = useState("");
 
   useEffect(() => {
@@ -271,10 +310,18 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
   const changedOnPage = pageFields.filter(
     (field) => supportsOcrGroundTruthComparison(field.fieldType) && (groundTruthByField.get(field.fieldId) || "") !== field.value
   ).length;
+  const filteredPageFields = pageFields.filter((field) => {
+    if (resultFilter === "all") return true;
+    if (resultFilter === "changed") {
+      return supportsOcrGroundTruthComparison(field.fieldType) && (groundTruthByField.get(field.fieldId) || "") !== field.value;
+    }
+    return normalizeFieldKind(field.fieldType) === resultFilter;
+  });
 
   const setPage = (page: number) => {
     setCurrentPage(page);
     setSelectedFieldId(null);
+    setResultFilter("all");
   };
 
   const selectField = (field: ProcessingLogField) => {
@@ -484,23 +531,24 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
                 <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-500">Read-only</span>
               </div>
               <div className="mt-2 grid grid-cols-2 gap-2 lg:grid-cols-5">
-                <SummaryTile label="ทั้งหมด" value={pageFields.length} helper={`หน้า ${currentPage}/${pageCount}`} />
-                <SummaryTile label="ข้อความ" value={currentPageKinds.text} helper="Text" />
-                <SummaryTile label="ตาราง" value={currentPageKinds.table} helper="Table" tone="indigo" />
-                <SummaryTile label="รูปภาพ" value={currentPageKinds.image} helper="Image" tone="sky" />
-                <SummaryTile label="ต่างจาก GT" value={changedOnPage} helper="OCR ≠ GT" tone="amber" />
+                <SummaryTile label="ทั้งหมด" value={pageFields.length} helper={`หน้า ${currentPage}/${pageCount}`} active={resultFilter === "all"} onClick={() => setResultFilter("all")} />
+                <SummaryTile label="ข้อความ" value={currentPageKinds.text} helper="Text" active={resultFilter === "text"} onClick={() => setResultFilter("text")} />
+                <SummaryTile label="ตาราง" value={currentPageKinds.table} helper="Table" tone="indigo" active={resultFilter === "table"} onClick={() => setResultFilter("table")} />
+                <SummaryTile label="รูปภาพ" value={currentPageKinds.image} helper="Image" tone="sky" active={resultFilter === "image"} onClick={() => setResultFilter("image")} />
+                <SummaryTile label="ต่างจาก GT" value={changedOnPage} helper="OCR != GT" tone="amber" active={resultFilter === "changed"} onClick={() => setResultFilter("changed")} />
               </div>
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto p-3">
-              {pageFields.length === 0 ? (
+              {filteredPageFields.length === 0 ? (
                 <EmptyState title="ไม่มีผลลัพธ์ในหน้านี้" message="Log นี้ไม่มี field สำหรับหน้าที่เลือก" />
               ) : (
                 <div className="space-y-3">
-                  {pageFields.map((field) => (
+                  {filteredPageFields.map((field) => (
                     <ReadOnlyFieldResult
                       key={field.fieldId}
                       field={field}
+                      page={log.sourcePages.find((item) => item.pageNumber === field.pageNumber)}
                       groundTruth={groundTruthByField.get(field.fieldId) || "-"}
                       selected={selectedFieldId === field.fieldId}
                       onSelect={() => selectField(field)}
@@ -699,11 +747,13 @@ function ProcessingLogDocumentPage({
 
 function ReadOnlyFieldResult({
   field,
+  page,
   groundTruth,
   selected,
   onSelect,
 }: {
   field: ProcessingLogField;
+  page?: ProcessingLog["sourcePages"][number];
   groundTruth: string;
   selected: boolean;
   onSelect: () => void;
@@ -738,11 +788,85 @@ function ReadOnlyFieldResult({
         </div>
       </div>
 
-      <div className="mt-3 grid gap-2 lg:grid-cols-2">
-        <ReadOnlyValue label={kind === "image" ? "Image Result" : kind === "table" ? "Original table result" : "ข้อความจาก OCR"} value={field.value} kind={kind} />
-        <ReadOnlyValue label="Ground Truth" value={groundTruth} kind={kind} mutedHighlight={isDifferent} />
-      </div>
+      {kind === "image" ? (
+        <div className="mt-3">
+          <ImageFieldResult field={field} page={page} />
+        </div>
+      ) : (
+        <div className="mt-3 grid gap-2 lg:grid-cols-2">
+          <ReadOnlyValue label={kind === "table" ? "Original table result" : "OCR Text"} value={field.value} kind={kind} />
+          <ReadOnlyValue label="Ground Truth" value={groundTruth} kind={kind} mutedHighlight={isDifferent} />
+        </div>
+      )}
     </button>
+  );
+}
+
+function ImageFieldResult({ field, page }: { field: ProcessingLogField; page?: ProcessingLog["sourcePages"][number] }) {
+  const previewReference = page?.processingReference
+    ? page.processingPreviewUrl || page.processingReference
+    : page?.sourcePreviewUrl || page?.previewUrl || page?.sourceReference;
+  const imageSrc = backendPreviewSrc(previewReference);
+  const [cropUrl, setCropUrl] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!imageSrc) {
+      setCropUrl("");
+      setError("");
+      return;
+    }
+    let cancelled = false;
+    let objectUrl = "";
+    setCropUrl("");
+    setError("");
+    fetch(imageSrc, { headers: authHeaders(), credentials: "include" })
+      .then((response) => {
+        if (!response.ok) throw new Error(`Image crop source failed with ${response.status}`);
+        return response.blob();
+      })
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        const image = new window.Image();
+        image.onload = () => {
+          if (cancelled) return;
+          const cropped = cropRoiFromImage(image, field.roi, page);
+          setCropUrl(cropped);
+          URL.revokeObjectURL(objectUrl);
+          objectUrl = "";
+        };
+        image.onerror = () => {
+          if (!cancelled) setError("โหลดรูปภาพสำหรับตัด ROI ไม่สำเร็จ");
+          URL.revokeObjectURL(objectUrl);
+          objectUrl = "";
+        };
+        image.src = objectUrl;
+      })
+      .catch((nextError) => {
+        if (!cancelled) {
+          setError(nextError instanceof Error ? nextError.message : "โหลดรูปภาพสำหรับตัด ROI ไม่สำเร็จ");
+        }
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [field.roi, imageSrc, page]);
+
+  return (
+    <div className="min-w-0">
+      <p className="mb-1 text-[10px] font-black uppercase tracking-wider text-slate-400">Image Result</p>
+      <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+        {cropUrl ? (
+          <img src={cropUrl} alt={field.fieldName} className="max-h-64 w-full object-contain" />
+        ) : (
+          <div className="px-3 py-4 text-center text-xs font-bold text-slate-500">
+            {error || field.value || "กำลังตัดรูปภาพจาก ROI..."}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -825,11 +949,15 @@ function SummaryTile({
   value,
   helper,
   tone = "slate",
+  active = false,
+  onClick,
 }: {
   label: string;
   value: number;
   helper: string;
   tone?: "slate" | "indigo" | "sky" | "amber";
+  active?: boolean;
+  onClick?: () => void;
 }) {
   const toneClass =
     tone === "indigo"
@@ -839,11 +967,21 @@ function SummaryTile({
         : tone === "amber"
           ? "border-amber-100 bg-amber-50/70 text-amber-900"
           : "border-slate-200 bg-white text-slate-900";
-  return (
-    <div className={`rounded-xl border p-2 text-left ${toneClass}`}>
+  const className = `rounded-xl border p-2 text-left transition-all ${
+    onClick ? "cursor-pointer hover:-translate-y-0.5 hover:shadow-sm" : ""
+  } ${active ? "ring-2 ring-blue-500 ring-offset-1" : ""} ${toneClass}`;
+  const content = (
+    <>
       <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">{label}</p>
       <p className="mt-0.5 text-base font-black tabular-nums">{value}</p>
       <p className="text-[9px] font-bold text-slate-400">{helper}</p>
-    </div>
+    </>
+  );
+  return onClick ? (
+    <button type="button" onClick={onClick} className={className}>
+      {content}
+    </button>
+  ) : (
+    <div className={className}>{content}</div>
   );
 }

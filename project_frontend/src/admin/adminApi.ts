@@ -1752,6 +1752,27 @@ export const updateTemplateStatus = async (templateId: string, status: TemplateS
 
 export type VerificationStrategy = "standard" | "strict";
 
+export type MaintenanceStatus = "disabled" | "scheduled" | "active" | "inactive";
+
+export interface SystemMaintenanceState {
+  enforcementEnabled: boolean;
+  status: MaintenanceStatus;
+  active: boolean;
+  scheduledStartAt: string | null;
+  expectedEndAt: string | null;
+  message: string;
+  updatedAt?: string | null;
+  updatedBy?: string | null;
+}
+
+export interface SystemMaintenanceUpdate {
+  enforcementEnabled?: boolean;
+  scheduledStartAt?: string | null;
+  expectedEndAt?: string | null;
+  message?: string;
+  clearSchedule?: boolean;
+}
+
 const mapVerificationStrategy = (value: unknown): VerificationStrategy =>
   value === "strict" ? "strict" : "standard";
 
@@ -1775,6 +1796,55 @@ export const updateVerificationStrategy = async (strategy: VerificationStrategy)
     throw new Error(json?.detail || json?.error?.message || "Update verification strategy failed");
   }
   return mapVerificationStrategy(json?.data?.verification_strategy || json?.verification_strategy);
+};
+
+const mapSystemMaintenance = (data: Record<string, unknown>): SystemMaintenanceState => ({
+  enforcementEnabled: Boolean(data.enforcementEnabled ?? data.enforcement_enabled),
+  status: String(data.status || "disabled") as MaintenanceStatus,
+  active: Boolean(data.active),
+  scheduledStartAt: (data.scheduledStartAt as string | null | undefined) ?? (data.scheduled_start_at as string | null | undefined) ?? null,
+  expectedEndAt: (data.expectedEndAt as string | null | undefined) ?? (data.expected_end_at as string | null | undefined) ?? null,
+  message: String(data.message || ""),
+  updatedAt: (data.updatedAt as string | null | undefined) ?? (data.updated_at as string | null | undefined) ?? null,
+  updatedBy: (data.updatedBy as string | null | undefined) ?? (data.updated_by as string | null | undefined) ?? null,
+});
+
+export const fetchSystemMaintenance = async (): Promise<SystemMaintenanceState> => {
+  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/system/maintenance`, { cache: "no-store" });
+  const json = await response.json();
+  if (!response.ok || json?.success === false) {
+    throw new Error(json?.detail || json?.error?.message || "Fetch system maintenance failed");
+  }
+  return mapSystemMaintenance((json?.data as Record<string, unknown>) || {});
+};
+
+export const fetchAdminSystemMaintenance = async (): Promise<SystemMaintenanceState> => {
+  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/system/maintenance`, { cache: "no-store" });
+  const json = await response.json();
+  if (!response.ok || json?.success === false) {
+    throw new Error(json?.detail || json?.error?.message || "Fetch system maintenance failed");
+  }
+  return mapSystemMaintenance((json?.data as Record<string, unknown>) || {});
+};
+
+export const updateAdminSystemMaintenance = async (
+  payload: SystemMaintenanceUpdate
+): Promise<SystemMaintenanceState> => {
+  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/system/maintenance`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const json = await response.json();
+  if (!response.ok || json?.success === false) {
+    const detail = json?.detail;
+    const message =
+      typeof detail === "string"
+        ? detail
+        : detail?.error?.message || json?.error?.message || "Update system maintenance failed";
+    throw new Error(message);
+  }
+  return mapSystemMaintenance((json?.data as Record<string, unknown>) || {});
 };
 
 export type OcrModelKind = "text_detection" | "text_recognition";
@@ -1960,14 +2030,17 @@ function mapDetectionDevResult(data: Record<string, unknown> | undefined): Detec
 
 export const detectTemplateDev = async (
   file: File | File[],
-  options: { standardTop5?: boolean } = {}
+  options: { standardTop5?: boolean; context?: "admin" | "user" } = {}
 ): Promise<DetectionDevResult> => {
   const formData = new FormData();
   const files = Array.isArray(file) ? file : [file];
   files.forEach((item, index) => {
     formData.append("file", item, item.name || `page-${index + 1}.jpg`);
   });
-  const query = options.standardTop5 ? "?standardTop5=1" : "";
+  const queryParams = new URLSearchParams();
+  if (options.standardTop5) queryParams.set("standardTop5", "1");
+  if (options.context) queryParams.set("context", options.context);
+  const query = queryParams.toString() ? `?${queryParams.toString()}` : "";
   const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/api/templates/detect-dev${query}`, {
     method: "POST",
     body: formData,
@@ -1975,7 +2048,16 @@ export const detectTemplateDev = async (
   const json = await response.json().catch(() => null);
   if (!response.ok) {
     const detail = json?.detail || json?.error?.message || json?.error || `Detection failed with ${response.status}`;
-    throw new Error(typeof detail === "string" ? detail : `Detection failed with ${response.status}`);
+    const maintenanceError = typeof detail === "object" ? detail?.error : null;
+    const error = new Error(
+      maintenanceError?.message ||
+      (typeof detail === "string" ? detail : `Detection failed with ${response.status}`)
+    );
+    if (maintenanceError?.code) {
+      (error as Error & { code?: string; maintenance?: unknown }).code = String(maintenanceError.code);
+      (error as Error & { code?: string; maintenance?: unknown }).maintenance = maintenanceError;
+    }
+    throw error;
   }
 
   const initialData = json?.data as Record<string, unknown> | undefined;

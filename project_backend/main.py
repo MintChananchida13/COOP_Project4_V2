@@ -54,6 +54,12 @@ OCR_JOB_PROCESSING_TIMEOUT_SECONDS = max(60, int(os.getenv("OCR_JOB_PROCESSING_T
 logger = logging.getLogger(__name__)
 
 
+def _ensure_processing_available_for_context(context: Optional[str]) -> None:
+    if str(context or "").strip().lower() == "admin":
+        return
+    global_settings.ensure_processing_available()
+
+
 def _cropped_roi_path(filename: str) -> str:
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     return os.path.join(OUTPUT_DIR, filename)
@@ -102,6 +108,7 @@ class DocumentPayload(BaseModel):
     image: str
     rois: List[ROIModel]
     async_mode: bool = False
+    context: str | None = None
 
 
 class LayoutImagePayload(BaseModel):
@@ -117,6 +124,7 @@ class LayoutAnalysisPayload(BaseModel):
 
 app = FastAPI(title="OCR AI Engine")
 DETECTION_DEBUG_DIR = Path(__file__).resolve().parent / "storage" / "detection_queries"
+global_settings = GlobalSettingsService()
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "").strip().rstrip("/")
 
@@ -154,7 +162,7 @@ async def startup_warmup() -> None:
     with db_connect() as conn:
         ensure_image_verification_categories_table(conn)
     try:
-        GlobalSettingsService().load_verification_strategy_cache()
+        global_settings.load_verification_strategy_cache()
     except Exception as error:
         logger.exception("Verification strategy cache startup load failed; first read will fall back to DB: %s", error)
     try:
@@ -1380,6 +1388,7 @@ def read_root():
 @app.post("/api/ai/process")
 async def process_document(payload: DocumentPayload, background_tasks: BackgroundTasks):
     try:
+        _ensure_processing_available_for_context(payload.context)
         if payload.async_mode:
             job_id = create_ocr_job(payload)
             background_tasks.add_task(run_ocr_job, job_id)
@@ -1428,6 +1437,7 @@ async def get_ai_process_job(job_id: str):
 
 @app.post("/api/layout/analyze")
 async def analyze_document_layout(payload: LayoutAnalysisPayload):
+    _ensure_processing_available_for_context(payload.context)
     if not payload.images:
         raise HTTPException(status_code=400, detail="At least one page image is required.")
 

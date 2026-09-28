@@ -4,12 +4,15 @@ import { useEffect, useMemo, useState } from "react";
 import { CalendarDays, Check, ChevronLeft, ChevronRight, Clock, Loader2, Pencil, Plus, Save, Settings, X } from "lucide-react";
 import {
   fetchOcrModelSettings,
+  fetchAdminSystemMaintenance,
   fetchVerificationStrategy,
   OcrModelConfig,
   OcrModelKind,
   OcrModelSettings,
   saveOcrModel,
+  SystemMaintenanceState,
   updateActiveOcrModels,
+  updateAdminSystemMaintenance,
   updateVerificationStrategy,
   VerificationStrategy,
 } from "./adminApi";
@@ -112,6 +115,13 @@ const getAutoExpectedEndParts = (startDate: string, startTime: string) => {
   if (Number.isNaN(start.getTime())) return null;
   start.setHours(start.getHours() + 1);
   return getLocalDateTimeParts(start);
+};
+
+const getLocalDateTimePartsFromIso = (value: string | null | undefined) => {
+  if (!value) return { date: "", time: "" };
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return { date: "", time: "" };
+  return getLocalDateTimeParts(date);
 };
 
 const parseLocalDate = (value: string) => {
@@ -334,11 +344,49 @@ export default function AdminSettingsPage() {
   const [modelFormStatus, setModelFormStatus] = useState<"idle" | "saving" | "error">("idle");
   const [modelFormError, setModelFormError] = useState("");
   const [maintenanceDraft, setMaintenanceDraft] = useState<MaintenanceDraft>(emptyMaintenanceDraft);
+  const [maintenanceState, setMaintenanceState] = useState<SystemMaintenanceState | null>(null);
   const [scheduledMaintenance, setScheduledMaintenance] = useState<ScheduledMaintenance | null>(null);
   const [isMaintenanceEditing, setIsMaintenanceEditing] = useState(true);
   const [maintenanceError, setMaintenanceError] = useState("");
+  const [maintenanceSaveStatus, setMaintenanceSaveStatus] = useState<"idle" | "saving" | "error">("idle");
   const [isExpectedEndManual, setIsExpectedEndManual] = useState(false);
   const [maintenanceNow, setMaintenanceNow] = useState(() => new Date());
+
+  const applyMaintenanceState = (state: SystemMaintenanceState) => {
+    setMaintenanceState(state);
+    if (state.scheduledStartAt && state.expectedEndAt) {
+      setScheduledMaintenance({
+        status: "scheduled",
+        scheduledStartAt: state.scheduledStartAt,
+        expectedEndAt: state.expectedEndAt,
+        message: state.message,
+      });
+      setIsMaintenanceEditing(false);
+      const startParts = getLocalDateTimePartsFromIso(state.scheduledStartAt);
+      const endParts = getLocalDateTimePartsFromIso(state.expectedEndAt);
+      const matchedPreset = maintenanceMessageOptions.includes(state.message)
+        ? state.message
+        : customMaintenanceMessagePreset;
+      setMaintenanceDraft({
+        startDate: startParts.date,
+        startTime: startParts.time,
+        expectedEndDate: endParts.date,
+        expectedEndTime: endParts.time,
+        messagePreset: matchedPreset,
+        message: state.message || maintenanceMessageOptions[0],
+      });
+      setIsExpectedEndManual(true);
+      return;
+    }
+    setScheduledMaintenance(null);
+    setMaintenanceDraft((current) => ({
+      ...emptyMaintenanceDraft,
+      messagePreset: current.messagePreset || emptyMaintenanceDraft.messagePreset,
+      message: current.message || emptyMaintenanceDraft.message,
+    }));
+    setIsMaintenanceEditing(true);
+    setIsExpectedEndManual(false);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -347,13 +395,18 @@ export default function AdminSettingsPage() {
       setStrategyFeedback("");
       setModelFeedback("");
       try {
-        const [strategy, ocrSettings] = await Promise.all([fetchVerificationStrategy(), fetchOcrModelSettings()]);
+        const [strategy, ocrSettings, maintenance] = await Promise.all([
+          fetchVerificationStrategy(),
+          fetchOcrModelSettings(),
+          fetchAdminSystemMaintenance(),
+        ]);
         if (cancelled) return;
         setSavedStrategy(strategy);
         setDraftStrategy(strategy);
         setModelSettings(ocrSettings);
         setDraftDetectionModelId(ocrSettings.active.text_detection);
         setDraftRecognitionModelId(ocrSettings.active.text_recognition);
+        applyMaintenanceState(maintenance);
         setLoadStatus("loaded");
       } catch (error) {
         console.warn("Settings load failed.", error);
@@ -488,7 +541,8 @@ export default function AdminSettingsPage() {
     setMaintenanceError("");
   };
 
-  const handleScheduleMaintenance = () => {
+  const handleScheduleMaintenance = async () => {
+    if (maintenanceSaveStatus === "saving") return;
     const scheduledStartAt = combineDateTime(maintenanceDraft.startDate, maintenanceDraft.startTime);
     const expectedEndAt = combineDateTime(maintenanceDraft.expectedEndDate, maintenanceDraft.expectedEndTime);
     const scheduledStartDate = new Date(scheduledStartAt);
@@ -531,29 +585,37 @@ export default function AdminSettingsPage() {
       return;
     }
 
-    setScheduledMaintenance({
-      status: "scheduled",
-      scheduledStartAt,
-      expectedEndAt,
-      message,
-    });
-    setMaintenanceDraft((current) => ({ ...current, message }));
-    setIsMaintenanceEditing(false);
+    setMaintenanceSaveStatus("saving");
     setMaintenanceError("");
+    try {
+      const persisted = await updateAdminSystemMaintenance({
+        scheduledStartAt: scheduledStartDate.toISOString(),
+        expectedEndAt: expectedEndDate.toISOString(),
+        message,
+      });
+      applyMaintenanceState(persisted);
+      setMaintenanceDraft((current) => ({ ...current, message }));
+      setIsMaintenanceEditing(false);
+      setMaintenanceSaveStatus("idle");
+    } catch (error) {
+      console.warn("System maintenance schedule update failed.", error);
+      setMaintenanceSaveStatus("error");
+      setMaintenanceError(error instanceof Error ? error.message : "บันทึกกำหนดการปิดปรับปรุงไม่สำเร็จ");
+    }
   };
 
   const handleEditMaintenance = () => {
     if (scheduledMaintenance) {
-      const [startDate, startTime = ""] = scheduledMaintenance.scheduledStartAt.split("T");
-      const [expectedEndDate, expectedEndTime = ""] = scheduledMaintenance.expectedEndAt.split("T");
+      const startParts = getLocalDateTimePartsFromIso(scheduledMaintenance.scheduledStartAt);
+      const expectedEndParts = getLocalDateTimePartsFromIso(scheduledMaintenance.expectedEndAt);
       const matchedPreset = maintenanceMessageOptions.includes(scheduledMaintenance.message)
         ? scheduledMaintenance.message
         : customMaintenanceMessagePreset;
       setMaintenanceDraft({
-        startDate,
-        startTime,
-        expectedEndDate,
-        expectedEndTime,
+        startDate: startParts.date,
+        startTime: startParts.time,
+        expectedEndDate: expectedEndParts.date,
+        expectedEndTime: expectedEndParts.time,
         messagePreset: matchedPreset,
         message: scheduledMaintenance.message,
       });
@@ -563,12 +625,38 @@ export default function AdminSettingsPage() {
     setMaintenanceError("");
   };
 
-  const handleCancelMaintenance = () => {
-    setScheduledMaintenance(null);
-    setMaintenanceDraft(emptyMaintenanceDraft);
-    setIsExpectedEndManual(false);
-    setIsMaintenanceEditing(true);
+  const handleCancelMaintenance = async () => {
+    if (maintenanceSaveStatus === "saving") return;
+    setMaintenanceSaveStatus("saving");
     setMaintenanceError("");
+    try {
+      const persisted = await updateAdminSystemMaintenance({ clearSchedule: true });
+      applyMaintenanceState(persisted);
+      setMaintenanceDraft(emptyMaintenanceDraft);
+      setIsExpectedEndManual(false);
+      setIsMaintenanceEditing(true);
+      setMaintenanceSaveStatus("idle");
+    } catch (error) {
+      console.warn("System maintenance cancel failed.", error);
+      setMaintenanceSaveStatus("error");
+      setMaintenanceError(error instanceof Error ? error.message : "ยกเลิกกำหนดการไม่สำเร็จ");
+    }
+  };
+
+  const handleToggleMaintenanceEnforcement = async () => {
+    if (maintenanceSaveStatus === "saving") return;
+    const nextValue = !maintenanceState?.enforcementEnabled;
+    setMaintenanceSaveStatus("saving");
+    setMaintenanceError("");
+    try {
+      const persisted = await updateAdminSystemMaintenance({ enforcementEnabled: nextValue });
+      applyMaintenanceState(persisted);
+      setMaintenanceSaveStatus("idle");
+    } catch (error) {
+      console.warn("System maintenance enforcement update failed.", error);
+      setMaintenanceSaveStatus("error");
+      setMaintenanceError(error instanceof Error ? error.message : "บันทึกสถานะการบังคับใช้ไม่สำเร็จ");
+    }
   };
 
   const renderModelSelect = (
@@ -688,6 +776,7 @@ export default function AdminSettingsPage() {
 
   const renderMaintenanceSettings = () => {
     const isScheduled = scheduledMaintenance?.status === "scheduled";
+    const isEnforcementEnabled = Boolean(maintenanceState?.enforcementEnabled);
     return (
       <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
@@ -705,6 +794,31 @@ export default function AdminSettingsPage() {
             <span className={`h-2 w-2 rounded-full ${isScheduled ? "bg-amber-500" : "bg-emerald-500"}`} />
             {isScheduled ? "มีกำหนดปิดปรับปรุง" : "เปิดให้บริการตามปกติ"}
           </div>
+        </div>
+
+        <div className="mt-5 flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-xs font-black text-slate-900">เปิดใช้งานระบบปิดปรับปรุง</p>
+            <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">
+              เมื่อเปิดใช้งาน ระบบจะปิดการประมวลผลของผู้ใช้ตามช่วงเวลาที่กำหนด
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={isEnforcementEnabled}
+            disabled={maintenanceSaveStatus === "saving"}
+            onClick={handleToggleMaintenanceEnforcement}
+            className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors ${
+              isEnforcementEnabled ? "bg-indigo-600" : "bg-slate-300"
+            } disabled:cursor-not-allowed disabled:opacity-60`}
+          >
+            <span
+              className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                isEnforcementEnabled ? "translate-x-6" : "translate-x-1"
+              }`}
+            />
+          </button>
         </div>
 
         {isScheduled && !isMaintenanceEditing ? (

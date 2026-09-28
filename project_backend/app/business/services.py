@@ -86,9 +86,19 @@ VERIFICATION_STRATEGY_STANDARD = "standard"
 VERIFICATION_STRATEGY_STRICT = "strict"
 VERIFICATION_STRATEGIES = {VERIFICATION_STRATEGY_STANDARD, VERIFICATION_STRATEGY_STRICT}
 OCR_MODEL_SETTINGS_KEY = "ocr_model_settings"
+SYSTEM_MAINTENANCE_SETTING_KEY = "system_maintenance"
 OCR_MODEL_KINDS = {"text_detection", "text_recognition"}
 _VERIFICATION_STRATEGY_CACHE_LOCK = threading.RLock()
 _VERIFICATION_STRATEGY_CACHE: Optional[str] = None
+
+DEFAULT_SYSTEM_MAINTENANCE: Dict[str, Any] = {
+    "enforcementEnabled": False,
+    "scheduledStartAt": None,
+    "expectedEndAt": None,
+    "message": "",
+    "updatedAt": None,
+    "updatedBy": None,
+}
 
 DEFAULT_OCR_MODEL_SETTINGS: Dict[str, Any] = {
     "active": {
@@ -316,6 +326,142 @@ class GlobalSettingsService:
                 (key, value),
             )
             conn.commit()
+
+    def _load_setting_value(self, key: str) -> Optional[str]:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = ?",
+                (key,),
+            ).fetchone()
+        return row["value"] if row else None
+
+    @staticmethod
+    def _parse_maintenance_datetime(value: Any) -> Optional[datetime]:
+        if not value:
+            return None
+        if isinstance(value, datetime):
+            parsed = value
+        else:
+            text = str(value).strip()
+            if not text:
+                return None
+            try:
+                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @staticmethod
+    def _maintenance_datetime_to_iso(value: Optional[datetime]) -> Optional[str]:
+        if value is None:
+            return None
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def _normalize_maintenance_setting(self, raw: Any) -> Dict[str, Any]:
+        source = raw if isinstance(raw, dict) else {}
+        normalized = dict(DEFAULT_SYSTEM_MAINTENANCE)
+        normalized["enforcementEnabled"] = bool(source.get("enforcementEnabled"))
+        start = self._parse_maintenance_datetime(source.get("scheduledStartAt"))
+        end = self._parse_maintenance_datetime(source.get("expectedEndAt"))
+        normalized["scheduledStartAt"] = self._maintenance_datetime_to_iso(start)
+        normalized["expectedEndAt"] = self._maintenance_datetime_to_iso(end)
+        normalized["message"] = str(source.get("message") or "").strip()
+        updated_at = self._parse_maintenance_datetime(source.get("updatedAt"))
+        normalized["updatedAt"] = self._maintenance_datetime_to_iso(updated_at)
+        updated_by = source.get("updatedBy")
+        normalized["updatedBy"] = str(updated_by).strip() if updated_by else None
+        return normalized
+
+    def _maintenance_state(self, setting: Dict[str, Any]) -> Dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        start = self._parse_maintenance_datetime(setting.get("scheduledStartAt"))
+        end = self._parse_maintenance_datetime(setting.get("expectedEndAt"))
+        has_schedule = start is not None and end is not None and start < end
+        schedule_active = bool(has_schedule and start <= now < end)
+        enforcement_enabled = bool(setting.get("enforcementEnabled"))
+        active = enforcement_enabled and schedule_active
+        if not enforcement_enabled:
+            status = "disabled"
+        elif active:
+            status = "active"
+        elif has_schedule and now < start:
+            status = "scheduled"
+        else:
+            status = "inactive"
+        return {
+            **setting,
+            "enforcementEnabled": enforcement_enabled,
+            "status": status,
+            "active": active,
+            "scheduledStartAt": self._maintenance_datetime_to_iso(start),
+            "expectedEndAt": self._maintenance_datetime_to_iso(end),
+        }
+
+    def get_system_maintenance(self) -> Dict[str, Any]:
+        raw_value = None
+        try:
+            raw_value = self._load_setting_value(SYSTEM_MAINTENANCE_SETTING_KEY)
+        except Exception as error:
+            logger.exception("System maintenance setting read failed; falling back to disabled state: %s", error)
+        raw = jsonb_load(raw_value, {}) if raw_value is not None else {}
+        if not isinstance(raw, dict):
+            logger.warning("System maintenance setting is malformed; falling back to disabled state.")
+            raw = {}
+        return self._maintenance_state(self._normalize_maintenance_setting(raw))
+
+    def update_system_maintenance(self, payload: Any, updated_by: Optional[str] = None) -> Dict[str, Any]:
+        current = self.get_system_maintenance()
+        next_setting = {
+            "enforcementEnabled": bool(current.get("enforcementEnabled")),
+            "scheduledStartAt": current.get("scheduledStartAt"),
+            "expectedEndAt": current.get("expectedEndAt"),
+            "message": current.get("message") or "",
+            "updatedAt": current.get("updatedAt"),
+            "updatedBy": current.get("updatedBy"),
+        }
+        if getattr(payload, "enforcement_enabled", None) is not None:
+            next_setting["enforcementEnabled"] = bool(payload.enforcement_enabled)
+        if getattr(payload, "scheduled_start_at", None) is not None:
+            next_setting["scheduledStartAt"] = self._maintenance_datetime_to_iso(payload.scheduled_start_at)
+        if getattr(payload, "expected_end_at", None) is not None:
+            next_setting["expectedEndAt"] = self._maintenance_datetime_to_iso(payload.expected_end_at)
+        if getattr(payload, "message", None) is not None:
+            next_setting["message"] = str(payload.message or "").strip()
+        if getattr(payload, "clear_schedule", None):
+            next_setting["scheduledStartAt"] = None
+            next_setting["expectedEndAt"] = None
+
+        start = self._parse_maintenance_datetime(next_setting.get("scheduledStartAt"))
+        end = self._parse_maintenance_datetime(next_setting.get("expectedEndAt"))
+        if (start is None) != (end is None):
+            raise HTTPException(status_code=400, detail="scheduledStartAt and expectedEndAt must be provided together")
+        if start is not None and end is not None and start >= end:
+            raise HTTPException(status_code=400, detail="expectedEndAt must be after scheduledStartAt")
+
+        next_setting["updatedAt"] = self._maintenance_datetime_to_iso(datetime.now(timezone.utc))
+        next_setting["updatedBy"] = str(updated_by or "admin").strip() or "admin"
+        self._save_setting(SYSTEM_MAINTENANCE_SETTING_KEY, jsonb_dump(next_setting))
+        return self._maintenance_state(self._normalize_maintenance_setting(next_setting))
+
+    def ensure_processing_available(self) -> None:
+        maintenance = self.get_system_maintenance()
+        if not maintenance.get("active"):
+            return
+        message = str(maintenance.get("message") or "ระบบอยู่ระหว่างการปิดปรับปรุง")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "ok": False,
+                "error": {
+                    "code": "SYSTEM_MAINTENANCE",
+                    "message": message,
+                    "scheduledStartAt": maintenance.get("scheduledStartAt"),
+                    "expectedEndAt": maintenance.get("expectedEndAt"),
+                },
+            },
+        )
 
     def get_verification_strategy(self) -> Dict[str, Any]:
         result, _ = self.get_verification_strategy_with_timing()

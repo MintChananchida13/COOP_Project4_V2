@@ -839,6 +839,7 @@ export default function WorkspaceTemplateEditorV2({
         headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
           auto_roi_mode: "text_line",
+          context: "admin",
           images: pagesToAnalyze.map(({ page, index }) => ({
             page_index: index,
             image: page.src,
@@ -1334,6 +1335,7 @@ export default function WorkspaceTemplateEditorV2({
         onIndexChange={onPageChange}
         hideOcrActions
         hideStepProgress
+        processingContext="admin"
         rootClassName="max-w-7xl mx-auto space-y-3"
         onImageMetricsChange={setImageMetrics}
         getRoiBadges={(roi) => {

@@ -117,6 +117,7 @@ export interface WorkspaceCustomEditorProps {
   fitImageToViewport?: boolean;
   imageFrameClassName?: string;
   layoutVariant?: "default" | "user";
+  processingContext?: "admin" | "user";
   rightPanelClassName?: string;
   rightPanelTopContent?: React.ReactNode;
   rightPanelRenderer?: (api: {
@@ -172,6 +173,7 @@ export default function WorkspaceCustomEditor({
   fitImageToViewport = true,
   imageFrameClassName = "w-[750px]",
   layoutVariant = "user",
+  processingContext = "user",
   rightPanelClassName,
   rightPanelTopContent,
   rightPanelRenderer,
@@ -841,6 +843,7 @@ export default function WorkspaceCustomEditor({
         headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
           auto_roi_mode: "text_line",
+          context: processingContext,
           images: pagesToAnalyze.map((imageSrc, pageIndex) => ({
             page_index: pageIndex,
             image: imageSrc,

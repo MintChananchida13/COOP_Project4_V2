@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from pydantic import AliasChoices, BaseModel, Field
@@ -161,6 +162,23 @@ class TemplateUpdate(BaseModel):
 
 class VerificationStrategyUpdate(BaseModel):
     verification_strategy: str = Field(validation_alias=AliasChoices("verification_strategy", "verificationStrategy"))
+
+
+class SystemMaintenanceUpdate(BaseModel):
+    enforcement_enabled: Optional[bool] = Field(
+        default=None,
+        validation_alias=AliasChoices("enforcement_enabled", "enforcementEnabled"),
+    )
+    scheduled_start_at: Optional[datetime] = Field(
+        default=None,
+        validation_alias=AliasChoices("scheduled_start_at", "scheduledStartAt"),
+    )
+    expected_end_at: Optional[datetime] = Field(
+        default=None,
+        validation_alias=AliasChoices("expected_end_at", "expectedEndAt"),
+    )
+    message: Optional[str] = None
+    clear_schedule: bool = Field(default=False, validation_alias=AliasChoices("clear_schedule", "clearSchedule"))
 
 
 class OcrModelPayload(BaseModel):
