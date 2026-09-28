@@ -283,10 +283,17 @@ function MaintenanceTimePicker({
   const [isOpen, setIsOpen] = useState(false);
   const [selectedHour = "", selectedMinute = ""] = value.split(":");
   const isTimeDisabled = (time: string) => Boolean(minTime && (minMode === "exclusive" ? time <= minTime : time < minTime));
+  const firstEnabledMinuteForHour = (hour: string) => minuteOptions.find((minute) => !isTimeDisabled(`${hour}:${minute}`));
   const selectTimePart = (part: "hour" | "minute", nextValue: string) => {
     const nextHour = part === "hour" ? nextValue : selectedHour || "00";
-    const nextMinute = part === "minute" ? nextValue : selectedMinute || "00";
-    const nextTime = `${nextHour}:${nextMinute}`;
+    let nextMinute = part === "minute" ? nextValue : selectedMinute || "00";
+    let nextTime = `${nextHour}:${nextMinute}`;
+    if (part === "hour" && isTimeDisabled(nextTime)) {
+      const fallbackMinute = firstEnabledMinuteForHour(nextHour);
+      if (!fallbackMinute) return;
+      nextMinute = fallbackMinute;
+      nextTime = `${nextHour}:${nextMinute}`;
+    }
     if (isTimeDisabled(nextTime)) return;
     onChange(nextTime);
   };
@@ -311,8 +318,7 @@ function MaintenanceTimePicker({
               <p className="mb-1 px-1 text-[10px] font-black uppercase text-slate-400">HH</p>
               <div className="max-h-48 overflow-y-auto pr-1">
                 {hourOptions.map((hour) => {
-                  const previewTime = `${hour}:${selectedMinute || "00"}`;
-                  const disabled = isTimeDisabled(previewTime);
+                  const disabled = !firstEnabledMinuteForHour(hour);
                   return (
                     <button
                       key={hour}
