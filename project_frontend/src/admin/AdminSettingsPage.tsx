@@ -15,6 +15,7 @@ import {
   updateAdminSystemMaintenance,
   updateVerificationStrategy,
   VerificationStrategy,
+  VerificationStrategySettings,
 } from "./adminApi";
 import { InlineState, LoadingState } from "../shared/ui";
 
@@ -386,6 +387,7 @@ function MaintenanceTimePicker({
 
 export default function AdminSettingsPage() {
   const [savedStrategy, setSavedStrategy] = useState<VerificationStrategy>("standard");
+  const [pendingStrategy, setPendingStrategy] = useState<VerificationStrategy | null>(null);
   const [draftStrategy, setDraftStrategy] = useState<VerificationStrategy>("standard");
   const [modelSettings, setModelSettings] = useState<OcrModelSettings>(emptyModelSettings);
   const [draftDetectionModelId, setDraftDetectionModelId] = useState("");
@@ -447,6 +449,18 @@ export default function AdminSettingsPage() {
     setIsExpectedEndManual(false);
   };
 
+  const applyVerificationStrategySettings = (settings: VerificationStrategySettings) => {
+    setSavedStrategy(settings.active);
+    setPendingStrategy(settings.pending);
+    setDraftStrategy(settings.pending || settings.active);
+  };
+
+  const applyOcrModelSettings = (settings: OcrModelSettings) => {
+    setModelSettings(settings);
+    setDraftDetectionModelId(settings.pendingActive?.text_detection || settings.active.text_detection);
+    setDraftRecognitionModelId(settings.pendingActive?.text_recognition || settings.active.text_recognition);
+  };
+
   useEffect(() => {
     let cancelled = false;
     const loadSettings = async () => {
@@ -460,11 +474,8 @@ export default function AdminSettingsPage() {
           fetchAdminSystemMaintenance(),
         ]);
         if (cancelled) return;
-        setSavedStrategy(strategy);
-        setDraftStrategy(strategy);
-        setModelSettings(ocrSettings);
-        setDraftDetectionModelId(ocrSettings.active.text_detection);
-        setDraftRecognitionModelId(ocrSettings.active.text_recognition);
+        applyVerificationStrategySettings(strategy);
+        applyOcrModelSettings(ocrSettings);
         applyMaintenanceState(maintenance);
         setLoadStatus("loaded");
       } catch (error) {
@@ -496,15 +507,27 @@ export default function AdminSettingsPage() {
     setIsMaintenanceEditing(true);
   }, [maintenanceNow, scheduledMaintenance]);
 
-  const hasStrategyChanges = draftStrategy !== savedStrategy;
+  const effectiveDraftStrategy = pendingStrategy || savedStrategy;
+  const hasStrategyChanges = draftStrategy !== effectiveDraftStrategy;
   const hasModelChanges =
-    draftDetectionModelId !== modelSettings.active.text_detection ||
-    draftRecognitionModelId !== modelSettings.active.text_recognition;
+    draftDetectionModelId !== (modelSettings.pendingActive?.text_detection || modelSettings.active.text_detection) ||
+    draftRecognitionModelId !== (modelSettings.pendingActive?.text_recognition || modelSettings.active.text_recognition);
   const hasUnsavedChanges = hasStrategyChanges || hasModelChanges;
   const selectedOption = useMemo(
     () => verificationStrategyOptions.find((option) => option.value === draftStrategy) || verificationStrategyOptions[0],
     [draftStrategy]
   );
+  const savedOption = useMemo(
+    () => verificationStrategyOptions.find((option) => option.value === savedStrategy) || verificationStrategyOptions[0],
+    [savedStrategy]
+  );
+  const pendingOption = useMemo(
+    () => pendingStrategy ? verificationStrategyOptions.find((option) => option.value === pendingStrategy) || verificationStrategyOptions[0] : null,
+    [pendingStrategy]
+  );
+  const modelName = (kind: OcrModelKind, modelId: string) =>
+    modelSettings.models[kind].find((model) => model.id === modelId)?.displayName || modelId || "-";
+  const hasPendingOcrModels = Boolean(modelSettings.pendingActive);
   const currentDateTimeParts = getLocalDateTimeParts(maintenanceNow);
   const expectedEndMinDate = maintenanceDraft.startDate || currentDateTimeParts.date;
   const expectedEndMinTime =
@@ -530,10 +553,9 @@ export default function AdminSettingsPage() {
     setStrategyFeedback("");
     try {
       const persistedStrategy = await updateVerificationStrategy(draftStrategy);
-      setSavedStrategy(persistedStrategy);
-      setDraftStrategy(persistedStrategy);
+      applyVerificationStrategySettings(persistedStrategy);
       setStrategySaveStatus("saved");
-      setStrategyFeedback("บันทึกการตั้งค่าเรียบร้อยแล้ว");
+      setStrategyFeedback(persistedStrategy.deferred ? "บันทึกเป็นค่ารออัปเดตแล้ว จะมีผลเมื่อเริ่มช่วงปิดปรับปรุง" : "บันทึกการตั้งค่าเรียบร้อยแล้ว");
       window.setTimeout(() => setStrategySaveStatus((current) => (current === "saved" ? "idle" : current)), 1800);
     } catch (error) {
       console.warn("Verification strategy update failed.", error);
@@ -551,11 +573,9 @@ export default function AdminSettingsPage() {
         textDetectionModelId: draftDetectionModelId,
         textRecognitionModelId: draftRecognitionModelId,
       });
-      setModelSettings(persistedSettings);
-      setDraftDetectionModelId(persistedSettings.active.text_detection);
-      setDraftRecognitionModelId(persistedSettings.active.text_recognition);
+      applyOcrModelSettings(persistedSettings);
       setModelSaveStatus("saved");
-      setModelFeedback("บันทึกการตั้งค่าโมเดลเรียบร้อยแล้ว");
+      setModelFeedback(persistedSettings.deferred ? "บันทึกโมเดลเป็นค่ารออัปเดตแล้ว จะมีผลเมื่อเริ่มช่วงปิดปรับปรุง" : "บันทึกการตั้งค่าโมเดลเรียบร้อยแล้ว");
       window.setTimeout(() => setModelSaveStatus((current) => (current === "saved" ? "idle" : current)), 1800);
     } catch (error) {
       console.warn("OCR model settings update failed.", error);
@@ -582,9 +602,7 @@ export default function AdminSettingsPage() {
     setModelFormError("");
     try {
       const persistedSettings = await saveOcrModel(editingModel.kind, editingModel.draft);
-      setModelSettings(persistedSettings);
-      setDraftDetectionModelId((current) => current || persistedSettings.active.text_detection);
-      setDraftRecognitionModelId((current) => current || persistedSettings.active.text_recognition);
+      applyOcrModelSettings(persistedSettings);
       setEditingModel(null);
       setModelFormStatus("idle");
     } catch (error) {
@@ -1051,7 +1069,14 @@ export default function AdminSettingsPage() {
                 <h3 className="text-sm font-black text-slate-900">การตรวจสอบ Template</h3>
                 <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">เลือกรูปแบบการตรวจสอบที่ใช้กับ Template ทั้งหมดในระบบ</p>
               </div>
-              <div className="rounded-full bg-slate-50 px-3 py-1 text-[11px] font-black text-slate-500">ปัจจุบัน: {savedStrategy === "strict" ? "Strict" : "Standard"}</div>
+              <div className="flex flex-wrap gap-2">
+                <div className="rounded-full bg-slate-50 px-3 py-1 text-[11px] font-black text-slate-500">ปัจจุบัน: {savedStrategy === "strict" ? "Strict" : "Standard"}</div>
+                {(pendingStrategy || hasStrategyChanges) && (
+                  <div className="rounded-full bg-amber-50 px-3 py-1 text-[11px] font-black text-amber-700">
+                    รออัปเดต: {draftStrategy === "strict" ? "Strict" : "Standard"}
+                  </div>
+                )}
+              </div>
             </div>
             <div className="mt-5 grid gap-3">
               {verificationStrategyOptions.map((option) => {
@@ -1067,7 +1092,13 @@ export default function AdminSettingsPage() {
                 );
               })}
             </div>
-            <p className="mt-4 text-xs font-semibold leading-5 text-slate-500">{selectedOption.description}</p>
+            <p className="mt-4 text-xs font-semibold leading-5 text-slate-500">
+              {hasStrategyChanges
+                ? `เลือกไว้: ${selectedOption.label} ระบบยังใช้งานจริงเป็น ${savedOption.label} จนกว่าจะกดบันทึกการตั้งค่า`
+                : pendingOption
+                  ? `รออัปเดตเป็น ${pendingOption.label} เมื่อเริ่มช่วงปิดปรับปรุง ระบบปัจจุบันยังเป็น ${savedOption.label}`
+                  : savedOption.description}
+            </p>
             {strategySaveStatus === "saved" && strategyFeedback && <div className="mt-4"><InlineState tone="success" message={strategyFeedback} /></div>}
             {strategySaveStatus === "error" && strategyFeedback && <div className="mt-4"><InlineState tone="danger" message={strategyFeedback} /></div>}
             <div className="mt-5 flex justify-end">
@@ -1092,6 +1123,16 @@ export default function AdminSettingsPage() {
             <div className="mt-5 grid gap-4 lg:grid-cols-2">
               {renderModelSelect("text_detection", "Text Detection Model", "โมเดลสำหรับตรวจหาตำแหน่งข้อความ", draftDetectionModelId, setDraftDetectionModelId)}
               {renderModelSelect("text_recognition", "Text Recognition Model", "โมเดลสำหรับอ่านข้อความ", draftRecognitionModelId, setDraftRecognitionModelId)}
+            </div>
+            <div className="mt-4 grid gap-2 text-xs font-semibold text-slate-500 sm:grid-cols-2">
+              <div className="rounded-xl bg-slate-50 px-3 py-2">
+                <span className="font-black text-slate-700">ปัจจุบัน:</span> DET {modelName("text_detection", modelSettings.active.text_detection)} / REC {modelName("text_recognition", modelSettings.active.text_recognition)}
+              </div>
+              {hasPendingOcrModels && modelSettings.pendingActive && (
+                <div className="rounded-xl bg-amber-50 px-3 py-2 text-amber-700">
+                  <span className="font-black">รออัปเดต:</span> DET {modelName("text_detection", modelSettings.pendingActive.text_detection)} / REC {modelName("text_recognition", modelSettings.pendingActive.text_recognition)}
+                </div>
+              )}
             </div>
             {modelSaveStatus === "saved" && modelFeedback && <div className="mt-4"><InlineState tone="success" message={modelFeedback} /></div>}
             {modelSaveStatus === "error" && modelFeedback && <div className="mt-4"><InlineState tone="danger" message={modelFeedback} /></div>}

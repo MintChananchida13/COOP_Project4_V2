@@ -162,6 +162,10 @@ async def startup_warmup() -> None:
     with db_connect() as conn:
         ensure_image_verification_categories_table(conn)
     try:
+        global_settings.get_system_maintenance()
+    except Exception as error:
+        logger.exception("System maintenance startup check failed; pending settings will be retried on next read: %s", error)
+    try:
         global_settings.load_verification_strategy_cache()
     except Exception as error:
         logger.exception("Verification strategy cache startup load failed; first read will fall back to DB: %s", error)

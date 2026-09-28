@@ -1752,6 +1752,12 @@ export const updateTemplateStatus = async (templateId: string, status: TemplateS
 
 export type VerificationStrategy = "standard" | "strict";
 
+export interface VerificationStrategySettings {
+  active: VerificationStrategy;
+  pending: VerificationStrategy | null;
+  deferred: boolean;
+}
+
 export type MaintenanceStatus = "disabled" | "scheduled" | "active" | "inactive";
 
 export interface SystemMaintenanceState {
@@ -1776,16 +1782,25 @@ export interface SystemMaintenanceUpdate {
 const mapVerificationStrategy = (value: unknown): VerificationStrategy =>
   value === "strict" ? "strict" : "standard";
 
-export const fetchVerificationStrategy = async (): Promise<VerificationStrategy> => {
+const mapVerificationStrategySettings = (data: Record<string, unknown>): VerificationStrategySettings => ({
+  active: mapVerificationStrategy(data.verification_strategy || data.verificationStrategy),
+  pending:
+    data.pending_verification_strategy || data.pendingVerificationStrategy
+      ? mapVerificationStrategy(data.pending_verification_strategy || data.pendingVerificationStrategy)
+      : null,
+  deferred: Boolean(data.deferred),
+});
+
+export const fetchVerificationStrategy = async (): Promise<VerificationStrategySettings> => {
   const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/settings/verification-strategy`);
   const json = await response.json();
   if (!response.ok || json?.success === false) {
     throw new Error(json?.detail || json?.error?.message || "Fetch verification strategy failed");
   }
-  return mapVerificationStrategy(json?.data?.verification_strategy || json?.verification_strategy);
+  return mapVerificationStrategySettings((json?.data as Record<string, unknown>) || {});
 };
 
-export const updateVerificationStrategy = async (strategy: VerificationStrategy): Promise<VerificationStrategy> => {
+export const updateVerificationStrategy = async (strategy: VerificationStrategy): Promise<VerificationStrategySettings> => {
   const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/settings/verification-strategy`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -1795,7 +1810,7 @@ export const updateVerificationStrategy = async (strategy: VerificationStrategy)
   if (!response.ok || json?.success === false) {
     throw new Error(json?.detail || json?.error?.message || "Update verification strategy failed");
   }
-  return mapVerificationStrategy(json?.data?.verification_strategy || json?.verification_strategy);
+  return mapVerificationStrategySettings((json?.data as Record<string, unknown>) || {});
 };
 
 const mapSystemMaintenance = (data: Record<string, unknown>): SystemMaintenanceState => ({
@@ -1859,6 +1874,8 @@ export interface OcrModelConfig {
 export interface OcrModelSettings {
   active: Record<OcrModelKind, string>;
   models: Record<OcrModelKind, OcrModelConfig[]>;
+  pendingActive?: Record<OcrModelKind, string> | null;
+  deferred?: boolean;
 }
 
 const mapOcrModel = (item: Record<string, unknown>): OcrModelConfig => ({
@@ -1881,6 +1898,16 @@ const mapOcrModelSettings = (data: Record<string, unknown>): OcrModelSettings =>
       text_detection: asRecordArray(models.text_detection || models.textDetection).map(mapOcrModel),
       text_recognition: asRecordArray(models.text_recognition || models.textRecognition).map(mapOcrModel),
     },
+    pendingActive: (() => {
+      const pendingSettings = (data.pending_ocr_models || data.pendingOcrModels) as Record<string, unknown> | undefined;
+      const pendingActive = (pendingSettings?.active || {}) as Record<string, unknown>;
+      if (!pendingSettings?.active) return null;
+      return {
+        text_detection: String(pendingActive.text_detection || pendingActive.textDetection || ""),
+        text_recognition: String(pendingActive.text_recognition || pendingActive.textRecognition || ""),
+      };
+    })(),
+    deferred: Boolean(data.deferred),
   };
 };
 

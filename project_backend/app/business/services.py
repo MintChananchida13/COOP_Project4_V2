@@ -82,10 +82,12 @@ from app.core.json_utils import jsonb_dump, jsonb_load
 logger = logging.getLogger(__name__)
 SAVE_DEBUG_ARTIFACTS = os.getenv("SAVE_DEBUG_ARTIFACTS", "false").strip().lower() in {"1", "true", "yes", "on"}
 VERIFICATION_STRATEGY_SETTING_KEY = "verification_strategy"
+PENDING_VERIFICATION_STRATEGY_SETTING_KEY = "pending_verification_strategy"
 VERIFICATION_STRATEGY_STANDARD = "standard"
 VERIFICATION_STRATEGY_STRICT = "strict"
 VERIFICATION_STRATEGIES = {VERIFICATION_STRATEGY_STANDARD, VERIFICATION_STRATEGY_STRICT}
 OCR_MODEL_SETTINGS_KEY = "ocr_model_settings"
+PENDING_OCR_MODEL_SETTINGS_KEY = "pending_ocr_model_settings"
 SYSTEM_MAINTENANCE_SETTING_KEY = "system_maintenance"
 OCR_MODEL_KINDS = {"text_detection", "text_recognition"}
 _VERIFICATION_STRATEGY_CACHE_LOCK = threading.RLock()
@@ -335,6 +337,11 @@ class GlobalSettingsService:
             ).fetchone()
         return row["value"] if row else None
 
+    def _delete_setting(self, key: str) -> None:
+        with _connect() as conn:
+            conn.execute("DELETE FROM app_settings WHERE key = ?", (key,))
+            conn.commit()
+
     @staticmethod
     def _parse_maintenance_datetime(value: Any) -> Optional[datetime]:
         if not value:
@@ -399,7 +406,7 @@ class GlobalSettingsService:
             "expectedEndAt": self._maintenance_datetime_to_iso(end),
         }
 
-    def get_system_maintenance(self) -> Dict[str, Any]:
+    def _system_maintenance_from_storage(self) -> Dict[str, Any]:
         raw_value = None
         try:
             raw_value = self._load_setting_value(SYSTEM_MAINTENANCE_SETTING_KEY)
@@ -411,8 +418,72 @@ class GlobalSettingsService:
             raw = {}
         return self._maintenance_state(self._normalize_maintenance_setting(raw))
 
+    def _pending_settings_due(self, maintenance: Dict[str, Any]) -> bool:
+        if not maintenance.get("enforcementEnabled"):
+            return False
+        start = self._parse_maintenance_datetime(maintenance.get("scheduledStartAt"))
+        if start is None:
+            return False
+        return datetime.now(timezone.utc) >= start
+
+    def _apply_pending_settings_if_due(self, maintenance: Optional[Dict[str, Any]] = None) -> bool:
+        state = maintenance or self._system_maintenance_from_storage()
+        if not self._pending_settings_due(state):
+            return False
+
+        pending_strategy_raw = self._load_setting_value(PENDING_VERIFICATION_STRATEGY_SETTING_KEY)
+        pending_ocr_raw = self._load_setting_value(PENDING_OCR_MODEL_SETTINGS_KEY)
+        if pending_strategy_raw is None and pending_ocr_raw is None:
+            return False
+
+        try:
+            strategy: Optional[str] = None
+            pending_ocr: Optional[Dict[str, Any]] = None
+            if pending_strategy_raw is not None:
+                strategy = normalize_verification_strategy(pending_strategy_raw)
+            if pending_ocr_raw is not None:
+                pending_ocr = normalize_ocr_model_settings(jsonb_load(pending_ocr_raw, None))
+            with _connect() as conn:
+                if strategy is not None:
+                    conn.execute(
+                        """
+                        INSERT INTO app_settings (key, value, updated_at)
+                        VALUES (?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (VERIFICATION_STRATEGY_SETTING_KEY, strategy),
+                    )
+                if pending_ocr is not None:
+                    conn.execute(
+                        """
+                        INSERT INTO app_settings (key, value, updated_at)
+                        VALUES (?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (OCR_MODEL_SETTINGS_KEY, jsonb_dump(pending_ocr)),
+                    )
+                if strategy is not None:
+                    conn.execute("DELETE FROM app_settings WHERE key = ?", (PENDING_VERIFICATION_STRATEGY_SETTING_KEY,))
+                if pending_ocr is not None:
+                    conn.execute("DELETE FROM app_settings WHERE key = ?", (PENDING_OCR_MODEL_SETTINGS_KEY,))
+                conn.commit()
+            if strategy is not None:
+                _set_cached_verification_strategy(strategy)
+        except Exception:
+            logger.exception("Pending settings apply failed; pending values were kept for retry.")
+            raise
+        return True
+
+    def get_system_maintenance(self) -> Dict[str, Any]:
+        maintenance = self._system_maintenance_from_storage()
+        try:
+            self._apply_pending_settings_if_due(maintenance)
+        except Exception:
+            pass
+        return maintenance
+
     def update_system_maintenance(self, payload: Any, updated_by: Optional[str] = None) -> Dict[str, Any]:
-        current = self.get_system_maintenance()
+        current = self._system_maintenance_from_storage()
         next_setting = {
             "enforcementEnabled": bool(current.get("enforcementEnabled")),
             "scheduledStartAt": current.get("scheduledStartAt"),
@@ -443,7 +514,16 @@ class GlobalSettingsService:
         next_setting["updatedAt"] = self._maintenance_datetime_to_iso(datetime.now(timezone.utc))
         next_setting["updatedBy"] = str(updated_by or "admin").strip() or "admin"
         self._save_setting(SYSTEM_MAINTENANCE_SETTING_KEY, jsonb_dump(next_setting))
-        return self._maintenance_state(self._normalize_maintenance_setting(next_setting))
+        maintenance = self._maintenance_state(self._normalize_maintenance_setting(next_setting))
+        try:
+            self._apply_pending_settings_if_due(maintenance)
+        except Exception:
+            pass
+        return maintenance
+
+    def _should_defer_admin_setting_updates(self) -> bool:
+        maintenance = self._system_maintenance_from_storage()
+        return bool(maintenance.get("enforcementEnabled"))
 
     def ensure_processing_available(self) -> None:
         maintenance = self.get_system_maintenance()
@@ -465,7 +545,16 @@ class GlobalSettingsService:
 
     def get_verification_strategy(self) -> Dict[str, Any]:
         result, _ = self.get_verification_strategy_with_timing()
+        pending = self._pending_verification_strategy()
+        if pending is not None:
+            result["pending_verification_strategy"] = pending
         return result
+
+    def _pending_verification_strategy(self) -> Optional[str]:
+        raw_value = self._load_setting_value(PENDING_VERIFICATION_STRATEGY_SETTING_KEY)
+        if raw_value is None:
+            return None
+        return normalize_verification_strategy(raw_value)
 
     def get_verification_strategy_with_timing(self) -> tuple[Dict[str, Any], Dict[str, Any]]:
         timing: Dict[str, Any] = {
@@ -537,6 +626,19 @@ class GlobalSettingsService:
         strategy = normalize_verification_strategy(row["value"] if row else None)
         return {"verification_strategy": strategy}
 
+    def _active_verification_strategy_no_apply(self) -> str:
+        cached_strategy = _get_cached_verification_strategy()
+        if cached_strategy is not None:
+            return cached_strategy
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = ?",
+                (VERIFICATION_STRATEGY_SETTING_KEY,),
+            ).fetchone()
+        strategy = normalize_verification_strategy(row["value"] if row else None)
+        _set_cached_verification_strategy(strategy)
+        return strategy
+
     def load_verification_strategy_cache(self) -> Dict[str, Any]:
         result, _ = self.get_verification_strategy_with_timing()
         return result
@@ -545,21 +647,38 @@ class GlobalSettingsService:
         strategy = normalize_verification_strategy(value)
         if strategy != str(value or "").strip().lower():
             raise HTTPException(status_code=400, detail="verification_strategy must be standard or strict")
+        if self._should_defer_admin_setting_updates():
+            self._save_setting(PENDING_VERIFICATION_STRATEGY_SETTING_KEY, strategy)
+            current = {"verification_strategy": self._active_verification_strategy_no_apply()}
+            current["pending_verification_strategy"] = strategy
+            current["deferred"] = True
+            return current
         self._save_setting(VERIFICATION_STRATEGY_SETTING_KEY, strategy)
+        self._delete_setting(PENDING_VERIFICATION_STRATEGY_SETTING_KEY)
         _set_cached_verification_strategy(strategy)
-        return {"verification_strategy": strategy}
+        return {"verification_strategy": strategy, "pending_verification_strategy": None, "deferred": False}
 
     def get_ocr_model_settings(self) -> Dict[str, Any]:
+        try:
+            self._apply_pending_settings_if_due()
+        except Exception:
+            pass
+        settings = self._active_ocr_model_settings_no_apply()
+        pending_raw = self._load_setting_value(PENDING_OCR_MODEL_SETTINGS_KEY)
+        pending_settings = normalize_ocr_model_settings(jsonb_load(pending_raw, None)) if pending_raw is not None else None
+        return {"ocr_models": settings, "pending_ocr_models": pending_settings}
+
+    def _active_ocr_model_settings_no_apply(self) -> Dict[str, Any]:
         with _connect() as conn:
             row = conn.execute(
                 "SELECT value FROM app_settings WHERE key = ?",
                 (OCR_MODEL_SETTINGS_KEY,),
             ).fetchone()
-        settings = normalize_ocr_model_settings(row["value"] if row else None)
-        return {"ocr_models": settings}
+        return normalize_ocr_model_settings(row["value"] if row else None)
 
     def update_ocr_active_models(self, text_detection_model_id: str, text_recognition_model_id: str) -> Dict[str, Any]:
-        settings = self.get_ocr_model_settings()["ocr_models"]
+        defer_update = self._should_defer_admin_setting_updates()
+        settings = self._active_ocr_model_settings_no_apply() if defer_update else self.get_ocr_model_settings()["ocr_models"]
         requested = {
             "text_detection": str(text_detection_model_id or "").strip(),
             "text_recognition": str(text_recognition_model_id or "").strip(),
@@ -569,8 +688,13 @@ class GlobalSettingsService:
             if model_id not in ids:
                 raise HTTPException(status_code=400, detail=f"Unknown {kind} model id")
             settings["active"][kind] = model_id
+        if defer_update:
+            self._save_setting(PENDING_OCR_MODEL_SETTINGS_KEY, jsonb_dump(settings))
+            active_settings = self._active_ocr_model_settings_no_apply()
+            return {"ocr_models": active_settings, "pending_ocr_models": settings, "deferred": True}
         self._save_setting(OCR_MODEL_SETTINGS_KEY, jsonb_dump(settings))
-        return {"ocr_models": settings}
+        self._delete_setting(PENDING_OCR_MODEL_SETTINGS_KEY)
+        return {"ocr_models": settings, "pending_ocr_models": None, "deferred": False}
 
     def upsert_ocr_model(self, kind: str, payload: Any, model_id: Optional[str] = None) -> Dict[str, Any]:
         normalized_kind = _normalize_model_kind(kind)
