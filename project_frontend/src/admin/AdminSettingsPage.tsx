@@ -124,6 +124,14 @@ const getLocalDateTimePartsFromIso = (value: string | null | undefined) => {
   return getLocalDateTimeParts(date);
 };
 
+const isMaintenanceScheduleUnexpired = (scheduledStartAt?: string | null, expectedEndAt?: string | null) => {
+  if (!scheduledStartAt || !expectedEndAt) return false;
+  const start = new Date(scheduledStartAt);
+  const end = new Date(expectedEndAt);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return false;
+  return start.getTime() < end.getTime() && end.getTime() > Date.now();
+};
+
 const parseLocalDate = (value: string) => {
   const [year, month, day] = value.split("-").map(Number);
   if (!year || !month || !day) return null;
@@ -321,16 +329,18 @@ export default function AdminSettingsPage() {
 
   const applyMaintenanceState = (state: SystemMaintenanceState) => {
     setMaintenanceState(state);
-    if (state.scheduledStartAt && state.expectedEndAt) {
+    if (isMaintenanceScheduleUnexpired(state.scheduledStartAt, state.expectedEndAt)) {
+      const scheduledStartAt = state.scheduledStartAt || "";
+      const expectedEndAt = state.expectedEndAt || "";
       setScheduledMaintenance({
         status: "scheduled",
-        scheduledStartAt: state.scheduledStartAt,
-        expectedEndAt: state.expectedEndAt,
+        scheduledStartAt,
+        expectedEndAt,
         message: state.message,
       });
       setIsMaintenanceEditing(false);
-      const startParts = getLocalDateTimePartsFromIso(state.scheduledStartAt);
-      const endParts = getLocalDateTimePartsFromIso(state.expectedEndAt);
+      const startParts = getLocalDateTimePartsFromIso(scheduledStartAt);
+      const endParts = getLocalDateTimePartsFromIso(expectedEndAt);
       const matchedPreset = maintenanceMessageOptions.includes(state.message)
         ? state.message
         : customMaintenanceMessagePreset;
@@ -394,6 +404,15 @@ export default function AdminSettingsPage() {
     }, 30000);
     return () => window.clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (!scheduledMaintenance) return;
+    if (isMaintenanceScheduleUnexpired(scheduledMaintenance.scheduledStartAt, scheduledMaintenance.expectedEndAt)) return;
+    setScheduledMaintenance(null);
+    setMaintenanceDraft(emptyMaintenanceDraft);
+    setIsExpectedEndManual(false);
+    setIsMaintenanceEditing(true);
+  }, [maintenanceNow, scheduledMaintenance]);
 
   const hasStrategyChanges = draftStrategy !== savedStrategy;
   const hasModelChanges =

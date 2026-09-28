@@ -91,6 +91,13 @@ const formatMaintenanceDateTime = (value?: string | null) => {
   }).format(date);
 };
 
+const isMaintenanceScheduleRelevant = (maintenance?: Partial<SystemMaintenanceState> | null) => {
+  if (!maintenance?.scheduledStartAt || !maintenance?.expectedEndAt) return false;
+  const expectedEnd = new Date(maintenance.expectedEndAt);
+  if (Number.isNaN(expectedEnd.getTime())) return false;
+  return expectedEnd.getTime() > Date.now();
+};
+
 interface TemplateDetectionNotice {
   title: string;
   message: string;
@@ -1690,6 +1697,10 @@ function HomeWorkspace() {
 
   useEffect(() => {
     void refreshMaintenanceState();
+    const interval = window.setInterval(() => {
+      void refreshMaintenanceState();
+    }, 60000);
+    return () => window.clearInterval(interval);
   }, []);
 
   const handleSystemMaintenanceError = async (error: unknown) => {
@@ -2105,6 +2116,13 @@ function HomeWorkspace() {
     setTemplateDetectionSnapshot(null);
     setTemplateDetectionNotice(null);
     setCurrentStep("upload");
+  };
+
+  const handleMaintenanceStatusCheck = async () => {
+    const state = await refreshMaintenanceState();
+    if (state && !state.active) {
+      handleClearAndUploadNew();
+    }
   };
 
   const handleBatchConfirm = async (finalProcessedImages: string[]) => {
@@ -3841,7 +3859,7 @@ function HomeWorkspace() {
         </div>
         <button
           type="button"
-          onClick={() => void refreshMaintenanceState()}
+          onClick={() => void handleMaintenanceStatusCheck()}
           className="inline-flex h-10 shrink-0 items-center justify-center rounded-xl border border-amber-300 bg-white px-4 text-xs font-black text-amber-800 transition-colors hover:bg-amber-100"
         >
           ตรวจสอบสถานะอีกครั้ง
@@ -3851,9 +3869,7 @@ function HomeWorkspace() {
   );
 
   const renderNotificationMenu = () => {
-    const hasMaintenanceNotification =
-      Boolean(maintenanceState?.enforcementEnabled) &&
-      (maintenanceState?.status === "scheduled" || maintenanceState?.status === "active");
+    const hasMaintenanceNotification = Boolean(maintenanceState?.active || isMaintenanceScheduleRelevant(maintenanceState));
     return (
       <div className="absolute right-0 top-full z-50 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white text-left shadow-xl">
         <div className="border-b border-slate-100 px-4 py-3">
@@ -3867,10 +3883,10 @@ function HomeWorkspace() {
                 <AlertTriangle size={16} className={maintenanceState?.active ? "mt-0.5 text-amber-600" : "mt-0.5 text-blue-600"} />
                 <div className="min-w-0">
                   <p className={`text-xs font-black ${maintenanceState?.active ? "text-amber-950" : "text-blue-950"}`}>
-                    {maintenanceState?.active ? "ระบบอยู่ระหว่างปิดปรับปรุง" : "มีกำหนดปิดปรับปรุงระบบ"}
+                    {maintenanceState?.active ? "ระบบอยู่ระหว่างปิดปรับปรุง" : "เตรียมปิดปรับปรุงระบบ"}
                   </p>
                   <p className={`mt-1 text-xs font-semibold leading-5 ${maintenanceState?.active ? "text-amber-800" : "text-blue-800"}`}>
-                    {maintenanceState?.message || "ระบบจะปิดการประมวลผลเอกสารตามช่วงเวลาที่กำหนด"}
+                    {maintenanceState?.message || "ระบบมีกำหนดอัปเดต กรุณาเตรียมบันทึกงานก่อนถึงเวลาเริ่ม"}
                   </p>
                   {maintenanceState?.scheduledStartAt && (
                     <p className="mt-2 text-[11px] font-bold text-slate-600">
@@ -3911,9 +3927,7 @@ function HomeWorkspace() {
   const exportFieldCount =
     exportPreviewPayload?.pages.reduce((sum, page) => sum + Object.keys(page.fields).length, 0) ?? 0;
   const isMaintenanceActive = Boolean(maintenanceState?.active);
-  const hasMaintenanceNotification =
-    Boolean(maintenanceState?.enforcementEnabled) &&
-    (maintenanceState?.status === "scheduled" || maintenanceState?.status === "active");
+  const hasMaintenanceNotification = Boolean(maintenanceState?.active || isMaintenanceScheduleRelevant(maintenanceState));
 
   return (
     <main className="min-h-screen bg-slate-50 select-none">
