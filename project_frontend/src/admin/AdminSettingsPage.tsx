@@ -136,11 +136,7 @@ const formatDatePickerValue = (value: string) => {
   return year && month && day ? `${day} / ${month} / ${year}` : "DD / MM / YYYY";
 };
 
-const timeOptions = Array.from({ length: 96 }, (_, index) => {
-  const hour = Math.floor(index / 4);
-  const minute = (index % 4) * 15;
-  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
-});
+const normalizeTimeInput = (value: string) => value.replace(/[^\d:]/g, "").slice(0, 5);
 
 const formatMaintenanceDateTime = (value: string) => {
   const date = new Date(value);
@@ -274,54 +270,25 @@ function MaintenanceTimePicker({
   minMode?: "inclusive" | "exclusive";
   onChange: (value: string) => void;
 }) {
-  const [isOpen, setIsOpen] = useState(false);
   return (
     <div className="relative">
       <div className="relative">
         <input
-          type="text"
+          type="time"
           inputMode="numeric"
           placeholder="HH:mm"
+          step={60}
+          min={minTime}
           value={value}
-          onFocus={() => setIsOpen(true)}
-          onChange={(event) => onChange(event.target.value.replace(/[^\d:]/g, "").slice(0, 5))}
+          onChange={(event) => onChange(normalizeTimeInput(event.target.value))}
           className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 pr-9 text-sm font-semibold text-slate-800 outline-none transition-colors placeholder:text-slate-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
         />
-        <button
-          type="button"
-          onClick={() => setIsOpen((current) => !current)}
-          className="absolute inset-y-0 right-0 inline-flex w-9 items-center justify-center text-slate-400 hover:text-slate-600"
-          aria-label="เลือกเวลา"
-        >
+        <div className="pointer-events-none absolute inset-y-0 right-0 inline-flex w-9 items-center justify-center text-slate-400">
           <Clock size={16} />
-        </button>
-      </div>
-      {isOpen && (
-        <div className="absolute left-0 top-full z-50 mt-2 max-h-56 w-40 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl">
-          {timeOptions.map((option) => {
-            const disabled = Boolean(minTime && (minMode === "exclusive" ? option <= minTime : option < minTime));
-            return (
-              <button
-                key={option}
-                type="button"
-                disabled={disabled}
-                onClick={() => {
-                  onChange(option);
-                  setIsOpen(false);
-                }}
-                className={`block h-9 w-full rounded-lg px-3 text-left text-xs font-black transition-colors ${
-                  option === value
-                    ? "bg-indigo-600 text-white"
-                    : disabled
-                      ? "cursor-not-allowed text-slate-300"
-                      : "text-slate-700 hover:bg-indigo-50 hover:text-indigo-700"
-                }`}
-              >
-                {option}
-              </button>
-            );
-          })}
         </div>
+      </div>
+      {minTime && minMode === "exclusive" && value && value <= minTime && (
+        <p className="mt-1 text-[10px] font-bold text-amber-600">Must be after {minTime}</p>
       )}
     </div>
   );

@@ -1648,6 +1648,7 @@ function HomeWorkspace() {
   const [exportContent, setExportContent] = useState<ExportContentOptions>({ text: true, tables: true, images: true });
   const [exportOptions, setExportOptions] = useState<ExportDisplayOptions>({ showFieldNames: true, showDocumentTitle: true });
   const [openTableExportDropdown, setOpenTableExportDropdown] = useState<string | null>(null);
+  const [isNotificationOpen, setIsNotificationOpen] = useState(false);
   const [excelExportMode, setExcelExportMode] = useState<"fields" | "tables" | "fields_tables">("fields_tables");
   const [textPreviewCopyStatus, setTextPreviewCopyStatus] = useState<string>("");
   const [matchedTemplate, setMatchedTemplate] = useState<{
@@ -1662,6 +1663,7 @@ function HomeWorkspace() {
   const activeProcessingRunIdRef = useRef<string>("");
   const ocrProcessingTimeMsRef = useRef<number | null>(null);
   const tableExportDropdownRef = useRef<HTMLDivElement | null>(null);
+  const notificationDropdownRef = useRef<HTMLDivElement | null>(null);
   const ocrPageReferenceDimensionsRef = useRef<Record<number, RoiReferenceDimensions>>({});
 
   useEffect(() => {
@@ -2017,6 +2019,23 @@ function HomeWorkspace() {
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [openTableExportDropdown]);
+
+  useEffect(() => {
+    if (!isNotificationOpen) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (notificationDropdownRef.current?.contains(event.target as Node)) return;
+      setIsNotificationOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsNotificationOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [isNotificationOpen]);
 
   const handleUploadSuccess = (urls: string[], sourceFileName?: string, sourceFileType?: "pdf" | "image", sourceFile?: File) => {
     activeProcessingRunIdRef.current = "";
@@ -3831,10 +3850,70 @@ function HomeWorkspace() {
     </section>
   );
 
+  const renderNotificationMenu = () => {
+    const hasMaintenanceNotification =
+      Boolean(maintenanceState?.enforcementEnabled) &&
+      (maintenanceState?.status === "scheduled" || maintenanceState?.status === "active");
+    return (
+      <div className="absolute right-0 top-full z-50 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white text-left shadow-xl">
+        <div className="border-b border-slate-100 px-4 py-3">
+          <p className="text-xs font-black text-slate-900">การแจ้งเตือน</p>
+          <p className="mt-0.5 text-[11px] font-semibold text-slate-500">สถานะระบบจาก backend ล่าสุด</p>
+        </div>
+        <div className="p-3">
+          {hasMaintenanceNotification ? (
+            <div className={`rounded-xl border p-3 ${maintenanceState?.active ? "border-amber-200 bg-amber-50" : "border-blue-100 bg-blue-50"}`}>
+              <div className="flex items-start gap-2">
+                <AlertTriangle size={16} className={maintenanceState?.active ? "mt-0.5 text-amber-600" : "mt-0.5 text-blue-600"} />
+                <div className="min-w-0">
+                  <p className={`text-xs font-black ${maintenanceState?.active ? "text-amber-950" : "text-blue-950"}`}>
+                    {maintenanceState?.active ? "ระบบอยู่ระหว่างปิดปรับปรุง" : "มีกำหนดปิดปรับปรุงระบบ"}
+                  </p>
+                  <p className={`mt-1 text-xs font-semibold leading-5 ${maintenanceState?.active ? "text-amber-800" : "text-blue-800"}`}>
+                    {maintenanceState?.message || "ระบบจะปิดการประมวลผลเอกสารตามช่วงเวลาที่กำหนด"}
+                  </p>
+                  {maintenanceState?.scheduledStartAt && (
+                    <p className="mt-2 text-[11px] font-bold text-slate-600">
+                      เริ่ม: {formatMaintenanceDateTime(maintenanceState.scheduledStartAt)}
+                    </p>
+                  )}
+                  {maintenanceState?.expectedEndAt && (
+                    <p className="mt-1 text-[11px] font-bold text-slate-600">
+                      คาดว่าจะเปิด: {formatMaintenanceDateTime(maintenanceState.expectedEndAt)}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-4 text-center">
+              <p className="text-xs font-black text-slate-700">ไม่มีแจ้งเตือนสำคัญ</p>
+              <p className="mt-1 text-[11px] font-semibold text-slate-500">
+                {maintenanceStatus === "error" ? "โหลดสถานะระบบไม่สำเร็จ" : "ระบบพร้อมให้บริการตามปกติ"}
+              </p>
+            </div>
+          )}
+        </div>
+        <div className="flex justify-end border-t border-slate-100 bg-slate-50 px-3 py-2">
+          <button
+            type="button"
+            onClick={() => void refreshMaintenanceState()}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-black text-slate-700 hover:bg-slate-100"
+          >
+            รีเฟรชสถานะ
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   const exportPreviewPayload = exportJson || exportText ? buildExportPayload() : null;
   const exportFieldCount =
     exportPreviewPayload?.pages.reduce((sum, page) => sum + Object.keys(page.fields).length, 0) ?? 0;
   const isMaintenanceActive = Boolean(maintenanceState?.active);
+  const hasMaintenanceNotification =
+    Boolean(maintenanceState?.enforcementEnabled) &&
+    (maintenanceState?.status === "scheduled" || maintenanceState?.status === "active");
 
   return (
     <main className="min-h-screen bg-slate-50 select-none">
@@ -3844,14 +3923,26 @@ function HomeWorkspace() {
         description="อัปโหลดเอกสาร ตรวจขอบเขต ค้นหา Template เลือก Field ที่ต้องการอ่าน และตรวจสอบผล OCR ก่อนนำออกใช้งาน"
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              aria-label="การแจ้งเตือน"
-              title="การแจ้งเตือน"
-              className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50 hover:text-blue-700"
-            >
-              <Bell size={16} strokeWidth={2.2} />
-            </button>
+            <div ref={notificationDropdownRef} className="relative">
+              <button
+                type="button"
+                aria-label="การแจ้งเตือน"
+                title="การแจ้งเตือน"
+                aria-expanded={isNotificationOpen}
+                onClick={() => setIsNotificationOpen((current) => !current)}
+                className={`relative inline-flex h-10 w-10 items-center justify-center rounded-xl border transition-colors ${
+                  hasMaintenanceNotification
+                    ? "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100"
+                    : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-blue-700"
+                }`}
+              >
+                <Bell size={16} strokeWidth={2.2} />
+                {hasMaintenanceNotification && (
+                  <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-amber-500 ring-2 ring-white" />
+                )}
+              </button>
+              {isNotificationOpen && renderNotificationMenu()}
+            </div>
             {authSession && (
               <div className="inline-flex h-10 items-center rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-600">
                 {authSession.email} / user
