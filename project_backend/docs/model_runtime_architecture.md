@@ -2,54 +2,48 @@
 
 ## Ownership
 
-The local backend owns system and process logic:
+The backend owns system and process logic:
 
-- Template detection
-- Fix and flexible ROI handling
+- Template detection and final candidate decisions
+- Fixed and flexible ROI handling
 - Crop orchestration
-- Auto ROI filtering and expansion
+- Auto ROI post-processing
 - Reading order
-- Text merge, normalize, and cleanup
-- Table quality gates
-- Semi-table processing
-- Summary and key-value processing
-- Result merge and post-process
-- Database access
+- Text merge, normalization, and cleanup
+- Table quality gates and fallback shaping
+- Image verification decision logic after raw SigLIP output
+- Database access and persistent state
+- System Maintenance enforcement
 
-The Gateway routes backend requests to leaf model services. Leaf model services
-own model loading and raw inference only.
+The Gateway routes backend requests to leaf model services. Leaf services own model loading and raw inference only.
 
 ## Environment Variables
-
-Set the Gateway URL and API key:
 
 ```powershell
 $env:GATEWAY_URL="http://127.0.0.1:8080"
 $env:MODEL_GATEWAY_API_KEY="replace-with-model-gateway-api-key"
 ```
 
-Local server, staging, and future permanent URLs must be swapped by changing
-this environment variable only. The backend calls the Gateway endpoints below;
-the Gateway forwards to the leaf services. Do not hard-code leaf service URLs in
-process or service code.
-
-Every backend request to the Gateway includes:
+Every backend request to Gateway includes:
 
 ```text
 Authorization: Bearer <MODEL_GATEWAY_API_KEY>
 ```
 
-## Runtime API Contract
+Do not hard-code leaf service URLs in backend process or service code.
 
-The Gateway should expose:
+## Gateway Endpoints
+
+The backend expects Gateway to expose:
 
 ```text
-GET /health
-POST /api/v1/layout-predictions
+GET  /health
+POST /api/v1/document-layouts
 POST /api/v1/text-detections
 POST /api/v1/text-recognitions
+POST /api/v1/text-recognition-batches
 POST /api/v1/table-model-results
-POST /api/v1/image-classifications
+POST /api/v1/image-verifications
 ```
 
 Standard response:
@@ -62,174 +56,45 @@ Standard response:
 }
 ```
 
-The backend also accepts legacy `data` in place of `result` while older demo
-runtimes are being migrated.
+The backend may tolerate older wrapper shapes in some adapters, but new runtimes should use `result`.
 
-## Runtime Result Expectations
+## Layout
 
-- Layout runtime: raw PP-DocLayoutV3 layout detections.
-- Text detection runtime: raw OCR detection polygons or boxes.
-- Text recognition runtime: raw recognition text/score output for one image, or
-  `{ "results": [...] }` for batch input.
-- Table runtime: raw Table Recognition / SLANeXt output under `raw_output` or
-  `output`; backend runs table post-processing and quality gates.
-- Image verification runtime: raw SigLIP logits matching the category prompt
-  order sent by the backend.
+Endpoint:
 
-## Exact Result Schemas
+```text
+POST /api/v1/document-layouts
+```
 
-### Layout
-
-`GATEWAY_URL /api/v1/layout-predictions` forwards to PP-DocLayoutV3 on the
-Layout leaf service. It returns raw layout items. The backend accepts nested
-objects/lists, but each detected item must contain one box and one label.
+Request:
 
 ```json
 {
-  "success": true,
-  "model": "PP-DocLayoutV3",
-  "result": {
-    "items": [
-      {
-        "bbox": [20, 10, 120, 60],
-        "label": "table",
-        "score": 0.95
-      }
-    ]
-  }
+  "image": "data:image/png;base64,...",
+  "layout_only": true
 }
 ```
 
-Accepted box keys: `bbox`, `box`, `layout_bbox`, `coordinate`, `coordinates`,
-`dt_polys`, `poly`, `points`, or `{ "x", "y", "width", "height" }`.
+`layout_only` defaults to `false`.
 
-Accepted label keys: `type`, `label`, `category`, `layout_type`, `block_type`,
-or `region_type`. Labels are normalized in backend to `text`, `table`, or
-`image`.
+- `layout_only=true`: run PP-DocLayoutV3 only. Do not call Text Detection in the Layout pipeline.
+- `layout_only=false`: preserve full document-layout pipeline behavior.
 
-Accepted confidence keys: `score`, `confidence`, or `prob`.
+Layout Signature generation calls with `layout_only=true`. Normal `analyze_layout()` behavior must remain unchanged unless explicitly requested.
 
-### Text Detection
+Expected result contains layout items with labels and boxes. Accepted box keys include `bbox`, `box`, `layout_bbox`, `coordinate`, `coordinates`, `dt_polys`, `poly`, `points`, or `{ "x", "y", "width", "height" }`.
 
-`GATEWAY_URL /api/v1/text-detections` forwards to PP-OCRv5 on the Text Detection
-leaf service. It returns raw text detection polygons or boxes. Do not group
-paragraphs or apply reading order in the runtime.
+Backend normalizes labels to `text`, `table`, or `image`.
 
-```json
-{
-  "success": true,
-  "model": "PP-OCRv5_server_det",
-  "result": {
-    "items": [
-      {
-        "dt_polys": [[10, 10], [80, 10], [80, 24], [10, 24]],
-        "score": 0.93,
-        "label": "text"
-      }
-    ]
-  }
-}
+## Text Detection
+
+Endpoint:
+
+```text
+POST /api/v1/text-detections
 ```
 
-The same accepted box and confidence keys as Layout are supported. Backend
-converts polygons to boxes, filters noisy fragments, and computes ROI ratios.
-
-### Text Recognition
-
-`GATEWAY_URL /api/v1/text-recognitions` forwards to the Thai Recognition leaf
-service. It supports single and batch input.
-
-Single response:
-
-```json
-{
-  "success": true,
-  "model": "th_PP-OCRv5_mobile_rec",
-  "result": {
-    "rec_text": "ABC123",
-    "rec_score": 0.98
-  }
-}
-```
-
-Batch response:
-
-```json
-{
-  "success": true,
-  "model": "th_PP-OCRv5_mobile_rec",
-  "result": {
-    "results": [
-      { "rec_text": "A", "rec_score": 0.91 },
-      { "rec_text": "B", "rec_score": 0.92 }
-    ]
-  }
-}
-```
-
-Accepted text keys: `rec_text`, `text`, or `label`.
-
-Accepted confidence keys: `rec_score`, `confidence`, `score`, or `prob`.
-
-Backend keeps crop ownership, reading order, merge, normalize, and cleanup.
-
-### Table Recognition
-
-`GATEWAY_URL /api/v1/table-model-results` forwards to TableRecognitionPipelineV2
-on the Table leaf service. It must only run Table Recognition / SLANeXt
-inference and JSON serialization.
-
-```json
-{
-  "success": true,
-  "model": "SLANeXt_wired/SLANeXt_wireless",
-  "result": {
-    "raw_output": [
-      {
-        "html": "<table><tr><td>A</td><td>B</td></tr></table>",
-        "structure_model": "SLANeXt_wired",
-        "score": 0.88
-      }
-    ]
-  }
-}
-```
-
-`raw_output` may be any JSON-serializable dict/list shape produced from the
-model. The backend currently extracts:
-
-- HTML from `html`, `pred_html`, `table_html`, or `structure_html`
-- rows from common row/table fields
-- structured cells from common cell/table fields
-- raw debug fields such as `table_type`, `model_name`, `structure_model`,
-  `score`, and `confidence`
-
-Runtime must not apply quality gates, semi-table reconstruction, structure
-recovery, OCR assignment, or final table post-processing.
-
-### Image Verification / SigLIP
-
-`GATEWAY_URL /api/v1/image-classifications` forwards to SigLIP on the Image
-Verification leaf service. It receives categories in the exact prompt order that
-backend expects. The runtime must return logits in the same order.
-
-```json
-{
-  "success": true,
-  "model": "google/siglip-so400m-patch14-384",
-  "result": {
-    "logits": [2.0, 0.0, -1.0],
-    "device": "cuda:0"
-  }
-}
-```
-
-The backend owns thresholding, ranking, UI percentages, `passed`, status, and
-failure reason.
-
-## Request Shapes
-
-Layout, text detection, text recognition, table:
+Request:
 
 ```json
 {
@@ -237,7 +102,28 @@ Layout, text detection, text recognition, table:
 }
 ```
 
-Batch text recognition:
+Runtime returns raw detection polygons or boxes. Backend owns filtering, conversion to ROI geometry, crop planning, and reading order.
+
+Text Detection is still used for extraction inside ROI crops and OCR flows. It should not be reintroduced as a redundant full-page adaptive projection pass in User Detection.
+
+## Text Recognition
+
+Endpoints:
+
+```text
+POST /api/v1/text-recognitions
+POST /api/v1/text-recognition-batches
+```
+
+Single request:
+
+```json
+{
+  "image": "data:image/png;base64,..."
+}
+```
+
+Batch request:
 
 ```json
 {
@@ -245,17 +131,64 @@ Batch text recognition:
 }
 ```
 
-Image verification:
+Backend owns crop ownership, segment merge, normalization, cleanup, and final text result shaping.
+
+## Table Recognition
+
+Endpoint:
+
+```text
+POST /api/v1/table-model-results
+```
+
+Runtime must only run table model inference and serialize raw output. Backend owns:
+
+- table quality gates
+- semi-table reconstruction
+- OCR assignment
+- structure recovery
+- final table post-processing
+- export shaping
+
+## Image Verification / SigLIP
+
+Endpoint:
+
+```text
+POST /api/v1/image-verifications
+```
+
+Request:
 
 ```json
 {
   "image": "data:image/png;base64,...",
   "categories": [
     {
-      "value": "qr_code",
-      "label": "QR Code",
-      "prompt": "..."
+      "value": "signature",
+      "label": "Signature",
+      "prompt": "This is a photo of a handwritten signature.",
+      "match_threshold": 0.45,
+      "margin_threshold": 0.04,
+      "evidence_temperature": 1.0,
+      "enabled": true
     }
   ]
 }
 ```
+
+Runtime must return raw logits or equivalent scores in the same order as categories. Backend owns ranking, thresholding, percentages, `passed`, status, and failure reason.
+
+## Performance Notes
+
+Keep model/runtime instrumentation metadata-only. Do not log image payloads or large raw model artifacts.
+
+Known performance-sensitive paths:
+
+- Layout response size and serialization
+- Text Detection latency for crop OCR
+- Template retrieval hot path
+- Verification field/anchor loading
+- Alignment image loading and signature comparison
+
+Published Template Cache and request-scoped caches are backend concerns, not model runtime concerns.
