@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, ChevronDown, ChevronRight, FileImage, Folder, Loader2, Pencil, Plus, Search, UploadCloud, X } from "lucide-react";
 import { Template, TemplateStatus } from "../types/ocr";
@@ -8,6 +8,7 @@ import {
   addTemplateRequestImage,
   createTemplateRequest,
   deleteTemplateApi,
+  fetchAdminSystemMaintenance,
   fetchTemplates,
   updateTemplateApi,
   updateTemplateStatus,
@@ -157,31 +158,77 @@ export default function AdminTemplatesPage() {
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
   const [isCreatingRequest, setIsCreatingRequest] = useState(false);
   const [createRequestError, setCreateRequestError] = useState("");
+  const handledPendingRefreshEndRef = useRef<string | null>(null);
+
+  const loadTemplates = useCallback(async (options?: { silent?: boolean }) => {
+    if (!options?.silent) {
+      setLoadStatus("loading");
+    }
+    try {
+      const persistedTemplates = await fetchTemplates();
+      setTemplates(persistedTemplates);
+      setLoadStatus("loaded");
+    } catch (error) {
+      console.warn("Templates load failed.", error);
+      if (!options?.silent) {
+        setTemplates([]);
+        setLoadStatus("error");
+      }
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
 
-    const loadTemplates = async () => {
-      setLoadStatus("loading");
-      try {
-        const persistedTemplates = await fetchTemplates();
-        if (cancelled) return;
-        setTemplates(persistedTemplates);
-        setLoadStatus("loaded");
-      } catch (error) {
-        console.warn("Templates load failed.", error);
-        if (cancelled) return;
-        setTemplates([]);
-        setLoadStatus("error");
-      }
+    const loadInitialTemplates = async () => {
+      if (cancelled) return;
+      await loadTemplates();
     };
 
-    loadTemplates();
+    void loadInitialTemplates();
 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadTemplates]);
+
+  const hasPendingTemplateChanges = useMemo(
+    () => templates.some((template) => Boolean(template.pendingStatus || template.pendingUpdate)),
+    [templates]
+  );
+
+  useEffect(() => {
+    if (!hasPendingTemplateChanges) return;
+    let cancelled = false;
+    let timeoutId: number | null = null;
+
+    const scheduleMaintenanceEndRefresh = async () => {
+      try {
+        const maintenance = await fetchAdminSystemMaintenance();
+        const expectedEndAt = maintenance.expectedEndAt;
+        if (!expectedEndAt || handledPendingRefreshEndRef.current === expectedEndAt) return;
+        const expectedEndMs = new Date(expectedEndAt).getTime();
+        if (Number.isNaN(expectedEndMs)) return;
+        const delayMs = Math.max(0, expectedEndMs - Date.now() + 1500);
+        timeoutId = window.setTimeout(() => {
+          if (cancelled) return;
+          handledPendingRefreshEndRef.current = expectedEndAt;
+          void loadTemplates({ silent: true });
+        }, delayMs);
+      } catch (error) {
+        console.warn("Maintenance end refresh scheduling failed.", error);
+      }
+    };
+
+    void scheduleMaintenanceEndRefresh();
+
+    return () => {
+      cancelled = true;
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [hasPendingTemplateChanges, loadTemplates]);
 
   useEffect(() => {
     if (!editingFolderId) return;

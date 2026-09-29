@@ -98,6 +98,17 @@ const isMaintenanceScheduleRelevant = (maintenance?: Partial<SystemMaintenanceSt
   return expectedEnd.getTime() > Date.now();
 };
 
+const maintenanceRefreshDelay = (maintenance?: Partial<SystemMaintenanceState> | null) => {
+  const candidates = [maintenance?.scheduledStartAt, maintenance?.expectedEndAt]
+    .map((value) => {
+      if (!value) return null;
+      const time = new Date(value).getTime();
+      return Number.isNaN(time) ? null : Math.max(0, time - Date.now() + 1000);
+    })
+    .filter((value): value is number => typeof value === "number" && value >= 0);
+  return candidates.length > 0 ? Math.min(...candidates) : null;
+};
+
 interface TemplateDetectionNotice {
   title: string;
   message: string;
@@ -1672,6 +1683,7 @@ function HomeWorkspace() {
   const tableExportDropdownRef = useRef<HTMLDivElement | null>(null);
   const notificationDropdownRef = useRef<HTMLDivElement | null>(null);
   const ocrPageReferenceDimensionsRef = useRef<Record<number, RoiReferenceDimensions>>({});
+  const previousMaintenanceActiveRef = useRef<boolean | null>(null);
 
   useEffect(() => {
     const session = readAuthSession();
@@ -1699,9 +1711,29 @@ function HomeWorkspace() {
     void refreshMaintenanceState();
     const interval = window.setInterval(() => {
       void refreshMaintenanceState();
-    }, 60000);
-    return () => window.clearInterval(interval);
+    }, 10000);
+    const handleVisibilityRefresh = () => {
+      if (document.visibilityState === "visible") {
+        void refreshMaintenanceState();
+      }
+    };
+    window.addEventListener("focus", refreshMaintenanceState);
+    document.addEventListener("visibilitychange", handleVisibilityRefresh);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshMaintenanceState);
+      document.removeEventListener("visibilitychange", handleVisibilityRefresh);
+    };
   }, []);
+
+  useEffect(() => {
+    const delay = maintenanceRefreshDelay(maintenanceState);
+    if (delay === null) return;
+    const timeout = window.setTimeout(() => {
+      void refreshMaintenanceState();
+    }, delay);
+    return () => window.clearTimeout(timeout);
+  }, [maintenanceState?.scheduledStartAt, maintenanceState?.expectedEndAt]);
 
   const handleSystemMaintenanceError = async (error: unknown) => {
     let currentError = error as
@@ -2092,8 +2124,11 @@ function HomeWorkspace() {
 
   const handleClearAndUploadNew = () => {
     queueProcessingLogSave("change_document");
+    ocrRunIdRef.current += 1;
     activeProcessingRunIdRef.current = "";
     ocrProcessingTimeMsRef.current = null;
+    setIsLoading(false);
+    setOcrProgress(null);
     setImagesList([]);
     setOriginalImagesList([]);
     setUploadedSourceFileId("");
@@ -2115,6 +2150,10 @@ function HomeWorkspace() {
     setMatchedTemplate(null);
     setTemplateDetectionSnapshot(null);
     setTemplateDetectionNotice(null);
+    setIsTemplateRequestOpen(false);
+    setIsExportMenuOpen(false);
+    setOpenTableExportDropdown(null);
+    setIsNotificationOpen(false);
     setCurrentStep("upload");
   };
 
@@ -2124,6 +2163,19 @@ function HomeWorkspace() {
       handleClearAndUploadNew();
     }
   };
+
+  useEffect(() => {
+    if (maintenanceStatus !== "ready") return;
+
+    const isActive = Boolean(maintenanceState?.active);
+    const wasActive = previousMaintenanceActiveRef.current;
+
+    if (isActive || wasActive === true) {
+      handleClearAndUploadNew();
+    }
+
+    previousMaintenanceActiveRef.current = isActive;
+  }, [maintenanceStatus, maintenanceState?.active]);
 
   const handleBatchConfirm = async (finalProcessedImages: string[]) => {
     activeProcessingRunIdRef.current = "";
@@ -3868,6 +3920,24 @@ function HomeWorkspace() {
     </section>
   );
 
+  const renderUpcomingMaintenanceNotice = () => (
+    <section className="rounded-xl border border-blue-100 bg-blue-50 p-4 shadow-sm">
+      <div className="flex items-start gap-3">
+        <AlertTriangle size={18} className="mt-0.5 shrink-0 text-blue-600" />
+        <div className="min-w-0">
+          <p className="text-sm font-black text-blue-950">เตรียมปิดปรับปรุงระบบ</p>
+          <p className="mt-1 text-sm font-semibold leading-6 text-blue-800">
+            {maintenanceState?.message || "ระบบมีกำหนดอัปเดต กรุณาเตรียมบันทึกงานก่อนถึงเวลาเริ่ม"}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs font-bold text-blue-700">
+            {maintenanceState?.scheduledStartAt && <span>เริ่ม: {formatMaintenanceDateTime(maintenanceState.scheduledStartAt)}</span>}
+            {maintenanceState?.expectedEndAt && <span>คาดว่าจะเปิด: {formatMaintenanceDateTime(maintenanceState.expectedEndAt)}</span>}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+
   const renderNotificationMenu = () => {
     const hasMaintenanceNotification = Boolean(maintenanceState?.active || isMaintenanceScheduleRelevant(maintenanceState));
     return (
@@ -3985,6 +4055,7 @@ function HomeWorkspace() {
       <div className="mx-auto max-w-7xl space-y-5 px-6 py-6">
         {isMaintenanceActive ? renderMaintenanceNotice() : (
           <>
+        {hasMaintenanceNotification && renderUpcomingMaintenanceNotice()}
 
         {currentStep !== "upload" && renderUserWorkflowGuide()}
 
