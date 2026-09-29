@@ -363,10 +363,16 @@ class GlobalSettingsService:
         updates = raw.get("template_updates") if isinstance(raw, dict) else {}
         return updates if isinstance(updates, dict) else {}
 
-    def _save_pending_template_changes(self, statuses: Dict[str, str], updates: Dict[str, Dict[str, Any]]) -> None:
+    def _pending_template_field_ops(self) -> Dict[str, List[Dict[str, Any]]]:
+        raw_value = self._load_setting_value(PENDING_TEMPLATE_CHANGES_SETTING_KEY)
+        raw = jsonb_load(raw_value, {}) if raw_value is not None else {}
+        ops = raw.get("template_field_ops") if isinstance(raw, dict) else {}
+        return ops if isinstance(ops, dict) else {}
+
+    def _save_pending_template_changes(self, statuses: Dict[str, str], updates: Dict[str, Dict[str, Any]], field_ops: Optional[Dict[str, List[Dict[str, Any]]]] = None) -> None:
         self._save_setting(
             PENDING_TEMPLATE_CHANGES_SETTING_KEY,
-            jsonb_dump({"template_statuses": statuses, "template_updates": updates}),
+            jsonb_dump({"template_statuses": statuses, "template_updates": updates, "template_field_ops": field_ops or self._pending_template_field_ops()}),
         )
 
     def save_pending_template_status(self, template_id: str, status: str) -> Dict[str, Any]:
@@ -390,6 +396,17 @@ class GlobalSettingsService:
         updates[template_key] = {**current, **patch}
         self._save_pending_template_changes(statuses, updates)
         return {"template_id": template_key, "pending_update": updates[template_key], "deferred": True}
+
+    def save_pending_template_field_op(self, template_id: str, operation: Dict[str, Any]) -> Dict[str, Any]:
+        template_key = str(template_id or "").strip()
+        if not template_key:
+            raise HTTPException(status_code=400, detail="template_id is required")
+        statuses = self._pending_template_statuses()
+        updates = self._pending_template_updates()
+        field_ops = self._pending_template_field_ops()
+        field_ops.setdefault(template_key, []).append(operation)
+        self._save_pending_template_changes(statuses, updates, field_ops)
+        return {"template_id": template_key, "pending_field_ops": len(field_ops[template_key]), "deferred": True}
 
     @staticmethod
     def _parse_maintenance_datetime(value: Any) -> Optional[datetime]:
@@ -484,7 +501,8 @@ class GlobalSettingsService:
         pending_ocr_raw = self._load_setting_value(PENDING_OCR_MODEL_SETTINGS_KEY)
         pending_template_statuses = self._pending_template_statuses()
         pending_template_updates = self._pending_template_updates()
-        if pending_strategy_raw is None and pending_ocr_raw is None and not pending_template_statuses and not pending_template_updates:
+        pending_template_field_ops = self._pending_template_field_ops()
+        if pending_strategy_raw is None and pending_ocr_raw is None and not pending_template_statuses and not pending_template_updates and not pending_template_field_ops:
             return False
 
         try:
@@ -535,6 +553,10 @@ class GlobalSettingsService:
                             [*(value for _, value in group_updates), template_id],
                         )
                     applied_template_statuses.setdefault(template_id, "active")
+                if pending_template_field_ops:
+                    AdminTemplateService()._apply_pending_template_field_ops(conn, pending_template_field_ops)
+                    for template_id in pending_template_field_ops.keys():
+                        applied_template_statuses.setdefault(str(template_id), "active")
                 for template_id, target_status in pending_template_statuses.items():
                     existing = conn.execute("SELECT id FROM template_versions WHERE id = ?", (template_id,)).fetchone()
                     if existing is None:
@@ -562,7 +584,7 @@ class GlobalSettingsService:
                     conn.execute("DELETE FROM app_settings WHERE key = ?", (PENDING_VERIFICATION_STRATEGY_SETTING_KEY,))
                 if pending_ocr is not None:
                     conn.execute("DELETE FROM app_settings WHERE key = ?", (PENDING_OCR_MODEL_SETTINGS_KEY,))
-                if pending_template_statuses or pending_template_updates:
+                if pending_template_statuses or pending_template_updates or pending_template_field_ops:
                     conn.execute("DELETE FROM app_settings WHERE key = ?", (PENDING_TEMPLATE_CHANGES_SETTING_KEY,))
                 conn.commit()
             if strategy is not None:
@@ -5123,6 +5145,100 @@ class TemplateRequestService:
 
 
 class AdminTemplateService:
+    def _defer_active_template_changes(self, template_id: str) -> bool:
+        settings = GlobalSettingsService()
+        if not settings._should_defer_admin_setting_updates():
+            return False
+        with _connect() as conn:
+            row = conn.execute("SELECT status FROM template_versions WHERE id = ?", (template_id,)).fetchone()
+        return bool(row is not None and row["status"] == "active")
+
+    def _template_with_pending_field_op(self, template_id: str, operation: Dict[str, Any]) -> Dict[str, Any]:
+        GlobalSettingsService().save_pending_template_field_op(template_id, operation)
+        return self.get_template(template_id, apply_pending=False)
+
+    def _apply_pending_template_field_ops(self, conn: Any, ops_by_template: Dict[str, List[Dict[str, Any]]]) -> None:
+        for template_id, ops in ops_by_template.items():
+            if not isinstance(ops, list):
+                continue
+            for op in ops:
+                if not isinstance(op, dict):
+                    continue
+                action = str(op.get("action") or "").strip()
+                if action == "delete_field":
+                    field_id = str(op.get("field_id") or "").strip()
+                    if not field_id:
+                        continue
+                    conn.execute("DELETE FROM extraction_fields WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)", (field_id, template_id))
+                    conn.execute("DELETE FROM verification_anchors WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)", (field_id, template_id))
+                    continue
+                payload_raw = op.get("payload")
+                if not isinstance(payload_raw, dict):
+                    continue
+                payload = TemplateFieldCreate(**payload_raw)
+                if action == "update_field":
+                    field_id = str(op.get("field_id") or "").strip()
+                    if not field_id:
+                        continue
+                    conn.execute("DELETE FROM extraction_fields WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)", (field_id, template_id))
+                    conn.execute("DELETE FROM verification_anchors WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)", (field_id, template_id))
+                    next_field_id = field_id
+                elif action == "create_field":
+                    next_field_id = _stub_id("tpl_field")
+                else:
+                    continue
+                if payload.use_for_verification:
+                    image_category_id = _resolve_image_category_id(conn, payload.image_category)
+                    conn.execute(
+                        """
+                        INSERT INTO verification_anchors (
+                            id, template_page_id, anchor_name, anchor_type,
+                            roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_points_json,
+                            required, weight, expected_text, match_type, regex_pattern,
+                            image_category_id, sort_order, created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        """,
+                        (
+                            next_field_id,
+                            payload.template_page_id,
+                            payload.field_name,
+                            _normalize_data_type(payload.data_type),
+                            payload.roi.x_ratio,
+                            payload.roi.y_ratio,
+                            payload.roi.width_ratio,
+                            payload.roi.height_ratio,
+                            _roi_points_json_from_payload(payload.roi),
+                            bool(payload.required_for_verification),
+                            payload.verification_weight or 1.0,
+                            payload.expected_text,
+                            payload.match_type,
+                            payload.regex_pattern,
+                            image_category_id,
+                            payload.sort_order,
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO extraction_fields (id, template_page_id, field_name, display_label, data_type, extraction_method, roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_points_json, roi_mode, expected_content, required, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                        (
+                            next_field_id,
+                            payload.template_page_id,
+                            payload.field_name,
+                            payload.display_label,
+                            _normalize_data_type(payload.data_type),
+                            _normalize_extraction_method(payload.extraction_method),
+                            payload.roi.x_ratio,
+                            payload.roi.y_ratio,
+                            payload.roi.width_ratio,
+                            payload.roi.height_ratio,
+                            _roi_points_json_from_payload(payload.roi),
+                            _normalize_roi_mode(payload.roi_mode),
+                            _normalize_expected_content(payload.expected_content),
+                            payload.sort_order,
+                        ),
+                    )
+
     def _template_base_query(self) -> str:
         return """
             SELECT tv.id, tg.name, tg.document_type, tg.category, tv.status,
@@ -5197,6 +5313,7 @@ class AdminTemplateService:
         settings.get_system_maintenance()
         pending_statuses = settings._pending_template_statuses()
         pending_updates = settings._pending_template_updates()
+        pending_field_ops = settings._pending_template_field_ops()
         with _connect() as conn:
             rows = conn.execute(f"{self._template_base_query()} ORDER BY tv.created_at DESC").fetchall()
             page_rows = conn.execute("SELECT * FROM template_pages ORDER BY template_version_id ASC, page_number ASC").fetchall()
@@ -5211,6 +5328,8 @@ class AdminTemplateService:
                 template["pending_status"] = pending_statuses[template["id"]]
             if template["id"] in pending_updates:
                 template["pending_update"] = pending_updates[template["id"]]
+            if template["id"] in pending_field_ops:
+                template["pending_update"] = {**(template.get("pending_update") or {}), "field_ops": len(pending_field_ops[template["id"]])}
             template["pages"] = pages_by_template.get(template["id"], [])
             templates.append(template)
         return {"templates": templates}
@@ -5221,6 +5340,7 @@ class AdminTemplateService:
             settings.get_system_maintenance()
         pending_statuses = settings._pending_template_statuses()
         pending_updates = settings._pending_template_updates()
+        pending_field_ops = settings._pending_template_field_ops()
         with _connect() as conn:
             template_row = conn.execute(f"{self._template_base_query()} WHERE tv.id = ?", (template_id,)).fetchone()
             if template_row is None:
@@ -5292,6 +5412,8 @@ class AdminTemplateService:
             result["pending_status"] = pending_statuses[template_id]
         if template_id in pending_updates:
             result["pending_update"] = pending_updates[template_id]
+        if template_id in pending_field_ops:
+            result["pending_update"] = {**(result.get("pending_update") or {}), "field_ops": len(pending_field_ops[template_id])}
         return result
 
     def _template_page_image_paths(self, template_id: str, pages: List[Dict[str, Any]]) -> Dict[int, str]:
@@ -6013,6 +6135,11 @@ class AdminTemplateService:
         return self.get_template(template_id)
 
     def create_template_field(self, template_id: str, payload: TemplateFieldCreate) -> Dict[str, Any]:
+        if self._defer_active_template_changes(template_id):
+            return self._template_with_pending_field_op(
+                template_id,
+                {"action": "create_field", "payload": payload.model_dump(mode="json")},
+            )
         field_id = _stub_id("tpl_field")
         with _connect() as conn:
             page_row = conn.execute(
@@ -6129,6 +6256,11 @@ class AdminTemplateService:
             "sort_order": patch.get("sort_order", current["sort_order"]),
         }
         merged_payload = TemplateFieldCreate(**merged)
+        if self._defer_active_template_changes(template_id):
+            return self._template_with_pending_field_op(
+                template_id,
+                {"action": "update_field", "field_id": field_id, "payload": merged_payload.model_dump(mode="json")},
+            )
         if bool(current.get("use_for_verification")) == bool(merged_payload.use_for_verification):
             with _connect() as conn:
                 page_row = conn.execute(
@@ -6202,6 +6334,11 @@ class AdminTemplateService:
         return self.create_template_field(template_id, merged_payload)
 
     def delete_template_field(self, template_id: str, field_id: str) -> Dict[str, Any]:
+        if self._defer_active_template_changes(template_id):
+            return self._template_with_pending_field_op(
+                template_id,
+                {"action": "delete_field", "field_id": field_id},
+            )
         with _connect() as conn:
             conn.execute("DELETE FROM extraction_fields WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)", (field_id, template_id))
             conn.execute("DELETE FROM verification_anchors WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)", (field_id, template_id))

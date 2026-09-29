@@ -307,8 +307,16 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
     }
 
     if (latestBundle) {
-      applyBundle(latestBundle);
-      setSaved("Field changes saved.");
+      if (latestBundle.template.pendingUpdate) {
+        setSelectedTemplate((current) => (current ? { ...current, pendingUpdate: latestBundle.template.pendingUpdate } : current));
+        pendingDeletedFieldIdsRef.current.clear();
+        dirtyFieldPatchesRef.current.clear();
+        pendingLocalFieldPatchesRef.current.clear();
+        setSaved("Field ROI changes saved as pending maintenance update.");
+      } else {
+        applyBundle(latestBundle);
+        setSaved("Field changes saved.");
+      }
     }
   };
 
