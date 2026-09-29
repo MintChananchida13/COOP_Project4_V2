@@ -172,6 +172,7 @@ export interface Template {
   category?: string;
   status: TemplateStatus;
   pendingStatus?: TemplateStatus;
+  pendingUpdate?: Record<string, unknown>;
   version: number;
   templateGroupId?: string;
   versionNumber?: number;

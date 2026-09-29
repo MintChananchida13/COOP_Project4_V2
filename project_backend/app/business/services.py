@@ -357,15 +357,39 @@ class GlobalSettingsService:
             if str(template_id).strip() and str(status).strip()
         }
 
+    def _pending_template_updates(self) -> Dict[str, Dict[str, Any]]:
+        raw_value = self._load_setting_value(PENDING_TEMPLATE_CHANGES_SETTING_KEY)
+        raw = jsonb_load(raw_value, {}) if raw_value is not None else {}
+        updates = raw.get("template_updates") if isinstance(raw, dict) else {}
+        return updates if isinstance(updates, dict) else {}
+
+    def _save_pending_template_changes(self, statuses: Dict[str, str], updates: Dict[str, Dict[str, Any]]) -> None:
+        self._save_setting(
+            PENDING_TEMPLATE_CHANGES_SETTING_KEY,
+            jsonb_dump({"template_statuses": statuses, "template_updates": updates}),
+        )
+
     def save_pending_template_status(self, template_id: str, status: str) -> Dict[str, Any]:
         template_key = str(template_id or "").strip()
         next_status = str(status or "").strip()
         if not template_key or not next_status:
             raise HTTPException(status_code=400, detail="template_id and status are required")
         statuses = self._pending_template_statuses()
+        updates = self._pending_template_updates()
         statuses[template_key] = next_status
-        self._save_setting(PENDING_TEMPLATE_CHANGES_SETTING_KEY, jsonb_dump({"template_statuses": statuses}))
+        self._save_pending_template_changes(statuses, updates)
         return {"template_id": template_key, "pending_status": next_status, "deferred": True}
+
+    def save_pending_template_update(self, template_id: str, patch: Dict[str, Any]) -> Dict[str, Any]:
+        template_key = str(template_id or "").strip()
+        if not template_key:
+            raise HTTPException(status_code=400, detail="template_id is required")
+        statuses = self._pending_template_statuses()
+        updates = self._pending_template_updates()
+        current = updates.get(template_key) if isinstance(updates.get(template_key), dict) else {}
+        updates[template_key] = {**current, **patch}
+        self._save_pending_template_changes(statuses, updates)
+        return {"template_id": template_key, "pending_update": updates[template_key], "deferred": True}
 
     @staticmethod
     def _parse_maintenance_datetime(value: Any) -> Optional[datetime]:
@@ -459,7 +483,8 @@ class GlobalSettingsService:
         pending_strategy_raw = self._load_setting_value(PENDING_VERIFICATION_STRATEGY_SETTING_KEY)
         pending_ocr_raw = self._load_setting_value(PENDING_OCR_MODEL_SETTINGS_KEY)
         pending_template_statuses = self._pending_template_statuses()
-        if pending_strategy_raw is None and pending_ocr_raw is None and not pending_template_statuses:
+        pending_template_updates = self._pending_template_updates()
+        if pending_strategy_raw is None and pending_ocr_raw is None and not pending_template_statuses and not pending_template_updates:
             return False
 
         try:
@@ -489,6 +514,27 @@ class GlobalSettingsService:
                         """,
                         (OCR_MODEL_SETTINGS_KEY, jsonb_dump(pending_ocr)),
                     )
+                for template_id, patch in pending_template_updates.items():
+                    if not isinstance(patch, dict):
+                        continue
+                    existing = conn.execute("SELECT id FROM template_versions WHERE id = ?", (template_id,)).fetchone()
+                    if existing is None:
+                        continue
+                    version_columns = {"version_name", "similarity_threshold", "final_confidence_threshold", "layout_weight", "text_anchor_weight", "image_anchor_weight", "detection_mode", "main_page_number"}
+                    group_columns = {"name", "document_type", "category", "description"}
+                    version_updates = [(key, patch[key]) for key in version_columns if key in patch]
+                    if version_updates:
+                        conn.execute(
+                            f"UPDATE template_versions SET {', '.join(f'{c} = ?' for c, _ in version_updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                            [*(value for _, value in version_updates), template_id],
+                        )
+                    group_updates = [(key, patch[key]) for key in group_columns if key in patch]
+                    if group_updates:
+                        conn.execute(
+                            f"UPDATE template_groups SET {', '.join(f'{c} = ?' for c, _ in group_updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT template_group_id FROM template_versions WHERE id = ?)",
+                            [*(value for _, value in group_updates), template_id],
+                        )
+                    applied_template_statuses.setdefault(template_id, "active")
                 for template_id, target_status in pending_template_statuses.items():
                     existing = conn.execute("SELECT id FROM template_versions WHERE id = ?", (template_id,)).fetchone()
                     if existing is None:
@@ -516,7 +562,7 @@ class GlobalSettingsService:
                     conn.execute("DELETE FROM app_settings WHERE key = ?", (PENDING_VERIFICATION_STRATEGY_SETTING_KEY,))
                 if pending_ocr is not None:
                     conn.execute("DELETE FROM app_settings WHERE key = ?", (PENDING_OCR_MODEL_SETTINGS_KEY,))
-                if pending_template_statuses:
+                if pending_template_statuses or pending_template_updates:
                     conn.execute("DELETE FROM app_settings WHERE key = ?", (PENDING_TEMPLATE_CHANGES_SETTING_KEY,))
                 conn.commit()
             if strategy is not None:
@@ -5150,6 +5196,7 @@ class AdminTemplateService:
         settings = GlobalSettingsService()
         settings.get_system_maintenance()
         pending_statuses = settings._pending_template_statuses()
+        pending_updates = settings._pending_template_updates()
         with _connect() as conn:
             rows = conn.execute(f"{self._template_base_query()} ORDER BY tv.created_at DESC").fetchall()
             page_rows = conn.execute("SELECT * FROM template_pages ORDER BY template_version_id ASC, page_number ASC").fetchall()
@@ -5162,14 +5209,18 @@ class AdminTemplateService:
             template = _template_row_to_api(row)
             if template["id"] in pending_statuses:
                 template["pending_status"] = pending_statuses[template["id"]]
+            if template["id"] in pending_updates:
+                template["pending_update"] = pending_updates[template["id"]]
             template["pages"] = pages_by_template.get(template["id"], [])
             templates.append(template)
         return {"templates": templates}
 
-    def get_template(self, template_id: str) -> Dict[str, Any]:
+    def get_template(self, template_id: str, apply_pending: bool = True) -> Dict[str, Any]:
         settings = GlobalSettingsService()
-        settings.get_system_maintenance()
+        if apply_pending:
+            settings.get_system_maintenance()
         pending_statuses = settings._pending_template_statuses()
+        pending_updates = settings._pending_template_updates()
         with _connect() as conn:
             template_row = conn.execute(f"{self._template_base_query()} WHERE tv.id = ?", (template_id,)).fetchone()
             if template_row is None:
@@ -5239,6 +5290,8 @@ class AdminTemplateService:
         }
         if template_id in pending_statuses:
             result["pending_status"] = pending_statuses[template_id]
+        if template_id in pending_updates:
+            result["pending_update"] = pending_updates[template_id]
         return result
 
     def _template_page_image_paths(self, template_id: str, pages: List[Dict[str, Any]]) -> Dict[int, str]:
@@ -5880,6 +5933,23 @@ class AdminTemplateService:
         settings = GlobalSettingsService()
         defer_status_update = "status" in patch and settings._should_defer_admin_setting_updates()
         pending_status = str(patch.pop("status")) if defer_status_update else None
+        defer_template_update = bool(patch) and settings._should_defer_admin_setting_updates()
+        if defer_template_update:
+            with _connect() as conn:
+                current = conn.execute("SELECT status FROM template_versions WHERE id = ?", (template_id,)).fetchone()
+            if current is not None and current["status"] == "active":
+                pending_patch: Dict[str, Any] = {}
+                for key in version_columns:
+                    if key in patch:
+                        pending_patch[key] = _normalize_detection_mode(patch[key]) if key == "detection_mode" else (_normalize_main_page_number(patch[key]) if key == "main_page_number" else patch[key])
+                for key in group_columns:
+                    if key in patch:
+                        pending_patch[key] = patch[key]
+                if pending_patch:
+                    settings.save_pending_template_update(template_id, pending_patch)
+                    if pending_status is not None:
+                        settings.save_pending_template_status(template_id, pending_status)
+                    return self.get_template(template_id, apply_pending=False)
         with _connect() as conn:
             version_updates = []
             for key in version_columns:
@@ -5896,7 +5966,7 @@ class AdminTemplateService:
             settings.save_pending_template_status(template_id, pending_status)
         else:
             _refresh_published_template_cache(template_id)
-        return self.get_template(template_id)
+        return self.get_template(template_id, apply_pending=False)
 
     def delete_template(self, template_id: str) -> Dict[str, Any]:
         with _connect() as conn:

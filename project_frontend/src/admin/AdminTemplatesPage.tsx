@@ -773,6 +773,11 @@ export default function AdminTemplatesPage() {
                                         รออัปเดต: {statusSelectLabel(template.pendingStatus)}
                                       </span>
                                     )}
+                                    {template.pendingUpdate && (
+                                      <span className="inline-flex items-center justify-center rounded-full bg-amber-50 px-2.5 py-1 text-[10px] font-black leading-none text-amber-700">
+                                        มีการแก้ไขรออัปเดต
+                                      </span>
+                                    )}
                                   </div>
                                 </div>
                                 <button
@@ -798,6 +803,7 @@ export default function AdminTemplatesPage() {
                               <label className="min-w-[150px]">
                                 <span className="sr-only">Template status</span>
                                 <select
+                                  key={`${template.id}-${template.status}-${template.pendingStatus || "none"}`}
                                   value={manageableStatuses.includes(template.status) ? (template.status === "disabled" ? "nonactive" : template.status) : template.status}
                                   onChange={(event) => {
                                     const nextStatus = event.target.value as TemplateStatus;
@@ -926,6 +932,11 @@ export default function AdminTemplatesPage() {
                     รออัปเดต: {statusSelectLabel(template.pendingStatus)}
                   </span>
                 )}
+                {template.pendingUpdate && (
+                  <span className="inline-flex items-center justify-center rounded-full bg-amber-50 px-2.5 py-1 text-[10px] font-black leading-none text-amber-700">
+                    มีการแก้ไขรออัปเดต
+                  </span>
+                )}
                 {loadStatus === "error" && (
                   <StatusBadge status="backend error" tone="warning" />
                 )}
@@ -939,6 +950,7 @@ export default function AdminTemplatesPage() {
               <label className="min-w-[170px]">
                 <span className="sr-only">Template status</span>
                 <select
+                  key={`${template.id}-${template.status}-${template.pendingStatus || "none"}`}
                   value={manageableStatuses.includes(template.status) ? (template.status === "disabled" ? "nonactive" : template.status) : template.status}
                   onChange={(event) => {
                     const nextStatus = event.target.value as TemplateStatus;

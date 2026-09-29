@@ -462,6 +462,8 @@ interface ApiTemplate {
   status: string;
   pending_status?: string | null;
   pendingStatus?: string | null;
+  pending_update?: Record<string, unknown> | null;
+  pendingUpdate?: Record<string, unknown> | null;
   version: number;
   template_group_id?: string | null;
   version_number?: number | null;
@@ -1023,6 +1025,7 @@ function mapApiTemplate(template: Partial<ApiTemplate> | null | undefined, fallb
     category: source.category || undefined,
     status: mapTemplateStatus(source.status || "draft"),
     pendingStatus: source.pending_status || source.pendingStatus ? mapTemplateStatus(source.pending_status || source.pendingStatus || "draft") : undefined,
+    pendingUpdate: source.pending_update || source.pendingUpdate || undefined,
     version: typeof source.version === "number" ? source.version : Number(source.version_number || 1),
     templateGroupId: source.template_group_id || undefined,
     versionNumber: source.version_number || source.version || 1,

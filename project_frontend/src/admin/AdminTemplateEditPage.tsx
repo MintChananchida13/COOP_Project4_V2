@@ -472,7 +472,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
     try {
       const bundle = await updateTemplateApi(templateId, patch);
       applyBundle(bundle);
-      setSaved("Template saved.");
+      setSaved(bundle.template.pendingUpdate ? "Template changes saved as pending maintenance update." : "Template saved.");
     } catch (error) {
       console.warn("Template save failed.", error);
       setLocalOnly("Template saved locally.");
@@ -695,9 +695,11 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
         mainPageNumber: templateDraft.mainPageNumber,
       };
       setSelectedTemplate((current) => (current ? { ...current, ...patch } : current));
+      let savedBundle: TemplateBundle | null = null;
       if (canPersistToBackend) {
         try {
           const bundle = await updateTemplateApi(templateId, patch);
+          savedBundle = bundle;
           applyBundle(bundle);
         } catch (error) {
           console.warn("Template update settings save failed.", error);
@@ -705,6 +707,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
           return;
         }
       }
+      setSaved(savedBundle?.template.pendingUpdate ? "Template changes saved as pending maintenance update." : "Template update saved.");
       setShowUpdateSuccessDialog(true);
     })();
   };
