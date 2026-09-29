@@ -119,11 +119,11 @@ interface TemplateDetectionNotice {
 const isStrictVerificationStrategy = (value?: string | null) => value === "strict";
 
 const verificationStrategyLabel = (value?: string | null) =>
-  isStrictVerificationStrategy(value) ? "แบบเข้มงวด (Strict)" : "แบบถ่วงน้ำหนัก (Standard)";
+  isStrictVerificationStrategy(value) ? "การตรวจสอบแบบลำดับเงื่อนไข" : "การตรวจสอบแบบถ่วงน้ำหนักคะแนน";
 
 const detectionFailureDetail = (detection: DetectionDevResult) =>
   isStrictVerificationStrategy(detection.bestCandidate?.verificationStrategy || (detection.debug?.verification_strategy as string | null | undefined))
-    ? "ไม่ผ่านการทดสอบแบบเข้มงวด"
+    ? "ไม่ผ่านการตรวจสอบแบบลำดับเงื่อนไข"
     : "ไม่โหลด ROI จาก Template ใด ๆ";
 
 const detectionVerificationStrategy = (detection: DetectionDevResult) =>
@@ -251,7 +251,7 @@ const NoTemplateDetectionCard = ({
     : notice.message || "ไม่พบ Template ที่ตรงกับเอกสารนี้";
   const strategy = notice.verificationStrategy || "standard";
   const strategyDescription = isStrictVerificationStrategy(strategy)
-    ? "ไม่ผ่านเงื่อนไขการตรวจสอบราย Anchor"
+    ? "ไม่ผ่านการตรวจสอบตามลำดับเงื่อนไขราย Anchor"
     : "ไม่ผ่านเกณฑ์คะแนนความมั่นใจ";
 
   return (

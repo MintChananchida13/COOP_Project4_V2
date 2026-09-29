@@ -18,6 +18,13 @@ const fetchWithAuth = (input: RequestInfo | URL, init: RequestInit = {}) => {
 
 const sleep = (milliseconds: number) => new Promise((resolve) => globalThis.setTimeout(resolve, milliseconds));
 
+const verificationStrategyDisplayLabel = (value: unknown) => {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "strict") return "การตรวจสอบแบบลำดับเงื่อนไข";
+  if (normalized === "standard") return "การตรวจสอบแบบถ่วงน้ำหนักคะแนน";
+  return String(value || "-");
+};
+
 let templateRequestListCache: AdminTemplateRequest[] | null = null;
 let templateListCache: Template[] | null = null;
 let templateRequestListPromise: Promise<AdminTemplateRequest[]> | null = null;
@@ -217,7 +224,7 @@ const mapProcessingLog = (value: unknown): ProcessingLog => {
       selectedTemplate: (templateDetection.selectedTemplate as string | null | undefined) ?? null,
       templateVersion: (templateDetection.templateVersion as string | null | undefined) ?? null,
       detectionMode: String(templateDetection.detectionMode || "-"),
-      verificationMode: String(templateDetection.verificationMode || "-"),
+      verificationMode: verificationStrategyDisplayLabel(templateDetection.verificationMode),
       candidates: asRecordArray(templateDetection.candidates).map((candidate) => ({
         template: String(candidate.template || "-"),
         layoutScore: numberOrZero(candidate.layoutScore),

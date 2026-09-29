@@ -22,15 +22,18 @@ import { InlineState, LoadingState } from "../shared/ui";
 const verificationStrategyOptions: { value: VerificationStrategy; label: string; description: string }[] = [
   {
     value: "standard",
-    label: "แบบมาตรฐาน (Standard)",
+    label: "การตรวจสอบแบบถ่วงน้ำหนักคะแนน",
     description: "ใช้คะแนนรวมจาก Layout, Text Anchor และ Image Anchor ตามค่าน้ำหนักของ Template แล้วเทียบกับเกณฑ์ความมั่นใจ โดย Anchor ที่บังคับต้องผ่านเสมอ",
   },
   {
     value: "strict",
-    label: "แบบเข้มงวด (Strict)",
+    label: "การตรวจสอบแบบลำดับเงื่อนไข",
     description: "ต้องผ่านเกณฑ์ Layout ก่อน จากนั้นตรวจ Text Anchor และ Image Anchor ทีละรายการ หาก Anchor ใดไม่ผ่าน ระบบจะไม่เลือก Template นั้นโดยไม่ใช้คะแนนรวมเป็นตัวตัดสินสุดท้าย",
   },
 ];
+
+const verificationStrategyLabel = (strategy: VerificationStrategy) =>
+  strategy === "strict" ? "การตรวจสอบแบบลำดับเงื่อนไข" : "การตรวจสอบแบบถ่วงน้ำหนักคะแนน";
 
 const emptyModelSettings: OcrModelSettings = {
   active: { text_detection: "", text_recognition: "" },
@@ -1070,10 +1073,10 @@ export default function AdminSettingsPage() {
                 <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">เลือกรูปแบบการตรวจสอบที่ใช้กับ Template ทั้งหมดในระบบ</p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <div className="rounded-full bg-slate-50 px-3 py-1 text-[11px] font-black text-slate-500">ปัจจุบัน: {savedStrategy === "strict" ? "Strict" : "Standard"}</div>
+                <div className="rounded-full bg-slate-50 px-3 py-1 text-[11px] font-black text-slate-500">ปัจจุบัน: {verificationStrategyLabel(savedStrategy)}</div>
                 {(pendingStrategy || hasStrategyChanges) && (
                   <div className="rounded-full bg-amber-50 px-3 py-1 text-[11px] font-black text-amber-700">
-                    รออัปเดต: {draftStrategy === "strict" ? "Strict" : "Standard"}
+                    รออัปเดต: {verificationStrategyLabel(draftStrategy)}
                   </div>
                 )}
               </div>
