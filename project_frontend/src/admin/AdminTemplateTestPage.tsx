@@ -671,7 +671,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
   const publishPrerequisitesMet = Boolean(stepTwoCompleted && detectionTestPassed);
   const overallReady = publishPrerequisitesMet;
   const canRunDetectionTest = Boolean(stepTwoCompleted && simulationAction === null && testDocumentFile && !detectionTestAction);
-  const canConfirmPublish = publishPrerequisitesMet && simulationAction === null && template?.status !== "active";
+  const canConfirmPublish = publishPrerequisitesMet && simulationAction === null && template?.status !== "active" && template?.pendingStatus !== "active";
   const validationSteps = [
     { step: 1, label: "ตรวจสอบ ROI และ OCR", enabled: true, done: ocrPreviewPassed },
     { step: 2, label: "สร้างข้อมูลอ้างอิง Template", enabled: stepOneConfirmed, done: stepTwoCompleted },
@@ -985,6 +985,11 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
           <span className="w-fit rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[10px] font-black uppercase tracking-wide text-slate-700">
             {template.status}
           </span>
+          {template.pendingStatus && (
+            <span className="w-fit rounded-full bg-amber-50 px-3 py-1 text-[10px] font-black text-amber-700">
+              รออัปเดต: {template.pendingStatus}
+            </span>
+          )}
         </div>
         <div className="mt-4 rounded-xl border border-slate-100 bg-white p-3">
           <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">

@@ -768,6 +768,11 @@ export default function AdminTemplatesPage() {
                                       {detectionModeLabel(template.detectionMode)}
                                     </span>
                                     <StatusBadge status={template.status} />
+                                    {template.pendingStatus && (
+                                      <span className="inline-flex items-center justify-center rounded-full bg-amber-50 px-2.5 py-1 text-[10px] font-black leading-none text-amber-700">
+                                        รออัปเดต: {statusSelectLabel(template.pendingStatus)}
+                                      </span>
+                                    )}
                                   </div>
                                 </div>
                                 <button
@@ -916,6 +921,11 @@ export default function AdminTemplatesPage() {
               )}
               <div className="mt-1 flex flex-wrap gap-1.5">
                 <StatusBadge status={template.status} />
+                {template.pendingStatus && (
+                  <span className="inline-flex items-center justify-center rounded-full bg-amber-50 px-2.5 py-1 text-[10px] font-black leading-none text-amber-700">
+                    รออัปเดต: {statusSelectLabel(template.pendingStatus)}
+                  </span>
+                )}
                 {loadStatus === "error" && (
                   <StatusBadge status="backend error" tone="warning" />
                 )}

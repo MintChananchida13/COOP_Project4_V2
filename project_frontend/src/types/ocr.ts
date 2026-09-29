@@ -171,6 +171,7 @@ export interface Template {
   documentType?: string;
   category?: string;
   status: TemplateStatus;
+  pendingStatus?: TemplateStatus;
   version: number;
   templateGroupId?: string;
   versionNumber?: number;
