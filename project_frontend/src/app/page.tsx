@@ -99,11 +99,13 @@ const isMaintenanceScheduleRelevant = (maintenance?: Partial<SystemMaintenanceSt
 };
 
 const maintenanceRefreshDelay = (maintenance?: Partial<SystemMaintenanceState> | null) => {
+  const now = Date.now();
   const candidates = [maintenance?.scheduledStartAt, maintenance?.expectedEndAt]
     .map((value) => {
       if (!value) return null;
       const time = new Date(value).getTime();
-      return Number.isNaN(time) ? null : Math.max(0, time - Date.now() + 1000);
+      if (Number.isNaN(time) || time <= now) return null;
+      return time - now + 1000;
     })
     .filter((value): value is number => typeof value === "number" && value >= 0);
   return candidates.length > 0 ? Math.min(...candidates) : null;
@@ -1709,9 +1711,6 @@ function HomeWorkspace() {
 
   useEffect(() => {
     void refreshMaintenanceState();
-    const interval = window.setInterval(() => {
-      void refreshMaintenanceState();
-    }, 10000);
     const handleVisibilityRefresh = () => {
       if (document.visibilityState === "visible") {
         void refreshMaintenanceState();
@@ -1720,7 +1719,6 @@ function HomeWorkspace() {
     window.addEventListener("focus", refreshMaintenanceState);
     document.addEventListener("visibilitychange", handleVisibilityRefresh);
     return () => {
-      window.clearInterval(interval);
       window.removeEventListener("focus", refreshMaintenanceState);
       document.removeEventListener("visibilitychange", handleVisibilityRefresh);
     };
