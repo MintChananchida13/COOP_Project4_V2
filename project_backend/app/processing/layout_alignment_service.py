@@ -19,6 +19,11 @@ class LayoutAlignmentService:
     SKIP_SCORE = 0.93
     SKIP_ASPECT_DELTA = 0.03
     MAX_SIGNATURE_CACHE = 64
+    MAX_TRANSFORM_CORNER_OVERFLOW_RATIO = 0.18
+    MIN_TRANSFORM_AREA_RATIO = 0.55
+    MAX_TRANSFORM_AREA_RATIO = 1.45
+    MIN_TRANSFORM_SIDE_RATIO = 0.55
+    MAX_TRANSFORM_SIDE_RATIO = 1.45
 
     def __init__(self) -> None:
         self._signature_cache: Dict[str, Dict[str, Any]] = {}
@@ -133,6 +138,27 @@ class LayoutAlignmentService:
             )
 
         template_height, template_width = template.shape[:2]
+        sanity = self._transform_sanity_check(matrix, transform_type, query.shape, template.shape)
+        signature_debug["transform_sanity"] = sanity
+        if not sanity.get("passed"):
+            return self._result(
+                "fallback",
+                str(sanity.get("reason") or "layout_transform_sanity_failed"),
+                output_path,
+                self._save_match_visualization(query, template, usable_matches, match_output_path),
+                before_layout_score=before_score,
+                after_layout_score=None,
+                layout_score_improvement=None,
+                query_signature=query_signature,
+                template_signature=template_signature,
+                layout_box_matches=usable_matches,
+                transform_type=transform_type,
+                warp_applied=False,
+                homography=matrix.tolist() if transform_type == "homography" else None,
+                affine=matrix.tolist() if transform_type != "homography" else None,
+                inliers=inliers,
+                signature_debug=signature_debug,
+            )
         try:
             if transform_type == "homography":
                 warped = cv2.warpPerspective(
@@ -396,6 +422,85 @@ class LayoutAlignmentService:
             if affine is not None:
                 return "affine", affine, int(mask.ravel().sum()) if mask is not None else 0
         return "none", None, 0
+
+    def _transform_sanity_check(
+        self,
+        matrix: np.ndarray,
+        transform_type: str,
+        query_shape: Tuple[int, int, int],
+        template_shape: Tuple[int, int, int],
+    ) -> Dict[str, Any]:
+        query_height, query_width = query_shape[:2]
+        template_height, template_width = template_shape[:2]
+        if query_width <= 0 or query_height <= 0 or template_width <= 0 or template_height <= 0:
+            return {"passed": False, "reason": "invalid_image_dimensions"}
+
+        corners = np.float32(
+            [
+                [0.0, 0.0],
+                [float(query_width), 0.0],
+                [float(query_width), float(query_height)],
+                [0.0, float(query_height)],
+            ]
+        )
+        if transform_type == "homography":
+            transformed = cv2.perspectiveTransform(corners.reshape(-1, 1, 2), matrix).reshape(-1, 2)
+        else:
+            transformed = cv2.transform(corners.reshape(-1, 1, 2), matrix).reshape(-1, 2)
+
+        xs = transformed[:, 0]
+        ys = transformed[:, 1]
+        overflow_x = max(0.0, -float(xs.min()), float(xs.max()) - float(template_width)) / max(1.0, float(template_width))
+        overflow_y = max(0.0, -float(ys.min()), float(ys.max()) - float(template_height)) / max(1.0, float(template_height))
+        if overflow_x > self.MAX_TRANSFORM_CORNER_OVERFLOW_RATIO or overflow_y > self.MAX_TRANSFORM_CORNER_OVERFLOW_RATIO:
+            return {
+                "passed": False,
+                "reason": "layout_transform_corners_outside_template",
+                "overflow_x": round(float(overflow_x), 4),
+                "overflow_y": round(float(overflow_y), 4),
+                "transformed_corners": transformed.round(2).tolist(),
+            }
+
+        area = abs(float(cv2.contourArea(transformed.astype(np.float32))))
+        template_area = max(1.0, float(template_width * template_height))
+        area_ratio = area / template_area
+        if area_ratio < self.MIN_TRANSFORM_AREA_RATIO or area_ratio > self.MAX_TRANSFORM_AREA_RATIO:
+            return {
+                "passed": False,
+                "reason": "layout_transform_area_ratio_out_of_range",
+                "area_ratio": round(float(area_ratio), 4),
+                "transformed_corners": transformed.round(2).tolist(),
+            }
+
+        top_width = float(np.linalg.norm(transformed[1] - transformed[0]))
+        bottom_width = float(np.linalg.norm(transformed[2] - transformed[3]))
+        left_height = float(np.linalg.norm(transformed[3] - transformed[0]))
+        right_height = float(np.linalg.norm(transformed[2] - transformed[1]))
+        width_ratio = max(top_width, bottom_width) / max(1.0, float(template_width))
+        height_ratio = max(left_height, right_height) / max(1.0, float(template_height))
+        if (
+            width_ratio < self.MIN_TRANSFORM_SIDE_RATIO
+            or width_ratio > self.MAX_TRANSFORM_SIDE_RATIO
+            or height_ratio < self.MIN_TRANSFORM_SIDE_RATIO
+            or height_ratio > self.MAX_TRANSFORM_SIDE_RATIO
+        ):
+            return {
+                "passed": False,
+                "reason": "layout_transform_side_ratio_out_of_range",
+                "width_ratio": round(float(width_ratio), 4),
+                "height_ratio": round(float(height_ratio), 4),
+                "transformed_corners": transformed.round(2).tolist(),
+            }
+
+        return {
+            "passed": True,
+            "reason": "layout_transform_sanity_passed",
+            "area_ratio": round(float(area_ratio), 4),
+            "width_ratio": round(float(width_ratio), 4),
+            "height_ratio": round(float(height_ratio), 4),
+            "overflow_x": round(float(overflow_x), 4),
+            "overflow_y": round(float(overflow_y), 4),
+        }
 
     def _save_match_visualization(
         self,
