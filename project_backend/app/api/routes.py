@@ -1,11 +1,13 @@
+import asyncio
 import io
+import json
 import threading
 from uuid import uuid4
 
 from typing import Any, Dict
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from app.auth.auth_service import authenticate_user, create_access_token, create_user
 from app.core.db import connect as connect_db
@@ -52,6 +54,7 @@ from app.business.services import (
     TemplateRequestService,
     ImageVerificationCategoryService,
 )
+from app.business.maintenance_events import maintenance_event_hub
 
 router = APIRouter()
 
@@ -82,18 +85,51 @@ def _ensure_processing_available_for_request(request: Request) -> None:
     global_settings.ensure_processing_available()
 
 
+def _public_maintenance_payload(maintenance: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "enforcementEnabled": maintenance.get("enforcementEnabled"),
+        "status": maintenance.get("status"),
+        "active": maintenance.get("active"),
+        "message": maintenance.get("message"),
+        "scheduledStartAt": maintenance.get("scheduledStartAt"),
+        "expectedEndAt": maintenance.get("expectedEndAt"),
+    }
+
+
+def _sse_message(event: str, data: Dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
 @router.get("/system/maintenance", response_model=ApiResponse)
 def get_public_system_maintenance() -> ApiResponse:
     maintenance = global_settings.get_system_maintenance()
-    return ok(
-        {
-            "enforcementEnabled": maintenance.get("enforcementEnabled"),
-            "status": maintenance.get("status"),
-            "active": maintenance.get("active"),
-            "message": maintenance.get("message"),
-            "scheduledStartAt": maintenance.get("scheduledStartAt"),
-            "expectedEndAt": maintenance.get("expectedEndAt"),
-        }
+    return ok(_public_maintenance_payload(maintenance))
+
+
+@router.get("/system/maintenance/events")
+async def stream_public_system_maintenance_events(request: Request) -> StreamingResponse:
+    async def event_stream():
+        last_seen_version = maintenance_event_hub.current_version()
+        initial = _public_maintenance_payload(global_settings.get_system_maintenance())
+        yield _sse_message("maintenance_state", initial)
+        while True:
+            if await request.is_disconnected():
+                break
+            event = await asyncio.to_thread(maintenance_event_hub.wait_for_event, last_seen_version, 25.0)
+            if event is None:
+                yield ": keep-alive\n\n"
+                continue
+            last_seen_version, payload = event
+            yield _sse_message("maintenance_state", _public_maintenance_payload(payload))
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -602,7 +638,9 @@ def get_admin_system_maintenance() -> ApiResponse:
 
 @router.put("/admin/system/maintenance", response_model=ApiResponse)
 def update_admin_system_maintenance(payload: SystemMaintenanceUpdate) -> ApiResponse:
-    return ok(global_settings.update_system_maintenance(payload, updated_by="admin"))
+    maintenance = global_settings.update_system_maintenance(payload, updated_by="admin")
+    maintenance_event_hub.publish(maintenance)
+    return ok(maintenance)
 
 
 @router.get("/admin/settings/ocr-models", response_model=ApiResponse)

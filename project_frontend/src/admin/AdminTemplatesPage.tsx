@@ -209,7 +209,15 @@ export default function AdminTemplatesPage() {
         if (!expectedEndAt || handledPendingRefreshEndRef.current === expectedEndAt) return;
         const expectedEndMs = new Date(expectedEndAt).getTime();
         if (Number.isNaN(expectedEndMs)) return;
-        const delayMs = Math.max(0, expectedEndMs - Date.now() + 1500);
+        const now = Date.now();
+        if (expectedEndMs <= now) {
+          handledPendingRefreshEndRef.current = expectedEndAt;
+          if (!cancelled) {
+            void loadTemplates({ silent: true });
+          }
+          return;
+        }
+        const delayMs = expectedEndMs - now + 1500;
         timeoutId = window.setTimeout(() => {
           if (cancelled) return;
           handledPendingRefreshEndRef.current = expectedEndAt;

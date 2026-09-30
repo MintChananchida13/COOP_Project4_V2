@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, Bell, LogOut } from "lucide-react";
@@ -92,6 +92,9 @@ const formatMaintenanceDateTime = (value?: string | null) => {
 };
 
 const isMaintenanceScheduleRelevant = (maintenance?: Partial<SystemMaintenanceState> | null) => {
+  if (!maintenance?.enforcementEnabled) return false;
+  if (maintenance?.active) return true;
+  if (maintenance?.status && !["scheduled", "active"].includes(String(maintenance.status))) return false;
   if (!maintenance?.scheduledStartAt || !maintenance?.expectedEndAt) return false;
   const expectedEnd = new Date(maintenance.expectedEndAt);
   if (Number.isNaN(expectedEnd.getTime())) return false;
@@ -1686,6 +1689,8 @@ function HomeWorkspace() {
   const notificationDropdownRef = useRef<HTMLDivElement | null>(null);
   const ocrPageReferenceDimensionsRef = useRef<Record<number, RoiReferenceDimensions>>({});
   const previousMaintenanceActiveRef = useRef<boolean | null>(null);
+  const maintenanceRequestRef = useRef<Promise<SystemMaintenanceState | null> | null>(null);
+  const maintenanceStateRef = useRef<SystemMaintenanceState | null>(null);
 
   useEffect(() => {
     const session = readAuthSession();
@@ -1696,42 +1701,71 @@ function HomeWorkspace() {
     setAuthSession(session);
   }, [router]);
 
-  const refreshMaintenanceState = async () => {
-    try {
-      const state = await fetchSystemMaintenance();
-      setMaintenanceState(state);
-      setMaintenanceStatus("ready");
-      return state;
-    } catch (error) {
-      console.warn("System maintenance state load failed.", error);
-      setMaintenanceStatus("error");
-      return null;
-    }
-  };
-
-  useEffect(() => {
-    void refreshMaintenanceState();
-    const handleVisibilityRefresh = () => {
-      if (document.visibilityState === "visible") {
-        void refreshMaintenanceState();
-      }
-    };
-    window.addEventListener("focus", refreshMaintenanceState);
-    document.addEventListener("visibilitychange", handleVisibilityRefresh);
-    return () => {
-      window.removeEventListener("focus", refreshMaintenanceState);
-      document.removeEventListener("visibilitychange", handleVisibilityRefresh);
-    };
+  const applyMaintenanceState = useCallback((state: SystemMaintenanceState) => {
+    maintenanceStateRef.current = state;
+    setMaintenanceState(state);
+    setMaintenanceStatus("ready");
   }, []);
 
+  const refreshMaintenanceState = useCallback(async () => {
+    if (maintenanceRequestRef.current) {
+      return maintenanceRequestRef.current;
+    }
+
+    const request = (async () => {
+      try {
+        const state = await fetchSystemMaintenance();
+        applyMaintenanceState(state);
+        return state;
+      } catch (error) {
+        console.warn("System maintenance state load failed.", error);
+        setMaintenanceStatus("error");
+        return null;
+      } finally {
+        maintenanceRequestRef.current = null;
+      }
+    })();
+
+    maintenanceRequestRef.current = request;
+    return request;
+  }, [applyMaintenanceState]);
+
   useEffect(() => {
+    const eventSource = new EventSource(`${ADMIN_API_BASE_URL}/system/maintenance/events`);
+    const handleMaintenanceState = (event: MessageEvent<string>) => {
+      try {
+        const parsed = JSON.parse(event.data) as SystemMaintenanceState;
+        applyMaintenanceState(parsed);
+      } catch (error) {
+        console.warn("System maintenance event parsing failed.", error);
+      }
+    };
+    eventSource.addEventListener("maintenance_state", handleMaintenanceState);
+    eventSource.onerror = () => {
+      setMaintenanceStatus((current) => (current === "loading" ? "error" : current));
+    };
+    return () => {
+      eventSource.removeEventListener("maintenance_state", handleMaintenanceState);
+      eventSource.close();
+    };
+  }, [applyMaintenanceState]);
+
+  useEffect(() => {
+    if (!isMaintenanceScheduleRelevant(maintenanceState)) return;
     const delay = maintenanceRefreshDelay(maintenanceState);
     if (delay === null) return;
     const timeout = window.setTimeout(() => {
       void refreshMaintenanceState();
     }, delay);
     return () => window.clearTimeout(timeout);
-  }, [maintenanceState?.scheduledStartAt, maintenanceState?.expectedEndAt]);
+  }, [
+    maintenanceState?.enforcementEnabled,
+    maintenanceState?.status,
+    maintenanceState?.active,
+    maintenanceState?.scheduledStartAt,
+    maintenanceState?.expectedEndAt,
+    refreshMaintenanceState,
+  ]);
 
   const handleSystemMaintenanceError = async (error: unknown) => {
     let currentError = error as
