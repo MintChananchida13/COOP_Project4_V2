@@ -2552,7 +2552,7 @@ def _build_table_candidate(result: Dict[str, Any], method: str) -> Dict[str, Any
     ocr_confidence = _calculate_ocr_confidence(candidate)
     structure_score = float(quality["score"])
     if ocr_confidence["available"]:
-        final_confidence = structure_score * 0.65 + float(ocr_confidence["score"]) * 0.35
+        final_confidence = structure_score * 0.50 + float(ocr_confidence["score"]) * 0.50
     else:
         final_confidence = structure_score * 0.85
     final_confidence = round(_clamp01(final_confidence), 4)
