@@ -376,10 +376,10 @@ def _expand_table_roi_box(box: List[float], image_width: int, image_height: int)
 
 def _minimum_text_roi_margin_px() -> Dict[str, float]:
     return {
-        "top": max(6.0, AUTO_ROI_EXPAND_TOP_PX * 0.60),
-        "bottom": max(4.0, AUTO_ROI_EXPAND_BOTTOM_PX * 0.50),
-        "left": max(4.0, AUTO_ROI_EXPAND_LEFT_PX * 0.40),
-        "right": max(4.0, AUTO_ROI_EXPAND_RIGHT_PX * 0.40),
+        "top": 4.0,
+        "bottom": 4.0,
+        "left": 4.0,
+        "right": 4.0,
     }
 
 
