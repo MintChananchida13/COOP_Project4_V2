@@ -1,5 +1,4 @@
 import os
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -23,9 +22,6 @@ class ImageNormalizationService:
     LAYOUT_CROP_PADDING_X_RATIO = 0.12
     LAYOUT_CROP_PADDING_TOP_RATIO = 0.18
     LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.18
-    TEXT_DESKEW_MIN_POLYGONS = int(os.getenv("TEXT_DESKEW_MIN_POLYGONS", "5"))
-    TEXT_DESKEW_MAX_ABS_ANGLE_DEG = float(os.getenv("TEXT_DESKEW_MAX_ABS_ANGLE_DEG", "3.0"))
-    TEXT_DESKEW_MAX_SPREAD_DEG = float(os.getenv("TEXT_DESKEW_MAX_SPREAD_DEG", "1.4"))
 
     def normalize_document(self, image_path: str, output_path: Optional[str] = None) -> Dict[str, Any]:
         source_path = Path(image_path)
@@ -81,17 +77,6 @@ class ImageNormalizationService:
                             "layout_crop_fallback_reason": layout_debug.get("fallback_reason"),
                         }
                     )
-
-            deskew_enabled = os.getenv("TEXT_POLYGON_DESKEW_ENABLED", "").strip().lower() in {"1", "true", "yes"}
-            if deskew_enabled and not bool(debug.get("perspective_applied")):
-                normalized, deskew_debug = self._text_polygon_deskew(normalized)
-                debug["text_polygon_deskew"] = deskew_debug
-            else:
-                debug["text_polygon_deskew"] = {
-                    "enabled": deskew_enabled,
-                    "applied": False,
-                    "reason": "perspective_already_applied" if bool(debug.get("perspective_applied")) else "disabled",
-                }
 
         normalized = self._resize_longest_side(normalized, self.LONGEST_SIDE)
         normalized_height, normalized_width = normalized.shape[:2]
@@ -665,141 +650,6 @@ class ImageNormalizationService:
             if right > left and bottom > top:
                 boxes.append([left, top, right, bottom])
         return boxes
-
-    def _text_polygon_deskew(self, image: np.ndarray) -> tuple[np.ndarray, Dict[str, Any]]:
-        debug: Dict[str, Any] = {
-            "enabled": True,
-            "applied": False,
-            "reason": "not_evaluated",
-            "polygon_count": 0,
-            "usable_angle_count": 0,
-            "median_angle_deg": None,
-            "angle_spread_deg": None,
-            "max_abs_angle_deg": self.TEXT_DESKEW_MAX_ABS_ANGLE_DEG,
-            "max_spread_deg": self.TEXT_DESKEW_MAX_SPREAD_DEG,
-        }
-        if image is None or image.size == 0:
-            debug["reason"] = "invalid_image"
-            return image, debug
-
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
-            temp_path = temp_file.name
-        try:
-            cv2.imwrite(temp_path, image)
-            from app.model_runtime.layout_analysis_service import detect_text_boxes
-
-            detection = detect_text_boxes(temp_path)
-        except Exception as error:
-            debug.update({"reason": "text_detection_unavailable", "error": str(error)})
-            return image, debug
-        finally:
-            Path(temp_path).unlink(missing_ok=True)
-
-        regions = detection.get("regions") if isinstance(detection, dict) else []
-        if not isinstance(regions, list):
-            debug["reason"] = "invalid_text_detection_result"
-            return image, debug
-
-        angles: List[float] = []
-        for region in regions:
-            if not isinstance(region, dict):
-                continue
-            polygon = region.get("polygon")
-            if not isinstance(polygon, list) or len(polygon) < 4:
-                continue
-            angle = self._text_polygon_angle_deg(polygon)
-            if angle is None:
-                continue
-            if abs(angle) > self.TEXT_DESKEW_MAX_ABS_ANGLE_DEG:
-                continue
-            angles.append(angle)
-
-        debug["polygon_count"] = sum(1 for region in regions if isinstance(region, dict) and isinstance(region.get("polygon"), list))
-        debug["usable_angle_count"] = len(angles)
-        if len(angles) < self.TEXT_DESKEW_MIN_POLYGONS:
-            debug["reason"] = "insufficient_text_polygons"
-            debug["minimum_polygons"] = self.TEXT_DESKEW_MIN_POLYGONS
-            return image, debug
-
-        angle_array = np.array(angles, dtype=np.float32)
-        median_angle = float(np.median(angle_array))
-        q1 = float(np.percentile(angle_array, 25))
-        q3 = float(np.percentile(angle_array, 75))
-        spread = float(q3 - q1)
-        debug["median_angle_deg"] = round(median_angle, 4)
-        debug["angle_spread_deg"] = round(spread, 4)
-        if abs(median_angle) < 0.15:
-            debug["reason"] = "angle_too_small"
-            return image, debug
-        if abs(median_angle) > self.TEXT_DESKEW_MAX_ABS_ANGLE_DEG:
-            debug["reason"] = "angle_too_large"
-            return image, debug
-        if spread > self.TEXT_DESKEW_MAX_SPREAD_DEG:
-            debug["reason"] = "angle_spread_too_high"
-            return image, debug
-
-        rotated = self._rotate_image_keep_bounds(image, median_angle)
-        validation = self._validate_transformed_image(rotated, image)
-        debug["transform_validation"] = validation
-        if not validation["passed"]:
-            debug["reason"] = validation["reason"]
-            return image, debug
-
-        debug.update(
-            {
-                "applied": True,
-                "reason": "text_polygon_rotation_applied",
-                "rotation_angle_deg": round(median_angle, 4),
-            }
-        )
-        return rotated, debug
-
-    def _text_polygon_angle_deg(self, polygon: List[Any]) -> Optional[float]:
-        points: List[List[float]] = []
-        for point in polygon[:4]:
-            if isinstance(point, dict):
-                x_value = point.get("x", point.get("x_ratio", point.get("xRatio")))
-                y_value = point.get("y", point.get("y_ratio", point.get("yRatio")))
-            elif isinstance(point, (list, tuple)) and len(point) >= 2:
-                x_value = point[0]
-                y_value = point[1]
-            else:
-                continue
-            try:
-                points.append([float(x_value), float(y_value)])
-            except (TypeError, ValueError):
-                continue
-        if len(points) < 4:
-            return None
-        ordered = self._order_points(np.array(points, dtype=np.float32))
-        top_left, top_right, bottom_right, bottom_left = ordered
-        top_angle = np.degrees(np.arctan2(float(top_right[1] - top_left[1]), float(top_right[0] - top_left[0])))
-        bottom_angle = np.degrees(np.arctan2(float(bottom_right[1] - bottom_left[1]), float(bottom_right[0] - bottom_left[0])))
-        angle = float((top_angle + bottom_angle) / 2.0)
-        while angle <= -45.0:
-            angle += 90.0
-        while angle > 45.0:
-            angle -= 90.0
-        return angle
-
-    def _rotate_image_keep_bounds(self, image: np.ndarray, angle_deg: float) -> np.ndarray:
-        height, width = image.shape[:2]
-        center = (width / 2.0, height / 2.0)
-        matrix = cv2.getRotationMatrix2D(center, float(angle_deg), 1.0)
-        cos_value = abs(matrix[0, 0])
-        sin_value = abs(matrix[0, 1])
-        new_width = int((height * sin_value) + (width * cos_value))
-        new_height = int((height * cos_value) + (width * sin_value))
-        matrix[0, 2] += (new_width / 2.0) - center[0]
-        matrix[1, 2] += (new_height / 2.0) - center[1]
-        return cv2.warpAffine(
-            image,
-            matrix,
-            (max(1, new_width), max(1, new_height)),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(255, 255, 255),
-        )
 
     def _resize_to_height(self, image: np.ndarray, height: int) -> np.ndarray:
         original_height, original_width = image.shape[:2]
