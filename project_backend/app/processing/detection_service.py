@@ -45,6 +45,10 @@ DETECTION_FULL_EVAL_LIMIT = max(1, int(os.getenv("DETECTION_FULL_EVAL_LIMIT", st
 DETECTION_ALIGNMENT_LIMIT = max(0, int(os.getenv("DETECTION_ALIGNMENT_LIMIT", "1")))
 SAVE_DEBUG_ARTIFACTS = os.getenv("SAVE_DEBUG_ARTIFACTS", "false").strip().lower() in {"1", "true", "yes", "on"}
 DETECTION_COORDINATE_DEBUG = os.getenv("DETECTION_COORDINATE_DEBUG", "false").strip().lower() in {"1", "true", "yes", "on"}
+LAYOUT_REFERENCE_CROP_ENABLED = os.getenv("LAYOUT_REFERENCE_CROP_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+LAYOUT_REFERENCE_CROP_MAX_INSET_RATIO = float(os.getenv("LAYOUT_REFERENCE_CROP_MAX_INSET_RATIO", "0.35"))
+LAYOUT_REFERENCE_CROP_MIN_COVERAGE_RATIO = float(os.getenv("LAYOUT_REFERENCE_CROP_MIN_COVERAGE_RATIO", "0.55"))
+LAYOUT_REFERENCE_CROP_MIN_DELTA_RATIO = float(os.getenv("LAYOUT_REFERENCE_CROP_MIN_DELTA_RATIO", "0.015"))
 verification_service = VerificationService()
 decision_service = DecisionService()
 global_settings_service = GlobalSettingsService()
@@ -522,6 +526,164 @@ def _image_source_dimensions(source: Optional[str]) -> Optional[List[int]]:
         return [int(width), int(height)]
     except Exception:
         return None
+
+
+def _signature_content_bounds(signature: Optional[Dict[str, Any]]) -> Optional[Dict[str, float]]:
+    regions = signature.get("regions") if isinstance(signature, dict) else None
+    if not isinstance(regions, list) or not regions:
+        return None
+    left = 1.0
+    top = 1.0
+    right = 0.0
+    bottom = 0.0
+    valid_count = 0
+    for region in regions:
+        if not isinstance(region, dict):
+            continue
+        bbox = region.get("bbox") if isinstance(region.get("bbox"), dict) else {}
+        try:
+            x = float(bbox.get("x_ratio") or 0.0)
+            y = float(bbox.get("y_ratio") or 0.0)
+            box_width = float(bbox.get("width_ratio") or 0.0)
+            box_height = float(bbox.get("height_ratio") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if box_width <= 0.0 or box_height <= 0.0:
+            continue
+        left = min(left, max(0.0, min(1.0, x)))
+        top = min(top, max(0.0, min(1.0, y)))
+        right = max(right, max(0.0, min(1.0, x + box_width)))
+        bottom = max(bottom, max(0.0, min(1.0, y + box_height)))
+        valid_count += 1
+    if valid_count <= 0 or right <= left or bottom <= top:
+        return None
+    return {
+        "left": left,
+        "top": top,
+        "right": right,
+        "bottom": bottom,
+        "width": right - left,
+        "height": bottom - top,
+        "region_count": valid_count,
+    }
+
+
+def _solve_reference_crop_axis(
+    query_min: float,
+    query_max: float,
+    template_min: float,
+    template_max: float,
+    image_size: int,
+) -> Optional[tuple[int, int]]:
+    query_span = query_max - query_min
+    template_span = template_max - template_min
+    if query_span <= 0.01 or template_span <= 0.01 or image_size <= 0:
+        return None
+    crop_size_ratio = query_span / template_span
+    crop_start_ratio = query_min - (template_min * crop_size_ratio)
+    crop_end_ratio = crop_start_ratio + crop_size_ratio
+    return int(round(crop_start_ratio * image_size)), int(round(crop_end_ratio * image_size))
+
+
+def _clamp_reference_crop_box(left: int, top: int, right: int, bottom: int, image_width: int, image_height: int) -> Dict[str, Any]:
+    original = [left, top, right, bottom]
+    max_inset_x = int(round(image_width * LAYOUT_REFERENCE_CROP_MAX_INSET_RATIO))
+    max_inset_y = int(round(image_height * LAYOUT_REFERENCE_CROP_MAX_INSET_RATIO))
+    min_width = int(round(image_width * LAYOUT_REFERENCE_CROP_MIN_COVERAGE_RATIO))
+    min_height = int(round(image_height * LAYOUT_REFERENCE_CROP_MIN_COVERAGE_RATIO))
+    safe_left = min(max(0, left), max_inset_x)
+    safe_top = min(max(0, top), max_inset_y)
+    safe_right = max(min(image_width, right), image_width - max_inset_x)
+    safe_bottom = max(min(image_height, bottom), image_height - max_inset_y)
+    if safe_right - safe_left < min_width:
+        missing = min_width - (safe_right - safe_left)
+        safe_left = max(0, safe_left - ((missing + 1) // 2))
+        safe_right = min(image_width, safe_right + (missing // 2))
+    if safe_bottom - safe_top < min_height:
+        missing = min_height - (safe_bottom - safe_top)
+        safe_top = max(0, safe_top - ((missing + 1) // 2))
+        safe_bottom = min(image_height, safe_bottom + (missing // 2))
+    if safe_right <= safe_left or safe_bottom <= safe_top:
+        return {"passed": False, "reason": "invalid_reference_crop_box", "original_box": original}
+    final_box = [safe_left, safe_top, safe_right, safe_bottom]
+    return {
+        "passed": True,
+        "original_box": original,
+        "final_box": final_box,
+        "clamped": final_box != original,
+        "max_inset_ratio": LAYOUT_REFERENCE_CROP_MAX_INSET_RATIO,
+        "min_coverage_ratio": LAYOUT_REFERENCE_CROP_MIN_COVERAGE_RATIO,
+    }
+
+
+def _layout_reference_adjusted_image(
+    image_path: str,
+    query_signature: Optional[Dict[str, Any]],
+    template_signature: Optional[Dict[str, Any]],
+    output_dir: Path,
+    template_id: Optional[str],
+    page_number: int,
+) -> Dict[str, Any]:
+    debug: Dict[str, Any] = {"enabled": LAYOUT_REFERENCE_CROP_ENABLED, "applied": False, "reason": "not_attempted"}
+    if not LAYOUT_REFERENCE_CROP_ENABLED:
+        debug["reason"] = "disabled"
+        return debug
+    query_bounds = _signature_content_bounds(query_signature)
+    template_bounds = _signature_content_bounds(template_signature)
+    debug["query_bounds"] = query_bounds
+    debug["template_bounds"] = template_bounds
+    if not query_bounds or not template_bounds:
+        debug["reason"] = "missing_signature_bounds"
+        return debug
+
+    image = cv2.imread(str(image_path))
+    if image is None:
+        debug["reason"] = "image_unreadable"
+        return debug
+    image_height, image_width = image.shape[:2]
+    x_axis = _solve_reference_crop_axis(query_bounds["left"], query_bounds["right"], template_bounds["left"], template_bounds["right"], image_width)
+    y_axis = _solve_reference_crop_axis(query_bounds["top"], query_bounds["bottom"], template_bounds["top"], template_bounds["bottom"], image_height)
+    if x_axis is None or y_axis is None:
+        debug["reason"] = "reference_crop_axis_unavailable"
+        return debug
+    crop_debug = _clamp_reference_crop_box(x_axis[0], y_axis[0], x_axis[1], y_axis[1], image_width, image_height)
+    debug["crop"] = crop_debug
+    if not crop_debug.get("passed"):
+        debug["reason"] = str(crop_debug.get("reason") or "reference_crop_invalid")
+        return debug
+
+    crop_left, crop_top, crop_right, crop_bottom = crop_debug["final_box"]
+    delta = max(
+        crop_left / max(1, image_width),
+        crop_top / max(1, image_height),
+        (image_width - crop_right) / max(1, image_width),
+        (image_height - crop_bottom) / max(1, image_height),
+    )
+    debug["max_delta_ratio"] = round(float(delta), 6)
+    if delta < LAYOUT_REFERENCE_CROP_MIN_DELTA_RATIO:
+        debug["reason"] = "reference_crop_delta_too_small"
+        return debug
+
+    cropped = image[crop_top:crop_bottom, crop_left:crop_right].copy()
+    if cropped.size == 0:
+        debug["reason"] = "reference_crop_empty"
+        return debug
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{_safe_file_token(template_id)}_page_{page_number}_layout_reference_crop.png"
+    if not cv2.imwrite(str(output_path), cropped):
+        debug["reason"] = "reference_crop_write_failed"
+        return debug
+    debug.update(
+        {
+            "applied": True,
+            "reason": "layout_reference_crop_applied",
+            "image_path": str(output_path),
+            "preview_url": _detection_preview_url(str(output_path)),
+            "source_image_size": [int(image_width), int(image_height)],
+            "output_image_size": [int(crop_right - crop_left), int(crop_bottom - crop_top)],
+        }
+    )
+    return debug
 
 
 def _layout_signature_for_image_path(image_path: str, timing: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
@@ -1705,6 +1867,31 @@ def _candidate_from_result(
     extraction_image_path = str(alignment.get("aligned_image_path") or query_image_path) if verification_source_used == "aligned" else query_image_path
     extraction_image_preview_url = _detection_preview_url(extraction_image_path)
     roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} else "projected"
+    layout_reference_crop_debug: Dict[str, Any] = {
+        "enabled": LAYOUT_REFERENCE_CROP_ENABLED,
+        "applied": False,
+        "reason": "candidate_not_final_passed",
+    }
+    if decision.get("final_passed") and verification_source_used == "normalized":
+        step_started = time.perf_counter()
+        query_path = Path(query_image_path)
+        output_root = query_path.parent.parent if query_path.parent.name == "normalized" else query_path.parent
+        layout_reference_crop_debug = _layout_reference_adjusted_image(
+            query_image_path,
+            query_signature,
+            template_signature,
+            output_root / "layout_reference",
+            template_id,
+            template_page_number,
+        )
+        candidate_timing["layout_reference_crop"] = time.perf_counter() - step_started
+        if layout_reference_crop_debug.get("applied") and layout_reference_crop_debug.get("image_path"):
+            extraction_image_path = str(layout_reference_crop_debug["image_path"])
+            extraction_image_preview_url = str(layout_reference_crop_debug.get("preview_url") or _detection_preview_url(extraction_image_path))
+            alignment_debug["layout_reference_crop_applied"] = True
+            alignment_debug["layout_reference_crop_reason"] = layout_reference_crop_debug.get("reason")
+    else:
+        candidate_timing["layout_reference_crop"] = 0.0
 
     template_fields: List[Dict[str, Any]] = []
     template_rois: List[Dict[str, Any]] = []
@@ -1862,6 +2049,7 @@ def _candidate_from_result(
         "extraction_image_path": extraction_image_path,
         "extraction_image_preview_url": extraction_image_preview_url,
         "roi_coordinate_space": roi_coordinate_space,
+        "layout_reference_crop": layout_reference_crop_debug,
 
         "verification": verification,
         "verification_details": (
@@ -1915,6 +2103,7 @@ def _candidate_from_result(
                 "roi_items_ms": _ms(candidate_timing.get("roi_items")),
                 "projection_ms": _ms(candidate_timing.get("projection")),
                 "extraction_test_ms": _ms(candidate_timing.get("extraction_test")),
+                "layout_reference_crop_ms": _ms(candidate_timing.get("layout_reference_crop")),
                 "coordinate_debug_ms": _ms(candidate_timing.get("coordinate_debug")),
             },
             "cache": candidate_cache_debug,
