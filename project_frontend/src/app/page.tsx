@@ -689,7 +689,7 @@ async function buildTemplateCanvasImages(
     const pageCandidate =
       page?.candidates?.find((candidate) => candidate.templateId === templateId) ||
       (page?.bestCandidate?.templateId === templateId ? page.bestCandidate : null);
-    const extractionSrc = backendPreviewSrc(pageCandidate?.extractionImagePreviewUrl || pageCandidate?.alignedImagePreviewUrl);
+    const extractionSrc = backendPreviewSrc(pageCandidate?.alignedImagePreviewUrl || pageCandidate?.extractionImagePreviewUrl);
     if (!extractionSrc) return sourceImage;
     try {
       return await imageUrlToCanvasSafeSrc(extractionSrc);

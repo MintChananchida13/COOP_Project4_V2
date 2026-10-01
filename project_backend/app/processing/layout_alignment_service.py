@@ -24,11 +24,6 @@ class LayoutAlignmentService:
     MAX_TRANSFORM_AREA_RATIO = 1.45
     MIN_TRANSFORM_SIDE_RATIO = 0.55
     MAX_TRANSFORM_SIDE_RATIO = 1.45
-    MAX_TRANSFORM_ROTATION_DEG = 3.0
-    MIN_TRANSFORM_SCALE = 0.92
-    MAX_TRANSFORM_SCALE = 1.08
-    MAX_TRANSFORM_TRANSLATION_RATIO = 0.08
-    MAX_TRANSFORM_SHEAR = 0.025
 
     def __init__(self) -> None:
         self._signature_cache: Dict[str, Dict[str, Any]] = {}
@@ -418,10 +413,14 @@ class LayoutAlignmentService:
         ]
 
     def _estimate_transform(self, query_points: np.ndarray, template_points: np.ndarray):
+        if len(query_points) >= 12:
+            homography, mask = cv2.findHomography(query_points.reshape(-1, 1, 2), template_points.reshape(-1, 1, 2), cv2.RANSAC, 5.0)
+            if homography is not None and mask is not None and int(mask.ravel().sum()) >= max(8, len(query_points) * 0.35):
+                return "homography", homography, int(mask.ravel().sum())
         if len(query_points) >= 6:
             affine, mask = cv2.estimateAffinePartial2D(query_points, template_points, method=cv2.RANSAC, ransacReprojThreshold=5.0)
             if affine is not None:
-                return "similarity", affine, int(mask.ravel().sum()) if mask is not None else 0
+                return "affine", affine, int(mask.ravel().sum()) if mask is not None else 0
         return "none", None, 0
 
     def _transform_sanity_check(
@@ -435,11 +434,6 @@ class LayoutAlignmentService:
         template_height, template_width = template_shape[:2]
         if query_width <= 0 or query_height <= 0 or template_width <= 0 or template_height <= 0:
             return {"passed": False, "reason": "invalid_image_dimensions"}
-        if transform_type != "similarity":
-            return {"passed": False, "reason": "layout_transform_type_not_allowed", "transform_type": transform_type}
-        affine_debug = self._affine_similarity_debug(matrix, query_shape, template_shape)
-        if not affine_debug.get("passed"):
-            return affine_debug
 
         corners = np.float32(
             [
@@ -449,7 +443,10 @@ class LayoutAlignmentService:
                 [0.0, float(query_height)],
             ]
         )
-        transformed = cv2.transform(corners.reshape(-1, 1, 2), matrix).reshape(-1, 2)
+        if transform_type == "homography":
+            transformed = cv2.perspectiveTransform(corners.reshape(-1, 1, 2), matrix).reshape(-1, 2)
+        else:
+            transformed = cv2.transform(corners.reshape(-1, 1, 2), matrix).reshape(-1, 2)
 
         xs = transformed[:, 0]
         ys = transformed[:, 1]
@@ -498,55 +495,12 @@ class LayoutAlignmentService:
         return {
             "passed": True,
             "reason": "layout_transform_sanity_passed",
-            **affine_debug,
             "area_ratio": round(float(area_ratio), 4),
             "width_ratio": round(float(width_ratio), 4),
             "height_ratio": round(float(height_ratio), 4),
             "overflow_x": round(float(overflow_x), 4),
             "overflow_y": round(float(overflow_y), 4),
         }
-
-    def _affine_similarity_debug(
-        self,
-        matrix: np.ndarray,
-        query_shape: Tuple[int, int, int],
-        template_shape: Tuple[int, int, int],
-    ) -> Dict[str, Any]:
-        query_height, query_width = query_shape[:2]
-        template_height, template_width = template_shape[:2]
-        a = float(matrix[0, 0])
-        b = float(matrix[0, 1])
-        c = float(matrix[1, 0])
-        d = float(matrix[1, 1])
-        tx = float(matrix[0, 2])
-        ty = float(matrix[1, 2])
-        scale_x = float(np.sqrt((a * a) + (c * c)))
-        scale_y = float(np.sqrt((b * b) + (d * d)))
-        scale = (scale_x + scale_y) / 2.0
-        shear = abs(scale_x - scale_y)
-        rotation = float(np.degrees(np.arctan2(c, a)))
-        translation_x = abs(tx) / max(1.0, float(template_width))
-        translation_y = abs(ty) / max(1.0, float(template_height))
-        debug = {
-            "passed": True,
-            "reason": "layout_similarity_transform_passed",
-            "rotation_deg": round(rotation, 4),
-            "scale": round(scale, 4),
-            "scale_x": round(scale_x, 4),
-            "scale_y": round(scale_y, 4),
-            "shear": round(shear, 4),
-            "translation_x_ratio": round(translation_x, 4),
-            "translation_y_ratio": round(translation_y, 4),
-        }
-        if abs(rotation) > self.MAX_TRANSFORM_ROTATION_DEG:
-            return {**debug, "passed": False, "reason": "layout_similarity_rotation_too_large"}
-        if scale < self.MIN_TRANSFORM_SCALE or scale > self.MAX_TRANSFORM_SCALE:
-            return {**debug, "passed": False, "reason": "layout_similarity_scale_out_of_range"}
-        if translation_x > self.MAX_TRANSFORM_TRANSLATION_RATIO or translation_y > self.MAX_TRANSFORM_TRANSLATION_RATIO:
-            return {**debug, "passed": False, "reason": "layout_similarity_translation_too_large"}
-        if shear > self.MAX_TRANSFORM_SHEAR:
-            return {**debug, "passed": False, "reason": "layout_similarity_shear_too_large"}
-        return debug
 
     def _save_match_visualization(
         self,

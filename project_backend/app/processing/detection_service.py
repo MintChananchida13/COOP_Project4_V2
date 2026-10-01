@@ -1366,13 +1366,6 @@ def _align_candidate_page(
             layout_alignment["alignment_debug"] = layout_debug
             return layout_alignment
 
-        layout_debug["orb_executed"] = False
-        layout_debug["orb_skipped_reason"] = "layout_similarity_alignment_failed_normalized_image_used"
-        layout_debug["align_candidate_page_total_ms"] = _ms(time.perf_counter() - align_candidate_started)
-        layout_alignment["alignment_status"] = "fallback"
-        layout_alignment["alignment_debug"] = layout_debug
-        return layout_alignment
-
         precheck = alignment_service.alignment_precheck(query_image_path, template_image_source, normalization_info)
         if not precheck.get("should_run_orb"):
             precheck["layout_alignment"] = layout_debug
@@ -1570,9 +1563,9 @@ def _candidate_from_result(
 
     # ค่าเริ่มต้น: ยังไม่ align
     alignment = _alignment_result(
-        "fallback",
+        "skipped",
         "normalized_verification_checked_first",
-        precheck={"reason": "alignment_deferred_until_needed_projected_roi_default"},
+        precheck={"reason": "alignment_deferred_until_needed"},
     )
 
     aligned_verification = None
@@ -1581,16 +1574,10 @@ def _candidate_from_result(
 
     # 2) Template alignment is part of the production path.
     # The alignment service precheck skips ORB when geometry already matches.
-    normalized_passed = bool(normalized_verification.get("passed"))
-    should_try_alignment = template_id is not None and allow_alignment and not normalized_passed
-
-    if normalized_passed:
-        alignment_debug = alignment.get("alignment_debug") or {}
-        alignment_debug["reason"] = "normalized_verification_passed_alignment_skipped"
-        alignment_debug["alignment_status"] = "fallback"
-        alignment_debug["warp_applied"] = False
-        alignment_debug["verification_source_used"] = "normalized"
-        alignment["alignment_debug"] = alignment_debug
+    should_try_alignment = template_id is not None and allow_alignment and (
+        verification_strategy != VERIFICATION_STRATEGY_STRICT
+        or bool(normalized_verification.get("passed"))
+    )
 
     if should_try_alignment:
         step_started = time.perf_counter()
@@ -1718,8 +1705,6 @@ def _candidate_from_result(
     extraction_image_path = str(alignment.get("aligned_image_path") or query_image_path) if verification_source_used == "aligned" else query_image_path
     extraction_image_preview_url = _detection_preview_url(extraction_image_path)
     roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} else "projected"
-    aligned_image_path = alignment.get("aligned_image_path") if verification_source_used == "aligned" and alignment_status == "aligned" else None
-    aligned_image_preview_url = alignment.get("aligned_image_preview_url") if aligned_image_path else None
 
     template_fields: List[Dict[str, Any]] = []
     template_rois: List[Dict[str, Any]] = []
@@ -1870,8 +1855,8 @@ def _candidate_from_result(
 
         "alignment_match_image_path": alignment.get("alignment_match_image_path"),
         "alignment_match_image_preview_url": alignment.get("alignment_match_image_preview_url"),
-        "aligned_image_path": aligned_image_path,
-        "aligned_image_preview_url": aligned_image_preview_url,
+        "aligned_image_path": alignment.get("aligned_image_path"),
+        "aligned_image_preview_url": alignment.get("aligned_image_preview_url"),
         "normalized_image_path": query_image_path,
         "normalized_image_preview_url": _detection_preview_url(query_image_path),
         "extraction_image_path": extraction_image_path,

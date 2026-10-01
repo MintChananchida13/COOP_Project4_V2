@@ -22,11 +22,6 @@ class ImageNormalizationService:
     LAYOUT_CROP_PADDING_X_RATIO = 0.12
     LAYOUT_CROP_PADDING_TOP_RATIO = 0.18
     LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.18
-    LAYOUT_PERSPECTIVE_MIN_RECTANGULARITY = 0.55
-    LAYOUT_PERSPECTIVE_MAX_ANGLE_DEG = 12.0
-    LAYOUT_PERSPECTIVE_MAX_AREA_RATIO = 0.92
-    LAYOUT_PERSPECTIVE_MAX_RECTANGLE_AREA_RATIO = 1.10
-    LAYOUT_MAIN_CLUSTER_PADDING_RATIO = 0.08
 
     def normalize_document(self, image_path: str, output_path: Optional[str] = None) -> Dict[str, Any]:
         source_path = Path(image_path)
@@ -534,11 +529,6 @@ class ImageNormalizationService:
             )
             return image.copy(), debug
 
-        raw_boxes = boxes
-        boxes = self._main_layout_content_boxes(raw_boxes, width, height)
-        if len(boxes) < self.LAYOUT_CROP_MIN_REGIONS:
-            boxes = raw_boxes
-
         left = min(box[0] for box in boxes)
         top = min(box[1] for box in boxes)
         right = max(box[2] for box in boxes)
@@ -552,7 +542,6 @@ class ImageNormalizationService:
                     "fallback_reason": "layout_content_area_too_small",
                     "layout_crop": {
                         "region_count": len(boxes),
-                        "raw_region_count": len(raw_boxes),
                         "content_box": [round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)],
                         "content_area_ratio": round(float(content_area_ratio), 4),
                     },
@@ -582,41 +571,10 @@ class ImageNormalizationService:
             )
             return image.copy(), debug
 
-        rectangle_area_ratio = ((crop_right - crop_left) * (crop_bottom - crop_top)) / max(1.0, width * height)
-        perspective_attempt = self._layout_perspective_crop_from_boxes(image, boxes, content_area_ratio, rectangle_area_ratio)
-        if perspective_attempt is not None:
-            perspective_image, perspective_debug = perspective_attempt
-            validation = self._validate_transformed_image(perspective_image, image)
-            perspective_debug["transform_validation"] = validation
-            if validation["passed"]:
-                debug.update(
-                    {
-                        "document_detected": True,
-                        "crop_applied": True,
-                        "perspective_applied": True,
-                        "normalization_status": "layout_perspective_cropped",
-                        "validation_passed": True,
-                        "fallback_used": False,
-                        "fallback_reason": None,
-                        "detected_contour_area": perspective_debug.get("detected_contour_area"),
-                        "contour_area_ratio": perspective_debug.get("contour_area_ratio"),
-                        "contour_source": "paddle_layout_quadrilateral",
-                        "contour_score": perspective_debug.get("score"),
-                        "contour_aspect_ratio": perspective_debug.get("aspect_ratio"),
-                        "contour_center_score": perspective_debug.get("center_score"),
-                        "detected_points": perspective_debug.get("detected_points"),
-                        "warped_size": perspective_debug.get("warped_size"),
-                        "transform_validation": validation,
-                        "layout_crop": perspective_debug,
-                    }
-                )
-                return perspective_image, debug
-
         cropped = image[crop_top:crop_bottom, crop_left:crop_right].copy()
         validation = self._validate_transformed_image(cropped, image)
         layout_crop_debug = {
             "region_count": len(boxes),
-            "raw_region_count": len(raw_boxes),
             "content_box": [round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)],
             "expanded_box": [crop_left, crop_top, crop_right, crop_bottom],
             "content_area_ratio": round(float(content_area_ratio), 4),
@@ -662,157 +620,6 @@ class ImageNormalizationService:
             }
         )
         return cropped, debug
-
-    def _layout_perspective_crop_from_boxes(
-        self,
-        image: np.ndarray,
-        boxes: List[List[float]],
-        content_area_ratio: float,
-        rectangle_area_ratio: float,
-    ) -> Optional[tuple[np.ndarray, Dict[str, Any]]]:
-        if len(boxes) < self.LAYOUT_CROP_MIN_REGIONS:
-            return None
-        height, width = image.shape[:2]
-        points: List[List[float]] = []
-        for left, top, right, bottom in boxes:
-            points.extend(
-                [
-                    [float(left), float(top)],
-                    [float(right), float(top)],
-                    [float(right), float(bottom)],
-                    [float(left), float(bottom)],
-                ]
-            )
-        if len(points) < 8:
-            return None
-        point_array = np.array(points, dtype=np.float32)
-        rect = cv2.minAreaRect(point_array)
-        (center_x, center_y), (rect_width, rect_height), rect_angle = rect
-        if rect_width <= 2 or rect_height <= 2:
-            return None
-
-        rect_area = float(rect_width * rect_height)
-        axis_left = min(box[0] for box in boxes)
-        axis_top = min(box[1] for box in boxes)
-        axis_right = max(box[2] for box in boxes)
-        axis_bottom = max(box[3] for box in boxes)
-        axis_area = max(1.0, float((axis_right - axis_left) * (axis_bottom - axis_top)))
-        rectangularity = axis_area / max(1.0, rect_area)
-        normalized_angle = self._normalized_rect_angle(rect_width, rect_height, rect_angle)
-        if rectangularity < self.LAYOUT_PERSPECTIVE_MIN_RECTANGULARITY:
-            return None
-        if abs(normalized_angle) > self.LAYOUT_PERSPECTIVE_MAX_ANGLE_DEG:
-            return None
-
-        expanded_width = rect_width + max(width * 0.03, rect_width * (self.LAYOUT_CROP_PADDING_X_RATIO * 2.0))
-        expanded_height = rect_height + max(height * 0.03, rect_height * (self.LAYOUT_CROP_PADDING_TOP_RATIO + self.LAYOUT_CROP_PADDING_BOTTOM_RATIO))
-        expanded_rect = ((center_x, center_y), (expanded_width, expanded_height), rect_angle)
-        ordered = self._order_points(cv2.boxPoints(expanded_rect).astype("float32"))
-        ordered[:, 0] = np.clip(ordered[:, 0], 0.0, float(width))
-        ordered[:, 1] = np.clip(ordered[:, 1], 0.0, float(height))
-
-        top_left, top_right, bottom_right, bottom_left = ordered
-        width_a = np.linalg.norm(bottom_right - bottom_left)
-        width_b = np.linalg.norm(top_right - top_left)
-        height_a = np.linalg.norm(top_right - bottom_right)
-        height_b = np.linalg.norm(top_left - bottom_left)
-        max_width = max(1, int(max(width_a, width_b)))
-        max_height = max(1, int(max(height_a, height_b)))
-        if max_width < self.MIN_TRANSFORMED_DIMENSION or max_height < self.MIN_TRANSFORMED_DIMENSION:
-            return None
-
-        destination = np.array(
-            [
-                [0, 0],
-                [max_width - 1, 0],
-                [max_width - 1, max_height - 1],
-                [0, max_height - 1],
-            ],
-            dtype="float32",
-        )
-        matrix = cv2.getPerspectiveTransform(ordered, destination)
-        warped = cv2.warpPerspective(
-            image,
-            matrix,
-            (max_width, max_height),
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(255, 255, 255),
-        )
-        center = np.array([width / 2.0, height / 2.0], dtype=np.float32)
-        contour_center = ordered.mean(axis=0)
-        center_distance = float(np.linalg.norm(contour_center - center))
-        max_center_distance = float(np.linalg.norm(center))
-        center_score = 1.0 - min(1.0, center_distance / max(1.0, max_center_distance))
-        area_ratio = float((max_width * max_height) / max(1.0, width * height))
-        if area_ratio > self.LAYOUT_PERSPECTIVE_MAX_AREA_RATIO:
-            return None
-        if area_ratio > rectangle_area_ratio * self.LAYOUT_PERSPECTIVE_MAX_RECTANGLE_AREA_RATIO:
-            return None
-        area_score = min(1.0, area_ratio / 0.75)
-        score = (0.60 * area_score) + (0.40 * center_score)
-        return warped, {
-            "region_count": len(boxes),
-            "source": "paddle_layout_quadrilateral",
-            "detected_points": [[round(float(x), 2), round(float(y), 2)] for x, y in ordered.tolist()],
-            "warped_size": [max_width, max_height],
-            "detected_contour_area": round(float(max_width * max_height), 2),
-            "contour_area_ratio": round(area_ratio, 4),
-            "content_area_ratio": round(float(content_area_ratio), 4),
-            "rectangle_area_ratio": round(float(rectangle_area_ratio), 4),
-            "aspect_ratio": round(float(max_width / max(1, max_height)), 4),
-            "center_score": round(float(center_score), 4),
-            "score": round(float(score), 4),
-            "rectangularity": round(float(rectangularity), 4),
-            "angle_deg": round(float(normalized_angle), 4),
-            "expanded_box": [[round(float(x), 2), round(float(y), 2)] for x, y in ordered.tolist()],
-        }
-
-    def _main_layout_content_boxes(self, boxes: List[List[float]], image_width: int, image_height: int) -> List[List[float]]:
-        if len(boxes) < self.LAYOUT_CROP_MIN_REGIONS:
-            return boxes
-        centers_x = np.array([(box[0] + box[2]) / 2.0 for box in boxes], dtype=np.float32)
-        centers_y = np.array([(box[1] + box[3]) / 2.0 for box in boxes], dtype=np.float32)
-        lefts = np.array([box[0] for box in boxes], dtype=np.float32)
-        tops = np.array([box[1] for box in boxes], dtype=np.float32)
-        rights = np.array([box[2] for box in boxes], dtype=np.float32)
-        bottoms = np.array([box[3] for box in boxes], dtype=np.float32)
-
-        center_left = float(np.percentile(centers_x, 5))
-        center_right = float(np.percentile(centers_x, 95))
-        center_top = float(np.percentile(centers_y, 5))
-        center_bottom = float(np.percentile(centers_y, 95))
-        edge_left = float(np.percentile(lefts, 5))
-        edge_right = float(np.percentile(rights, 95))
-        edge_top = float(np.percentile(tops, 5))
-        edge_bottom = float(np.percentile(bottoms, 95))
-        pad_x = max(float(image_width) * 0.01, (edge_right - edge_left) * self.LAYOUT_MAIN_CLUSTER_PADDING_RATIO)
-        pad_y = max(float(image_height) * 0.01, (edge_bottom - edge_top) * self.LAYOUT_MAIN_CLUSTER_PADDING_RATIO)
-        filter_left = min(center_left, edge_left) - pad_x
-        filter_right = max(center_right, edge_right) + pad_x
-        filter_top = min(center_top, edge_top) - pad_y
-        filter_bottom = max(center_bottom, edge_bottom) + pad_y
-
-        filtered = [
-            box
-            for box in boxes
-            if filter_left <= ((box[0] + box[2]) / 2.0) <= filter_right
-            and filter_top <= ((box[1] + box[3]) / 2.0) <= filter_bottom
-            and box[2] >= edge_left - pad_x
-            and box[0] <= edge_right + pad_x
-            and box[3] >= edge_top - pad_y
-            and box[1] <= edge_bottom + pad_y
-        ]
-        return filtered if len(filtered) >= self.LAYOUT_CROP_MIN_REGIONS else boxes
-
-    def _normalized_rect_angle(self, rect_width: float, rect_height: float, rect_angle: float) -> float:
-        angle = float(rect_angle)
-        if rect_width < rect_height:
-            angle += 90.0
-        while angle <= -45.0:
-            angle += 90.0
-        while angle > 45.0:
-            angle -= 90.0
-        return angle
 
     def _layout_region_boxes(self, analysis: Dict[str, Any], image_width: int, image_height: int) -> List[List[float]]:
         regions = analysis.get("regions") if isinstance(analysis, dict) else None
