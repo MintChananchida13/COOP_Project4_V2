@@ -5904,14 +5904,20 @@ class AdminTemplateService:
             "template": completed_template,
         }
 
-    def test_extraction_fields(self, template_id: str) -> Dict[str, Any]:
+    def test_extraction_fields(
+        self,
+        template_id: str,
+        extraction_fields: Optional[List[Dict[str, Any]]] = None,
+        pages: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         template = self.get_template(template_id)
         if template.get("status") == "not_found":
             raise HTTPException(status_code=404, detail="Template not found")
-        fields = [field for field in template.get("fields") or [] if not field.get("use_for_verification")]
+        fields = extraction_fields if extraction_fields is not None else [field for field in template.get("fields") or [] if not field.get("use_for_verification")]
+        page_source = pages if pages is not None else template.get("pages") or []
         pages_by_number = {
             int(page.get("page_number") or 1): page
-            for page in template.get("pages") or []
+            for page in page_source
         }
         tested_fields: List[Dict[str, Any]] = []
         pending_text_items: List[Dict[str, Any]] = []
@@ -6103,12 +6109,18 @@ class AdminTemplateService:
             "passed_count": passed_count,
             "failed_count": len(tested_fields) - passed_count,
             "fields": tested_fields,
+            "source": "request_payload" if extraction_fields is not None else "stored_template",
         }
 
-    def test_verification_anchors(self, template_id: str, verification_fields: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    def test_verification_anchors(
+        self,
+        template_id: str,
+        verification_fields: Optional[List[Dict[str, Any]]] = None,
+        pages: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         started = time.perf_counter()
         template = self.get_template(template_id)
-        page_paths = self._template_page_image_paths(template_id, template.get("pages") or [])
+        page_paths = self._template_page_image_paths(template_id, pages if pages is not None else template.get("pages") or [])
         try:
             active_fields = verification_fields if verification_fields is not None else None
             verification = VerificationService().verify_template(template_id, page_paths, active_fields)

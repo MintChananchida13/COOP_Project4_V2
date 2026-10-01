@@ -310,7 +310,9 @@ class TemplateFieldUpdate(BaseModel):
 
 
 class TemplateVerificationTestRequest(BaseModel):
+    extraction_fields: Optional[List[Dict[str, Any]]] = None
     verification_fields: Optional[List[Dict[str, Any]]] = None
+    pages: Optional[List[Dict[str, Any]]] = None
 
 
 class IgnoreRegionCreate(BaseModel):

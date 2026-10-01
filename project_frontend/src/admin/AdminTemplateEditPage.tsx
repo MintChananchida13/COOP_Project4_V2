@@ -242,7 +242,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
   const flushFieldDrafts = async () => {
     if (!canPersistToBackend) {
       setLocalOnly("Field changes saved locally.");
-      return;
+      return selectedTemplateFieldsRef.current;
     }
 
     let latestBundle: TemplateBundle | null = null;
@@ -318,6 +318,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
         setSaved("Field changes saved.");
       }
     }
+    return selectedTemplateFieldsRef.current;
   };
 
   useEffect(() => {

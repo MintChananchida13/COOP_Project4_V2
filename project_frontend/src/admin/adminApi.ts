@@ -2555,15 +2555,34 @@ const templateFieldToVerificationTestPayload = (field: TemplateField) => ({
   sort_order: field.sortOrder ?? 0,
 });
 
+const templateTestPagesPayload = (pages?: { src: string; id?: string | number }[]) =>
+  pages?.map((page, index) => ({
+    id: page.id ? String(page.id) : `local_test_page_${index + 1}`,
+    page_number: index + 1,
+    sample_image_url: page.src,
+    normalized_image_url: page.src,
+  }));
+
 const runTemplateStepTest = async (
   templateId: string,
   path: "test-extraction" | "test-verification",
-  options?: { verificationFields?: TemplateField[] }
+  options?: { extractionFields?: TemplateField[]; verificationFields?: TemplateField[]; pages?: { src: string; id?: string | number }[] }
 ) => {
+  const pagesPayload = templateTestPagesPayload(options?.pages);
   const body =
     path === "test-verification" && options?.verificationFields
-      ? JSON.stringify({ verification_fields: options.verificationFields.map(templateFieldToVerificationTestPayload) })
-      : undefined;
+      ? JSON.stringify({
+          verification_fields: options.verificationFields.map(templateFieldToVerificationTestPayload),
+          pages: pagesPayload,
+        })
+      : path === "test-extraction" && options?.extractionFields
+        ? JSON.stringify({
+            extraction_fields: options.extractionFields.map(templateFieldToVerificationTestPayload),
+            pages: pagesPayload,
+          })
+        : pagesPayload
+          ? JSON.stringify({ pages: pagesPayload })
+          : undefined;
   const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/templates/${templateId}/${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2577,10 +2596,11 @@ const runTemplateStepTest = async (
   return mapTemplateStepTestResult((json?.data as Record<string, unknown> | undefined) || {});
 };
 
-export const testTemplateExtractionFields = (templateId: string) => runTemplateStepTest(templateId, "test-extraction");
+export const testTemplateExtractionFields = (templateId: string, extractionFields?: TemplateField[], pages?: { src: string; id?: string | number }[]) =>
+  runTemplateStepTest(templateId, "test-extraction", { extractionFields, pages });
 
-export const testTemplateVerificationAnchors = (templateId: string, verificationFields?: TemplateField[]) =>
-  runTemplateStepTest(templateId, "test-verification", { verificationFields });
+export const testTemplateVerificationAnchors = (templateId: string, verificationFields?: TemplateField[], pages?: { src: string; id?: string | number }[]) =>
+  runTemplateStepTest(templateId, "test-verification", { verificationFields, pages });
 
 export const createTemplatePageApi = async (templateId: string, pageNumber: number, sampleImageUrl?: string) =>
   mapTemplateBundleResponse(

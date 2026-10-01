@@ -814,8 +814,15 @@ def test_template(
 
 
 @router.post("/admin/templates/{template_id}/test-extraction", response_model=ApiResponse)
-def test_template_extraction_fields(template_id: str) -> ApiResponse:
-    return ok(admin_templates.test_extraction_fields(template_id))
+def test_template_extraction_fields(
+    template_id: str,
+    payload: TemplateVerificationTestRequest | None = None,
+) -> ApiResponse:
+    return ok(admin_templates.test_extraction_fields(
+        template_id,
+        payload.extraction_fields if payload else None,
+        payload.pages if payload else None,
+    ))
 
 
 @router.post("/admin/templates/{template_id}/test-verification", response_model=ApiResponse)
@@ -823,7 +830,11 @@ def test_template_verification_anchors(
     template_id: str,
     payload: TemplateVerificationTestRequest | None = None,
 ) -> ApiResponse:
-    return ok(admin_templates.test_verification_anchors(template_id, payload.verification_fields if payload else None))
+    return ok(admin_templates.test_verification_anchors(
+        template_id,
+        payload.verification_fields if payload else None,
+        payload.pages if payload else None,
+    ))
 
 
 @router.post("/admin/templates/{template_id}/prepublish-simulation", response_model=ApiResponse)

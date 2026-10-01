@@ -39,7 +39,7 @@ interface WorkspaceTemplateEditorProps {
   onDeleteIgnoreRegion: (regionId: string) => void;
   onGenerateEmbedding: () => void;
   onRunTestMode: () => void;
-  onBeforeRunTest?: () => Promise<void>;
+  onBeforeRunTest?: () => Promise<TemplateField[] | void>;
   testModeLabel?: string;
   onBackToAdjust?: () => void;
 }
@@ -901,15 +901,21 @@ export default function WorkspaceTemplateEditorV2({
     setTestStatus(kind === "extraction" ? "Testing extraction fields..." : "Testing verification anchors...");
     setTestResult(null);
     try {
+      let latestFieldsForTest = fields;
       if (onBeforeRunTest) {
         setTestStatus("Saving latest ROI and field settings...");
-        await onBeforeRunTest();
+        const flushedFields = await onBeforeRunTest();
+        if (Array.isArray(flushedFields)) {
+          latestFieldsForTest = flushedFields;
+        }
         setTestStatus(kind === "extraction" ? "Testing extraction fields..." : "Testing verification anchors...");
       }
+      const latestExtractionFields = latestFieldsForTest.filter((field) => !isAnchor(field));
+      const latestVerificationAnchors = latestFieldsForTest.filter(isAnchor);
       const result =
         kind === "extraction"
-          ? await testTemplateExtractionFields(templateId)
-          : await testTemplateVerificationAnchors(templateId, verificationAnchors);
+          ? await testTemplateExtractionFields(templateId, latestExtractionFields, pages)
+          : await testTemplateVerificationAnchors(templateId, latestVerificationAnchors, pages);
       setTestResult(result);
       setTestResultKind(kind);
       setTestStatus(`${kind === "extraction" ? "Extraction" : "Verification"} test complete: ${result.passedCount}/${result.testedCount} passed.`);
