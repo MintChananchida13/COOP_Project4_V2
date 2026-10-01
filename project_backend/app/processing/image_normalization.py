@@ -22,6 +22,9 @@ class ImageNormalizationService:
     LAYOUT_CROP_PADDING_X_RATIO = 0.12
     LAYOUT_CROP_PADDING_TOP_RATIO = 0.18
     LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.18
+    LAYOUT_DESKEW_MAX_ANGLE_DEG = 2.5
+    LAYOUT_DESKEW_MIN_ANGLE_DEG = 0.25
+    LAYOUT_DESKEW_MIN_RECTANGULARITY = 0.70
 
     def normalize_document(self, image_path: str, output_path: Optional[str] = None) -> Dict[str, Any]:
         source_path = Path(image_path)
@@ -529,10 +532,17 @@ class ImageNormalizationService:
             )
             return image.copy(), debug
 
-        left = min(box[0] for box in boxes)
-        top = min(box[1] for box in boxes)
-        right = max(box[2] for box in boxes)
-        bottom = max(box[3] for box in boxes)
+        deskew_image = image
+        deskew_boxes = boxes
+        deskew_debug = self._layout_deskew_candidate(image, boxes)
+        if deskew_debug.get("applied"):
+            deskew_image = deskew_debug["image"]
+            deskew_boxes = deskew_debug["boxes"]
+
+        left = min(box[0] for box in deskew_boxes)
+        top = min(box[1] for box in deskew_boxes)
+        right = max(box[2] for box in deskew_boxes)
+        bottom = max(box[3] for box in deskew_boxes)
         content_width = max(1.0, right - left)
         content_height = max(1.0, bottom - top)
         content_area_ratio = (content_width * content_height) / max(1.0, width * height)
@@ -541,9 +551,10 @@ class ImageNormalizationService:
                 {
                     "fallback_reason": "layout_content_area_too_small",
                     "layout_crop": {
-                        "region_count": len(boxes),
+                        "region_count": len(deskew_boxes),
                         "content_box": [round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)],
                         "content_area_ratio": round(float(content_area_ratio), 4),
+                        "deskew": self._layout_deskew_debug_payload(deskew_debug),
                     },
                 }
             )
@@ -571,10 +582,10 @@ class ImageNormalizationService:
             )
             return image.copy(), debug
 
-        cropped = image[crop_top:crop_bottom, crop_left:crop_right].copy()
+        cropped = deskew_image[crop_top:crop_bottom, crop_left:crop_right].copy()
         validation = self._validate_transformed_image(cropped, image)
         layout_crop_debug = {
-            "region_count": len(boxes),
+            "region_count": len(deskew_boxes),
             "content_box": [round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)],
             "expanded_box": [crop_left, crop_top, crop_right, crop_bottom],
             "content_area_ratio": round(float(content_area_ratio), 4),
@@ -585,6 +596,7 @@ class ImageNormalizationService:
                 "bottom": round(float(pad_bottom), 2),
             },
             "source": "paddle_layout_regions",
+            "deskew": self._layout_deskew_debug_payload(deskew_debug),
         }
         if not validation["passed"]:
             debug.update(
@@ -607,6 +619,7 @@ class ImageNormalizationService:
                 "fallback_reason": None,
                 "detected_contour_area": round(float((crop_right - crop_left) * (crop_bottom - crop_top)), 2),
                 "contour_area_ratio": round(float(((crop_right - crop_left) * (crop_bottom - crop_top)) / max(1, width * height)), 4),
+                "contour_score": deskew_debug.get("rectangularity"),
                 "contour_aspect_ratio": round(float((crop_right - crop_left) / max(1, crop_bottom - crop_top)), 4),
                 "detected_points": [
                     [float(crop_left), float(crop_top)],
@@ -620,6 +633,125 @@ class ImageNormalizationService:
             }
         )
         return cropped, debug
+
+    def _layout_deskew_candidate(self, image: np.ndarray, boxes: List[List[float]]) -> Dict[str, Any]:
+        height, width = image.shape[:2]
+        result: Dict[str, Any] = {
+            "applied": False,
+            "reason": "not_evaluated",
+            "angle_deg": 0.0,
+            "rectangularity": None,
+        }
+        if len(boxes) < self.LAYOUT_CROP_MIN_REGIONS:
+            result["reason"] = "insufficient_layout_regions"
+            return result
+
+        points: List[List[float]] = []
+        for left, top, right, bottom in boxes:
+            points.extend([[left, top], [right, top], [right, bottom], [left, bottom]])
+        if len(points) < 8:
+            result["reason"] = "insufficient_layout_points"
+            return result
+
+        point_array = np.array(points, dtype=np.float32)
+        rect = cv2.minAreaRect(point_array)
+        (_, _), (rect_width, rect_height), rect_angle = rect
+        if rect_width <= 2 or rect_height <= 2:
+            result["reason"] = "invalid_layout_rect"
+            return result
+
+        axis_left = min(box[0] for box in boxes)
+        axis_top = min(box[1] for box in boxes)
+        axis_right = max(box[2] for box in boxes)
+        axis_bottom = max(box[3] for box in boxes)
+        axis_area = max(1.0, float((axis_right - axis_left) * (axis_bottom - axis_top)))
+        rect_area = max(1.0, float(rect_width * rect_height))
+        rectangularity = min(axis_area, rect_area) / max(axis_area, rect_area)
+        angle = self._normalized_layout_angle(float(rect_width), float(rect_height), float(rect_angle))
+        result.update(
+            {
+                "reason": "candidate_evaluated",
+                "angle_deg": round(float(angle), 4),
+                "rectangularity": round(float(rectangularity), 4),
+            }
+        )
+
+        if rectangularity < self.LAYOUT_DESKEW_MIN_RECTANGULARITY:
+            result["reason"] = "layout_rectangularity_too_low"
+            return result
+        if abs(angle) < self.LAYOUT_DESKEW_MIN_ANGLE_DEG:
+            result["reason"] = "layout_angle_too_small"
+            return result
+        if abs(angle) > self.LAYOUT_DESKEW_MAX_ANGLE_DEG:
+            result["reason"] = "layout_angle_too_large"
+            return result
+
+        matrix = cv2.getRotationMatrix2D((width / 2.0, height / 2.0), angle, 1.0)
+        rotated = cv2.warpAffine(
+            image,
+            matrix,
+            (width, height),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(255, 255, 255),
+        )
+        rotated_boxes = self._transform_layout_boxes(boxes, matrix, width, height)
+        if len(rotated_boxes) < self.LAYOUT_CROP_MIN_REGIONS:
+            result["reason"] = "rotated_layout_boxes_invalid"
+            return result
+
+        result.update(
+            {
+                "applied": True,
+                "reason": "layout_gentle_deskew_applied",
+                "image": rotated,
+                "boxes": rotated_boxes,
+            }
+        )
+        return result
+
+    def _layout_deskew_debug_payload(self, deskew_debug: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "applied": bool(deskew_debug.get("applied")),
+            "reason": deskew_debug.get("reason"),
+            "angle_deg": deskew_debug.get("angle_deg"),
+            "rectangularity": deskew_debug.get("rectangularity"),
+            "max_angle_deg": self.LAYOUT_DESKEW_MAX_ANGLE_DEG,
+        }
+
+    def _normalized_layout_angle(self, rect_width: float, rect_height: float, rect_angle: float) -> float:
+        angle = rect_angle
+        if rect_width < rect_height:
+            angle += 90.0
+        while angle <= -45.0:
+            angle += 90.0
+        while angle > 45.0:
+            angle -= 90.0
+        return -angle
+
+    def _transform_layout_boxes(
+        self,
+        boxes: List[List[float]],
+        matrix: np.ndarray,
+        image_width: int,
+        image_height: int,
+    ) -> List[List[float]]:
+        transformed_boxes: List[List[float]] = []
+        for left, top, right, bottom in boxes:
+            points = np.array(
+                [[[left, top]], [[right, top]], [[right, bottom]], [[left, bottom]]],
+                dtype=np.float32,
+            )
+            transformed = cv2.transform(points, matrix).reshape(-1, 2)
+            x_values = transformed[:, 0]
+            y_values = transformed[:, 1]
+            new_left = max(0.0, min(float(image_width), float(x_values.min())))
+            new_top = max(0.0, min(float(image_height), float(y_values.min())))
+            new_right = max(0.0, min(float(image_width), float(x_values.max())))
+            new_bottom = max(0.0, min(float(image_height), float(y_values.max())))
+            if new_right > new_left and new_bottom > new_top:
+                transformed_boxes.append([new_left, new_top, new_right, new_bottom])
+        return transformed_boxes
 
     def _layout_region_boxes(self, analysis: Dict[str, Any], image_width: int, image_height: int) -> List[List[float]]:
         regions = analysis.get("regions") if isinstance(analysis, dict) else None
