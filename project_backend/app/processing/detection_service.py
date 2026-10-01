@@ -1366,6 +1366,13 @@ def _align_candidate_page(
             layout_alignment["alignment_debug"] = layout_debug
             return layout_alignment
 
+        layout_debug["orb_executed"] = False
+        layout_debug["orb_skipped_reason"] = "layout_similarity_alignment_failed_normalized_image_used"
+        layout_debug["align_candidate_page_total_ms"] = _ms(time.perf_counter() - align_candidate_started)
+        layout_alignment["alignment_status"] = "fallback"
+        layout_alignment["alignment_debug"] = layout_debug
+        return layout_alignment
+
         precheck = alignment_service.alignment_precheck(query_image_path, template_image_source, normalization_info)
         if not precheck.get("should_run_orb"):
             precheck["layout_alignment"] = layout_debug
@@ -1563,9 +1570,9 @@ def _candidate_from_result(
 
     # ค่าเริ่มต้น: ยังไม่ align
     alignment = _alignment_result(
-        "skipped",
+        "fallback",
         "normalized_verification_checked_first",
-        precheck={"reason": "alignment_deferred_until_needed"},
+        precheck={"reason": "alignment_deferred_until_needed_projected_roi_default"},
     )
 
     aligned_verification = None
@@ -1574,10 +1581,16 @@ def _candidate_from_result(
 
     # 2) Template alignment is part of the production path.
     # The alignment service precheck skips ORB when geometry already matches.
-    should_try_alignment = template_id is not None and allow_alignment and (
-        verification_strategy != VERIFICATION_STRATEGY_STRICT
-        or bool(normalized_verification.get("passed"))
-    )
+    normalized_passed = bool(normalized_verification.get("passed"))
+    should_try_alignment = template_id is not None and allow_alignment and not normalized_passed
+
+    if normalized_passed:
+        alignment_debug = alignment.get("alignment_debug") or {}
+        alignment_debug["reason"] = "normalized_verification_passed_alignment_skipped"
+        alignment_debug["alignment_status"] = "fallback"
+        alignment_debug["warp_applied"] = False
+        alignment_debug["verification_source_used"] = "normalized"
+        alignment["alignment_debug"] = alignment_debug
 
     if should_try_alignment:
         step_started = time.perf_counter()
