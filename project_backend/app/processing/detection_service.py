@@ -1705,6 +1705,8 @@ def _candidate_from_result(
     extraction_image_path = str(alignment.get("aligned_image_path") or query_image_path) if verification_source_used == "aligned" else query_image_path
     extraction_image_preview_url = _detection_preview_url(extraction_image_path)
     roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} else "projected"
+    aligned_image_path = alignment.get("aligned_image_path") if verification_source_used == "aligned" and alignment_status == "aligned" else None
+    aligned_image_preview_url = alignment.get("aligned_image_preview_url") if aligned_image_path else None
 
     template_fields: List[Dict[str, Any]] = []
     template_rois: List[Dict[str, Any]] = []
@@ -1855,8 +1857,8 @@ def _candidate_from_result(
 
         "alignment_match_image_path": alignment.get("alignment_match_image_path"),
         "alignment_match_image_preview_url": alignment.get("alignment_match_image_preview_url"),
-        "aligned_image_path": alignment.get("aligned_image_path"),
-        "aligned_image_preview_url": alignment.get("aligned_image_preview_url"),
+        "aligned_image_path": aligned_image_path,
+        "aligned_image_preview_url": aligned_image_preview_url,
         "normalized_image_path": query_image_path,
         "normalized_image_preview_url": _detection_preview_url(query_image_path),
         "extraction_image_path": extraction_image_path,
