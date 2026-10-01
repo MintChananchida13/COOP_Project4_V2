@@ -6028,14 +6028,15 @@ class AdminTemplateService:
             "fields": tested_fields,
         }
 
-    def test_verification_anchors(self, template_id: str) -> Dict[str, Any]:
+    def test_verification_anchors(self, template_id: str, verification_fields: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         started = time.perf_counter()
         template = self.get_template(template_id)
         page_paths = self._template_page_image_paths(template_id, template.get("pages") or [])
         try:
-            verification = VerificationService().verify_template(template_id, page_paths)
+            active_fields = verification_fields if verification_fields is not None else None
+            verification = VerificationService().verify_template(template_id, page_paths, active_fields)
             checked = verification.get("checked_fields", [])
-            result = {"template_id": template_id, "status": verification.get("status"), "passed": verification.get("passed"), "score": verification.get("score"), "tested_count": len(checked), "passed_count": sum(1 for item in checked if item.get("passed")), "failed_count": sum(1 for item in checked if not item.get("passed")), "anchors": checked}
+            result = {"template_id": template_id, "status": verification.get("status"), "passed": verification.get("passed"), "score": verification.get("score"), "tested_count": len(checked), "passed_count": sum(1 for item in checked if item.get("passed")), "failed_count": sum(1 for item in checked if not item.get("passed")), "anchors": checked, "source": "request_payload" if verification_fields is not None else "stored_template"}
             logger.info(
                 "[TEMPLATE VERIFY] test-verification done: template_id=%s anchors=%s elapsed=%.2fs status=%s",
                 template_id,

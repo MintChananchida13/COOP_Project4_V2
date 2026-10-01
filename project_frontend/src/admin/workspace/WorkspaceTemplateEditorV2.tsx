@@ -909,7 +909,7 @@ export default function WorkspaceTemplateEditorV2({
       const result =
         kind === "extraction"
           ? await testTemplateExtractionFields(templateId)
-          : await testTemplateVerificationAnchors(templateId);
+          : await testTemplateVerificationAnchors(templateId, verificationAnchors);
       setTestResult(result);
       setTestResultKind(kind);
       setTestStatus(`${kind === "extraction" ? "Extraction" : "Verification"} test complete: ${result.passedCount}/${result.testedCount} passed.`);

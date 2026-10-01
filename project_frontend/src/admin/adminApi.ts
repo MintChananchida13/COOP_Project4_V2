@@ -2524,10 +2524,50 @@ function mapTemplateStepTestResult(data: Record<string, unknown>): TemplateStepT
   };
 }
 
-const runTemplateStepTest = async (templateId: string, path: "test-extraction" | "test-verification") => {
+const templateFieldToVerificationTestPayload = (field: TemplateField) => ({
+  id: field.id,
+  template_id: field.templateId,
+  template_page_id: field.templatePageId,
+  page_number: field.pageNumber,
+  field_name: field.fieldName,
+  display_label: field.displayLabel,
+  roi: {
+    page_number: field.roi.pageNumber,
+    x_ratio: field.roi.xRatio,
+    y_ratio: field.roi.yRatio,
+    width_ratio: field.roi.widthRatio,
+    height_ratio: field.roi.heightRatio,
+    points: apiRoiPoints(field.roi.points),
+  },
+  data_type: field.dataType || "text",
+  user_selectable: field.userSelectable ?? false,
+  default_selected: field.defaultSelected ?? false,
+  use_for_verification: true,
+  expected_text: field.expectedText,
+  match_type: field.matchType,
+  required_for_verification: field.requiredForVerification ?? false,
+  extraction_method: normalizeExtractionMethod(field.extractionMethod),
+  roi_mode: field.roiMode === "flexible" ? "flexible" : "fix",
+  expected_content: field.expectedContent ?? null,
+  roi_padding: field.roiPadding ?? 0,
+  verification_weight: field.verificationWeight ?? 1,
+  image_category: serializeImageCategoryValue(field.imageCategory),
+  sort_order: field.sortOrder ?? 0,
+});
+
+const runTemplateStepTest = async (
+  templateId: string,
+  path: "test-extraction" | "test-verification",
+  options?: { verificationFields?: TemplateField[] }
+) => {
+  const body =
+    path === "test-verification" && options?.verificationFields
+      ? JSON.stringify({ verification_fields: options.verificationFields.map(templateFieldToVerificationTestPayload) })
+      : undefined;
   const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/templates/${templateId}/${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    body,
   });
   const json = await response.json().catch(() => null);
   if (!response.ok) {
@@ -2539,7 +2579,8 @@ const runTemplateStepTest = async (templateId: string, path: "test-extraction" |
 
 export const testTemplateExtractionFields = (templateId: string) => runTemplateStepTest(templateId, "test-extraction");
 
-export const testTemplateVerificationAnchors = (templateId: string) => runTemplateStepTest(templateId, "test-verification");
+export const testTemplateVerificationAnchors = (templateId: string, verificationFields?: TemplateField[]) =>
+  runTemplateStepTest(templateId, "test-verification", { verificationFields });
 
 export const createTemplatePageApi = async (templateId: string, pageNumber: number, sampleImageUrl?: string) =>
   mapTemplateBundleResponse(

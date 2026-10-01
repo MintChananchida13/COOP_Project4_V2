@@ -309,6 +309,10 @@ class TemplateFieldUpdate(BaseModel):
     sort_order: Optional[int] = None
 
 
+class TemplateVerificationTestRequest(BaseModel):
+    verification_fields: Optional[List[Dict[str, Any]]] = None
+
+
 class IgnoreRegionCreate(BaseModel):
     template_page_id: str
     page_number: int = Field(..., ge=1)
