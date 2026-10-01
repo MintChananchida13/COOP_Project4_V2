@@ -461,8 +461,14 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
           });
         }
       }
-      if (latestBundle) applyBundle(latestBundle);
-      setSaved("Adjusted images saved. Workspace ROI is ready.");
+      if (latestBundle?.template.pendingUpdate) {
+        setSelectedTemplate((current) => (current ? { ...current, pendingUpdate: latestBundle.template.pendingUpdate } : current));
+        setSelectedTemplatePages(nextPages);
+        setSaved("Adjusted images saved as pending maintenance update. Workspace ROI uses the local adjusted image.");
+      } else {
+        if (latestBundle) applyBundle(latestBundle);
+        setSaved("Adjusted images saved. Workspace ROI is ready.");
+      }
     } catch (error) {
       console.warn("Adjusted image save failed.", error);
       setSelectedTemplatePages(nextPages.length > 0 ? nextPages : previousPages);

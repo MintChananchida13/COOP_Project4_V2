@@ -369,10 +369,29 @@ class GlobalSettingsService:
         ops = raw.get("template_field_ops") if isinstance(raw, dict) else {}
         return ops if isinstance(ops, dict) else {}
 
-    def _save_pending_template_changes(self, statuses: Dict[str, str], updates: Dict[str, Dict[str, Any]], field_ops: Optional[Dict[str, List[Dict[str, Any]]]] = None) -> None:
+    def _pending_template_page_ops(self) -> Dict[str, List[Dict[str, Any]]]:
+        raw_value = self._load_setting_value(PENDING_TEMPLATE_CHANGES_SETTING_KEY)
+        raw = jsonb_load(raw_value, {}) if raw_value is not None else {}
+        ops = raw.get("template_page_ops") if isinstance(raw, dict) else {}
+        return ops if isinstance(ops, dict) else {}
+
+    def _save_pending_template_changes(
+        self,
+        statuses: Dict[str, str],
+        updates: Dict[str, Dict[str, Any]],
+        field_ops: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+        page_ops: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    ) -> None:
         self._save_setting(
             PENDING_TEMPLATE_CHANGES_SETTING_KEY,
-            jsonb_dump({"template_statuses": statuses, "template_updates": updates, "template_field_ops": field_ops or self._pending_template_field_ops()}),
+            jsonb_dump(
+                {
+                    "template_statuses": statuses,
+                    "template_updates": updates,
+                    "template_field_ops": field_ops or self._pending_template_field_ops(),
+                    "template_page_ops": page_ops or self._pending_template_page_ops(),
+                }
+            ),
         )
 
     def save_pending_template_status(self, template_id: str, status: str) -> Dict[str, Any]:
@@ -407,6 +426,18 @@ class GlobalSettingsService:
         field_ops.setdefault(template_key, []).append(operation)
         self._save_pending_template_changes(statuses, updates, field_ops)
         return {"template_id": template_key, "pending_field_ops": len(field_ops[template_key]), "deferred": True}
+
+    def save_pending_template_page_op(self, template_id: str, operation: Dict[str, Any]) -> Dict[str, Any]:
+        template_key = str(template_id or "").strip()
+        if not template_key:
+            raise HTTPException(status_code=400, detail="template_id is required")
+        statuses = self._pending_template_statuses()
+        updates = self._pending_template_updates()
+        field_ops = self._pending_template_field_ops()
+        page_ops = self._pending_template_page_ops()
+        page_ops.setdefault(template_key, []).append(operation)
+        self._save_pending_template_changes(statuses, updates, field_ops, page_ops)
+        return {"template_id": template_key, "pending_page_ops": len(page_ops[template_key]), "deferred": True}
 
     @staticmethod
     def _parse_maintenance_datetime(value: Any) -> Optional[datetime]:
@@ -502,7 +533,8 @@ class GlobalSettingsService:
         pending_template_statuses = self._pending_template_statuses()
         pending_template_updates = self._pending_template_updates()
         pending_template_field_ops = self._pending_template_field_ops()
-        if pending_strategy_raw is None and pending_ocr_raw is None and not pending_template_statuses and not pending_template_updates and not pending_template_field_ops:
+        pending_template_page_ops = self._pending_template_page_ops()
+        if pending_strategy_raw is None and pending_ocr_raw is None and not pending_template_statuses and not pending_template_updates and not pending_template_field_ops and not pending_template_page_ops:
             return False
 
         try:
@@ -557,6 +589,10 @@ class GlobalSettingsService:
                     AdminTemplateService()._apply_pending_template_field_ops(conn, pending_template_field_ops)
                     for template_id in pending_template_field_ops.keys():
                         applied_template_statuses.setdefault(str(template_id), "active")
+                if pending_template_page_ops:
+                    AdminTemplateService()._apply_pending_template_page_ops(conn, pending_template_page_ops)
+                    for template_id in pending_template_page_ops.keys():
+                        applied_template_statuses.setdefault(str(template_id), "active")
                 for template_id, target_status in pending_template_statuses.items():
                     existing = conn.execute("SELECT id FROM template_versions WHERE id = ?", (template_id,)).fetchone()
                     if existing is None:
@@ -584,7 +620,7 @@ class GlobalSettingsService:
                     conn.execute("DELETE FROM app_settings WHERE key = ?", (PENDING_VERIFICATION_STRATEGY_SETTING_KEY,))
                 if pending_ocr is not None:
                     conn.execute("DELETE FROM app_settings WHERE key = ?", (PENDING_OCR_MODEL_SETTINGS_KEY,))
-                if pending_template_statuses or pending_template_updates or pending_template_field_ops:
+                if pending_template_statuses or pending_template_updates or pending_template_field_ops or pending_template_page_ops:
                     conn.execute("DELETE FROM app_settings WHERE key = ?", (PENDING_TEMPLATE_CHANGES_SETTING_KEY,))
                 conn.commit()
             if strategy is not None:
@@ -5157,6 +5193,41 @@ class AdminTemplateService:
         GlobalSettingsService().save_pending_template_field_op(template_id, operation)
         return self.get_template(template_id, apply_pending=False)
 
+    def _template_with_pending_page_op(self, template_id: str, operation: Dict[str, Any]) -> Dict[str, Any]:
+        GlobalSettingsService().save_pending_template_page_op(template_id, operation)
+        return self.get_template(template_id, apply_pending=False)
+
+    def _apply_pending_template_page_ops(self, conn: Any, ops_by_template: Dict[str, List[Dict[str, Any]]]) -> None:
+        templates_to_refresh: set[str] = set()
+        column_map = {
+            "page_number": "page_number",
+            "page_name": "page_name",
+            "sample_image_url": "sample_image_url",
+            "normalized_image_url": "normalized_image_url",
+            "layout_signature_json": "layout_signature_json",
+        }
+        for template_id, ops in ops_by_template.items():
+            if not isinstance(ops, list):
+                continue
+            for op in ops:
+                if not isinstance(op, dict):
+                    continue
+                action = str(op.get("action") or "").strip()
+                page_id = str(op.get("page_id") or "").strip()
+                patch = op.get("patch") if isinstance(op.get("patch"), dict) else {}
+                if action != "update_page" or not page_id or not patch:
+                    continue
+                updates = [(column_map[key], patch[key]) for key in patch.keys() if key in column_map]
+                if not updates:
+                    continue
+                conn.execute(
+                    f"UPDATE template_pages SET {', '.join(f'{column} = ?' for column, _ in updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND template_version_id = ?",
+                    [*(value for _, value in updates), page_id, template_id],
+                )
+                templates_to_refresh.add(str(template_id))
+        for template_id in templates_to_refresh:
+            _refresh_template_layout_signatures(conn, template_id)
+
     def _apply_pending_template_field_ops(self, conn: Any, ops_by_template: Dict[str, List[Dict[str, Any]]]) -> None:
         for template_id, ops in ops_by_template.items():
             if not isinstance(ops, list):
@@ -5314,6 +5385,7 @@ class AdminTemplateService:
         pending_statuses = settings._pending_template_statuses()
         pending_updates = settings._pending_template_updates()
         pending_field_ops = settings._pending_template_field_ops()
+        pending_page_ops = settings._pending_template_page_ops()
         with _connect() as conn:
             rows = conn.execute(f"{self._template_base_query()} ORDER BY tv.created_at DESC").fetchall()
             page_rows = conn.execute("SELECT * FROM template_pages ORDER BY template_version_id ASC, page_number ASC").fetchall()
@@ -5330,6 +5402,8 @@ class AdminTemplateService:
                 template["pending_update"] = pending_updates[template["id"]]
             if template["id"] in pending_field_ops:
                 template["pending_update"] = {**(template.get("pending_update") or {}), "field_ops": len(pending_field_ops[template["id"]])}
+            if template["id"] in pending_page_ops:
+                template["pending_update"] = {**(template.get("pending_update") or {}), "page_ops": len(pending_page_ops[template["id"]])}
             template["pages"] = pages_by_template.get(template["id"], [])
             templates.append(template)
         return {"templates": templates}
@@ -5341,6 +5415,7 @@ class AdminTemplateService:
         pending_statuses = settings._pending_template_statuses()
         pending_updates = settings._pending_template_updates()
         pending_field_ops = settings._pending_template_field_ops()
+        pending_page_ops = settings._pending_template_page_ops()
         with _connect() as conn:
             template_row = conn.execute(f"{self._template_base_query()} WHERE tv.id = ?", (template_id,)).fetchone()
             if template_row is None:
@@ -5414,6 +5489,8 @@ class AdminTemplateService:
             result["pending_update"] = pending_updates[template_id]
         if template_id in pending_field_ops:
             result["pending_update"] = {**(result.get("pending_update") or {}), "field_ops": len(pending_field_ops[template_id])}
+        if template_id in pending_page_ops:
+            result["pending_update"] = {**(result.get("pending_update") or {}), "page_ops": len(pending_page_ops[template_id])}
         return result
 
     def _template_page_image_paths(self, template_id: str, pages: List[Dict[str, Any]]) -> Dict[int, str]:
@@ -6122,6 +6199,11 @@ class AdminTemplateService:
         column_map = {"page_number": "page_number", "page_name": "page_name", "sample_image_url": "sample_image_url", "normalized_image_url": "normalized_image_url", "layout_signature_json": "layout_signature_json"}
         updates = [(column_map[key], value) for key, value in patch.items() if key in column_map]
         if updates:
+            if self._defer_active_template_changes(template_id):
+                return self._template_with_pending_page_op(
+                    template_id,
+                    {"action": "update_page", "page_id": page_id, "patch": patch},
+                )
             with _connect() as conn:
                 conn.execute(f"UPDATE template_pages SET {', '.join(f'{c} = ?' for c, _ in updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND template_version_id = ?", [*(v for _, v in updates), page_id, template_id])
                 conn.commit()
