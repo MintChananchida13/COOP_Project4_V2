@@ -25,6 +25,10 @@ class ImageNormalizationService:
     LAYOUT_DESKEW_MAX_ANGLE_DEG = 2.5
     LAYOUT_DESKEW_MIN_ANGLE_DEG = 0.25
     LAYOUT_DESKEW_MIN_RECTANGULARITY = 0.70
+    LAYOUT_CROP_MAX_INSET_X_RATIO = 0.10
+    LAYOUT_CROP_MAX_INSET_Y_RATIO = 0.10
+    LAYOUT_CROP_MIN_WIDTH_RATIO = 0.80
+    LAYOUT_CROP_MIN_HEIGHT_RATIO = 0.80
 
     def normalize_document(self, image_path: str, output_path: Optional[str] = None) -> Dict[str, Any]:
         source_path = Path(image_path)
@@ -568,6 +572,12 @@ class ImageNormalizationService:
         crop_top = int(max(0, np.floor(top - pad_top)))
         crop_right = int(min(width, np.ceil(right + pad_right)))
         crop_bottom = int(min(height, np.ceil(bottom + pad_bottom)))
+        requested_crop_box = [crop_left, crop_top, crop_right, crop_bottom]
+        safe_crop = self._safe_layout_crop_box(crop_left, crop_top, crop_right, crop_bottom, width, height)
+        crop_left = safe_crop["left"]
+        crop_top = safe_crop["top"]
+        crop_right = safe_crop["right"]
+        crop_bottom = safe_crop["bottom"]
 
         if crop_right <= crop_left or crop_bottom <= crop_top:
             debug.update(
@@ -576,7 +586,9 @@ class ImageNormalizationService:
                     "layout_crop": {
                         "region_count": len(boxes),
                         "content_box": [round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)],
+                        "requested_expanded_box": requested_crop_box,
                         "expanded_box": [crop_left, crop_top, crop_right, crop_bottom],
+                        "safe_crop": self._safe_layout_crop_debug_payload(safe_crop),
                     },
                 }
             )
@@ -587,6 +599,7 @@ class ImageNormalizationService:
         layout_crop_debug = {
             "region_count": len(deskew_boxes),
             "content_box": [round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)],
+            "requested_expanded_box": requested_crop_box,
             "expanded_box": [crop_left, crop_top, crop_right, crop_bottom],
             "content_area_ratio": round(float(content_area_ratio), 4),
             "padding": {
@@ -597,6 +610,7 @@ class ImageNormalizationService:
             },
             "source": "paddle_layout_regions",
             "deskew": self._layout_deskew_debug_payload(deskew_debug),
+            "safe_crop": self._safe_layout_crop_debug_payload(safe_crop),
         }
         if not validation["passed"]:
             debug.update(
@@ -709,6 +723,69 @@ class ImageNormalizationService:
             }
         )
         return result
+
+    def _safe_layout_crop_box(
+        self,
+        crop_left: int,
+        crop_top: int,
+        crop_right: int,
+        crop_bottom: int,
+        image_width: int,
+        image_height: int,
+    ) -> Dict[str, Any]:
+        original = [crop_left, crop_top, crop_right, crop_bottom]
+        max_left = int(round(image_width * self.LAYOUT_CROP_MAX_INSET_X_RATIO))
+        max_top = int(round(image_height * self.LAYOUT_CROP_MAX_INSET_Y_RATIO))
+        min_right = int(round(image_width * (1.0 - self.LAYOUT_CROP_MAX_INSET_X_RATIO)))
+        min_bottom = int(round(image_height * (1.0 - self.LAYOUT_CROP_MAX_INSET_Y_RATIO)))
+
+        safe_left = min(max(0, crop_left), max_left)
+        safe_top = min(max(0, crop_top), max_top)
+        safe_right = max(min(image_width, crop_right), min_right)
+        safe_bottom = max(min(image_height, crop_bottom), min_bottom)
+
+        min_width = int(round(image_width * self.LAYOUT_CROP_MIN_WIDTH_RATIO))
+        min_height = int(round(image_height * self.LAYOUT_CROP_MIN_HEIGHT_RATIO))
+        if safe_right - safe_left < min_width:
+            missing = min_width - (safe_right - safe_left)
+            safe_left = max(0, safe_left - ((missing + 1) // 2))
+            safe_right = min(image_width, safe_right + (missing // 2))
+            if safe_right - safe_left < min_width:
+                safe_left = max(0, safe_right - min_width)
+                safe_right = min(image_width, safe_left + min_width)
+        if safe_bottom - safe_top < min_height:
+            missing = min_height - (safe_bottom - safe_top)
+            safe_top = max(0, safe_top - ((missing + 1) // 2))
+            safe_bottom = min(image_height, safe_bottom + (missing // 2))
+            if safe_bottom - safe_top < min_height:
+                safe_top = max(0, safe_bottom - min_height)
+                safe_bottom = min(image_height, safe_top + min_height)
+
+        final_box = [safe_left, safe_top, safe_right, safe_bottom]
+        return {
+            "left": safe_left,
+            "top": safe_top,
+            "right": safe_right,
+            "bottom": safe_bottom,
+            "original_box": original,
+            "final_box": final_box,
+            "applied": final_box != original,
+            "max_inset_x_ratio": self.LAYOUT_CROP_MAX_INSET_X_RATIO,
+            "max_inset_y_ratio": self.LAYOUT_CROP_MAX_INSET_Y_RATIO,
+            "min_width_ratio": self.LAYOUT_CROP_MIN_WIDTH_RATIO,
+            "min_height_ratio": self.LAYOUT_CROP_MIN_HEIGHT_RATIO,
+        }
+
+    def _safe_layout_crop_debug_payload(self, safe_crop: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "applied": bool(safe_crop.get("applied")),
+            "original_box": safe_crop.get("original_box"),
+            "final_box": safe_crop.get("final_box"),
+            "max_inset_x_ratio": safe_crop.get("max_inset_x_ratio"),
+            "max_inset_y_ratio": safe_crop.get("max_inset_y_ratio"),
+            "min_width_ratio": safe_crop.get("min_width_ratio"),
+            "min_height_ratio": safe_crop.get("min_height_ratio"),
+        }
 
     def _layout_deskew_debug_payload(self, deskew_debug: Dict[str, Any]) -> Dict[str, Any]:
         return {
