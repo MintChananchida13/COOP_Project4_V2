@@ -53,6 +53,9 @@ def search_layout_candidates(
         "invalid_signature_count": 0,
         "layout_compare": 0.0,
         "layout_compare_breakdown": {},
+        "query_signature_summary": {},
+        "prefilter_rejected_samples": [],
+        "compared_samples": [],
         "compared_count": 0,
         "prefilter_rejected_count": 0,
         "count_area_rejected_count": 0,
@@ -232,6 +235,25 @@ def search_layout_candidates(
         logger.debug("[LAYOUT] published cache rows_count=%s", len(rows))
 
     best_by_template: Dict[str, Dict[str, Any]] = {}
+    breakdown["query_signature_summary"] = {
+        "page_aspect_ratio": query_signature.get("page_aspect_ratio"),
+        "image_width": query_signature.get("image_width"),
+        "image_height": query_signature.get("image_height"),
+        "region_count": query_signature.get("region_count"),
+        "label_counts": query_signature.get("label_counts"),
+        "area_by_label": query_signature.get("area_by_label"),
+        "layout_space_normalization": query_signature.get("layout_space_normalization"),
+        "regions_preview": [
+            {
+                "label": region.get("label"),
+                "bbox": region.get("bbox"),
+                "center": region.get("center"),
+                "area_ratio": region.get("area_ratio"),
+            }
+            for region in (query_signature.get("regions") or [])[:12]
+            if isinstance(region, dict)
+        ],
+    }
     compared_count = 0
     prefilter_rejected_count = 0
     count_area_rejected_count = 0
@@ -283,8 +305,36 @@ def search_layout_candidates(
         for key, value in compare_timing.items():
             compare_breakdown[key] = float(compare_breakdown.get(key) or 0.0) + float(value or 0.0)
         compared_count += 1
+        sample = {
+            "template_id": template_id,
+            "template_name": row["template_name"],
+            "template_page_number": row["page_number"],
+            "score": similarity.get("score"),
+            "prefilter_score": similarity.get("prefilter_score"),
+            "label_count_score": similarity.get("label_count_score"),
+            "area_distribution_score": similarity.get("area_distribution_score"),
+            "aspect_score": similarity.get("aspect_score"),
+            "grid_score": similarity.get("grid_score"),
+            "spatial_score": similarity.get("spatial_score"),
+            "prefilter_rejected": similarity.get("prefilter_rejected"),
+            "prefilter_reason": similarity.get("prefilter_reason"),
+            "prefilter_reasons": similarity.get("prefilter_reasons"),
+            "thresholds": {
+                "count": similarity.get("count_prefilter_threshold"),
+                "area": similarity.get("area_prefilter_threshold"),
+                "grid": similarity.get("grid_prefilter_threshold"),
+                "aspect": similarity.get("aspect_prefilter_threshold"),
+            },
+            "count_area_rejected": similarity.get("count_area_rejected"),
+            "structural_rejected": similarity.get("structural_rejected"),
+            "normalization_debug": similarity.get("normalization_debug"),
+        }
+        if len(breakdown["compared_samples"]) < 10:
+            breakdown["compared_samples"].append(sample)
         if similarity.get("prefilter_rejected"):
             prefilter_rejected_count += 1
+            if len(breakdown["prefilter_rejected_samples"]) < 20:
+                breakdown["prefilter_rejected_samples"].append(sample)
             if similarity.get("count_area_rejected"):
                 count_area_rejected_count += 1
             if similarity.get("structural_rejected"):

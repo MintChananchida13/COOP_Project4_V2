@@ -123,6 +123,30 @@ def _metrics_for_regions(regions: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _signature_debug_summary(signature: Dict[str, Any]) -> Dict[str, Any]:
+    regions = signature.get("regions") if isinstance(signature.get("regions"), list) else []
+    labels = Counter(str(region.get("label") or "text") for region in regions if isinstance(region, dict))
+    return {
+        "page_aspect_ratio": round(float(signature.get("page_aspect_ratio") or 0.0), 6),
+        "image_width": int(float(signature.get("image_width") or 0)),
+        "image_height": int(float(signature.get("image_height") or 0)),
+        "region_count": int(signature.get("region_count") or len(regions)),
+        "label_counts": dict(signature.get("label_counts") or labels),
+        "area_by_label": signature.get("area_by_label") or {},
+        "layout_space_normalization": signature.get("layout_space_normalization"),
+        "regions_preview": [
+            {
+                "label": region.get("label"),
+                "bbox": region.get("bbox"),
+                "center": region.get("center"),
+                "area_ratio": region.get("area_ratio"),
+            }
+            for region in regions[:12]
+            if isinstance(region, dict)
+        ],
+    }
+
+
 def _content_bounds_for_regions(regions: Sequence[Dict[str, Any]]) -> Optional[Dict[str, float]]:
     boxes = []
     for region in regions:
@@ -460,8 +484,22 @@ def compare_layout_signatures(
     timing: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     total_started = time.perf_counter()
+    query_before_normalize = _signature_debug_summary(query)
+    template_before_normalize = _signature_debug_summary(template)
     query = normalize_signature_layout_space(query)
     template = normalize_signature_layout_space(template)
+    query_after_normalize = _signature_debug_summary(query)
+    template_after_normalize = _signature_debug_summary(template)
+    normalization_debug = {
+        "query_before": query_before_normalize,
+        "query_after": query_after_normalize,
+        "template_before": template_before_normalize,
+        "template_after": template_after_normalize,
+        "query_normalized_twice_safe": (query_before_normalize.get("layout_space_normalization") or {}).get("applied")
+        and query_before_normalize == query_after_normalize,
+        "template_normalized_twice_safe": (template_before_normalize.get("layout_space_normalization") or {}).get("applied")
+        and template_before_normalize == template_after_normalize,
+    }
     ignored_regions = template.get("ignored_regions") if isinstance(template.get("ignored_regions"), list) else []
     if ignored_regions:
         step_started = time.perf_counter()
@@ -536,11 +574,13 @@ def compare_layout_signatures(
             timing["total"] = timing.get("total", 0.0) + (time.perf_counter() - total_started)
         return {
             "score": 0.0,
+            "prefilter_score": 0.0,
             "aspect_score": round(aspect_score, 4),
             "label_count_score": round(label_count_score, 4),
             "area_distribution_score": round(area_distribution_score, 4),
             "grid_score": round(grid_score, 4),
             "spatial_score": None,
+            "normalization_debug": normalization_debug,
             "query_region_count": int(query.get("region_count") or 0),
             "template_region_count": int(template.get("region_count") or 0),
             "prefilter_rejected": True,
@@ -571,11 +611,13 @@ def compare_layout_signatures(
         timing["total"] = timing.get("total", 0.0) + (time.perf_counter() - total_started)
     return {
         "score": round(final_score, 4),
+        "prefilter_score": round(((aspect_score * 0.15) + (label_count_score * 0.20) + (area_distribution_score * 0.20) + (grid_score * 0.20)), 4),
         "aspect_score": round(aspect_score, 4),
         "label_count_score": round(label_count_score, 4),
         "area_distribution_score": round(area_distribution_score, 4),
         "grid_score": round(grid_score, 4),
         "spatial_score": round(spatial_score, 4),
+        "normalization_debug": normalization_debug,
         "query_region_count": int(query.get("region_count") or 0),
         "template_region_count": int(template.get("region_count") or 0),
         "prefilter_rejected": False,
