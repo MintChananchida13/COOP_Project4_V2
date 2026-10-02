@@ -1861,25 +1861,6 @@ def _layout_reference_adjusted_image(
             "width": (final_box[2] - final_box[0]) / max(1, image_width),
             "height": (final_box[3] - final_box[1]) / max(1, image_height),
         }
-        frame_coverage = [
-            round(float(expanded_layout_bounds["width"]), 6),
-            round(float(expanded_layout_bounds["height"]), 6),
-        ]
-        frame_edge_inset = {
-            "left": round(float(expanded_layout_bounds["left"]), 6),
-            "top": round(float(expanded_layout_bounds["top"]), 6),
-            "right": round(float(1.0 - expanded_layout_bounds["right"]), 6),
-            "bottom": round(float(1.0 - expanded_layout_bounds["bottom"]), 6),
-        }
-        debug["projected_frame_coverage"] = frame_coverage
-        debug["projected_edge_inset"] = frame_edge_inset
-        if frame_coverage[0] >= 0.94 and frame_coverage[1] >= 0.94 and max(float(value) for value in frame_edge_inset.values()) <= 0.04:
-            debug["full_frame_document_detected"] = True
-            debug["crop_required"] = False
-            debug["crop_skip_reason"] = "expanded_layout_bounds_near_image_frame"
-            debug["reason"] = "full_frame_document_no_crop_required"
-            debug["fallback_reason"] = None
-            return debug
     crop_debug = {
         "passed": True,
         "reason": "layout_union_crop_applied",
@@ -1921,10 +1902,6 @@ def _layout_reference_adjusted_image(
         (image_height - crop_bottom) / max(1, image_height),
     )
     debug["max_delta_ratio"] = round(float(delta), 6)
-    if delta < LAYOUT_REFERENCE_CROP_MIN_DELTA_RATIO:
-        debug["reason"] = "reference_crop_delta_too_small"
-        debug["fallback_reason"] = debug["reason"]
-        return debug
 
     cropped = image[crop_top:crop_bottom, crop_left:crop_right].copy()
     if cropped.size == 0:
