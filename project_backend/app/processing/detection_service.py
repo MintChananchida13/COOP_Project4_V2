@@ -52,7 +52,7 @@ LAYOUT_REFERENCE_CROP_MIN_DELTA_RATIO = float(os.getenv("LAYOUT_REFERENCE_CROP_M
 LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO", "0.20"))
 LAYOUT_REFERENCE_PROJECTED_MAX_COVERAGE_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MAX_COVERAGE_RATIO", "0.98"))
 LAYOUT_REFERENCE_PROJECTED_MAX_SCALE_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MAX_SCALE_RATIO", "8.0"))
-LAYOUT_REFERENCE_PROJECTED_MIN_SAFETY_MARGIN_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MIN_SAFETY_MARGIN_RATIO", "0.025"))
+LAYOUT_REFERENCE_PROJECTED_MIN_SAFETY_MARGIN_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MIN_SAFETY_MARGIN_RATIO", "0.005"))
 LAYOUT_REFERENCE_PROJECTED_MAX_SAFETY_MARGIN_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MAX_SAFETY_MARGIN_RATIO", "0.10"))
 LAYOUT_REFERENCE_PROJECTED_TEMPLATE_MARGIN_WEIGHT = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_TEMPLATE_MARGIN_WEIGHT", "0.50"))
 verification_service = VerificationService()
@@ -789,24 +789,103 @@ def _clamp_reference_crop_box(left: int, top: int, right: int, bottom: int, imag
 def _reference_crop_safety_margins(
     crop_width: int,
     crop_height: int,
+    image_width: int,
+    image_height: int,
+    projected_box: List[int],
+    query_bounds: Dict[str, float],
     template_bounds: Dict[str, float],
-) -> Dict[str, int]:
+    query_raw_bounds: Optional[Dict[str, float]] = None,
+    template_raw_bounds: Optional[Dict[str, float]] = None,
+    projection_confidence: float = 1.0,
+) -> Dict[str, Any]:
     min_ratio = max(0.0, LAYOUT_REFERENCE_PROJECTED_MIN_SAFETY_MARGIN_RATIO)
     max_ratio = max(min_ratio, LAYOUT_REFERENCE_PROJECTED_MAX_SAFETY_MARGIN_RATIO)
     weight = max(0.0, LAYOUT_REFERENCE_PROJECTED_TEMPLATE_MARGIN_WEIGHT)
     template_width = max(float(template_bounds.get("width") or 0.0), 1e-6)
     template_height = max(float(template_bounds.get("height") or 0.0), 1e-6)
+    base_ratios = {
+        "left": (max(0.0, float(template_bounds.get("left") or 0.0)) / template_width) * weight,
+        "right": (max(0.0, 1.0 - float(template_bounds.get("right") or 1.0)) / template_width) * weight,
+        "top": (max(0.0, float(template_bounds.get("top") or 0.0)) / template_height) * weight,
+        "bottom": (max(0.0, 1.0 - float(template_bounds.get("bottom") or 1.0)) / template_height) * weight,
+    }
+    content_box = {
+        "left": float(query_bounds.get("left") or 0.0) * image_width,
+        "right": float(query_bounds.get("right") or 0.0) * image_width,
+        "top": float(query_bounds.get("top") or 0.0) * image_height,
+        "bottom": float(query_bounds.get("bottom") or 0.0) * image_height,
+    }
+    left, top, right, bottom = projected_box
+    edge_gaps = {
+        "left": max(0.0, content_box["left"] - left) / max(1.0, float(crop_width)),
+        "right": max(0.0, right - content_box["right"]) / max(1.0, float(crop_width)),
+        "top": max(0.0, content_box["top"] - top) / max(1.0, float(crop_height)),
+        "bottom": max(0.0, bottom - content_box["bottom"]) / max(1.0, float(crop_height)),
+    }
+    edge_uncertainty = {
+        side: max(0.0, min_ratio - gap)
+        for side, gap in edge_gaps.items()
+    }
+    def _shrink_uncertainty(raw_bounds: Optional[Dict[str, float]], robust_bounds: Dict[str, float]) -> Dict[str, float]:
+        if not isinstance(raw_bounds, dict):
+            return {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0}
+        robust_width = max(float(robust_bounds.get("width") or 0.0), 1e-6)
+        robust_height = max(float(robust_bounds.get("height") or 0.0), 1e-6)
+        return {
+            "left": max(0.0, float(robust_bounds.get("left") or 0.0) - float(raw_bounds.get("left") or 0.0)) / robust_width,
+            "right": max(0.0, float(raw_bounds.get("right") or 0.0) - float(robust_bounds.get("right") or 0.0)) / robust_width,
+            "top": max(0.0, float(robust_bounds.get("top") or 0.0) - float(raw_bounds.get("top") or 0.0)) / robust_height,
+            "bottom": max(0.0, float(raw_bounds.get("bottom") or 0.0) - float(robust_bounds.get("bottom") or 0.0)) / robust_height,
+        }
+    query_shrink = _shrink_uncertainty(query_raw_bounds, query_bounds)
+    template_shrink = _shrink_uncertainty(template_raw_bounds, template_bounds)
+    shrink_uncertainty = {
+        side: min(max_ratio, max(query_shrink[side], template_shrink[side]) * 0.50)
+        for side in ("left", "right", "top", "bottom")
+    }
+    confidence = max(0.0, min(1.0, float(projection_confidence)))
+    geometry_uncertainty = 1.0 - confidence
     side_ratios = {
-        "left": max(min_ratio, (max(0.0, float(template_bounds.get("left") or 0.0)) / template_width) * weight),
-        "right": max(min_ratio, (max(0.0, 1.0 - float(template_bounds.get("right") or 1.0)) / template_width) * weight),
-        "top": max(min_ratio, (max(0.0, float(template_bounds.get("top") or 0.0)) / template_height) * weight),
-        "bottom": max(min_ratio, (max(0.0, 1.0 - float(template_bounds.get("bottom") or 1.0)) / template_height) * weight),
+        side: min(
+            max_ratio,
+            max(min_ratio, base_ratios[side])
+            + edge_uncertainty[side]
+            + shrink_uncertainty[side]
+            + (geometry_uncertainty * max(min_ratio, base_ratios[side])),
+        )
+        for side in ("left", "right", "top", "bottom")
+    }
+    adaptive_safety_margin = {
+        "left": int(round(crop_width * side_ratios["left"])),
+        "right": int(round(crop_width * side_ratios["right"])),
+        "top": int(round(crop_height * side_ratios["top"])),
+        "bottom": int(round(crop_height * side_ratios["bottom"])),
     }
     return {
-        "left": int(round(crop_width * min(max_ratio, side_ratios["left"]))),
-        "right": int(round(crop_width * min(max_ratio, side_ratios["right"]))),
-        "top": int(round(crop_height * min(max_ratio, side_ratios["top"]))),
-        "bottom": int(round(crop_height * min(max_ratio, side_ratios["bottom"]))),
+        "base_safety_margin": {
+            "left": int(round(crop_width * min(max_ratio, max(min_ratio, base_ratios["left"])))),
+            "right": int(round(crop_width * min(max_ratio, max(min_ratio, base_ratios["right"])))),
+            "top": int(round(crop_height * min(max_ratio, max(min_ratio, base_ratios["top"])))),
+            "bottom": int(round(crop_height * min(max_ratio, max(min_ratio, base_ratios["bottom"])))),
+        },
+        "adaptive_safety_margin": adaptive_safety_margin,
+        "edge_uncertainty": {
+            side: round(float(value), 6)
+            for side, value in edge_uncertainty.items()
+        },
+        "robust_shrink_uncertainty": {
+            side: round(float(value), 6)
+            for side, value in shrink_uncertainty.items()
+        },
+        "projection_confidence": round(float(confidence), 6),
+        "edge_gaps": {
+            side: round(float(value), 6)
+            for side, value in edge_gaps.items()
+        },
+        "side_ratios": {
+            side: round(float(value), 6)
+            for side, value in side_ratios.items()
+        },
     }
 
 
@@ -819,6 +898,8 @@ def _projected_reference_crop_box(
     image_height: int,
     query_bounds: Dict[str, float],
     template_bounds: Dict[str, float],
+    query_raw_bounds: Optional[Dict[str, float]] = None,
+    template_raw_bounds: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     original = [left, top, right, bottom]
     if image_width <= 0 or image_height <= 0:
@@ -831,8 +912,27 @@ def _projected_reference_crop_box(
         return {"passed": False, "reason": "projected_document_box_empty", "original_box": original}
     crop_width = crop_right - crop_left
     crop_height = crop_bottom - crop_top
+    template_width = max(float(template_bounds.get("width") or 0.0), 1e-6)
+    template_height = max(float(template_bounds.get("height") or 0.0), 1e-6)
+    query_width = max(float(query_bounds.get("width") or 0.0), 1e-6)
+    query_height = max(float(query_bounds.get("height") or 0.0), 1e-6)
+    scale_x = query_width / template_width
+    scale_y = query_height / template_height
+    projection_confidence = max(0.0, min(1.0, min(scale_x, scale_y) / max(scale_x, scale_y, 1e-6)))
     projected_box_before_margin = [crop_left, crop_top, crop_right, crop_bottom]
-    safety_margin = _reference_crop_safety_margins(crop_width, crop_height, template_bounds)
+    safety_debug = _reference_crop_safety_margins(
+        crop_width,
+        crop_height,
+        image_width,
+        image_height,
+        projected_box_before_margin,
+        query_bounds,
+        template_bounds,
+        query_raw_bounds=query_raw_bounds,
+        template_raw_bounds=template_raw_bounds,
+        projection_confidence=projection_confidence,
+    )
+    safety_margin = safety_debug["adaptive_safety_margin"]
     crop_left = max(0, crop_left - safety_margin["left"])
     crop_top = max(0, crop_top - safety_margin["top"])
     crop_right = min(image_width, crop_right + safety_margin["right"])
@@ -844,18 +944,17 @@ def _projected_reference_crop_box(
             "original_box": original,
             "projected_box_before_margin": projected_box_before_margin,
             "safety_margin": safety_margin,
+            "base_safety_margin": safety_debug["base_safety_margin"],
+            "adaptive_safety_margin": safety_debug["adaptive_safety_margin"],
+            "edge_uncertainty": safety_debug["edge_uncertainty"],
+            "robust_shrink_uncertainty": safety_debug["robust_shrink_uncertainty"],
+            "projection_confidence": safety_debug["projection_confidence"],
             "projected_box_after_margin": [crop_left, crop_top, crop_right, crop_bottom],
         }
     crop_width = crop_right - crop_left
     crop_height = crop_bottom - crop_top
     coverage_x = crop_width / max(1, image_width)
     coverage_y = crop_height / max(1, image_height)
-    template_width = max(float(template_bounds.get("width") or 0.0), 1e-6)
-    template_height = max(float(template_bounds.get("height") or 0.0), 1e-6)
-    query_width = max(float(query_bounds.get("width") or 0.0), 1e-6)
-    query_height = max(float(query_bounds.get("height") or 0.0), 1e-6)
-    scale_x = query_width / template_width
-    scale_y = query_height / template_height
     if (
         coverage_x < LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO
         or coverage_y < LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO
@@ -867,6 +966,11 @@ def _projected_reference_crop_box(
             "final_box": [crop_left, crop_top, crop_right, crop_bottom],
             "projected_box_before_margin": projected_box_before_margin,
             "safety_margin": safety_margin,
+            "base_safety_margin": safety_debug["base_safety_margin"],
+            "adaptive_safety_margin": safety_debug["adaptive_safety_margin"],
+            "edge_uncertainty": safety_debug["edge_uncertainty"],
+            "robust_shrink_uncertainty": safety_debug["robust_shrink_uncertainty"],
+            "projection_confidence": safety_debug["projection_confidence"],
             "projected_box_after_margin": [crop_left, crop_top, crop_right, crop_bottom],
             "coverage": [round(float(coverage_x), 6), round(float(coverage_y), 6)],
         }
@@ -881,6 +985,11 @@ def _projected_reference_crop_box(
             "final_box": [crop_left, crop_top, crop_right, crop_bottom],
             "projected_box_before_margin": projected_box_before_margin,
             "safety_margin": safety_margin,
+            "base_safety_margin": safety_debug["base_safety_margin"],
+            "adaptive_safety_margin": safety_debug["adaptive_safety_margin"],
+            "edge_uncertainty": safety_debug["edge_uncertainty"],
+            "robust_shrink_uncertainty": safety_debug["robust_shrink_uncertainty"],
+            "projection_confidence": safety_debug["projection_confidence"],
             "projected_box_after_margin": [crop_left, crop_top, crop_right, crop_bottom],
             "coverage": [round(float(coverage_x), 6), round(float(coverage_y), 6)],
         }
@@ -898,6 +1007,11 @@ def _projected_reference_crop_box(
             "final_box": [crop_left, crop_top, crop_right, crop_bottom],
             "projected_box_before_margin": projected_box_before_margin,
             "safety_margin": safety_margin,
+            "base_safety_margin": safety_debug["base_safety_margin"],
+            "adaptive_safety_margin": safety_debug["adaptive_safety_margin"],
+            "edge_uncertainty": safety_debug["edge_uncertainty"],
+            "robust_shrink_uncertainty": safety_debug["robust_shrink_uncertainty"],
+            "projection_confidence": safety_debug["projection_confidence"],
             "projected_box_after_margin": [crop_left, crop_top, crop_right, crop_bottom],
             "scale": [round(float(scale_x), 6), round(float(scale_y), 6)],
         }
@@ -908,6 +1022,11 @@ def _projected_reference_crop_box(
         "final_box": [crop_left, crop_top, crop_right, crop_bottom],
         "projected_box_before_margin": projected_box_before_margin,
         "safety_margin": safety_margin,
+        "base_safety_margin": safety_debug["base_safety_margin"],
+        "adaptive_safety_margin": safety_debug["adaptive_safety_margin"],
+        "edge_uncertainty": safety_debug["edge_uncertainty"],
+        "robust_shrink_uncertainty": safety_debug["robust_shrink_uncertainty"],
+        "projection_confidence": safety_debug["projection_confidence"],
         "projected_box_after_margin": [crop_left, crop_top, crop_right, crop_bottom],
         "clamped": [crop_left, crop_top, crop_right, crop_bottom] != original,
         "coverage": [round(float(coverage_x), 6), round(float(coverage_y), 6)],
@@ -1008,8 +1127,15 @@ def _layout_reference_adjusted_image(
         image_height,
         query_bounds,
         template_bounds,
+        query_raw_bounds=query_raw_bounds if isinstance(query_raw_bounds, dict) else None,
+        template_raw_bounds=template_raw_bounds if isinstance(template_raw_bounds, dict) else None,
     )
     debug["projected_document_box"] = projected_crop_debug
+    debug["base_safety_margin"] = projected_crop_debug.get("base_safety_margin")
+    debug["adaptive_safety_margin"] = projected_crop_debug.get("adaptive_safety_margin")
+    debug["edge_uncertainty"] = projected_crop_debug.get("edge_uncertainty")
+    debug["robust_shrink_uncertainty"] = projected_crop_debug.get("robust_shrink_uncertainty")
+    debug["projection_confidence"] = projected_crop_debug.get("projection_confidence")
     debug["projected_box_before_margin"] = projected_crop_debug.get("projected_box_before_margin")
     debug["safety_margin"] = projected_crop_debug.get("safety_margin")
     debug["projected_box_after_margin"] = projected_crop_debug.get("projected_box_after_margin")
