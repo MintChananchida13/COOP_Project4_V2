@@ -776,6 +776,45 @@ def _signature_metrics_for_regions(regions: List[Dict[str, Any]]) -> Dict[str, A
     }
 
 
+def _expand_layout_bounds(bounds: Dict[str, float], margin_x: float, margin_y: float) -> Dict[str, float]:
+    expanded = {
+        "left": max(0.0, float(bounds.get("left") or 0.0) - margin_x),
+        "top": max(0.0, float(bounds.get("top") or 0.0) - margin_y),
+        "right": min(1.0, float(bounds.get("right") or 1.0) + margin_x),
+        "bottom": min(1.0, float(bounds.get("bottom") or 1.0) + margin_y),
+    }
+    expanded["width"] = max(0.0, expanded["right"] - expanded["left"])
+    expanded["height"] = max(0.0, expanded["bottom"] - expanded["top"])
+    return expanded
+
+
+def _layout_bounds_to_pixel_box(bounds: Dict[str, float], image_width: int, image_height: int) -> List[int]:
+    return [
+        max(0, int(round(float(bounds.get("left") or 0.0) * image_width))),
+        max(0, int(round(float(bounds.get("top") or 0.0) * image_height))),
+        min(image_width, int(round(float(bounds.get("right") or 1.0) * image_width))),
+        min(image_height, int(round(float(bounds.get("bottom") or 1.0) * image_height))),
+    ]
+
+
+def _union_region_boxes(boxes: List[Dict[str, float]]) -> Optional[Dict[str, float]]:
+    valid = [box for box in boxes if isinstance(box, dict) and float(box.get("width") or 0.0) > 0.0 and float(box.get("height") or 0.0) > 0.0]
+    if not valid:
+        return None
+    left = min(float(box.get("left") or 0.0) for box in valid)
+    top = min(float(box.get("top") or 0.0) for box in valid)
+    right = max(float(box.get("right") or 0.0) for box in valid)
+    bottom = max(float(box.get("bottom") or 0.0) for box in valid)
+    return {
+        "left": max(0.0, min(1.0, left)),
+        "top": max(0.0, min(1.0, top)),
+        "right": max(0.0, min(1.0, right)),
+        "bottom": max(0.0, min(1.0, bottom)),
+        "width": max(0.0, min(1.0, right) - max(0.0, left)),
+        "height": max(0.0, min(1.0, bottom) - max(0.0, top)),
+    }
+
+
 def _retrieval_precrop_signature(
     signature: Dict[str, Any],
     image_path: Optional[str] = None,
@@ -789,6 +828,14 @@ def _retrieval_precrop_signature(
         "retrieval_precrop_coverage": None,
         "retrieval_precrop_image_path": None,
         "retrieval_precrop_preview_url": None,
+        "retrieval_crop": {
+            "applied": False,
+            "layout_bounds": None,
+            "expanded_bounds": None,
+            "safety_margin": None,
+            "crop_box": None,
+            "crop_size": None,
+        },
         "retrieval_source": "original_layout_signature",
         "reason": None,
     }
@@ -814,6 +861,7 @@ def _retrieval_precrop_signature(
         1.0 - float(bounds.get("bottom") or 1.0),
     )
     debug["retrieval_precrop_coverage"] = coverage
+    debug["retrieval_crop"]["layout_bounds"] = {key: round(float(value), 6) for key, value in bounds.items()}
     full_frame_like = width >= 0.92 and height >= 0.92 and edge_inset <= 0.04
     if full_frame_like:
         debug["reason"] = "content_already_full_frame"
@@ -823,14 +871,7 @@ def _retrieval_precrop_signature(
         return signature, debug
     margin_x = max(0.06, width * 0.12)
     margin_y = max(0.06, height * 0.12)
-    crop = {
-        "left": max(0.0, float(bounds.get("left") or 0.0) - margin_x),
-        "top": max(0.0, float(bounds.get("top") or 0.0) - margin_y),
-        "right": min(1.0, float(bounds.get("right") or 1.0) + margin_x),
-        "bottom": min(1.0, float(bounds.get("bottom") or 1.0) + margin_y),
-    }
-    crop["width"] = crop["right"] - crop["left"]
-    crop["height"] = crop["bottom"] - crop["top"]
+    crop = _expand_layout_bounds(bounds, margin_x, margin_y)
     if crop["width"] <= 0.05 or crop["height"] <= 0.05:
         debug["reason"] = "precrop_box_too_small"
         return signature, debug
@@ -889,6 +930,14 @@ def _retrieval_precrop_signature(
             "retrieval_precrop_applied": True,
             "retrieval_precrop_box": {key: round(float(value), 6) for key, value in crop.items()},
             "retrieval_precrop_coverage": round(float(crop["width"] * crop["height"]), 6),
+            "retrieval_crop": {
+                "applied": True,
+                "layout_bounds": {key: round(float(value), 6) for key, value in bounds.items()},
+                "expanded_bounds": {key: round(float(value), 6) for key, value in crop.items()},
+                "safety_margin": {"x": round(float(margin_x), 6), "y": round(float(margin_y), 6)},
+                "crop_box": {key: round(float(value), 6) for key, value in crop.items()},
+                "crop_size": [int(next_signature["image_width"]), int(next_signature["image_height"])],
+            },
             "retrieval_source": "retrieval_precrop_image_signature",
             "reason": "background_content_bounds_rebased_for_retrieval",
         }
@@ -1324,6 +1373,9 @@ def _layout_correspondence_crop_box(
         "template_page_size": list(_signature_template_page_size(template_signature) or []),
         "projected_document_box": None,
         "final_crop_box": None,
+        "document_layout_bounds": None,
+        "expanded_layout_bounds": None,
+        "matched_region_count": 0,
     }
     if not isinstance(query_signature, dict) or not isinstance(template_signature, dict):
         debug["fallback_reason"] = "missing_signature_for_correspondence_crop"
@@ -1402,6 +1454,7 @@ def _layout_correspondence_crop_box(
     if inlier_count < 4:
         debug["fallback_reason"] = "insufficient_correspondence_inliers"
         return debug
+    inlier_matches = [item for item, keep in zip(matches, inlier_mask) if bool(keep)]
     if inlier_count < len(matches):
         scale_x, translate_x = _fit_axis(template_x[inlier_mask], query_x[inlier_mask])
         scale_y, translate_y = _fit_axis(template_y[inlier_mask], query_y[inlier_mask])
@@ -1424,20 +1477,20 @@ def _layout_correspondence_crop_box(
     top_ratio = translate_y
     right_ratio = scale_x + translate_x
     bottom_ratio = scale_y + translate_y
-    margin_x = min(0.015, max(0.004, (right_ratio - left_ratio) * 0.006))
-    margin_y = min(0.015, max(0.004, (bottom_ratio - top_ratio) * 0.006))
     projected = [
         int(round(left_ratio * image_width)),
         int(round(top_ratio * image_height)),
         int(round(right_ratio * image_width)),
         int(round(bottom_ratio * image_height)),
     ]
-    final_box = [
-        max(0, int(round((left_ratio - margin_x) * image_width))),
-        max(0, int(round((top_ratio - margin_y) * image_height))),
-        min(image_width, int(round((right_ratio + margin_x) * image_width))),
-        min(image_height, int(round((bottom_ratio + margin_y) * image_height))),
-    ]
+    document_bounds = _union_region_boxes([item["query_box"] for item in inlier_matches])
+    if not document_bounds:
+        debug["fallback_reason"] = "correspondence_document_bounds_unavailable"
+        return debug
+    margin_x = max(0.04, float(document_bounds["width"]) * 0.10)
+    margin_y = max(0.04, float(document_bounds["height"]) * 0.10)
+    expanded_bounds = _expand_layout_bounds(document_bounds, margin_x, margin_y)
+    final_box = _layout_bounds_to_pixel_box(expanded_bounds, image_width, image_height)
     if final_box[2] <= final_box[0] or final_box[3] <= final_box[1]:
         debug["fallback_reason"] = "correspondence_crop_empty"
         return debug
@@ -1463,7 +1516,10 @@ def _layout_correspondence_crop_box(
             "confidence": round(float(confidence), 6),
             "projected_document_box": projected,
             "final_crop_box": final_box,
-            "safety_margin": [round(float(margin_x), 6), round(float(margin_y), 6)],
+            "document_layout_bounds": {key: round(float(value), 6) for key, value in document_bounds.items()},
+            "expanded_layout_bounds": {key: round(float(value), 6) for key, value in expanded_bounds.items()},
+            "matched_region_count": int(inlier_count),
+            "safety_margin": {"x": round(float(margin_x), 6), "y": round(float(margin_y), 6)},
             "coverage": [round(float(coverage_x), 6), round(float(coverage_y), 6)],
         }
     )
@@ -1672,8 +1728,11 @@ def _layout_reference_adjusted_image(
     debug["confidence"] = correspondence_crop_debug.get("confidence")
     debug["template_page_size"] = correspondence_crop_debug.get("template_page_size")
     if correspondence_crop_debug.get("passed"):
-        debug["projected_document_box"] = correspondence_crop_debug
+        debug["projected_document_box"] = correspondence_crop_debug.get("projected_document_box")
         debug["final_crop_box"] = correspondence_crop_debug.get("final_crop_box")
+        debug["document_layout_bounds"] = correspondence_crop_debug.get("document_layout_bounds")
+        debug["expanded_layout_bounds"] = correspondence_crop_debug.get("expanded_layout_bounds")
+        debug["matched_region_count"] = correspondence_crop_debug.get("matched_region_count")
         projected_box = correspondence_crop_debug.get("projected_document_box")
         projected_frame_coverage = None
         projected_edge_inset = None
@@ -1710,13 +1769,17 @@ def _layout_reference_adjusted_image(
         crop_debug = {
             "passed": True,
             "reason": "layout_correspondence_crop_applied",
-            "method": "layout_correspondence",
+            "method": "layout_correspondence_layout_bounds",
             "original_box": correspondence_crop_debug.get("projected_document_box"),
             "final_box": correspondence_crop_debug.get("final_crop_box"),
+            "document_layout_bounds": correspondence_crop_debug.get("document_layout_bounds"),
+            "expanded_layout_bounds": correspondence_crop_debug.get("expanded_layout_bounds"),
+            "matched_region_count": correspondence_crop_debug.get("matched_region_count"),
             "projected_box_before_margin": correspondence_crop_debug.get("projected_document_box"),
             "projected_box_after_margin": correspondence_crop_debug.get("final_crop_box"),
             "coverage": correspondence_crop_debug.get("coverage"),
             "confidence": correspondence_crop_debug.get("confidence"),
+            "safety_margin": correspondence_crop_debug.get("safety_margin"),
         }
         debug["fallback_reason"] = None
     else:
@@ -1792,6 +1855,16 @@ def _layout_reference_adjusted_image(
     debug["final_crop_box"] = [int(crop_left), int(crop_top), int(crop_right), int(crop_bottom)]
     debug["crop_size"] = [int(crop_right - crop_left), int(crop_bottom - crop_top)]
     debug["crop_image_size"] = [int(crop_right - crop_left), int(crop_bottom - crop_top)]
+    debug["final_crop"] = {
+        "matched_region_count": crop_debug.get("matched_region_count"),
+        "document_layout_bounds": crop_debug.get("document_layout_bounds") or debug.get("query_content_bounds"),
+        "expanded_layout_bounds": crop_debug.get("expanded_layout_bounds"),
+        "safety_margin": crop_debug.get("safety_margin") or debug.get("safety_margin"),
+        "final_crop_box": [int(crop_left), int(crop_top), int(crop_right), int(crop_bottom)],
+        "final_crop_size": [int(crop_right - crop_left), int(crop_bottom - crop_top)],
+        "template_page_size": debug.get("template_page_size"),
+        "selected_processing_source": "layout_reference_crop",
+    }
     delta = max(
         crop_left / max(1, image_width),
         crop_top / max(1, image_height),
@@ -1811,6 +1884,8 @@ def _layout_reference_adjusted_image(
         return debug
     template_page_size = _signature_template_page_size(template_signature)
     debug["template_page_size"] = list(template_page_size) if template_page_size else None
+    if isinstance(debug.get("final_crop"), dict):
+        debug["final_crop"]["template_page_size"] = debug["template_page_size"]
     output_image = cropped
     resize_applied = False
     if template_page_size:
@@ -3087,6 +3162,8 @@ def _candidate_from_result(
     selected_processing_path = extraction_image_path
     processing_image_size = _image_dimensions(extraction_image_path)
     template_page_size = layout_reference_crop_debug.get("template_page_size")
+    if isinstance(layout_reference_crop_debug.get("final_crop"), dict):
+        layout_reference_crop_debug["final_crop"]["selected_processing_source"] = selected_processing_source
     roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} else "projected"
 
     template_fields: List[Dict[str, Any]] = []
@@ -3261,6 +3338,7 @@ def _candidate_from_result(
         "template_page_size": template_page_size,
         "roi_coordinate_space": roi_coordinate_space,
         "layout_reference_crop": layout_reference_crop_debug,
+        "final_crop": layout_reference_crop_debug.get("final_crop"),
 
         "verification": verification,
         "verification_details": (
@@ -3622,6 +3700,7 @@ def _detect_page(
                 else "original_layout_space" if matching_image_path != normalized_image_path else "normalized_image"
             ),
             "retrieval_precrop": retrieval_precrop_debug,
+            "retrieval_crop": retrieval_precrop_debug.get("retrieval_crop"),
             "retrieval_precrop_attempted": retrieval_precrop_debug.get("retrieval_precrop_attempted"),
             "retrieval_precrop_applied": retrieval_precrop_debug.get("retrieval_precrop_applied"),
             "retrieval_precrop_box": retrieval_precrop_debug.get("retrieval_precrop_box"),
@@ -3757,6 +3836,8 @@ def _aggregate_candidates(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "processing_image_size": best_page_cand.get("processing_image_size"),
             "template_page_size": best_page_cand.get("template_page_size"),
             "roi_coordinate_space": best_page_cand.get("roi_coordinate_space"),
+            "layout_reference_crop": best_page_cand.get("layout_reference_crop"),
+            "final_crop": best_page_cand.get("final_crop"),
             "verification": best_page_cand.get("verification"),
             "verification_details": (
                 best_page_cand.get("verification_details")
