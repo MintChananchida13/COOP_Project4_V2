@@ -19,9 +19,9 @@ class ImageNormalizationService:
     MIN_IMAGE_STDDEV = 3.0
     LAYOUT_CROP_MIN_REGIONS = 3
     LAYOUT_CROP_MIN_CONTENT_AREA_RATIO = 0.025
-    LAYOUT_CROP_PADDING_X_RATIO = 0.30
-    LAYOUT_CROP_PADDING_TOP_RATIO = 0.38
-    LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.38
+    LAYOUT_CROP_PADDING_X_RATIO = 0.16
+    LAYOUT_CROP_PADDING_TOP_RATIO = 0.24
+    LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.24
     LAYOUT_DESKEW_MAX_ANGLE_DEG = 2.5
     LAYOUT_DESKEW_MIN_ANGLE_DEG = 0.25
     LAYOUT_DESKEW_MIN_RECTANGULARITY = 0.70
@@ -43,7 +43,6 @@ class ImageNormalizationService:
 
         original_height, original_width = image.shape[:2]
         bypass_requested = os.getenv("IMAGE_NORMALIZATION_BYPASS", "").strip().lower() in {"1", "true", "yes"}
-        crop_enabled = os.getenv("IMAGE_NORMALIZATION_PRE_TEMPLATE_CROP_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
         if bypass_requested:
             normalized = image.copy()
             debug = {
@@ -69,65 +68,22 @@ class ImageNormalizationService:
                     "height": original_height,
                 },
             }
-        elif crop_enabled:
-            layout_normalized, layout_debug = self._layout_assisted_crop(
-                image,
-                "pre_template_perspective_crop_disabled",
-                allow_deskew=False,
-                success_status="pre_template_layout_loose_crop",
-            )
-            if layout_debug.get("normalization_status") in {"layout_cropped", "pre_template_layout_loose_crop"}:
-                normalized = layout_normalized
-                debug = layout_debug
-            else:
-                normalized = image.copy()
-                debug = {
-                    **layout_debug,
-                    "document_detected": False,
-                    "crop_applied": False,
-                    "perspective_applied": False,
-                    "normalization_status": "fallback",
-                    "validation_passed": True,
-                    "fallback_used": True,
-                    "fallback_reason": layout_debug.get("fallback_reason") or "layout_crop_unavailable",
-                    "layout_crop_attempted": True,
-                    "layout_crop": layout_debug.get("layout_crop"),
-                    "layout_crop_fallback_reason": layout_debug.get("fallback_reason"),
-                    "transform_validation": {
-                        "passed": True,
-                        "reason": "layout_crop_fallback_to_original",
-                        "width": original_width,
-                        "height": original_height,
-                    },
-                }
         else:
-            normalized = image.copy()
-            debug = {
-                "document_detected": False,
-                "crop_applied": False,
-                "perspective_applied": False,
-                "normalization_status": "uncropped",
-                "validation_passed": True,
-                "fallback_used": False,
-                "fallback_reason": None,
-                "original_size": [original_width, original_height],
-                "detected_contour_area": None,
-                "contour_area_ratio": None,
-                "contour_source": None,
-                "contour_score": None,
-                "contour_aspect_ratio": None,
-                "contour_center_score": None,
-                "detected_points": None,
-                "layout_crop_attempted": False,
-                "layout_crop": None,
-                "layout_crop_disabled": True,
-                "transform_validation": {
-                    "passed": True,
-                    "reason": "pre_template_normalization_uncropped",
-                    "width": original_width,
-                    "height": original_height,
-                },
-            }
+            normalized, debug = self._perspective_correct(image)
+            if debug.get("normalization_status") == "fallback":
+                layout_normalized, layout_debug = self._layout_assisted_crop(image, debug.get("fallback_reason"))
+                if layout_debug.get("normalization_status") == "layout_cropped":
+                    normalized = layout_normalized
+                    debug = layout_debug
+                else:
+                    normalized = image.copy()
+                    debug.update(
+                        {
+                            "layout_crop_attempted": True,
+                            "layout_crop": layout_debug.get("layout_crop"),
+                            "layout_crop_fallback_reason": layout_debug.get("fallback_reason"),
+                        }
+                    )
 
         normalized = self._resize_longest_side(normalized, self.LONGEST_SIDE)
         normalized_height, normalized_width = normalized.shape[:2]
@@ -182,10 +138,8 @@ class ImageNormalizationService:
         layout_normalized, layout_debug = self._layout_assisted_crop(
             image,
             "layout_matching_crop",
-            allow_deskew=False,
-            success_status="pre_template_layout_matching_crop",
         )
-        if layout_debug.get("normalization_status") == "pre_template_layout_matching_crop":
+        if layout_debug.get("normalization_status") == "layout_cropped":
             matching_image = layout_normalized
             debug = layout_debug
         else:
@@ -641,7 +595,6 @@ class ImageNormalizationService:
             analysis = analyze_layout(
                 image,
                 expand_text_rois=False,
-                use_text_detection=False,
             )
         except Exception as error:
             debug.update(
@@ -665,25 +618,10 @@ class ImageNormalizationService:
             )
             return image.copy(), debug
 
-        deskew_image = image
-        deskew_boxes = boxes
-        if allow_deskew:
-            deskew_debug = self._layout_deskew_candidate(image, boxes)
-            if deskew_debug.get("applied"):
-                deskew_image = deskew_debug["image"]
-                deskew_boxes = deskew_debug["boxes"]
-        else:
-            deskew_debug = {
-                "applied": False,
-                "reason": "disabled_for_pre_template_loose_crop",
-                "angle_deg": 0.0,
-                "rectangularity": None,
-            }
-
-        left = min(box[0] for box in deskew_boxes)
-        top = min(box[1] for box in deskew_boxes)
-        right = max(box[2] for box in deskew_boxes)
-        bottom = max(box[3] for box in deskew_boxes)
+        left = min(box[0] for box in boxes)
+        top = min(box[1] for box in boxes)
+        right = max(box[2] for box in boxes)
+        bottom = max(box[3] for box in boxes)
         content_width = max(1.0, right - left)
         content_height = max(1.0, bottom - top)
         content_area_ratio = (content_width * content_height) / max(1.0, width * height)
@@ -692,10 +630,9 @@ class ImageNormalizationService:
                 {
                     "fallback_reason": "layout_content_area_too_small",
                     "layout_crop": {
-                        "region_count": len(deskew_boxes),
+                        "region_count": len(boxes),
                         "content_box": [round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)],
                         "content_area_ratio": round(float(content_area_ratio), 4),
-                        "deskew": self._layout_deskew_debug_payload(deskew_debug),
                     },
                 }
             )
@@ -709,12 +646,6 @@ class ImageNormalizationService:
         crop_top = int(max(0, np.floor(top - pad_top)))
         crop_right = int(min(width, np.ceil(right + pad_right)))
         crop_bottom = int(min(height, np.ceil(bottom + pad_bottom)))
-        requested_crop_box = [crop_left, crop_top, crop_right, crop_bottom]
-        safe_crop = self._safe_layout_crop_box(crop_left, crop_top, crop_right, crop_bottom, width, height)
-        crop_left = safe_crop["left"]
-        crop_top = safe_crop["top"]
-        crop_right = safe_crop["right"]
-        crop_bottom = safe_crop["bottom"]
 
         if crop_right <= crop_left or crop_bottom <= crop_top:
             debug.update(
@@ -723,20 +654,17 @@ class ImageNormalizationService:
                     "layout_crop": {
                         "region_count": len(boxes),
                         "content_box": [round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)],
-                        "requested_expanded_box": requested_crop_box,
                         "expanded_box": [crop_left, crop_top, crop_right, crop_bottom],
-                        "safe_crop": self._safe_layout_crop_debug_payload(safe_crop),
                     },
                 }
             )
             return image.copy(), debug
 
-        cropped = deskew_image[crop_top:crop_bottom, crop_left:crop_right].copy()
+        cropped = image[crop_top:crop_bottom, crop_left:crop_right].copy()
         validation = self._validate_transformed_image(cropped, image)
         layout_crop_debug = {
-            "region_count": len(deskew_boxes),
+            "region_count": len(boxes),
             "content_box": [round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)],
-            "requested_expanded_box": requested_crop_box,
             "expanded_box": [crop_left, crop_top, crop_right, crop_bottom],
             "content_area_ratio": round(float(content_area_ratio), 4),
             "padding": {
@@ -746,8 +674,6 @@ class ImageNormalizationService:
                 "bottom": round(float(pad_bottom), 2),
             },
             "source": "paddle_layout_regions",
-            "deskew": self._layout_deskew_debug_payload(deskew_debug),
-            "safe_crop": self._safe_layout_crop_debug_payload(safe_crop),
         }
         if not validation["passed"]:
             debug.update(
@@ -770,7 +696,7 @@ class ImageNormalizationService:
                 "fallback_reason": None,
                 "detected_contour_area": round(float((crop_right - crop_left) * (crop_bottom - crop_top)), 2),
                 "contour_area_ratio": round(float(((crop_right - crop_left) * (crop_bottom - crop_top)) / max(1, width * height)), 4),
-                "contour_score": deskew_debug.get("rectangularity"),
+                "contour_score": None,
                 "contour_aspect_ratio": round(float((crop_right - crop_left) / max(1, crop_bottom - crop_top)), 4),
                 "detected_points": [
                     [float(crop_left), float(crop_top)],
