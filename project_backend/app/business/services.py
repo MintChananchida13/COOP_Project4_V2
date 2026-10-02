@@ -523,9 +523,9 @@ class GlobalSettingsService:
             return False
         return datetime.now(timezone.utc) >= start
 
-    def _apply_pending_settings_if_due(self, maintenance: Optional[Dict[str, Any]] = None) -> bool:
+    def _apply_pending_settings_if_due(self, maintenance: Optional[Dict[str, Any]] = None, *, force: bool = False) -> bool:
         state = maintenance or self._system_maintenance_from_storage()
-        if not self._pending_settings_due(state):
+        if not force and not self._pending_settings_due(state):
             return False
 
         pending_strategy_raw = self._load_setting_value(PENDING_VERIFICATION_STRATEGY_SETTING_KEY)
@@ -638,7 +638,7 @@ class GlobalSettingsService:
     def get_system_maintenance(self) -> Dict[str, Any]:
         maintenance = self._system_maintenance_from_storage()
         try:
-            self._apply_pending_settings_if_due(maintenance)
+            self._apply_pending_settings_if_due(maintenance, force=not bool(maintenance.get("enforcementEnabled")))
         except Exception:
             pass
         return maintenance
@@ -672,14 +672,19 @@ class GlobalSettingsService:
         if start is not None and end is not None and start >= end:
             raise HTTPException(status_code=400, detail="expectedEndAt must be after scheduledStartAt")
 
+        force_apply_pending = getattr(payload, "enforcement_enabled", None) is False
+        if force_apply_pending:
+            self._apply_pending_settings_if_due(current, force=True)
+
         next_setting["updatedAt"] = self._maintenance_datetime_to_iso(datetime.now(timezone.utc))
         next_setting["updatedBy"] = str(updated_by or "admin").strip() or "admin"
         self._save_setting(SYSTEM_MAINTENANCE_SETTING_KEY, jsonb_dump(next_setting))
         maintenance = self._maintenance_state(self._normalize_maintenance_setting(next_setting))
-        try:
-            self._apply_pending_settings_if_due(maintenance)
-        except Exception:
-            pass
+        if not force_apply_pending:
+            try:
+                self._apply_pending_settings_if_due(maintenance)
+            except Exception:
+                pass
         return maintenance
 
     def _should_defer_admin_setting_updates(self) -> bool:

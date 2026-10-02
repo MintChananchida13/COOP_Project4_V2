@@ -1872,6 +1872,7 @@ export const updateAdminSystemMaintenance = async (
         : detail?.error?.message || json?.error?.message || "Update system maintenance failed";
     throw new Error(message);
   }
+  invalidateAdminListCache("all");
   return mapSystemMaintenance((json?.data as Record<string, unknown>) || {});
 };
 
