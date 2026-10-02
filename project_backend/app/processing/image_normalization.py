@@ -13,6 +13,10 @@ class ImageNormalizationService:
     MAX_CONTOUR_AREA_RATIO = 0.98
     MIN_ASPECT_RATIO = 0.20
     MAX_ASPECT_RATIO = 5.0
+    MIN_DOCUMENT_RECTANGULARITY = 0.50
+    MIN_DOCUMENT_EXTENT_RATIO = 0.40
+    MAX_DOCUMENT_SIDE_IMBALANCE = 2.4
+    MAX_DOCUMENT_AREA_GAIN_RATIO = 1.8
     MIN_TRANSFORMED_DIMENSION = 80
     MIN_TRANSFORMED_AREA_RATIO = 0.03
     MAX_TRANSFORMED_ASPECT_RATIO = 8.0
@@ -69,34 +73,36 @@ class ImageNormalizationService:
                 },
             }
         else:
-            layout_normalized, layout_debug = self._layout_assisted_crop(
-                image,
-                "perspective_rotation_disabled",
-            )
-            if layout_debug.get("normalization_status") == "layout_cropped":
-                normalized = layout_normalized
-                debug = layout_debug
-            else:
-                normalized = image.copy()
-                debug = {
-                    **layout_debug,
-                    "document_detected": False,
-                    "crop_applied": False,
-                    "perspective_applied": False,
-                    "normalization_status": "fallback",
-                    "validation_passed": True,
-                    "fallback_used": True,
-                    "fallback_reason": layout_debug.get("fallback_reason") or "layout_crop_unavailable",
-                    "layout_crop_attempted": True,
-                    "layout_crop": layout_debug.get("layout_crop"),
-                    "layout_crop_fallback_reason": layout_debug.get("fallback_reason"),
-                    "transform_validation": {
-                        "passed": True,
-                        "reason": "layout_crop_fallback_to_original",
-                        "width": original_width,
-                        "height": original_height,
-                    },
-                }
+            normalized, debug = self._perspective_correct(image)
+            if debug.get("normalization_status") == "fallback":
+                layout_normalized, layout_debug = self._layout_assisted_crop(
+                    image,
+                    debug.get("fallback_reason") or "perspective_unavailable",
+                )
+                if layout_debug.get("normalization_status") == "layout_cropped":
+                    normalized = layout_normalized
+                    debug = layout_debug
+                else:
+                    normalized = image.copy()
+                    debug = {
+                        **layout_debug,
+                        "document_detected": False,
+                        "crop_applied": False,
+                        "perspective_applied": False,
+                        "normalization_status": "fallback",
+                        "validation_passed": True,
+                        "fallback_used": True,
+                        "fallback_reason": layout_debug.get("fallback_reason") or "layout_crop_unavailable",
+                        "layout_crop_attempted": True,
+                        "layout_crop": layout_debug.get("layout_crop"),
+                        "layout_crop_fallback_reason": layout_debug.get("fallback_reason"),
+                        "transform_validation": {
+                            "passed": True,
+                            "reason": "layout_crop_fallback_to_original",
+                            "width": original_width,
+                            "height": original_height,
+                        },
+                    }
 
         normalized = self._resize_longest_side(normalized, self.LONGEST_SIDE)
         normalized_height, normalized_width = normalized.shape[:2]
@@ -148,34 +154,36 @@ class ImageNormalizationService:
             raise ValueError(f"Unable to read image for layout matching normalization: {image_path}")
 
         original_height, original_width = image.shape[:2]
-        layout_normalized, layout_debug = self._layout_assisted_crop(
-            image,
-            "layout_matching_crop",
-        )
-        if layout_debug.get("normalization_status") == "layout_cropped":
-            matching_image = layout_normalized
-            debug = layout_debug
-        else:
-            matching_image = image.copy()
-            debug = {
-                **layout_debug,
-                "document_detected": False,
-                "crop_applied": False,
-                "perspective_applied": False,
-                "normalization_status": "layout_matching_uncropped",
-                "validation_passed": True,
-                "fallback_used": True,
-                "fallback_reason": layout_debug.get("fallback_reason") or "layout_matching_crop_unavailable",
-                "layout_crop_attempted": True,
-                "layout_crop": layout_debug.get("layout_crop"),
-                "layout_crop_fallback_reason": layout_debug.get("fallback_reason"),
-                "transform_validation": {
-                    "passed": True,
-                    "reason": "layout_matching_crop_fallback_to_original",
-                    "width": original_width,
-                    "height": original_height,
-                },
-            }
+        matching_image, debug = self._perspective_correct(image)
+        if debug.get("normalization_status") == "fallback":
+            layout_normalized, layout_debug = self._layout_assisted_crop(
+                image,
+                debug.get("fallback_reason") or "layout_matching_crop",
+            )
+            if layout_debug.get("normalization_status") == "layout_cropped":
+                matching_image = layout_normalized
+                debug = layout_debug
+            else:
+                matching_image = image.copy()
+                debug = {
+                    **layout_debug,
+                    "document_detected": False,
+                    "crop_applied": False,
+                    "perspective_applied": False,
+                    "normalization_status": "layout_matching_uncropped",
+                    "validation_passed": True,
+                    "fallback_used": True,
+                    "fallback_reason": layout_debug.get("fallback_reason") or "layout_matching_crop_unavailable",
+                    "layout_crop_attempted": True,
+                    "layout_crop": layout_debug.get("layout_crop"),
+                    "layout_crop_fallback_reason": layout_debug.get("fallback_reason"),
+                    "transform_validation": {
+                        "passed": True,
+                        "reason": "layout_matching_crop_fallback_to_original",
+                        "width": original_width,
+                        "height": original_height,
+                    },
+                }
 
         matching_image = self._resize_longest_side(matching_image, self.LONGEST_SIDE)
         matching_height, matching_width = matching_image.shape[:2]
@@ -245,6 +253,38 @@ class ImageNormalizationService:
         width_b = np.linalg.norm(top_right - top_left)
         height_a = np.linalg.norm(top_right - bottom_right)
         height_b = np.linalg.norm(top_left - bottom_left)
+        width_imbalance = max(width_a, width_b) / max(1.0, min(width_a, width_b))
+        height_imbalance = max(height_a, height_b) / max(1.0, min(height_a, height_b))
+        contour_area = float(contour_info.get("area") or 0.0)
+        warped_area = float(max(width_a, width_b) * max(height_a, height_b))
+        area_gain_ratio = warped_area / max(1.0, contour_area)
+        geometry_validation = {
+            "width_imbalance": round(float(width_imbalance), 4),
+            "height_imbalance": round(float(height_imbalance), 4),
+            "area_gain_ratio": round(float(area_gain_ratio), 4),
+            "rectangularity": contour_info.get("rectangularity"),
+            "extent_ratio": contour_info.get("extent_ratio"),
+        }
+        if (
+            width_imbalance > self.MAX_DOCUMENT_SIDE_IMBALANCE
+            or height_imbalance > self.MAX_DOCUMENT_SIDE_IMBALANCE
+            or area_gain_ratio > self.MAX_DOCUMENT_AREA_GAIN_RATIO
+        ):
+            reason = "document_contour_geometry_unstable"
+            debug.update(
+                {
+                    "validation_passed": False,
+                    "fallback_used": True,
+                    "fallback_reason": reason,
+                    "normalization_status": "fallback",
+                    "transform_validation": {
+                        "passed": False,
+                        "reason": reason,
+                        **geometry_validation,
+                    },
+                }
+            )
+            return image.copy(), debug
         max_width = max(1, int(max(width_a, width_b)))
         max_height = max(1, int(max(height_a, height_b)))
 
@@ -265,7 +305,12 @@ class ImageNormalizationService:
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=(255, 255, 255),
         )
-        validation = self._validate_transformed_image(warped, image)
+        validation = self._validate_transformed_image(
+            warped,
+            image,
+            expected_aspect_ratio=contour_info.get("aspect_ratio"),
+        )
+        validation.update(geometry_validation)
         if not validation["passed"]:
             debug.update(
                 {
@@ -347,6 +392,8 @@ class ImageNormalizationService:
             "score": round(float(best["score"]), 4),
             "aspect_ratio": round(float(best["aspect_ratio"]), 4),
             "center_score": round(float(best["center_score"]), 4),
+            "rectangularity": round(float(best["rectangularity"]), 4),
+            "extent_ratio": round(float(best["extent_ratio"]), 4),
             "fallback_reason": None,
         }
 
@@ -393,11 +440,20 @@ class ImageNormalizationService:
         if aspect_ratio < self.MIN_ASPECT_RATIO or aspect_ratio > self.MAX_ASPECT_RATIO:
             return None
 
+        quad_area = float(cv2.contourArea(ordered.reshape(4, 1, 2)))
+        rectangularity = area / max(1.0, quad_area)
+        extent_ratio = area / max(1.0, width * height)
+        if rectangularity < self.MIN_DOCUMENT_RECTANGULARITY:
+            return None
+        if extent_ratio < self.MIN_DOCUMENT_EXTENT_RATIO:
+            return None
+
         contour_center = ordered.mean(axis=0)
         center_distance = np.linalg.norm(contour_center - image_center)
         center_score = 1.0 - min(1.0, center_distance / max(1.0, max_center_distance))
         area_score = min(1.0, area_ratio / 0.75)
-        score = (0.65 * area_score) + (0.35 * center_score)
+        geometry_score = min(1.0, rectangularity) * min(1.0, extent_ratio)
+        score = (0.55 * area_score) + (0.30 * center_score) + (0.15 * geometry_score)
 
         return {
             "points_array": ordered,
@@ -405,6 +461,8 @@ class ImageNormalizationService:
             "area": area,
             "area_ratio": area_ratio,
             "aspect_ratio": aspect_ratio,
+            "rectangularity": rectangularity,
+            "extent_ratio": extent_ratio,
             "center_score": center_score,
             "source": source,
             "score": score,
@@ -480,7 +538,8 @@ class ImageNormalizationService:
     def _validate_transformed_image(
     self,
     transformed: Optional[np.ndarray],
-    original: np.ndarray,) -> Dict[str, Any]:
+    original: np.ndarray,
+    expected_aspect_ratio: Optional[float] = None,) -> Dict[str, Any]:
 
         if transformed is None or not isinstance(transformed, np.ndarray):
             return {"passed": False, "reason": "perspective_transform_failed"}
@@ -498,10 +557,11 @@ class ImageNormalizationService:
 
         aspect_ratio = width / max(1, height)
         original_aspect_ratio = original_width / max(1, original_height)
+        reference_aspect_ratio = expected_aspect_ratio or original_aspect_ratio
 
         aspect_change_ratio = max(
-            aspect_ratio / original_aspect_ratio,
-            original_aspect_ratio / aspect_ratio,
+            aspect_ratio / reference_aspect_ratio,
+            reference_aspect_ratio / aspect_ratio,
         )
 
         gray = (
@@ -520,6 +580,7 @@ class ImageNormalizationService:
             "area_ratio": round(float(area_ratio), 4),
             "aspect_ratio": round(float(aspect_ratio), 4),
             "original_aspect_ratio": round(float(original_aspect_ratio), 4),
+            "reference_aspect_ratio": round(float(reference_aspect_ratio), 4),
             "aspect_change_ratio": round(float(aspect_change_ratio), 4),
             "stddev": round(stddev, 4),
         }
