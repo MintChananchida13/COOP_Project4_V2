@@ -19,16 +19,16 @@ class ImageNormalizationService:
     MIN_IMAGE_STDDEV = 3.0
     LAYOUT_CROP_MIN_REGIONS = 3
     LAYOUT_CROP_MIN_CONTENT_AREA_RATIO = 0.025
-    LAYOUT_CROP_PADDING_X_RATIO = 0.40
-    LAYOUT_CROP_PADDING_TOP_RATIO = 0.48
-    LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.48
+    LAYOUT_CROP_PADDING_X_RATIO = 0.30
+    LAYOUT_CROP_PADDING_TOP_RATIO = 0.38
+    LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.38
     LAYOUT_DESKEW_MAX_ANGLE_DEG = 2.5
     LAYOUT_DESKEW_MIN_ANGLE_DEG = 0.25
     LAYOUT_DESKEW_MIN_RECTANGULARITY = 0.70
-    LAYOUT_CROP_MAX_INSET_X_RATIO = 0.05
-    LAYOUT_CROP_MAX_INSET_Y_RATIO = 0.05
-    LAYOUT_CROP_MIN_WIDTH_RATIO = 0.90
-    LAYOUT_CROP_MIN_HEIGHT_RATIO = 0.90
+    LAYOUT_CROP_MAX_INSET_X_RATIO = 0.15
+    LAYOUT_CROP_MAX_INSET_Y_RATIO = 0.15
+    LAYOUT_CROP_MIN_WIDTH_RATIO = 0.70
+    LAYOUT_CROP_MIN_HEIGHT_RATIO = 0.70
 
     def normalize_document(self, image_path: str, output_path: Optional[str] = None) -> Dict[str, Any]:
         source_path = Path(image_path)
@@ -43,6 +43,7 @@ class ImageNormalizationService:
 
         original_height, original_width = image.shape[:2]
         bypass_requested = os.getenv("IMAGE_NORMALIZATION_BYPASS", "").strip().lower() in {"1", "true", "yes"}
+        crop_disabled = os.getenv("IMAGE_NORMALIZATION_PRE_TEMPLATE_CROP_DISABLED", "").strip().lower() in {"1", "true", "yes", "on"}
         if bypass_requested:
             normalized = image.copy()
             debug = {
@@ -68,7 +69,7 @@ class ImageNormalizationService:
                     "height": original_height,
                 },
             }
-        else:
+        elif not crop_disabled:
             layout_normalized, layout_debug = self._layout_assisted_crop(
                 image,
                 "pre_template_perspective_crop_disabled",
@@ -99,6 +100,34 @@ class ImageNormalizationService:
                         "height": original_height,
                     },
                 }
+        else:
+            normalized = image.copy()
+            debug = {
+                "document_detected": False,
+                "crop_applied": False,
+                "perspective_applied": False,
+                "normalization_status": "uncropped",
+                "validation_passed": True,
+                "fallback_used": False,
+                "fallback_reason": None,
+                "original_size": [original_width, original_height],
+                "detected_contour_area": None,
+                "contour_area_ratio": None,
+                "contour_source": None,
+                "contour_score": None,
+                "contour_aspect_ratio": None,
+                "contour_center_score": None,
+                "detected_points": None,
+                "layout_crop_attempted": False,
+                "layout_crop": None,
+                "layout_crop_disabled": True,
+                "transform_validation": {
+                    "passed": True,
+                    "reason": "pre_template_normalization_uncropped",
+                    "width": original_width,
+                    "height": original_height,
+                },
+            }
 
         normalized = self._resize_longest_side(normalized, self.LONGEST_SIDE)
         normalized_height, normalized_width = normalized.shape[:2]

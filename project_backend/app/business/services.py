@@ -5202,6 +5202,76 @@ class AdminTemplateService:
         GlobalSettingsService().save_pending_template_page_op(template_id, operation)
         return self.get_template(template_id, apply_pending=False)
 
+    @staticmethod
+    def _pending_float_equal(left: Any, right: Any, tolerance: float = 0.000001) -> bool:
+        try:
+            return abs(float(left) - float(right)) <= tolerance
+        except (TypeError, ValueError):
+            return left == right
+
+    @staticmethod
+    def _pending_points_equal(existing_points_json: Any, payload: TemplateFieldCreate) -> bool:
+        existing_points = jsonb_load(existing_points_json, None) if existing_points_json else None
+        payload_points = payload.roi.points
+        if not existing_points and not payload_points:
+            return True
+        return existing_points == payload_points
+
+    def _pending_extraction_field_matches_payload(self, row: Any, payload: TemplateFieldCreate) -> bool:
+        return (
+            str(row["template_page_id"]) == str(payload.template_page_id)
+            and str(row["field_name"]) == str(payload.field_name)
+            and str(row["display_label"] or "") == str(payload.display_label or "")
+            and str(row["data_type"] or "") == str(_normalize_data_type(payload.data_type) or "")
+            and str(row["extraction_method"] or "") == str(_normalize_extraction_method(payload.extraction_method) or "")
+            and self._pending_float_equal(row["roi_x_ratio"], payload.roi.x_ratio)
+            and self._pending_float_equal(row["roi_y_ratio"], payload.roi.y_ratio)
+            and self._pending_float_equal(row["roi_width_ratio"], payload.roi.width_ratio)
+            and self._pending_float_equal(row["roi_height_ratio"], payload.roi.height_ratio)
+            and self._pending_points_equal(row["roi_points_json"], payload)
+            and str(row["roi_mode"] or "") == str(_normalize_roi_mode(payload.roi_mode) or "")
+            and str(row["expected_content"] or "") == str(_normalize_expected_content(payload.expected_content) or "")
+            and int(row["sort_order"] or 0) == int(payload.sort_order or 0)
+        )
+
+    def _pending_extraction_field_by_page_name(
+        self,
+        conn: Any,
+        template_id: str,
+        payload: TemplateFieldCreate,
+        *,
+        excluding_field_id: Optional[str] = None,
+    ) -> Optional[Any]:
+        row = conn.execute(
+            """
+            SELECT ef.*
+            FROM extraction_fields ef
+            JOIN template_pages tp ON tp.id = ef.template_page_id
+            WHERE tp.template_version_id = ?
+              AND ef.template_page_id = ?
+              AND ef.field_name = ?
+              AND (? IS NULL OR ef.id != ?)
+            """,
+            (
+                template_id,
+                payload.template_page_id,
+                payload.field_name,
+                excluding_field_id,
+                excluding_field_id,
+            ),
+        ).fetchone()
+        return row
+
+    def _raise_pending_field_conflict(self, template_id: str, payload: TemplateFieldCreate, existing_field_id: Any) -> None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Pending template field operation conflicts with an existing field "
+                f"(template_id={template_id}, template_page_id={payload.template_page_id}, "
+                f"field_name={payload.field_name}, existing_field_id={existing_field_id})"
+            ),
+        )
+
     def _apply_pending_template_page_ops(self, conn: Any, ops_by_template: Dict[str, List[Dict[str, Any]]]) -> None:
         templates_to_refresh: set[str] = set()
         column_map = {
@@ -5260,6 +5330,12 @@ class AdminTemplateService:
                     conn.execute("DELETE FROM verification_anchors WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)", (field_id, template_id))
                     next_field_id = field_id
                 elif action == "create_field":
+                    if not payload.use_for_verification:
+                        existing = self._pending_extraction_field_by_page_name(conn, template_id, payload)
+                        if existing is not None:
+                            if self._pending_extraction_field_matches_payload(existing, payload):
+                                continue
+                            self._raise_pending_field_conflict(template_id, payload, existing["id"])
                     next_field_id = _stub_id("tpl_field")
                 else:
                     continue
@@ -5295,6 +5371,15 @@ class AdminTemplateService:
                         ),
                     )
                 else:
+                    if action == "update_field":
+                        existing = self._pending_extraction_field_by_page_name(
+                            conn,
+                            template_id,
+                            payload,
+                            excluding_field_id=next_field_id,
+                        )
+                        if existing is not None:
+                            self._raise_pending_field_conflict(template_id, payload, existing["id"])
                     conn.execute(
                         "INSERT INTO extraction_fields (id, template_page_id, field_name, display_label, data_type, extraction_method, roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_points_json, roi_mode, expected_content, required, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
                         (
