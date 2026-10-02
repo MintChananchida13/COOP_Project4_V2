@@ -12,6 +12,9 @@ from app.core.json_utils import jsonb_load
 logger = logging.getLogger(__name__)
 LABELS = ("text", "table", "image")
 GRID_SIZE = 4
+LAYOUT_SPACE_PADDING_RATIO = float(os.getenv("LAYOUT_SPACE_PADDING_RATIO", "0.08"))
+LAYOUT_SPACE_MIN_REGIONS = int(os.getenv("LAYOUT_SPACE_MIN_REGIONS", "2"))
+LAYOUT_SPACE_MIN_SPAN_RATIO = float(os.getenv("LAYOUT_SPACE_MIN_SPAN_RATIO", "0.08"))
 COUNT_PREFILTER_THRESHOLD = float(os.getenv("LAYOUT_COUNT_PREFILTER_THRESHOLD", "0.55"))
 AREA_PREFILTER_THRESHOLD = float(os.getenv("LAYOUT_AREA_PREFILTER_THRESHOLD", "0.55"))
 GRID_PREFILTER_THRESHOLD = float(os.getenv("LAYOUT_GRID_PREFILTER_THRESHOLD", "0.55"))
@@ -120,6 +123,176 @@ def _metrics_for_regions(regions: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _content_bounds_for_regions(regions: Sequence[Dict[str, Any]]) -> Optional[Dict[str, float]]:
+    boxes = []
+    for region in regions:
+        bbox = region.get("bbox") or {}
+        try:
+            x = _clamp(float(bbox.get("x_ratio")))
+            y = _clamp(float(bbox.get("y_ratio")))
+            width = _clamp(float(bbox.get("width_ratio")))
+            height = _clamp(float(bbox.get("height_ratio")))
+        except (TypeError, ValueError):
+            continue
+        if width <= 0 or height <= 0:
+            continue
+        boxes.append((x, y, min(1.0, x + width), min(1.0, y + height)))
+    if len(boxes) < LAYOUT_SPACE_MIN_REGIONS:
+        return None
+    left = min(item[0] for item in boxes)
+    top = min(item[1] for item in boxes)
+    right = max(item[2] for item in boxes)
+    bottom = max(item[3] for item in boxes)
+    span_x = right - left
+    span_y = bottom - top
+    if span_x < LAYOUT_SPACE_MIN_SPAN_RATIO or span_y < LAYOUT_SPACE_MIN_SPAN_RATIO:
+        return None
+    pad_x = span_x * LAYOUT_SPACE_PADDING_RATIO
+    pad_y = span_y * LAYOUT_SPACE_PADDING_RATIO
+    left = max(0.0, left - pad_x)
+    top = max(0.0, top - pad_y)
+    right = min(1.0, right + pad_x)
+    bottom = min(1.0, bottom + pad_y)
+    width = right - left
+    height = bottom - top
+    if width <= 0 or height <= 0:
+        return None
+    return {
+        "left": left,
+        "top": top,
+        "right": right,
+        "bottom": bottom,
+        "width": width,
+        "height": height,
+    }
+
+
+def _rebase_region_to_layout_space(region: Dict[str, Any], bounds: Dict[str, float]) -> Optional[Dict[str, Any]]:
+    bbox = region.get("bbox") or {}
+    try:
+        x = float(bbox.get("x_ratio") or 0.0)
+        y = float(bbox.get("y_ratio") or 0.0)
+        width = float(bbox.get("width_ratio") or 0.0)
+        height = float(bbox.get("height_ratio") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    left = _clamp((x - bounds["left"]) / bounds["width"])
+    top = _clamp((y - bounds["top"]) / bounds["height"])
+    right = _clamp((x + width - bounds["left"]) / bounds["width"])
+    bottom = _clamp((y + height - bounds["top"]) / bounds["height"])
+    next_width = right - left
+    next_height = bottom - top
+    if next_width <= 0 or next_height <= 0:
+        return None
+    next_region = dict(region)
+    next_region["bbox"] = {
+        "x_ratio": round(left, 6),
+        "y_ratio": round(top, 6),
+        "width_ratio": round(next_width, 6),
+        "height_ratio": round(next_height, 6),
+    }
+    next_region["center"] = [round(left + next_width / 2, 6), round(top + next_height / 2, 6)]
+    next_region["area_ratio"] = round(_clamp(next_width * next_height), 6)
+    return next_region
+
+
+def _rebase_bbox_to_layout_space(bbox: Dict[str, Any], bounds: Dict[str, float]) -> Optional[Dict[str, float]]:
+    try:
+        x = float(bbox.get("x_ratio") or 0.0)
+        y = float(bbox.get("y_ratio") or 0.0)
+        width = float(bbox.get("width_ratio") or 0.0)
+        height = float(bbox.get("height_ratio") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    left = _clamp((x - bounds["left"]) / bounds["width"])
+    top = _clamp((y - bounds["top"]) / bounds["height"])
+    right = _clamp((x + width - bounds["left"]) / bounds["width"])
+    bottom = _clamp((y + height - bounds["top"]) / bounds["height"])
+    next_width = right - left
+    next_height = bottom - top
+    if next_width <= 0 or next_height <= 0:
+        return None
+    return {
+        "x_ratio": round(left, 6),
+        "y_ratio": round(top, 6),
+        "width_ratio": round(next_width, 6),
+        "height_ratio": round(next_height, 6),
+    }
+
+
+def normalize_signature_layout_space(signature: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(signature, dict):
+        return signature
+    existing = signature.get("layout_space_normalization")
+    if isinstance(existing, dict) and existing.get("applied"):
+        return signature
+    regions = signature.get("regions") if isinstance(signature.get("regions"), list) else []
+    bounds = _content_bounds_for_regions(regions)
+    if not bounds:
+        return {
+            **signature,
+            "layout_space_normalization": {
+                "applied": False,
+                "reason": "insufficient_layout_content_bounds",
+                "min_regions": LAYOUT_SPACE_MIN_REGIONS,
+                "min_span_ratio": LAYOUT_SPACE_MIN_SPAN_RATIO,
+            },
+        }
+    rebased_regions = [
+        region
+        for region in (_rebase_region_to_layout_space(region, bounds) for region in regions)
+        if region is not None
+    ]
+    if len(rebased_regions) < LAYOUT_SPACE_MIN_REGIONS:
+        return {
+            **signature,
+            "layout_space_normalization": {
+                "applied": False,
+                "reason": "insufficient_rebased_regions",
+                "bounds": {key: round(float(value), 6) for key, value in bounds.items()},
+            },
+        }
+    width = max(float(signature.get("image_width") or 1.0), 1.0)
+    height = max(float(signature.get("image_height") or 1.0), 1.0)
+    layout_width = max(1.0, width * bounds["width"])
+    layout_height = max(1.0, height * bounds["height"])
+    metrics = _metrics_for_regions(rebased_regions)
+    ignored_regions = [
+        rebased
+        for rebased in (
+            _rebase_bbox_to_layout_space(mask, bounds)
+            for mask in (signature.get("ignored_regions") if isinstance(signature.get("ignored_regions"), list) else [])
+            if isinstance(mask, dict)
+        )
+        if rebased is not None
+    ]
+    return {
+        **signature,
+        "page_aspect_ratio": round(layout_width / layout_height, 6),
+        "image_width": int(round(layout_width)),
+        "image_height": int(round(layout_height)),
+        "region_count": metrics["region_count"],
+        "label_counts": metrics["label_counts"],
+        "area_by_label": metrics["area_by_label"],
+        "grid_counts": metrics["grid_counts"],
+        "grid_area": metrics["grid_area"],
+        "regions": rebased_regions,
+        "ignored_regions": ignored_regions,
+        "layout_space_normalization": {
+            "applied": True,
+            "source": "layout_content_bounds",
+            "bounds": {key: round(float(value), 6) for key, value in bounds.items()},
+            "padding_ratio": LAYOUT_SPACE_PADDING_RATIO,
+            "original_image_width": int(width),
+            "original_image_height": int(height),
+        },
+    }
+
+
 def build_layout_signature(layout_analysis: Dict[str, Any]) -> Dict[str, Any]:
     width = max(float(layout_analysis.get("image_width") or 1), 1.0)
     height = max(float(layout_analysis.get("image_height") or 1), 1.0)
@@ -175,7 +348,7 @@ def build_layout_signature(layout_analysis: Dict[str, Any]) -> Dict[str, Any]:
         metrics["label_counts"],
     )
 
-    return {
+    signature = {
         "version": "layout-signature-v1",
         "engine": layout_analysis.get("engine") or "layout_model_runtime",
         "model": layout_analysis.get("model") or "PP-DocLayoutV3",
@@ -192,6 +365,7 @@ def build_layout_signature(layout_analysis: Dict[str, Any]) -> Dict[str, Any]:
         "regions": regions,
         "ignored_regions": ignored_regions,
     }
+    return normalize_signature_layout_space(signature)
 
 
 def signature_to_json(signature: Dict[str, Any]) -> str:
@@ -286,6 +460,8 @@ def compare_layout_signatures(
     timing: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     total_started = time.perf_counter()
+    query = normalize_signature_layout_space(query)
+    template = normalize_signature_layout_space(template)
     ignored_regions = template.get("ignored_regions") if isinstance(template.get("ignored_regions"), list) else []
     if ignored_regions:
         step_started = time.perf_counter()
