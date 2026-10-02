@@ -724,6 +724,29 @@ def _projected_reference_crop_box(
     }
 
 
+def _signature_template_page_size(signature: Optional[Dict[str, Any]]) -> Optional[tuple[int, int]]:
+    if not isinstance(signature, dict):
+        return None
+    normalization = signature.get("layout_space_normalization")
+    if isinstance(normalization, dict):
+        try:
+            width = int(float(normalization.get("original_image_width") or 0))
+            height = int(float(normalization.get("original_image_height") or 0))
+        except (TypeError, ValueError):
+            width = 0
+            height = 0
+        if width > 0 and height > 0:
+            return width, height
+    try:
+        width = int(float(signature.get("image_width") or 0))
+        height = int(float(signature.get("image_height") or 0))
+    except (TypeError, ValueError):
+        return None
+    if width > 0 and height > 0:
+        return width, height
+    return None
+
+
 def _layout_reference_adjusted_image(
     image_path: str,
     query_signature: Optional[Dict[str, Any]],
@@ -803,12 +826,24 @@ def _layout_reference_adjusted_image(
         debug["reason"] = "reference_crop_empty"
         debug["fallback_reason"] = debug["reason"]
         return debug
+    template_page_size = _signature_template_page_size(template_signature)
+    debug["template_page_size"] = list(template_page_size) if template_page_size else None
+    output_image = cropped
+    resize_applied = False
+    if template_page_size:
+        target_width, target_height = template_page_size
+        crop_height, crop_width = cropped.shape[:2]
+        if crop_width > 0 and crop_height > 0 and (crop_width != target_width or crop_height != target_height):
+            interpolation = cv2.INTER_AREA if crop_width > target_width or crop_height > target_height else cv2.INTER_LINEAR
+            output_image = cv2.resize(cropped, (target_width, target_height), interpolation=interpolation)
+            resize_applied = True
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{_safe_file_token(template_id)}_page_{page_number}_layout_reference_crop.png"
-    if not cv2.imwrite(str(output_path), cropped):
+    if not cv2.imwrite(str(output_path), output_image):
         debug["reason"] = "reference_crop_write_failed"
         debug["fallback_reason"] = debug["reason"]
         return debug
+    output_height, output_width = output_image.shape[:2]
     debug.update(
         {
             "applied": True,
@@ -816,7 +851,10 @@ def _layout_reference_adjusted_image(
             "image_path": str(output_path),
             "preview_url": _detection_preview_url(str(output_path)),
             "source_image_size": [int(image_width), int(image_height)],
-            "output_image_size": [int(crop_right - crop_left), int(crop_bottom - crop_top)],
+            "crop_image_size": [int(crop_right - crop_left), int(crop_bottom - crop_top)],
+            "output_image_size": [int(output_width), int(output_height)],
+            "processing_image_size": [int(output_width), int(output_height)],
+            "resize_applied": resize_applied,
         }
     )
     return debug
@@ -2035,6 +2073,10 @@ def _candidate_from_result(
     candidate_timing["decision"] = time.perf_counter() - step_started
     extraction_image_path = str(alignment.get("aligned_image_path") or verification_query_image_path) if verification_source_used == "aligned" else verification_query_image_path
     extraction_image_preview_url = _detection_preview_url(extraction_image_path)
+    selected_processing_source = verification_source_used
+    selected_processing_path = extraction_image_path
+    processing_image_size = _image_dimensions(extraction_image_path)
+    template_page_size = layout_reference_crop_debug.get("template_page_size")
     roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} else "projected"
 
     template_fields: List[Dict[str, Any]] = []
@@ -2192,6 +2234,11 @@ def _candidate_from_result(
         "normalized_image_preview_url": _detection_preview_url(query_image_path),
         "extraction_image_path": extraction_image_path,
         "extraction_image_preview_url": extraction_image_preview_url,
+        "selected_processing_source": selected_processing_source,
+        "selected_processing_path": selected_processing_path,
+        "projected_document_box": layout_reference_crop_debug.get("projected_document_box"),
+        "processing_image_size": processing_image_size,
+        "template_page_size": template_page_size,
         "roi_coordinate_space": roi_coordinate_space,
         "layout_reference_crop": layout_reference_crop_debug,
 
@@ -2496,18 +2543,35 @@ def _detect_page(
     best_candidate = passing_candidates[0] if passing_candidates else None
     matched = best_candidate is not None
     confident_layout_count = sum(1 for candidate in candidates if candidate.get("layout_confident"))
+    selected_processing_path = (
+        str(best_candidate.get("extraction_image_path") or "")
+        if isinstance(best_candidate, dict)
+        else ""
+    )
+    if not selected_processing_path:
+        selected_processing_path = processing_image_path
+    selected_processing_preview_url = _detection_preview_url(selected_processing_path)
+    selected_processing_source = (
+        str(best_candidate.get("verification_source_used") or "matched_candidate")
+        if isinstance(best_candidate, dict)
+        else "original"
+    )
     return {
         "page_index": page_index,
         "matched": matched,
         "best_candidate": best_candidate,
         "candidates": candidates,
-        "image_preview_data_url": _image_to_data_url(Path(normalized_image_path)),
+        "image_preview_data_url": _image_to_data_url(Path(selected_processing_path)),
         "original_image_preview_url": _detection_preview_url(str(page_info["original_path"])),
         "normalized_image_preview_url": _detection_preview_url(normalized_image_path),
+        "selected_processing_preview_url": selected_processing_preview_url,
         "matching_image_preview_url": _detection_preview_url(matching_image_path),
         "original_image_path": str(page_info["original_path"]),
         "normalized_image_path": normalized_image_path,
         "processing_image_path": processing_image_path,
+        "selected_processing_source": selected_processing_source,
+        "selected_processing_path": selected_processing_path,
+        "selected_processing_image_size": _image_dimensions(selected_processing_path),
         "matching_image_path": matching_image_path,
         "normalization": page_info["normalization"],
         "matching_normalization": page_info.get("matching_normalization"),
@@ -2515,6 +2579,10 @@ def _detect_page(
             "query_image_path": str(page_info["original_path"]),
             "normalized_query_image_path": normalized_image_path,
             "processing_query_image_path": processing_image_path,
+            "selected_processing_source": selected_processing_source,
+            "selected_processing_path": selected_processing_path,
+            "selected_processing_preview_url": selected_processing_preview_url,
+            "selected_processing_image_size": _image_dimensions(selected_processing_path),
             "matching_query_image_path": matching_image_path,
             "original_image_preview_url": _detection_preview_url(str(page_info["original_path"])),
             "normalized_image_preview_url": _detection_preview_url(normalized_image_path),
@@ -2643,6 +2711,11 @@ def _aggregate_candidates(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "normalized_image_preview_url": best_page_cand.get("normalized_image_preview_url"),
             "extraction_image_path": best_page_cand.get("extraction_image_path"),
             "extraction_image_preview_url": best_page_cand.get("extraction_image_preview_url"),
+            "selected_processing_source": best_page_cand.get("selected_processing_source"),
+            "selected_processing_path": best_page_cand.get("selected_processing_path"),
+            "projected_document_box": best_page_cand.get("projected_document_box"),
+            "processing_image_size": best_page_cand.get("processing_image_size"),
+            "template_page_size": best_page_cand.get("template_page_size"),
             "roi_coordinate_space": best_page_cand.get("roi_coordinate_space"),
             "verification": best_page_cand.get("verification"),
             "verification_details": (
