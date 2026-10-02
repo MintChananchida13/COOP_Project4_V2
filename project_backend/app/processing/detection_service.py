@@ -845,13 +845,33 @@ def _reference_crop_safety_margins(
     }
     confidence = max(0.0, min(1.0, float(projection_confidence)))
     geometry_uncertainty = 1.0 - confidence
+    base_side_ratios = {
+        side: min(max_ratio, max(min_ratio, base_ratios[side]))
+        for side in ("left", "right", "top", "bottom")
+    }
+    edge_margin_ratios = {
+        side: edge_uncertainty[side]
+        for side in ("left", "right", "top", "bottom")
+    }
+    robust_shrink_margin_ratios = {
+        side: min(
+            max_ratio,
+            shrink_uncertainty[side]
+            * min(1.0, (geometry_uncertainty * 4.0) + (edge_uncertainty[side] / max(min_ratio, 1e-6))),
+        )
+        for side in ("left", "right", "top", "bottom")
+    }
+    confidence_margin_ratios = {
+        side: geometry_uncertainty * base_side_ratios[side]
+        for side in ("left", "right", "top", "bottom")
+    }
     side_ratios = {
         side: min(
             max_ratio,
-            max(min_ratio, base_ratios[side])
-            + edge_uncertainty[side]
-            + shrink_uncertainty[side]
-            + (geometry_uncertainty * max(min_ratio, base_ratios[side])),
+            base_side_ratios[side]
+            + edge_margin_ratios[side]
+            + robust_shrink_margin_ratios[side]
+            + confidence_margin_ratios[side],
         )
         for side in ("left", "right", "top", "bottom")
     }
@@ -862,13 +882,38 @@ def _reference_crop_safety_margins(
         "bottom": int(round(crop_height * side_ratios["bottom"])),
     }
     return {
+        "base_margin": {
+            "left": int(round(crop_width * base_side_ratios["left"])),
+            "right": int(round(crop_width * base_side_ratios["right"])),
+            "top": int(round(crop_height * base_side_ratios["top"])),
+            "bottom": int(round(crop_height * base_side_ratios["bottom"])),
+        },
         "base_safety_margin": {
-            "left": int(round(crop_width * min(max_ratio, max(min_ratio, base_ratios["left"])))),
-            "right": int(round(crop_width * min(max_ratio, max(min_ratio, base_ratios["right"])))),
-            "top": int(round(crop_height * min(max_ratio, max(min_ratio, base_ratios["top"])))),
-            "bottom": int(round(crop_height * min(max_ratio, max(min_ratio, base_ratios["bottom"])))),
+            "left": int(round(crop_width * base_side_ratios["left"])),
+            "right": int(round(crop_width * base_side_ratios["right"])),
+            "top": int(round(crop_height * base_side_ratios["top"])),
+            "bottom": int(round(crop_height * base_side_ratios["bottom"])),
         },
         "adaptive_safety_margin": adaptive_safety_margin,
+        "final_adaptive_margin": adaptive_safety_margin,
+        "edge_margin_contribution": {
+            "left": int(round(crop_width * edge_margin_ratios["left"])),
+            "right": int(round(crop_width * edge_margin_ratios["right"])),
+            "top": int(round(crop_height * edge_margin_ratios["top"])),
+            "bottom": int(round(crop_height * edge_margin_ratios["bottom"])),
+        },
+        "robust_shrink_margin_contribution": {
+            "left": int(round(crop_width * robust_shrink_margin_ratios["left"])),
+            "right": int(round(crop_width * robust_shrink_margin_ratios["right"])),
+            "top": int(round(crop_height * robust_shrink_margin_ratios["top"])),
+            "bottom": int(round(crop_height * robust_shrink_margin_ratios["bottom"])),
+        },
+        "confidence_margin_contribution": {
+            "left": int(round(crop_width * confidence_margin_ratios["left"])),
+            "right": int(round(crop_width * confidence_margin_ratios["right"])),
+            "top": int(round(crop_height * confidence_margin_ratios["top"])),
+            "bottom": int(round(crop_height * confidence_margin_ratios["bottom"])),
+        },
         "edge_uncertainty": {
             side: round(float(value), 6)
             for side, value in edge_uncertainty.items()
@@ -944,8 +989,13 @@ def _projected_reference_crop_box(
             "original_box": original,
             "projected_box_before_margin": projected_box_before_margin,
             "safety_margin": safety_margin,
+            "base_margin": safety_debug["base_margin"],
             "base_safety_margin": safety_debug["base_safety_margin"],
+            "edge_margin_contribution": safety_debug["edge_margin_contribution"],
+            "robust_shrink_margin_contribution": safety_debug["robust_shrink_margin_contribution"],
+            "confidence_margin_contribution": safety_debug["confidence_margin_contribution"],
             "adaptive_safety_margin": safety_debug["adaptive_safety_margin"],
+            "final_adaptive_margin": safety_debug["final_adaptive_margin"],
             "edge_uncertainty": safety_debug["edge_uncertainty"],
             "robust_shrink_uncertainty": safety_debug["robust_shrink_uncertainty"],
             "projection_confidence": safety_debug["projection_confidence"],
@@ -966,8 +1016,13 @@ def _projected_reference_crop_box(
             "final_box": [crop_left, crop_top, crop_right, crop_bottom],
             "projected_box_before_margin": projected_box_before_margin,
             "safety_margin": safety_margin,
+            "base_margin": safety_debug["base_margin"],
             "base_safety_margin": safety_debug["base_safety_margin"],
+            "edge_margin_contribution": safety_debug["edge_margin_contribution"],
+            "robust_shrink_margin_contribution": safety_debug["robust_shrink_margin_contribution"],
+            "confidence_margin_contribution": safety_debug["confidence_margin_contribution"],
             "adaptive_safety_margin": safety_debug["adaptive_safety_margin"],
+            "final_adaptive_margin": safety_debug["final_adaptive_margin"],
             "edge_uncertainty": safety_debug["edge_uncertainty"],
             "robust_shrink_uncertainty": safety_debug["robust_shrink_uncertainty"],
             "projection_confidence": safety_debug["projection_confidence"],
@@ -985,8 +1040,13 @@ def _projected_reference_crop_box(
             "final_box": [crop_left, crop_top, crop_right, crop_bottom],
             "projected_box_before_margin": projected_box_before_margin,
             "safety_margin": safety_margin,
+            "base_margin": safety_debug["base_margin"],
             "base_safety_margin": safety_debug["base_safety_margin"],
+            "edge_margin_contribution": safety_debug["edge_margin_contribution"],
+            "robust_shrink_margin_contribution": safety_debug["robust_shrink_margin_contribution"],
+            "confidence_margin_contribution": safety_debug["confidence_margin_contribution"],
             "adaptive_safety_margin": safety_debug["adaptive_safety_margin"],
+            "final_adaptive_margin": safety_debug["final_adaptive_margin"],
             "edge_uncertainty": safety_debug["edge_uncertainty"],
             "robust_shrink_uncertainty": safety_debug["robust_shrink_uncertainty"],
             "projection_confidence": safety_debug["projection_confidence"],
@@ -1007,8 +1067,13 @@ def _projected_reference_crop_box(
             "final_box": [crop_left, crop_top, crop_right, crop_bottom],
             "projected_box_before_margin": projected_box_before_margin,
             "safety_margin": safety_margin,
+            "base_margin": safety_debug["base_margin"],
             "base_safety_margin": safety_debug["base_safety_margin"],
+            "edge_margin_contribution": safety_debug["edge_margin_contribution"],
+            "robust_shrink_margin_contribution": safety_debug["robust_shrink_margin_contribution"],
+            "confidence_margin_contribution": safety_debug["confidence_margin_contribution"],
             "adaptive_safety_margin": safety_debug["adaptive_safety_margin"],
+            "final_adaptive_margin": safety_debug["final_adaptive_margin"],
             "edge_uncertainty": safety_debug["edge_uncertainty"],
             "robust_shrink_uncertainty": safety_debug["robust_shrink_uncertainty"],
             "projection_confidence": safety_debug["projection_confidence"],
@@ -1022,8 +1087,13 @@ def _projected_reference_crop_box(
         "final_box": [crop_left, crop_top, crop_right, crop_bottom],
         "projected_box_before_margin": projected_box_before_margin,
         "safety_margin": safety_margin,
+        "base_margin": safety_debug["base_margin"],
         "base_safety_margin": safety_debug["base_safety_margin"],
+        "edge_margin_contribution": safety_debug["edge_margin_contribution"],
+        "robust_shrink_margin_contribution": safety_debug["robust_shrink_margin_contribution"],
+        "confidence_margin_contribution": safety_debug["confidence_margin_contribution"],
         "adaptive_safety_margin": safety_debug["adaptive_safety_margin"],
+        "final_adaptive_margin": safety_debug["final_adaptive_margin"],
         "edge_uncertainty": safety_debug["edge_uncertainty"],
         "robust_shrink_uncertainty": safety_debug["robust_shrink_uncertainty"],
         "projection_confidence": safety_debug["projection_confidence"],
@@ -1057,6 +1127,74 @@ def _signature_template_page_size(signature: Optional[Dict[str, Any]]) -> Option
     return None
 
 
+def _detect_full_frame_document(
+    query_bounds: Optional[Dict[str, float]],
+    template_bounds: Optional[Dict[str, float]],
+    query_signature: Optional[Dict[str, Any]],
+    template_signature: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    debug: Dict[str, Any] = {
+        "full_frame_document_detected": False,
+        "full_frame_confidence": 0.0,
+        "crop_required": True,
+        "crop_skip_reason": None,
+    }
+    if not isinstance(query_bounds, dict) or not isinstance(template_bounds, dict):
+        debug["crop_skip_reason"] = "missing_bounds_for_full_frame_check"
+        return debug
+    query_page_size = _signature_template_page_size(query_signature)
+    template_page_size = _signature_template_page_size(template_signature)
+    if not query_page_size or not template_page_size:
+        debug["crop_skip_reason"] = "missing_page_size_for_full_frame_check"
+        return debug
+    query_w, query_h = query_page_size
+    template_w, template_h = template_page_size
+    if query_w <= 0 or query_h <= 0 or template_w <= 0 or template_h <= 0:
+        debug["crop_skip_reason"] = "invalid_page_size_for_full_frame_check"
+        return debug
+
+    query_aspect = query_w / max(1.0, float(query_h))
+    template_aspect = template_w / max(1.0, float(template_h))
+    aspect_delta = abs(query_aspect - template_aspect) / max(template_aspect, 1e-6)
+    query_coverage_x = float(query_bounds.get("width") or 0.0)
+    query_coverage_y = float(query_bounds.get("height") or 0.0)
+    template_coverage_x = float(template_bounds.get("width") or 0.0)
+    template_coverage_y = float(template_bounds.get("height") or 0.0)
+    coverage_ratio_x = query_coverage_x / max(template_coverage_x, 1e-6)
+    coverage_ratio_y = query_coverage_y / max(template_coverage_y, 1e-6)
+    edge_delta = max(
+        abs(float(query_bounds.get("left") or 0.0) - float(template_bounds.get("left") or 0.0)),
+        abs(float(query_bounds.get("right") or 0.0) - float(template_bounds.get("right") or 0.0)),
+        abs(float(query_bounds.get("top") or 0.0) - float(template_bounds.get("top") or 0.0)),
+        abs(float(query_bounds.get("bottom") or 0.0) - float(template_bounds.get("bottom") or 0.0)),
+    )
+    coverage_penalty = max(
+        0.0,
+        abs(1.0 - coverage_ratio_x),
+        abs(1.0 - coverage_ratio_y),
+    )
+    confidence = max(0.0, min(1.0, 1.0 - max(aspect_delta / 0.10, edge_delta / 0.08, coverage_penalty / 0.15)))
+    full_frame = aspect_delta <= 0.06 and edge_delta <= 0.055 and 0.90 <= coverage_ratio_x <= 1.12 and 0.90 <= coverage_ratio_y <= 1.12
+    debug.update(
+        {
+            "full_frame_document_detected": bool(full_frame),
+            "full_frame_confidence": round(float(confidence), 6),
+            "crop_required": not bool(full_frame),
+            "crop_skip_reason": "full_frame_document_matches_template_geometry" if full_frame else None,
+            "full_frame_geometry": {
+                "query_page_size": [int(query_w), int(query_h)],
+                "template_page_size": [int(template_w), int(template_h)],
+                "query_aspect": round(float(query_aspect), 6),
+                "template_aspect": round(float(template_aspect), 6),
+                "aspect_delta": round(float(aspect_delta), 6),
+                "coverage_ratio": [round(float(coverage_ratio_x), 6), round(float(coverage_ratio_y), 6)],
+                "edge_delta": round(float(edge_delta), 6),
+            },
+        }
+    )
+    return debug
+
+
 def _layout_reference_adjusted_image(
     image_path: str,
     query_signature: Optional[Dict[str, Any]],
@@ -1065,7 +1203,15 @@ def _layout_reference_adjusted_image(
     template_id: Optional[str],
     page_number: int,
 ) -> Dict[str, Any]:
-    debug: Dict[str, Any] = {"enabled": LAYOUT_REFERENCE_CROP_ENABLED, "applied": False, "reason": "not_attempted"}
+    debug: Dict[str, Any] = {
+        "enabled": LAYOUT_REFERENCE_CROP_ENABLED,
+        "applied": False,
+        "reason": "not_attempted",
+        "full_frame_document_detected": False,
+        "full_frame_confidence": 0.0,
+        "crop_required": True,
+        "crop_skip_reason": None,
+    }
     if not LAYOUT_REFERENCE_CROP_ENABLED:
         debug["reason"] = "disabled"
         return debug
@@ -1105,6 +1251,17 @@ def _layout_reference_adjusted_image(
         debug["reason"] = "missing_signature_bounds"
         debug["fallback_reason"] = "missing_signature_bounds"
         return debug
+    full_frame_debug = _detect_full_frame_document(
+        query_bounds,
+        template_bounds,
+        query_signature,
+        template_signature,
+    )
+    debug.update(full_frame_debug)
+    if full_frame_debug.get("full_frame_document_detected"):
+        debug["reason"] = "full_frame_document_no_crop_required"
+        debug["fallback_reason"] = None
+        return debug
 
     image = cv2.imread(str(image_path))
     if image is None:
@@ -1131,8 +1288,13 @@ def _layout_reference_adjusted_image(
         template_raw_bounds=template_raw_bounds if isinstance(template_raw_bounds, dict) else None,
     )
     debug["projected_document_box"] = projected_crop_debug
+    debug["base_margin"] = projected_crop_debug.get("base_margin")
     debug["base_safety_margin"] = projected_crop_debug.get("base_safety_margin")
+    debug["edge_margin_contribution"] = projected_crop_debug.get("edge_margin_contribution")
+    debug["robust_shrink_margin_contribution"] = projected_crop_debug.get("robust_shrink_margin_contribution")
+    debug["confidence_margin_contribution"] = projected_crop_debug.get("confidence_margin_contribution")
     debug["adaptive_safety_margin"] = projected_crop_debug.get("adaptive_safety_margin")
+    debug["final_adaptive_margin"] = projected_crop_debug.get("final_adaptive_margin")
     debug["edge_uncertainty"] = projected_crop_debug.get("edge_uncertainty")
     debug["robust_shrink_uncertainty"] = projected_crop_debug.get("robust_shrink_uncertainty")
     debug["projection_confidence"] = projected_crop_debug.get("projection_confidence")
@@ -2417,6 +2579,11 @@ def _candidate_from_result(
             "decision_reason": "คะแนนรวมต่ำกว่าเกณฑ์",
             "decision_path": "คะแนนรวมต่ำกว่าเกณฑ์",
         }
+    candidate_rejection_reason = None if decision.get("final_passed") else (
+        decision.get("decision_reason")
+        or decision.get("decision_path")
+        or "candidate_failed_final_decision"
+    )
     candidate_timing["decision"] = time.perf_counter() - step_started
     extraction_image_path = str(alignment.get("aligned_image_path") or verification_query_image_path) if verification_source_used == "aligned" else verification_query_image_path
     extraction_image_preview_url = _detection_preview_url(extraction_image_path)
@@ -2569,6 +2736,11 @@ def _candidate_from_result(
         "normalized_verification_score": round(normalized_verification_score, 4),
         "aligned_verification_score": round(aligned_verification_score, 4) if aligned_verification_score is not None else None,
         "verification_source_used": verification_source_used,
+        "candidate_rejection_reason": candidate_rejection_reason,
+        "full_frame_document_detected": layout_reference_crop_debug.get("full_frame_document_detected"),
+        "full_frame_confidence": layout_reference_crop_debug.get("full_frame_confidence"),
+        "crop_required": layout_reference_crop_debug.get("crop_required"),
+        "crop_skip_reason": layout_reference_crop_debug.get("crop_skip_reason"),
         "before_alignment_verification": round(normalized_verification_score, 4),
         "after_alignment_verification": round(aligned_verification_score, 4) if aligned_verification_score is not None else None,
         "verification_improvement": verification_improvement,
