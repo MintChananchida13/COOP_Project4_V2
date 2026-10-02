@@ -2474,6 +2474,11 @@ def _candidate_from_result(
     verification = normalized_verification
     base_verification_source = "layout_reference_crop" if layout_reference_crop_debug.get("applied") else "normalized"
     verification_source_used = base_verification_source
+    pre_alignment_processing_source = base_verification_source
+    post_alignment_processing_source = base_verification_source
+    alignment_required = not bool(normalized_verification.get("passed"))
+    alignment_skip_reason = None if alignment_required else "pre_alignment_verification_already_passed"
+    alignment_processing_image_selected = False
 
     # ค่าเริ่มต้น: ยังไม่ align
     alignment = _alignment_result(
@@ -2544,21 +2549,32 @@ def _candidate_from_result(
                     request_cache.stats["verification_image_model_cache_misses"] += int(aligned_internal_timing.get("image_model_cache_misses") or 0)
             aligned_internal_timing_ms = _timing_ms_map(aligned_internal_timing)
             aligned_score = float(aligned_verification.get("score") or 0.0)
+            aligned_improvement = aligned_score - normalized_score
 
             # 3) Alignment is optional refinement. Never use a warped image if it
             # hurts OCR verification; fallback to the normalized image instead.
-            if aligned_score >= normalized_score:
+            if alignment_required and aligned_improvement > 0.0001:
                 verification = aligned_verification
                 verification_source_used = "aligned"
+                post_alignment_processing_source = "aligned"
+                alignment_processing_image_selected = True
             else:
                 alignment["alignment_status"] = "fallback"
                 alignment_debug = alignment.get("alignment_debug") or {}
-                alignment_debug["reason"] = "aligned_verification_worse_than_base_verification"
+                alignment_debug["reason"] = (
+                    "pre_alignment_verification_already_passed"
+                    if not alignment_required
+                    else "aligned_verification_did_not_improve_base_verification"
+                )
                 alignment_debug["alignment_status"] = "fallback"
                 alignment_debug["verification_source_used"] = base_verification_source
                 alignment["alignment_debug"] = alignment_debug
                 verification = normalized_verification
                 verification_source_used = base_verification_source
+                post_alignment_processing_source = base_verification_source
+                alignment_processing_image_selected = False
+                if alignment_skip_reason is None:
+                    alignment_skip_reason = alignment_debug["reason"]
 
     alignment_debug = alignment.get("alignment_debug") or {}
     alignment_score = float(alignment.get("alignment_score") or alignment_debug.get("alignment_score") or 0.0)
@@ -2579,6 +2595,11 @@ def _candidate_from_result(
     alignment_debug["verification_improvement"] = verification_improvement
     alignment_debug["verification_image_used"] = verification_source_used
     alignment_debug["verification_source_used"] = verification_source_used
+    alignment_debug["alignment_required"] = alignment_required
+    alignment_debug["alignment_skip_reason"] = alignment_skip_reason
+    alignment_debug["pre_alignment_processing_source"] = pre_alignment_processing_source
+    alignment_debug["post_alignment_processing_source"] = post_alignment_processing_source
+    alignment_debug["alignment_processing_image_selected"] = alignment_processing_image_selected
     alignment_debug["layout_reference_crop"] = layout_reference_crop_debug
     if layout_reference_crop_debug.get("applied"):
         alignment_debug["layout_reference_crop_applied"] = True
@@ -2769,6 +2790,11 @@ def _candidate_from_result(
         "alignment_passed": alignment_status == "aligned",
         "alignment_fallback_used": verification_source_used != "aligned",
         "alignment_reason": alignment_reason,
+        "alignment_required": alignment_required,
+        "alignment_skip_reason": alignment_skip_reason,
+        "pre_alignment_processing_source": pre_alignment_processing_source,
+        "post_alignment_processing_source": post_alignment_processing_source,
+        "alignment_processing_image_selected": alignment_processing_image_selected,
 
         "normalized_verification_score": round(normalized_verification_score, 4),
         "aligned_verification_score": round(aligned_verification_score, 4) if aligned_verification_score is not None else None,
