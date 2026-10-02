@@ -52,6 +52,9 @@ LAYOUT_REFERENCE_CROP_MIN_DELTA_RATIO = float(os.getenv("LAYOUT_REFERENCE_CROP_M
 LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO", "0.20"))
 LAYOUT_REFERENCE_PROJECTED_MAX_COVERAGE_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MAX_COVERAGE_RATIO", "0.98"))
 LAYOUT_REFERENCE_PROJECTED_MAX_SCALE_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MAX_SCALE_RATIO", "8.0"))
+LAYOUT_REFERENCE_PROJECTED_MIN_SAFETY_MARGIN_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MIN_SAFETY_MARGIN_RATIO", "0.025"))
+LAYOUT_REFERENCE_PROJECTED_MAX_SAFETY_MARGIN_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MAX_SAFETY_MARGIN_RATIO", "0.10"))
+LAYOUT_REFERENCE_PROJECTED_TEMPLATE_MARGIN_WEIGHT = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_TEMPLATE_MARGIN_WEIGHT", "0.50"))
 verification_service = VerificationService()
 decision_service = DecisionService()
 global_settings_service = GlobalSettingsService()
@@ -783,6 +786,30 @@ def _clamp_reference_crop_box(left: int, top: int, right: int, bottom: int, imag
     }
 
 
+def _reference_crop_safety_margins(
+    crop_width: int,
+    crop_height: int,
+    template_bounds: Dict[str, float],
+) -> Dict[str, int]:
+    min_ratio = max(0.0, LAYOUT_REFERENCE_PROJECTED_MIN_SAFETY_MARGIN_RATIO)
+    max_ratio = max(min_ratio, LAYOUT_REFERENCE_PROJECTED_MAX_SAFETY_MARGIN_RATIO)
+    weight = max(0.0, LAYOUT_REFERENCE_PROJECTED_TEMPLATE_MARGIN_WEIGHT)
+    template_width = max(float(template_bounds.get("width") or 0.0), 1e-6)
+    template_height = max(float(template_bounds.get("height") or 0.0), 1e-6)
+    side_ratios = {
+        "left": max(min_ratio, (max(0.0, float(template_bounds.get("left") or 0.0)) / template_width) * weight),
+        "right": max(min_ratio, (max(0.0, 1.0 - float(template_bounds.get("right") or 1.0)) / template_width) * weight),
+        "top": max(min_ratio, (max(0.0, float(template_bounds.get("top") or 0.0)) / template_height) * weight),
+        "bottom": max(min_ratio, (max(0.0, 1.0 - float(template_bounds.get("bottom") or 1.0)) / template_height) * weight),
+    }
+    return {
+        "left": int(round(crop_width * min(max_ratio, side_ratios["left"]))),
+        "right": int(round(crop_width * min(max_ratio, side_ratios["right"]))),
+        "top": int(round(crop_height * min(max_ratio, side_ratios["top"]))),
+        "bottom": int(round(crop_height * min(max_ratio, side_ratios["bottom"]))),
+    }
+
+
 def _projected_reference_crop_box(
     left: int,
     top: int,
@@ -804,6 +831,23 @@ def _projected_reference_crop_box(
         return {"passed": False, "reason": "projected_document_box_empty", "original_box": original}
     crop_width = crop_right - crop_left
     crop_height = crop_bottom - crop_top
+    projected_box_before_margin = [crop_left, crop_top, crop_right, crop_bottom]
+    safety_margin = _reference_crop_safety_margins(crop_width, crop_height, template_bounds)
+    crop_left = max(0, crop_left - safety_margin["left"])
+    crop_top = max(0, crop_top - safety_margin["top"])
+    crop_right = min(image_width, crop_right + safety_margin["right"])
+    crop_bottom = min(image_height, crop_bottom + safety_margin["bottom"])
+    if crop_right <= crop_left or crop_bottom <= crop_top:
+        return {
+            "passed": False,
+            "reason": "projected_document_box_empty_after_margin",
+            "original_box": original,
+            "projected_box_before_margin": projected_box_before_margin,
+            "safety_margin": safety_margin,
+            "projected_box_after_margin": [crop_left, crop_top, crop_right, crop_bottom],
+        }
+    crop_width = crop_right - crop_left
+    crop_height = crop_bottom - crop_top
     coverage_x = crop_width / max(1, image_width)
     coverage_y = crop_height / max(1, image_height)
     template_width = max(float(template_bounds.get("width") or 0.0), 1e-6)
@@ -821,6 +865,9 @@ def _projected_reference_crop_box(
             "reason": "projected_document_box_too_small",
             "original_box": original,
             "final_box": [crop_left, crop_top, crop_right, crop_bottom],
+            "projected_box_before_margin": projected_box_before_margin,
+            "safety_margin": safety_margin,
+            "projected_box_after_margin": [crop_left, crop_top, crop_right, crop_bottom],
             "coverage": [round(float(coverage_x), 6), round(float(coverage_y), 6)],
         }
     if (
@@ -832,6 +879,9 @@ def _projected_reference_crop_box(
             "reason": "projected_document_box_too_large",
             "original_box": original,
             "final_box": [crop_left, crop_top, crop_right, crop_bottom],
+            "projected_box_before_margin": projected_box_before_margin,
+            "safety_margin": safety_margin,
+            "projected_box_after_margin": [crop_left, crop_top, crop_right, crop_bottom],
             "coverage": [round(float(coverage_x), 6), round(float(coverage_y), 6)],
         }
     if (
@@ -846,6 +896,9 @@ def _projected_reference_crop_box(
             "reason": "projected_document_scale_unreliable",
             "original_box": original,
             "final_box": [crop_left, crop_top, crop_right, crop_bottom],
+            "projected_box_before_margin": projected_box_before_margin,
+            "safety_margin": safety_margin,
+            "projected_box_after_margin": [crop_left, crop_top, crop_right, crop_bottom],
             "scale": [round(float(scale_x), 6), round(float(scale_y), 6)],
         }
     return {
@@ -853,6 +906,9 @@ def _projected_reference_crop_box(
         "reason": "projected_document_box_valid",
         "original_box": original,
         "final_box": [crop_left, crop_top, crop_right, crop_bottom],
+        "projected_box_before_margin": projected_box_before_margin,
+        "safety_margin": safety_margin,
+        "projected_box_after_margin": [crop_left, crop_top, crop_right, crop_bottom],
         "clamped": [crop_left, crop_top, crop_right, crop_bottom] != original,
         "coverage": [round(float(coverage_x), 6), round(float(coverage_y), 6)],
         "scale": [round(float(scale_x), 6), round(float(scale_y), 6)],
@@ -954,6 +1010,9 @@ def _layout_reference_adjusted_image(
         template_bounds,
     )
     debug["projected_document_box"] = projected_crop_debug
+    debug["projected_box_before_margin"] = projected_crop_debug.get("projected_box_before_margin")
+    debug["safety_margin"] = projected_crop_debug.get("safety_margin")
+    debug["projected_box_after_margin"] = projected_crop_debug.get("projected_box_after_margin")
     if projected_crop_debug.get("passed"):
         crop_debug = projected_crop_debug
         debug["fallback_reason"] = None
@@ -970,6 +1029,7 @@ def _layout_reference_adjusted_image(
 
     crop_left, crop_top, crop_right, crop_bottom = crop_debug["final_box"]
     debug["crop_size"] = [int(crop_right - crop_left), int(crop_bottom - crop_top)]
+    debug["crop_image_size"] = [int(crop_right - crop_left), int(crop_bottom - crop_top)]
     delta = max(
         crop_left / max(1, image_width),
         crop_top / max(1, image_height),
