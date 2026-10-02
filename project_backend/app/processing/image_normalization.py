@@ -69,21 +69,34 @@ class ImageNormalizationService:
                 },
             }
         else:
-            normalized, debug = self._perspective_correct(image)
-            if debug.get("normalization_status") == "fallback":
-                layout_normalized, layout_debug = self._layout_assisted_crop(image, debug.get("fallback_reason"))
-                if layout_debug.get("normalization_status") == "layout_cropped":
-                    normalized = layout_normalized
-                    debug = layout_debug
-                else:
-                    normalized = image.copy()
-                    debug.update(
-                        {
-                            "layout_crop_attempted": True,
-                            "layout_crop": layout_debug.get("layout_crop"),
-                            "layout_crop_fallback_reason": layout_debug.get("fallback_reason"),
-                        }
-                    )
+            layout_normalized, layout_debug = self._layout_assisted_crop(
+                image,
+                "perspective_rotation_disabled",
+            )
+            if layout_debug.get("normalization_status") == "layout_cropped":
+                normalized = layout_normalized
+                debug = layout_debug
+            else:
+                normalized = image.copy()
+                debug = {
+                    **layout_debug,
+                    "document_detected": False,
+                    "crop_applied": False,
+                    "perspective_applied": False,
+                    "normalization_status": "fallback",
+                    "validation_passed": True,
+                    "fallback_used": True,
+                    "fallback_reason": layout_debug.get("fallback_reason") or "layout_crop_unavailable",
+                    "layout_crop_attempted": True,
+                    "layout_crop": layout_debug.get("layout_crop"),
+                    "layout_crop_fallback_reason": layout_debug.get("fallback_reason"),
+                    "transform_validation": {
+                        "passed": True,
+                        "reason": "layout_crop_fallback_to_original",
+                        "width": original_width,
+                        "height": original_height,
+                    },
+                }
 
         normalized = self._resize_longest_side(normalized, self.LONGEST_SIDE)
         normalized_height, normalized_width = normalized.shape[:2]

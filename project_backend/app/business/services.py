@@ -5234,46 +5234,6 @@ class AdminTemplateService:
         GlobalSettingsService().save_pending_template_page_op(template_id, operation)
         return self.get_template(template_id, apply_pending=False)
 
-    @staticmethod
-    def _pending_float_equal(left: Any, right: Any, tolerance: float = 0.000001) -> bool:
-        try:
-            return abs(float(left) - float(right)) <= tolerance
-        except (TypeError, ValueError):
-            return left == right
-
-    @staticmethod
-    def _pending_points_equal(existing_points_json: Any, payload: TemplateFieldCreate) -> bool:
-        existing_points = jsonb_load(existing_points_json, None) if existing_points_json else None
-        payload_points = payload.roi.points
-        if not existing_points and not payload_points:
-            return True
-        return existing_points == payload_points
-
-    def _pending_extraction_field_matches_payload(self, row: Any, payload: TemplateFieldCreate) -> bool:
-        return not self._pending_extraction_field_payload_differences(row, payload)
-
-    def _pending_extraction_field_payload_differences(self, row: Any, payload: TemplateFieldCreate) -> Dict[str, Dict[str, Any]]:
-        checks: List[tuple[str, Any, Any, bool]] = [
-            ("template_page_id", row["template_page_id"], payload.template_page_id, str(row["template_page_id"]) == str(payload.template_page_id)),
-            ("field_name", row["field_name"], payload.field_name, str(row["field_name"]) == str(payload.field_name)),
-            ("label", row["display_label"], payload.display_label, str(row["display_label"] or "") == str(payload.display_label or "")),
-            ("field_type", row["data_type"], _normalize_data_type(payload.data_type), str(row["data_type"] or "") == str(_normalize_data_type(payload.data_type) or "")),
-            ("method", row["extraction_method"], _normalize_extraction_method(payload.extraction_method), str(row["extraction_method"] or "") == str(_normalize_extraction_method(payload.extraction_method) or "")),
-            ("roi.x", row["roi_x_ratio"], payload.roi.x_ratio, self._pending_float_equal(row["roi_x_ratio"], payload.roi.x_ratio)),
-            ("roi.y", row["roi_y_ratio"], payload.roi.y_ratio, self._pending_float_equal(row["roi_y_ratio"], payload.roi.y_ratio)),
-            ("roi.width", row["roi_width_ratio"], payload.roi.width_ratio, self._pending_float_equal(row["roi_width_ratio"], payload.roi.width_ratio)),
-            ("roi.height", row["roi_height_ratio"], payload.roi.height_ratio, self._pending_float_equal(row["roi_height_ratio"], payload.roi.height_ratio)),
-            ("points", jsonb_load(row["roi_points_json"], None) if row["roi_points_json"] else None, payload.roi.points, self._pending_points_equal(row["roi_points_json"], payload)),
-            ("roi_mode", row["roi_mode"], _normalize_roi_mode(payload.roi_mode), str(row["roi_mode"] or "") == str(_normalize_roi_mode(payload.roi_mode) or "")),
-            ("expected_content", row["expected_content"], _normalize_expected_content(payload.expected_content), str(row["expected_content"] or "") == str(_normalize_expected_content(payload.expected_content) or "")),
-            ("sort_order", row["sort_order"], payload.sort_order, int(row["sort_order"] or 0) == int(payload.sort_order or 0)),
-        ]
-        return {
-            field: {"existing": existing, "pending": pending}
-            for field, existing, pending, passed in checks
-            if not passed
-        }
-
     def _pending_extraction_field_by_page_name(
         self,
         conn: Any,
@@ -5301,27 +5261,6 @@ class AdminTemplateService:
             ),
         ).fetchone()
         return row
-
-    def _raise_pending_field_conflict(self, template_id: str, payload: TemplateFieldCreate, existing_field_id: Any) -> None:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Pending template field operation conflicts with an existing field "
-                f"(template_id={template_id}, template_page_id={payload.template_page_id}, "
-                f"field_name={payload.field_name}, existing_field_id={existing_field_id})"
-            ),
-        )
-
-    def _log_pending_field_mismatch(self, template_id: str, existing: Any, payload: TemplateFieldCreate) -> None:
-        differences = self._pending_extraction_field_payload_differences(existing, payload)
-        logger.warning(
-            "Pending field comparison mismatch: template_id=%s template_page_id=%s field_name=%s existing_field_id=%s differences=%s",
-            template_id,
-            payload.template_page_id,
-            payload.field_name,
-            existing["id"],
-            differences,
-        )
 
     def _update_extraction_field_from_pending_payload(self, conn: Any, template_id: str, field_id: str, payload: TemplateFieldCreate) -> None:
         conn.execute(
@@ -5494,7 +5433,8 @@ class AdminTemplateService:
                             excluding_field_id=next_field_id,
                         )
                         if existing is not None:
-                            self._raise_pending_field_conflict(template_id, payload, existing["id"])
+                            self._update_extraction_field_from_pending_payload(conn, template_id, existing["id"], payload)
+                            continue
                     conn.execute(
                         "INSERT INTO extraction_fields (id, template_page_id, field_name, display_label, data_type, extraction_method, roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_points_json, roi_mode, expected_content, required, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
                         (
