@@ -909,6 +909,38 @@ class GlobalSettingsService:
         self._save_setting(OCR_MODEL_SETTINGS_KEY, jsonb_dump(settings))
         return {"ocr_models": settings, "model": cleaned}
 
+    def delete_ocr_model(self, kind: str, model_id: str) -> Dict[str, Any]:
+        normalized_kind = _normalize_model_kind(kind)
+        target_id = str(model_id or "").strip()
+        if not target_id:
+            raise HTTPException(status_code=400, detail="model_id is required")
+
+        settings_response = self.get_ocr_model_settings()
+        settings = settings_response["ocr_models"]
+        pending_settings = settings_response.get("pending_ocr_models")
+        if settings["active"].get(normalized_kind) == target_id:
+            raise HTTPException(status_code=409, detail="Cannot delete the active OCR model")
+        if isinstance(pending_settings, dict) and pending_settings.get("active", {}).get(normalized_kind) == target_id:
+            raise HTTPException(status_code=409, detail="Cannot delete an OCR model that is pending activation")
+
+        models = settings["models"][normalized_kind]
+        next_models = [model for model in models if model["id"] != target_id]
+        if len(next_models) == len(models):
+            raise HTTPException(status_code=404, detail="OCR model not found")
+        if not next_models:
+            raise HTTPException(status_code=409, detail="At least one OCR model is required")
+
+        settings["models"][normalized_kind] = next_models
+        self._save_setting(OCR_MODEL_SETTINGS_KEY, jsonb_dump(settings))
+        if isinstance(pending_settings, dict):
+            pending_models = pending_settings.get("models", {}).get(normalized_kind, [])
+            if isinstance(pending_models, list):
+                pending_settings["models"][normalized_kind] = [
+                    model for model in pending_models if isinstance(model, dict) and model.get("id") != target_id
+                ]
+                self._save_setting(PENDING_OCR_MODEL_SETTINGS_KEY, jsonb_dump(pending_settings))
+        return {"ocr_models": settings, "pending_ocr_models": pending_settings, "deleted_model_id": target_id}
+
     def active_ocr_model(self, kind: str) -> Dict[str, Any]:
         normalized_kind = _normalize_model_kind(kind)
         settings = self.get_ocr_model_settings()["ocr_models"]

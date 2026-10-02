@@ -669,6 +669,11 @@ def update_ocr_model(kind: str, model_id: str, payload: OcrModelPayload) -> ApiR
     return ok(global_settings.upsert_ocr_model(kind, payload, model_id=model_id))
 
 
+@router.delete("/admin/settings/ocr-models/{kind}/{model_id}", response_model=ApiResponse)
+def delete_ocr_model(kind: str, model_id: str) -> ApiResponse:
+    return ok(global_settings.delete_ocr_model(kind, model_id))
+
+
 @router.get("/admin/templates/{template_id}", response_model=ApiResponse)
 def get_template(template_id: str) -> ApiResponse:
     return ok(admin_templates.get_template(template_id))

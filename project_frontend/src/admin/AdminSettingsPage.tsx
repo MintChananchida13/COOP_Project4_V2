@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CalendarDays, Check, ChevronLeft, ChevronRight, Clock, Loader2, Pencil, Plus, Save, Settings, X } from "lucide-react";
+import { CalendarDays, Check, ChevronLeft, ChevronRight, Clock, Loader2, Pencil, Plus, Save, Settings, Trash2, X } from "lucide-react";
 import {
+  deleteOcrModel,
   fetchOcrModelSettings,
   fetchAdminSystemMaintenance,
   fetchVerificationStrategy,
@@ -405,6 +406,7 @@ export default function AdminSettingsPage() {
   const [editingModel, setEditingModel] = useState<{ kind: OcrModelKind; draft: ModelDraft } | null>(null);
   const [modelFormStatus, setModelFormStatus] = useState<"idle" | "saving" | "error">("idle");
   const [modelFormError, setModelFormError] = useState("");
+  const [deletingModelId, setDeletingModelId] = useState<string | null>(null);
   const [maintenanceDraft, setMaintenanceDraft] = useState<MaintenanceDraft>(emptyMaintenanceDraft);
   const [maintenanceState, setMaintenanceState] = useState<SystemMaintenanceState | null>(null);
   const [scheduledMaintenance, setScheduledMaintenance] = useState<ScheduledMaintenance | null>(null);
@@ -612,6 +614,25 @@ export default function AdminSettingsPage() {
       console.warn("OCR model save failed.", error);
       setModelFormStatus("error");
       setModelFormError(error instanceof Error ? error.message : "บันทึกโมเดลไม่สำเร็จ");
+    }
+  };
+
+  const handleDeleteModel = async (kind: OcrModelKind, model: OcrModelConfig) => {
+    if (deletingModelId) return;
+    const confirmed = window.confirm(`ลบโมเดล OCR "${model.displayName}" หรือไม่?`);
+    if (!confirmed) return;
+    setDeletingModelId(model.id);
+    setModelFormStatus("idle");
+    setModelFormError("");
+    try {
+      const persistedSettings = await deleteOcrModel(kind, model.id);
+      applyOcrModelSettings(persistedSettings);
+    } catch (error) {
+      console.warn("OCR model delete failed.", error);
+      setModelFormStatus("error");
+      setModelFormError(error instanceof Error ? error.message : "ลบโมเดล OCR ไม่สำเร็จ");
+    } finally {
+      setDeletingModelId(null);
     }
   };
 
@@ -835,7 +856,13 @@ export default function AdminSettingsPage() {
                     เพิ่มโมเดล
                   </button>
                 </div>
-                {models.map((model) => (
+                {modelFormStatus === "error" && modelFormError && <InlineState tone="danger" message={modelFormError} />}
+                {models.map((model) => {
+                  const isActive = model.id === activeModelId;
+                  const isPendingActive = modelSettings.pendingActive?.[activeManagerTab] === model.id;
+                  const isDeleting = deletingModelId === model.id;
+                  const deleteDisabled = isActive || isPendingActive || Boolean(deletingModelId);
+                  return (
                   <div key={model.id} className="rounded-xl border border-slate-200 bg-white p-4">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="min-w-0">
@@ -848,13 +875,26 @@ export default function AdminSettingsPage() {
                           <div><span className="font-black text-slate-700">Batch API Path</span><br />{model.batchApiPath}</div>
                         </div>
                       </div>
+                      <div className="flex flex-wrap gap-2 sm:justify-end">
                       <button type="button" onClick={() => openEditModel(activeManagerTab, model)} className="inline-flex h-9 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 hover:bg-slate-50">
                         <Pencil size={14} />
                         แก้ไข
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteModel(activeManagerTab, model)}
+                        disabled={deleteDisabled}
+                        title={isActive ? "ไม่สามารถลบโมเดลที่ใช้งานอยู่" : isPendingActive ? "ไม่สามารถลบโมเดลที่รออัปเดต" : "ลบโมเดล OCR"}
+                        className="inline-flex h-9 items-center gap-2 rounded-xl border border-rose-200 bg-white px-3 text-xs font-black text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 disabled:hover:bg-white"
+                      >
+                        {isDeleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                        ลบ
+                      </button>
+                      </div>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

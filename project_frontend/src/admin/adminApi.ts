@@ -1978,6 +1978,18 @@ export const saveOcrModel = async (
   return mapOcrModelSettings((json?.data as Record<string, unknown>) || {});
 };
 
+export const deleteOcrModel = async (kind: OcrModelKind, modelId: string): Promise<OcrModelSettings> => {
+  const response = await fetchWithAuth(
+    `${ADMIN_API_BASE_URL}/admin/settings/ocr-models/${kind}/${encodeURIComponent(modelId)}`,
+    { method: "DELETE" }
+  );
+  const json = await response.json();
+  if (!response.ok || json?.success === false) {
+    throw new Error(json?.detail || json?.error?.message || "Delete OCR model failed");
+  }
+  return mapOcrModelSettings((json?.data as Record<string, unknown>) || {});
+};
+
 const embeddingJobResponseError = async (response: Response, fallback: string) => {
   const json = await response.json().catch(() => null);
   const detail = json?.detail || json?.error?.message || json?.error || fallback;
