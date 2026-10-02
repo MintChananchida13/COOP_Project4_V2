@@ -1132,6 +1132,8 @@ def _detect_full_frame_document(
     template_bounds: Optional[Dict[str, float]],
     query_signature: Optional[Dict[str, Any]],
     template_signature: Optional[Dict[str, Any]],
+    query_raw_bounds: Optional[Dict[str, float]] = None,
+    template_raw_bounds: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     debug: Dict[str, Any] = {
         "full_frame_document_detected": False,
@@ -1160,6 +1162,10 @@ def _detect_full_frame_document(
     query_coverage_y = float(query_bounds.get("height") or 0.0)
     template_coverage_x = float(template_bounds.get("width") or 0.0)
     template_coverage_y = float(template_bounds.get("height") or 0.0)
+    raw_query_coverage_x = float((query_raw_bounds or {}).get("width") or query_coverage_x)
+    raw_query_coverage_y = float((query_raw_bounds or {}).get("height") or query_coverage_y)
+    raw_template_coverage_x = float((template_raw_bounds or {}).get("width") or template_coverage_x)
+    raw_template_coverage_y = float((template_raw_bounds or {}).get("height") or template_coverage_y)
     coverage_ratio_x = query_coverage_x / max(template_coverage_x, 1e-6)
     coverage_ratio_y = query_coverage_y / max(template_coverage_y, 1e-6)
     edge_delta = max(
@@ -1173,8 +1179,24 @@ def _detect_full_frame_document(
         abs(1.0 - coverage_ratio_x),
         abs(1.0 - coverage_ratio_y),
     )
-    confidence = max(0.0, min(1.0, 1.0 - max(aspect_delta / 0.10, edge_delta / 0.08, coverage_penalty / 0.15)))
-    full_frame = aspect_delta <= 0.06 and edge_delta <= 0.055 and 0.90 <= coverage_ratio_x <= 1.12 and 0.90 <= coverage_ratio_y <= 1.12
+    raw_frame_coverage = min(raw_query_coverage_x, raw_query_coverage_y)
+    robust_frame_coverage = min(query_coverage_x, query_coverage_y)
+    raw_template_frame_coverage = min(raw_template_coverage_x, raw_template_coverage_y)
+    raw_full_frame_evidence = raw_frame_coverage >= 0.96 and aspect_delta <= 0.06
+    robust_geometry_evidence = edge_delta <= 0.055 and 0.90 <= coverage_ratio_x <= 1.12 and 0.90 <= coverage_ratio_y <= 1.12
+    confidence = max(
+        0.0,
+        min(
+            1.0,
+            max(
+                1.0 - max(aspect_delta / 0.10, edge_delta / 0.08, coverage_penalty / 0.15),
+                0.85 if raw_full_frame_evidence and raw_template_frame_coverage >= 0.90 else 0.0,
+            ),
+        ),
+    )
+    full_frame = (aspect_delta <= 0.06 and robust_geometry_evidence) or (
+        raw_full_frame_evidence and raw_template_frame_coverage >= 0.90
+    )
     debug.update(
         {
             "full_frame_document_detected": bool(full_frame),
@@ -1189,6 +1211,13 @@ def _detect_full_frame_document(
                 "aspect_delta": round(float(aspect_delta), 6),
                 "coverage_ratio": [round(float(coverage_ratio_x), 6), round(float(coverage_ratio_y), 6)],
                 "edge_delta": round(float(edge_delta), 6),
+            },
+            "raw_frame_coverage": round(float(raw_frame_coverage), 6),
+            "robust_frame_coverage": round(float(robust_frame_coverage), 6),
+            "full_frame_evidence": {
+                "raw_full_frame": bool(raw_full_frame_evidence),
+                "robust_geometry": bool(robust_geometry_evidence),
+                "raw_template_frame_coverage": round(float(raw_template_frame_coverage), 6),
             },
         }
     )
@@ -1256,6 +1285,8 @@ def _layout_reference_adjusted_image(
         template_bounds,
         query_signature,
         template_signature,
+        query_raw_bounds=query_raw_bounds if isinstance(query_raw_bounds, dict) else None,
+        template_raw_bounds=template_raw_bounds if isinstance(template_raw_bounds, dict) else None,
     )
     debug.update(full_frame_debug)
     if full_frame_debug.get("full_frame_document_detected"):
@@ -1301,11 +1332,17 @@ def _layout_reference_adjusted_image(
     debug["projected_box_before_margin"] = projected_crop_debug.get("projected_box_before_margin")
     debug["safety_margin"] = projected_crop_debug.get("safety_margin")
     debug["projected_box_after_margin"] = projected_crop_debug.get("projected_box_after_margin")
+    debug["projected_frame_coverage"] = projected_crop_debug.get("coverage")
     if projected_crop_debug.get("passed"):
         crop_debug = projected_crop_debug
         debug["fallback_reason"] = None
     else:
         debug["fallback_reason"] = projected_crop_debug.get("reason") or "projected_document_box_invalid"
+        if debug["fallback_reason"] == "projected_document_box_too_large":
+            debug["reason"] = "projected_document_box_too_large_no_crop_required"
+            debug["crop_required"] = False
+            debug["crop_skip_reason"] = "projected_document_box_too_large"
+            return debug
         crop_debug = _clamp_reference_crop_box(x_axis[0], y_axis[0], x_axis[1], y_axis[1], image_width, image_height)
         crop_debug["fallback_from_projected"] = True
         crop_debug["fallback_reason"] = debug["fallback_reason"]
