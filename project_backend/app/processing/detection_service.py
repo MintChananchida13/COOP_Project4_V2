@@ -63,6 +63,7 @@ LAYOUT_REFERENCE_PROJECTED_MAX_SCALE_RATIO = float(os.getenv("LAYOUT_REFERENCE_P
 LAYOUT_REFERENCE_PROJECTED_MIN_SAFETY_MARGIN_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MIN_SAFETY_MARGIN_RATIO", "0.005"))
 LAYOUT_REFERENCE_PROJECTED_MAX_SAFETY_MARGIN_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MAX_SAFETY_MARGIN_RATIO", "0.10"))
 LAYOUT_REFERENCE_PROJECTED_TEMPLATE_MARGIN_WEIGHT = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_TEMPLATE_MARGIN_WEIGHT", "0.50"))
+GENERIC_LAYOUT_UNION_CROP_MARGIN_RATIO = float(os.getenv("GENERIC_LAYOUT_UNION_CROP_MARGIN_RATIO", "0.02"))
 verification_service = VerificationService()
 decision_service = DecisionService()
 global_settings_service = GlobalSettingsService()
@@ -876,6 +877,49 @@ def _old_layout_crop_box_from_bounds(
     }
 
 
+def _generic_layout_union_crop_box_from_bounds(
+    bounds: Dict[str, float],
+    image_width: int,
+    image_height: int,
+) -> Dict[str, Any]:
+    left = float(bounds.get("left") or 0.0) * image_width
+    top = float(bounds.get("top") or 0.0) * image_height
+    right = float(bounds.get("right") or 1.0) * image_width
+    bottom = float(bounds.get("bottom") or 1.0) * image_height
+    margin_x = max(0.0, image_width * GENERIC_LAYOUT_UNION_CROP_MARGIN_RATIO)
+    margin_y = max(0.0, image_height * GENERIC_LAYOUT_UNION_CROP_MARGIN_RATIO)
+    final_box = [
+        int(max(0, np.floor(left - margin_x))),
+        int(max(0, np.floor(top - margin_y))),
+        int(min(image_width, np.ceil(right + margin_x))),
+        int(min(image_height, np.ceil(bottom + margin_y))),
+    ]
+    crop_width = max(0, final_box[2] - final_box[0])
+    crop_height = max(0, final_box[3] - final_box[1])
+    passed = crop_width > 0 and crop_height > 0
+    coverage = round(float((crop_width / max(1, image_width)) * (crop_height / max(1, image_height))), 6)
+    return {
+        "passed": passed,
+        "reason": "generic_layout_union_crop_box_valid" if passed else "generic_layout_union_crop_zero_area",
+        "layout_union_box": [round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)],
+        "content_box": [round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)],
+        "margin_x_px": round(float(margin_x), 2),
+        "margin_y_px": round(float(margin_y), 2),
+        "expanded_crop_box": final_box,
+        "final_crop_box": final_box,
+        "final_crop_coverage": coverage,
+        "final_box": final_box,
+        "expanded_box": final_box,
+        "padding": {
+            "left": round(float(margin_x), 2),
+            "right": round(float(margin_x), 2),
+            "top": round(float(margin_y), 2),
+            "bottom": round(float(margin_y), 2),
+        },
+        "source": "generic_layout_union_crop_from_raw_layout_bounds",
+    }
+
+
 def _union_region_boxes(boxes: List[Dict[str, float]]) -> Optional[Dict[str, float]]:
     valid = [box for box in boxes if isinstance(box, dict) and float(box.get("width") or 0.0) > 0.0 and float(box.get("height") or 0.0) > 0.0]
     if not valid:
@@ -952,12 +996,12 @@ def _retrieval_precrop_signature(
         return signature, debug
     image_width = max(float(signature.get("image_width") or 1.0), 1.0)
     image_height = max(float(signature.get("image_height") or 1.0), 1.0)
-    old_crop_debug = _old_layout_crop_box_from_bounds(bounds, int(round(image_width)), int(round(image_height)))
-    if not old_crop_debug.get("passed"):
-        debug["reason"] = old_crop_debug.get("reason") or "old_layout_precrop_unavailable"
-        debug["retrieval_crop"]["old_layout_crop"] = old_crop_debug
+    generic_crop_debug = _generic_layout_union_crop_box_from_bounds(bounds, int(round(image_width)), int(round(image_height)))
+    if not generic_crop_debug.get("passed"):
+        debug["reason"] = generic_crop_debug.get("reason") or "generic_layout_precrop_unavailable"
+        debug["retrieval_crop"]["generic_layout_crop"] = generic_crop_debug
         return signature, debug
-    crop_box = old_crop_debug["final_box"]
+    crop_box = generic_crop_debug["final_box"]
     crop = {
         "left": crop_box[0] / image_width,
         "top": crop_box[1] / image_height,
@@ -1026,10 +1070,16 @@ def _retrieval_precrop_signature(
                 "applied": True,
                 "layout_bounds": {key: round(float(value), 6) for key, value in bounds.items()},
                 "expanded_bounds": {key: round(float(value), 6) for key, value in crop.items()},
-                "safety_margin": old_crop_debug.get("padding"),
+                "safety_margin": generic_crop_debug.get("padding"),
+                "layout_union_box": generic_crop_debug.get("layout_union_box"),
+                "margin_x_px": generic_crop_debug.get("margin_x_px"),
+                "margin_y_px": generic_crop_debug.get("margin_y_px"),
+                "expanded_crop_box": generic_crop_debug.get("expanded_crop_box"),
+                "final_crop_box": generic_crop_debug.get("final_crop_box"),
+                "final_crop_coverage": generic_crop_debug.get("final_crop_coverage"),
                 "crop_box": {key: round(float(value), 6) for key, value in crop.items()},
                 "crop_size": [int(next_signature["image_width"]), int(next_signature["image_height"])],
-                "old_layout_crop": old_crop_debug,
+                "generic_layout_crop": generic_crop_debug,
             },
             "retrieval_source": "retrieval_precrop_image_signature",
             "reason": "background_content_bounds_rebased_for_retrieval",
@@ -1844,13 +1894,13 @@ def _layout_reference_adjusted_image(
         debug["fallback_reason"] = None
         return debug
 
-    old_crop_debug = _old_layout_crop_box_from_bounds(query_bounds, image_width, image_height)
-    debug["old_layout_crop_fallback"] = old_crop_debug
-    if not old_crop_debug.get("passed"):
-        debug["reason"] = old_crop_debug.get("reason") or "old_layout_crop_unavailable"
+    generic_crop_debug = _generic_layout_union_crop_box_from_bounds(query_bounds, image_width, image_height)
+    debug["generic_layout_union_crop"] = generic_crop_debug
+    if not generic_crop_debug.get("passed"):
+        debug["reason"] = generic_crop_debug.get("reason") or "generic_layout_union_crop_unavailable"
         debug["fallback_reason"] = debug["reason"]
         return debug
-    final_box = old_crop_debug.get("final_box")
+    final_box = generic_crop_debug.get("final_box")
     expanded_layout_bounds = None
     if isinstance(final_box, list) and len(final_box) == 4:
         expanded_layout_bounds = {
@@ -1865,12 +1915,17 @@ def _layout_reference_adjusted_image(
         "passed": True,
         "reason": "layout_union_crop_applied",
         "method": "generic_layout_union_bounds_crop",
-        "final_box": old_crop_debug.get("final_box"),
+        "final_box": generic_crop_debug.get("final_box"),
         "document_layout_bounds": query_bounds,
         "expanded_layout_bounds": expanded_layout_bounds,
         "matched_region_count": query_bounds.get("region_count"),
-        "safety_margin": old_crop_debug.get("padding"),
-        "old_layout_crop": old_crop_debug,
+        "safety_margin": generic_crop_debug.get("padding"),
+        "layout_union_box": generic_crop_debug.get("layout_union_box"),
+        "margin_x_px": generic_crop_debug.get("margin_x_px"),
+        "margin_y_px": generic_crop_debug.get("margin_y_px"),
+        "expanded_crop_box": generic_crop_debug.get("expanded_crop_box"),
+        "final_crop_coverage": generic_crop_debug.get("final_crop_coverage"),
+        "generic_layout_crop": generic_crop_debug,
     }
     debug["crop_required"] = True
     debug["fallback_reason"] = None
@@ -1893,7 +1948,12 @@ def _layout_reference_adjusted_image(
         "final_crop_size": [int(crop_right - crop_left), int(crop_bottom - crop_top)],
         "template_page_size": debug.get("template_page_size"),
         "selected_processing_source": "layout_reference_crop",
-        "old_layout_crop": crop_debug.get("old_layout_crop"),
+        "layout_union_box": crop_debug.get("layout_union_box"),
+        "margin_x_px": crop_debug.get("margin_x_px"),
+        "margin_y_px": crop_debug.get("margin_y_px"),
+        "expanded_crop_box": crop_debug.get("expanded_crop_box"),
+        "final_crop_coverage": crop_debug.get("final_crop_coverage"),
+        "generic_layout_crop": crop_debug.get("generic_layout_crop"),
     }
     delta = max(
         crop_left / max(1, image_width),
