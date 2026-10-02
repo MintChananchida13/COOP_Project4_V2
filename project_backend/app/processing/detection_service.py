@@ -931,6 +931,7 @@ def _normalize_query_pages(
                     "page_index": index,
                     "original_path": str(page_path),
                     "normalized_path": str(page_path),
+                    "matching_path": str(page_path),
                     "normalization": {
                         "normalization_status": "skipped",
                         "reason": "pdf_rendered_page_used_without_image_normalization",
@@ -945,16 +946,23 @@ def _normalize_query_pages(
                 timing["prepare_normalization_skipped"] = timing.get("prepare_normalization_skipped", 0.0) + (time.perf_counter() - step_started)
             continue
         normalized_path = normalized_dir / f"page_{index}_normalized.png"
+        matching_path = normalized_dir / f"page_{index}_matching.png"
         step_started = time.perf_counter()
         info = normalization_service.normalize_document(str(page_path), str(normalized_path))
         if timing is not None:
             timing["prepare_normalization"] = timing.get("prepare_normalization", 0.0) + (time.perf_counter() - step_started)
+        step_started = time.perf_counter()
+        matching_info = normalization_service.create_layout_matching_image(str(page_path), str(matching_path))
+        if timing is not None:
+            timing["prepare_matching_image"] = timing.get("prepare_matching_image", 0.0) + (time.perf_counter() - step_started)
         normalized_pages.append(
             {
                 "page_index": index,
                 "original_path": str(page_path),
                 "normalized_path": info["normalized_image_path"],
+                "matching_path": matching_info["matching_image_path"],
                 "normalization": info,
+                "matching_normalization": matching_info,
             }
         )
     return normalized_pages
@@ -2219,7 +2227,8 @@ def _detect_page(
 ) -> Dict[str, Any]:
     page_index = int(page_info["page_index"])
     normalized_image_path = str(page_info["normalized_path"])
-    query_signature = _layout_signature_for_image_path(normalized_image_path, timing=timing)
+    matching_image_path = str(page_info.get("matching_path") or normalized_image_path)
+    query_signature = _layout_signature_for_image_path(matching_image_path, timing=timing)
     step_started = time.perf_counter()
     raw_results = search_layout_candidates(
         query_signature,
@@ -2283,7 +2292,7 @@ def _detect_page(
                 page_index,
                 normalized_image_path,
                 page_info.get("normalization"),
-                query_signature=query_signature,
+                query_signature=query_signature if matching_image_path == normalized_image_path else None,
                 allow_alignment=index <= DETECTION_ALIGNMENT_LIMIT,
                 include_template_id=include_template_id,
                 verification_strategy=verification_strategy,
@@ -2358,15 +2367,21 @@ def _detect_page(
         "image_preview_data_url": _image_to_data_url(Path(normalized_image_path)),
         "original_image_preview_url": _detection_preview_url(str(page_info["original_path"])),
         "normalized_image_preview_url": _detection_preview_url(normalized_image_path),
+        "matching_image_preview_url": _detection_preview_url(matching_image_path),
         "original_image_path": str(page_info["original_path"]),
         "normalized_image_path": normalized_image_path,
+        "matching_image_path": matching_image_path,
         "normalization": page_info["normalization"],
+        "matching_normalization": page_info.get("matching_normalization"),
         "debug": {
             "query_image_path": str(page_info["original_path"]),
             "normalized_query_image_path": normalized_image_path,
+            "matching_query_image_path": matching_image_path,
             "original_image_preview_url": _detection_preview_url(str(page_info["original_path"])),
             "normalized_image_preview_url": _detection_preview_url(normalized_image_path),
+            "matching_image_preview_url": _detection_preview_url(matching_image_path),
             "query_engine": "layout_signature",
+            "query_signature_source": "matching_image" if matching_image_path != normalized_image_path else "normalized_image",
             "query_version": query_signature.get("version"),
             "query_model_name": query_signature.get("model"),
             "query_vector_dimension": 0,
@@ -2853,6 +2868,7 @@ def detect_template_dev(
                 "converted_page_count": len(page_paths) if source_type == "pdf" else 0,
                 "query_page_paths": [str(path) for path in page_paths] if SAVE_DEBUG_ARTIFACTS else [],
                 "normalized_query_page_paths": [page["normalized_path"] for page in normalized_pages] if SAVE_DEBUG_ARTIFACTS else [],
+                "matching_query_page_paths": [page.get("matching_path") for page in normalized_pages] if SAVE_DEBUG_ARTIFACTS else [],
                 "include_template_id": include_template_id,
                 "verification_strategy": verification_strategy,
                 "retrieval_limit": retrieval_limit,

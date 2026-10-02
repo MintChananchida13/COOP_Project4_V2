@@ -423,7 +423,39 @@ class GlobalSettingsService:
         statuses = self._pending_template_statuses()
         updates = self._pending_template_updates()
         field_ops = self._pending_template_field_ops()
-        field_ops.setdefault(template_key, []).append(operation)
+        next_operation = dict(operation)
+        if str(next_operation.get("action") or "") == "create_field":
+            next_operation.setdefault("field_id", _stub_id("tpl_field"))
+            payload = next_operation.get("payload") if isinstance(next_operation.get("payload"), dict) else {}
+            next_page_id = str(payload.get("template_page_id") or "").strip()
+            next_field_name = str(payload.get("field_name") or "").strip()
+            next_use_for_verification = bool(payload.get("use_for_verification"))
+            if next_page_id and next_field_name:
+                coalesced_ops: List[Dict[str, Any]] = []
+                replaced = False
+                for existing_op in field_ops.get(template_key, []):
+                    if not isinstance(existing_op, dict):
+                        continue
+                    existing_payload = existing_op.get("payload") if isinstance(existing_op.get("payload"), dict) else {}
+                    same_pending_create = (
+                        str(existing_op.get("action") or "") == "create_field"
+                        and str(existing_payload.get("template_page_id") or "").strip() == next_page_id
+                        and str(existing_payload.get("field_name") or "").strip() == next_field_name
+                        and bool(existing_payload.get("use_for_verification")) == next_use_for_verification
+                    )
+                    if same_pending_create:
+                        next_operation["field_id"] = existing_op.get("field_id") or next_operation["field_id"]
+                        coalesced_ops.append(next_operation)
+                        replaced = True
+                    else:
+                        coalesced_ops.append(existing_op)
+                if not replaced:
+                    coalesced_ops.append(next_operation)
+                field_ops[template_key] = coalesced_ops
+            else:
+                field_ops.setdefault(template_key, []).append(next_operation)
+        else:
+            field_ops.setdefault(template_key, []).append(next_operation)
         self._save_pending_template_changes(statuses, updates, field_ops)
         return {"template_id": template_key, "pending_field_ops": len(field_ops[template_key]), "deferred": True}
 
@@ -5291,6 +5323,36 @@ class AdminTemplateService:
             differences,
         )
 
+    @staticmethod
+    def _coalesce_pending_template_field_ops(ops: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        coalesced: List[Dict[str, Any]] = []
+        create_indexes: Dict[tuple[str, str, bool], int] = {}
+        for op in ops:
+            if not isinstance(op, dict):
+                continue
+            if str(op.get("action") or "") != "create_field":
+                coalesced.append(op)
+                continue
+            payload = op.get("payload") if isinstance(op.get("payload"), dict) else {}
+            page_id = str(payload.get("template_page_id") or "").strip()
+            field_name = str(payload.get("field_name") or "").strip()
+            use_for_verification = bool(payload.get("use_for_verification"))
+            if not page_id or not field_name:
+                coalesced.append(op)
+                continue
+            key = (page_id, field_name, use_for_verification)
+            next_op = dict(op)
+            next_op.setdefault("field_id", _stub_id("tpl_field"))
+            if key in create_indexes:
+                existing_index = create_indexes[key]
+                previous_id = coalesced[existing_index].get("field_id")
+                next_op["field_id"] = previous_id or next_op["field_id"]
+                coalesced[existing_index] = next_op
+            else:
+                create_indexes[key] = len(coalesced)
+                coalesced.append(next_op)
+        return coalesced
+
     def _apply_pending_template_page_ops(self, conn: Any, ops_by_template: Dict[str, List[Dict[str, Any]]]) -> None:
         templates_to_refresh: set[str] = set()
         column_map = {
@@ -5326,7 +5388,7 @@ class AdminTemplateService:
         for template_id, ops in ops_by_template.items():
             if not isinstance(ops, list):
                 continue
-            for op in ops:
+            for op in self._coalesce_pending_template_field_ops(ops):
                 if not isinstance(op, dict):
                     continue
                 action = str(op.get("action") or "").strip()
@@ -5349,6 +5411,16 @@ class AdminTemplateService:
                     conn.execute("DELETE FROM verification_anchors WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)", (field_id, template_id))
                     next_field_id = field_id
                 elif action == "create_field":
+                    next_field_id = str(op.get("field_id") or "").strip() or _stub_id("tpl_field")
+                    existing_by_id = conn.execute(
+                        "SELECT * FROM extraction_fields WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)",
+                        (next_field_id, template_id),
+                    ).fetchone() if not payload.use_for_verification else None
+                    if existing_by_id is not None:
+                        if self._pending_extraction_field_matches_payload(existing_by_id, payload):
+                            continue
+                        self._log_pending_field_mismatch(template_id, existing_by_id, payload)
+                        self._raise_pending_field_conflict(template_id, payload, existing_by_id["id"])
                     if not payload.use_for_verification:
                         existing = self._pending_extraction_field_by_page_name(conn, template_id, payload)
                         if existing is not None:
@@ -5356,7 +5428,6 @@ class AdminTemplateService:
                                 continue
                             self._log_pending_field_mismatch(template_id, existing, payload)
                             self._raise_pending_field_conflict(template_id, payload, existing["id"])
-                    next_field_id = _stub_id("tpl_field")
                 else:
                     continue
                 if payload.use_for_verification:

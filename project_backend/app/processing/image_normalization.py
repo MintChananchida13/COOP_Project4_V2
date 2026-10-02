@@ -169,6 +169,84 @@ class ImageNormalizationService:
             "normalization_debug": debug,
         }
 
+    def create_layout_matching_image(self, image_path: str, output_path: str) -> Dict[str, Any]:
+        source_path = Path(image_path)
+        target_path = Path(output_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        image = cv2.imread(str(source_path))
+        if image is None:
+            raise ValueError(f"Unable to read image for layout matching normalization: {image_path}")
+
+        original_height, original_width = image.shape[:2]
+        layout_normalized, layout_debug = self._layout_assisted_crop(
+            image,
+            "layout_matching_crop",
+            allow_deskew=False,
+            success_status="pre_template_layout_matching_crop",
+        )
+        if layout_debug.get("normalization_status") == "pre_template_layout_matching_crop":
+            matching_image = layout_normalized
+            debug = layout_debug
+        else:
+            matching_image = image.copy()
+            debug = {
+                **layout_debug,
+                "document_detected": False,
+                "crop_applied": False,
+                "perspective_applied": False,
+                "normalization_status": "layout_matching_uncropped",
+                "validation_passed": True,
+                "fallback_used": True,
+                "fallback_reason": layout_debug.get("fallback_reason") or "layout_matching_crop_unavailable",
+                "layout_crop_attempted": True,
+                "layout_crop": layout_debug.get("layout_crop"),
+                "layout_crop_fallback_reason": layout_debug.get("fallback_reason"),
+                "transform_validation": {
+                    "passed": True,
+                    "reason": "layout_matching_crop_fallback_to_original",
+                    "width": original_width,
+                    "height": original_height,
+                },
+            }
+
+        matching_image = self._resize_longest_side(matching_image, self.LONGEST_SIDE)
+        matching_height, matching_width = matching_image.shape[:2]
+        debug.update(
+            {
+                "original_size": [original_width, original_height],
+                "normalized_size": [matching_width, matching_height],
+                "output_size": [matching_width, matching_height],
+                "matching_only": True,
+            }
+        )
+
+        write_success = bool(cv2.imwrite(str(target_path), matching_image))
+        decoded_output = cv2.imread(str(target_path)) if write_success else None
+        if not write_success or decoded_output is None:
+            cv2.imwrite(str(target_path), image)
+            debug.update(
+                {
+                    "normalization_status": "layout_matching_fallback",
+                    "validation_passed": False,
+                    "fallback_used": True,
+                    "fallback_reason": "layout_matching_output_decode_failed",
+                }
+            )
+
+        return {
+            "matching_image_path": str(target_path),
+            "normalization_status": debug["normalization_status"],
+            "crop_applied": debug["crop_applied"],
+            "fallback_used": debug["fallback_used"],
+            "fallback_reason": debug["fallback_reason"],
+            "original_size": [original_width, original_height],
+            "output_size": debug["output_size"],
+            "resize_policy": "longest_side",
+            "longest_side": self.LONGEST_SIDE,
+            "normalization_debug": debug,
+        }
+
     def _perspective_correct(self, image: np.ndarray) -> tuple[np.ndarray, Dict[str, Any]]:
         contour_info = self._find_document_contour(image)
         contour = contour_info.get("contour") if contour_info else None
