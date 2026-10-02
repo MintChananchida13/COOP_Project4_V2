@@ -600,6 +600,141 @@ def _signature_layout_space_source_bounds(signature: Optional[Dict[str, Any]]) -
     }
 
 
+def _bounds_from_boxes(boxes: List[Dict[str, float]]) -> Optional[Dict[str, float]]:
+    if not boxes:
+        return None
+    left = min(box["left"] for box in boxes)
+    top = min(box["top"] for box in boxes)
+    right = max(box["right"] for box in boxes)
+    bottom = max(box["bottom"] for box in boxes)
+    if right <= left or bottom <= top:
+        return None
+    return {
+        "left": round(float(left), 6),
+        "top": round(float(top), 6),
+        "right": round(float(right), 6),
+        "bottom": round(float(bottom), 6),
+        "width": round(float(right - left), 6),
+        "height": round(float(bottom - top), 6),
+        "region_count": len(boxes),
+    }
+
+
+def _quantile(values: List[float], ratio: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * ratio))))
+    return float(ordered[index])
+
+
+def _signature_robust_content_bounds(signature: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    raw_bounds = _signature_layout_space_source_bounds(signature) or _signature_content_bounds(signature)
+    result: Dict[str, Any] = {
+        "raw_content_bounds": raw_bounds,
+        "robust_content_bounds": None,
+        "regions_used": 0,
+        "regions_excluded": 0,
+        "fallback_reason": None,
+    }
+    regions = signature.get("regions") if isinstance(signature, dict) else None
+    if not isinstance(regions, list) or len(regions) < 6:
+        result["fallback_reason"] = "insufficient_regions_for_robust_bounds"
+        return result
+
+    boxes: List[Dict[str, float]] = []
+    for index, region in enumerate(regions):
+        if not isinstance(region, dict):
+            continue
+        bbox = region.get("source_bbox") if isinstance(region.get("source_bbox"), dict) else region.get("bbox")
+        if not isinstance(bbox, dict):
+            continue
+        try:
+            x = max(0.0, min(1.0, float(bbox.get("x_ratio") or 0.0)))
+            y = max(0.0, min(1.0, float(bbox.get("y_ratio") or 0.0)))
+            width = max(0.0, min(1.0, float(bbox.get("width_ratio") or 0.0)))
+            height = max(0.0, min(1.0, float(bbox.get("height_ratio") or 0.0)))
+        except (TypeError, ValueError):
+            continue
+        if width <= 0.0 or height <= 0.0:
+            continue
+        area = width * height
+        boxes.append(
+            {
+                "index": float(index),
+                "left": x,
+                "top": y,
+                "right": min(1.0, x + width),
+                "bottom": min(1.0, y + height),
+                "center_x": min(1.0, x + width / 2.0),
+                "center_y": min(1.0, y + height / 2.0),
+                "area": area,
+            }
+        )
+    if len(boxes) < 6:
+        result["fallback_reason"] = "insufficient_valid_boxes_for_robust_bounds"
+        return result
+
+    median_area = _quantile([box["area"] for box in boxes], 0.5)
+    min_area = max(0.000005, median_area * 0.10)
+    area_filtered = [box for box in boxes if box["area"] >= min_area]
+    if len(area_filtered) < max(4, int(len(boxes) * 0.45)):
+        area_filtered = boxes
+
+    low_x = _quantile([box["center_x"] for box in area_filtered], 0.03)
+    high_x = _quantile([box["center_x"] for box in area_filtered], 0.97)
+    low_y = _quantile([box["center_y"] for box in area_filtered], 0.03)
+    high_y = _quantile([box["center_y"] for box in area_filtered], 0.97)
+    center_filtered = [
+        box
+        for box in area_filtered
+        if low_x <= box["center_x"] <= high_x and low_y <= box["center_y"] <= high_y
+    ]
+    if len(center_filtered) < max(4, int(len(boxes) * 0.45)):
+        result["fallback_reason"] = "robust_filter_removed_too_many_regions"
+        return result
+
+    robust_bounds = _bounds_from_boxes(center_filtered)
+    if not robust_bounds:
+        result["fallback_reason"] = "robust_bounds_empty"
+        return result
+
+    normalization = signature.get("layout_space_normalization") if isinstance(signature, dict) else None
+    source_bounds = None
+    if isinstance(normalization, dict) and normalization.get("applied") and isinstance(normalization.get("bounds"), dict):
+        source = _signature_layout_space_source_bounds(signature)
+        if source:
+            source_bounds = {
+                "left": source["left"] + robust_bounds["left"] * source["width"],
+                "top": source["top"] + robust_bounds["top"] * source["height"],
+                "right": source["left"] + robust_bounds["right"] * source["width"],
+                "bottom": source["top"] + robust_bounds["bottom"] * source["height"],
+            }
+            source_bounds["width"] = source_bounds["right"] - source_bounds["left"]
+            source_bounds["height"] = source_bounds["bottom"] - source_bounds["top"]
+            source_bounds["region_count"] = robust_bounds["region_count"]
+
+    final_bounds = source_bounds or robust_bounds
+    raw_area = float((raw_bounds or {}).get("width") or 0.0) * float((raw_bounds or {}).get("height") or 0.0)
+    robust_area = float(final_bounds.get("width") or 0.0) * float(final_bounds.get("height") or 0.0)
+    if raw_area > 0 and robust_area < raw_area * 0.35:
+        result["fallback_reason"] = "robust_bounds_too_small_vs_raw_bounds"
+        return result
+
+    result.update(
+        {
+            "robust_content_bounds": {
+                key: round(float(value), 6) if isinstance(value, float) else value
+                for key, value in final_bounds.items()
+            },
+            "regions_used": len(center_filtered),
+            "regions_excluded": max(0, len(boxes) - len(center_filtered)),
+            "fallback_reason": None,
+        }
+    )
+    return result
+
+
 def _solve_reference_crop_axis(
     query_min: float,
     query_max: float,
@@ -759,12 +894,38 @@ def _layout_reference_adjusted_image(
     if not LAYOUT_REFERENCE_CROP_ENABLED:
         debug["reason"] = "disabled"
         return debug
-    query_bounds = _signature_layout_space_source_bounds(query_signature) or _signature_content_bounds(query_signature)
-    template_bounds = _signature_layout_space_source_bounds(template_signature) or _signature_content_bounds(template_signature)
+    query_robust_debug = _signature_robust_content_bounds(query_signature)
+    template_robust_debug = _signature_robust_content_bounds(template_signature)
+    query_raw_bounds = query_robust_debug.get("raw_content_bounds")
+    template_raw_bounds = template_robust_debug.get("raw_content_bounds")
+    query_bounds = query_robust_debug.get("robust_content_bounds") or query_raw_bounds
+    template_bounds = template_robust_debug.get("robust_content_bounds") or template_raw_bounds
     debug["query_bounds"] = query_bounds
     debug["template_bounds"] = template_bounds
     debug["query_content_bounds"] = query_bounds
     debug["template_content_bounds"] = template_bounds
+    debug["raw_content_bounds"] = {
+        "query": query_raw_bounds,
+        "template": template_raw_bounds,
+    }
+    debug["robust_content_bounds"] = {
+        "query": query_robust_debug.get("robust_content_bounds"),
+        "template": template_robust_debug.get("robust_content_bounds"),
+    }
+    debug["regions_used"] = {
+        "query": query_robust_debug.get("regions_used"),
+        "template": template_robust_debug.get("regions_used"),
+    }
+    debug["regions_excluded"] = {
+        "query": query_robust_debug.get("regions_excluded"),
+        "template": template_robust_debug.get("regions_excluded"),
+    }
+    robust_fallback_reasons = {
+        "query": query_robust_debug.get("fallback_reason"),
+        "template": template_robust_debug.get("fallback_reason"),
+    }
+    if robust_fallback_reasons["query"] or robust_fallback_reasons["template"]:
+        debug["robust_bounds_fallback_reason"] = robust_fallback_reasons
     if not query_bounds or not template_bounds:
         debug["reason"] = "missing_signature_bounds"
         debug["fallback_reason"] = "missing_signature_bounds"
