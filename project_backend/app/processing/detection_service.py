@@ -568,6 +568,35 @@ def _signature_content_bounds(signature: Optional[Dict[str, Any]]) -> Optional[D
     }
 
 
+def _signature_layout_space_source_bounds(signature: Optional[Dict[str, Any]]) -> Optional[Dict[str, float]]:
+    if not isinstance(signature, dict):
+        return None
+    normalization = signature.get("layout_space_normalization")
+    if not isinstance(normalization, dict) or not normalization.get("applied"):
+        return None
+    bounds = normalization.get("bounds")
+    if not isinstance(bounds, dict):
+        return None
+    try:
+        left = float(bounds.get("left"))
+        top = float(bounds.get("top"))
+        right = float(bounds.get("right"))
+        bottom = float(bounds.get("bottom"))
+    except (TypeError, ValueError):
+        return None
+    if right <= left or bottom <= top:
+        return None
+    return {
+        "left": max(0.0, min(1.0, left)),
+        "top": max(0.0, min(1.0, top)),
+        "right": max(0.0, min(1.0, right)),
+        "bottom": max(0.0, min(1.0, bottom)),
+        "width": max(0.0, min(1.0, right) - max(0.0, min(1.0, left))),
+        "height": max(0.0, min(1.0, bottom) - max(0.0, min(1.0, top))),
+        "region_count": int(normalization.get("region_count") or signature.get("region_count") or 0),
+    }
+
+
 def _solve_reference_crop_axis(
     query_min: float,
     query_max: float,
@@ -628,8 +657,8 @@ def _layout_reference_adjusted_image(
     if not LAYOUT_REFERENCE_CROP_ENABLED:
         debug["reason"] = "disabled"
         return debug
-    query_bounds = _signature_content_bounds(query_signature)
-    template_bounds = _signature_content_bounds(template_signature)
+    query_bounds = _signature_layout_space_source_bounds(query_signature) or _signature_content_bounds(query_signature)
+    template_bounds = _signature_layout_space_source_bounds(template_signature) or _signature_content_bounds(template_signature)
     debug["query_bounds"] = query_bounds
     debug["template_bounds"] = template_bounds
     if not query_bounds or not template_bounds:
@@ -1668,10 +1697,31 @@ def _candidate_from_result(
         or 1
     )
     detection_mode = str(metadata.get("detection_mode") or (template or {}).get("detection_mode") or "all_pages")
+    layout_reference_crop_debug: Dict[str, Any] = {
+        "enabled": LAYOUT_REFERENCE_CROP_ENABLED,
+        "applied": False,
+        "reason": "not_attempted",
+    }
+    verification_query_image_path = query_image_path
+    step_started = time.perf_counter()
+    query_path = Path(query_image_path)
+    output_root = query_path.parent.parent if query_path.parent.name == "normalized" else query_path.parent
+    layout_reference_crop_debug = _layout_reference_adjusted_image(
+        query_image_path,
+        query_signature,
+        template_signature,
+        output_root / "layout_reference",
+        template_id,
+        template_page_number,
+    )
+    candidate_timing["layout_reference_crop"] = time.perf_counter() - step_started
+    if layout_reference_crop_debug.get("applied") and layout_reference_crop_debug.get("image_path"):
+        verification_query_image_path = str(layout_reference_crop_debug["image_path"])
+    step_started = time.perf_counter()
     candidate_page_image_paths = dict(page_image_paths)
-    candidate_page_image_paths[template_page_number] = query_image_path
+    candidate_page_image_paths[template_page_number] = verification_query_image_path
     verification_page_image_paths = (
-        {template_page_number: query_image_path}
+        {template_page_number: verification_query_image_path}
         if detection_mode == "main_page"
         else candidate_page_image_paths
     )
@@ -1731,7 +1781,8 @@ def _candidate_from_result(
 
     normalized_score = float(normalized_verification.get("score") or 0.0)
     verification = normalized_verification
-    verification_source_used = "normalized"
+    base_verification_source = "layout_reference_crop" if layout_reference_crop_debug.get("applied") else "normalized"
+    verification_source_used = base_verification_source
 
     # ค่าเริ่มต้น: ยังไม่ align
     alignment = _alignment_result(
@@ -1746,17 +1797,14 @@ def _candidate_from_result(
 
     # 2) Template alignment is part of the production path.
     # The alignment service precheck skips ORB when geometry already matches.
-    should_try_alignment = template_id is not None and allow_alignment and (
-        verification_strategy != VERIFICATION_STRATEGY_STRICT
-        or bool(normalized_verification.get("passed"))
-    )
+    should_try_alignment = template_id is not None and allow_alignment
 
     if should_try_alignment:
         step_started = time.perf_counter()
         alignment = _align_candidate_page(
             template_id,
             template_page_number,
-            query_image_path,
+            verification_query_image_path,
             normalization_info,
             query_signature=query_signature,
             template_signature=template_signature,
@@ -1816,10 +1864,10 @@ def _candidate_from_result(
                 alignment_debug = alignment.get("alignment_debug") or {}
                 alignment_debug["reason"] = "aligned_verification_worse_than_normalized"
                 alignment_debug["alignment_status"] = "fallback"
-                alignment_debug["verification_source_used"] = "normalized"
+                alignment_debug["verification_source_used"] = base_verification_source
                 alignment["alignment_debug"] = alignment_debug
                 verification = normalized_verification
-                verification_source_used = "normalized"
+                verification_source_used = base_verification_source
 
     alignment_debug = alignment.get("alignment_debug") or {}
     alignment_score = float(alignment.get("alignment_score") or alignment_debug.get("alignment_score") or 0.0)
@@ -1840,6 +1888,10 @@ def _candidate_from_result(
     alignment_debug["verification_improvement"] = verification_improvement
     alignment_debug["verification_image_used"] = verification_source_used
     alignment_debug["verification_source_used"] = verification_source_used
+    alignment_debug["layout_reference_crop"] = layout_reference_crop_debug
+    if layout_reference_crop_debug.get("applied"):
+        alignment_debug["layout_reference_crop_applied"] = True
+        alignment_debug["layout_reference_crop_reason"] = layout_reference_crop_debug.get("reason")
 
     alignment_reason = _alignment_reason(alignment_status, alignment, alignment_debug)
     alignment_debug["alignment_status"] = alignment_status
@@ -1874,34 +1926,9 @@ def _candidate_from_result(
             "decision_path": "คะแนนรวมต่ำกว่าเกณฑ์",
         }
     candidate_timing["decision"] = time.perf_counter() - step_started
-    extraction_image_path = str(alignment.get("aligned_image_path") or query_image_path) if verification_source_used == "aligned" else query_image_path
+    extraction_image_path = str(alignment.get("aligned_image_path") or verification_query_image_path) if verification_source_used == "aligned" else verification_query_image_path
     extraction_image_preview_url = _detection_preview_url(extraction_image_path)
     roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} else "projected"
-    layout_reference_crop_debug: Dict[str, Any] = {
-        "enabled": LAYOUT_REFERENCE_CROP_ENABLED,
-        "applied": False,
-        "reason": "candidate_not_final_passed",
-    }
-    if decision.get("final_passed") and verification_source_used == "normalized":
-        step_started = time.perf_counter()
-        query_path = Path(query_image_path)
-        output_root = query_path.parent.parent if query_path.parent.name == "normalized" else query_path.parent
-        layout_reference_crop_debug = _layout_reference_adjusted_image(
-            query_image_path,
-            query_signature,
-            template_signature,
-            output_root / "layout_reference",
-            template_id,
-            template_page_number,
-        )
-        candidate_timing["layout_reference_crop"] = time.perf_counter() - step_started
-        if layout_reference_crop_debug.get("applied") and layout_reference_crop_debug.get("image_path"):
-            extraction_image_path = str(layout_reference_crop_debug["image_path"])
-            extraction_image_preview_url = str(layout_reference_crop_debug.get("preview_url") or _detection_preview_url(extraction_image_path))
-            alignment_debug["layout_reference_crop_applied"] = True
-            alignment_debug["layout_reference_crop_reason"] = layout_reference_crop_debug.get("reason")
-    else:
-        candidate_timing["layout_reference_crop"] = 0.0
 
     template_fields: List[Dict[str, Any]] = []
     template_rois: List[Dict[str, Any]] = []
