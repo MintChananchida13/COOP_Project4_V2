@@ -1104,6 +1104,200 @@ def _projected_reference_crop_box(
     }
 
 
+def _region_bbox(region: Dict[str, Any], key: str = "bbox") -> Optional[Dict[str, float]]:
+    bbox = region.get(key) if isinstance(region.get(key), dict) else region.get("bbox")
+    if not isinstance(bbox, dict):
+        return None
+    try:
+        x = max(0.0, min(1.0, float(bbox.get("x_ratio") or 0.0)))
+        y = max(0.0, min(1.0, float(bbox.get("y_ratio") or 0.0)))
+        width = max(0.0, min(1.0, float(bbox.get("width_ratio") or 0.0)))
+        height = max(0.0, min(1.0, float(bbox.get("height_ratio") or 0.0)))
+    except (TypeError, ValueError):
+        return None
+    if width <= 0.0 or height <= 0.0:
+        return None
+    return {
+        "left": x,
+        "top": y,
+        "right": min(1.0, x + width),
+        "bottom": min(1.0, y + height),
+        "width": width,
+        "height": height,
+        "center_x": min(1.0, x + width / 2.0),
+        "center_y": min(1.0, y + height / 2.0),
+        "aspect": width / max(height, 1e-6),
+        "area": width * height,
+    }
+
+
+def _layout_correspondence_crop_box(
+    query_signature: Optional[Dict[str, Any]],
+    template_signature: Optional[Dict[str, Any]],
+    image_width: int,
+    image_height: int,
+) -> Dict[str, Any]:
+    debug: Dict[str, Any] = {
+        "passed": False,
+        "fallback_reason": None,
+        "correspondence_count": 0,
+        "inlier_count": 0,
+        "inlier_ratio": 0.0,
+        "scale_x": None,
+        "scale_y": None,
+        "translate_x": None,
+        "translate_y": None,
+        "rmse": None,
+        "confidence": 0.0,
+        "template_page_size": list(_signature_template_page_size(template_signature) or []),
+        "projected_document_box": None,
+        "final_crop_box": None,
+    }
+    if not isinstance(query_signature, dict) or not isinstance(template_signature, dict):
+        debug["fallback_reason"] = "missing_signature_for_correspondence_crop"
+        return debug
+    query_regions = [item for item in query_signature.get("regions", []) if isinstance(item, dict)]
+    template_regions = [item for item in template_signature.get("regions", []) if isinstance(item, dict)]
+    if len(query_regions) < 4 or len(template_regions) < 4:
+        debug["fallback_reason"] = "insufficient_regions_for_correspondence_crop"
+        return debug
+
+    candidates: List[Dict[str, Any]] = []
+    for qi, query_region in enumerate(query_regions):
+        q_match_box = _region_bbox(query_region, "bbox")
+        q_source_box = _region_bbox(query_region, "source_bbox")
+        if not q_match_box or not q_source_box:
+            continue
+        q_label = str(query_region.get("label") or "text")
+        for ti, template_region in enumerate(template_regions):
+            if str(template_region.get("label") or "text") != q_label:
+                continue
+            t_match_box = _region_bbox(template_region, "bbox")
+            t_source_box = _region_bbox(template_region, "source_bbox")
+            if not t_match_box or not t_source_box:
+                continue
+            center_dist = abs(q_match_box["center_x"] - t_match_box["center_x"]) + abs(q_match_box["center_y"] - t_match_box["center_y"])
+            size_delta = abs(q_match_box["width"] - t_match_box["width"]) + abs(q_match_box["height"] - t_match_box["height"])
+            aspect_delta = abs(q_match_box["aspect"] - t_match_box["aspect"]) / max(t_match_box["aspect"], 1e-6)
+            area_delta = abs(q_match_box["area"] - t_match_box["area"]) / max(t_match_box["area"], 1e-6)
+            score = 1.0 - min(1.0, (center_dist * 1.8) + (size_delta * 1.4) + (aspect_delta * 0.20) + (area_delta * 0.08))
+            if score < 0.45:
+                continue
+            candidates.append(
+                {
+                    "score": score,
+                    "query_index": qi,
+                    "template_index": ti,
+                    "query_box": q_source_box,
+                    "template_box": t_source_box,
+                }
+            )
+    candidates.sort(key=lambda item: float(item["score"]), reverse=True)
+    matches: List[Dict[str, Any]] = []
+    used_query: set[int] = set()
+    used_template: set[int] = set()
+    for item in candidates:
+        if int(item["query_index"]) in used_query or int(item["template_index"]) in used_template:
+            continue
+        matches.append(item)
+        used_query.add(int(item["query_index"]))
+        used_template.add(int(item["template_index"]))
+        if len(matches) >= 30:
+            break
+    debug["correspondence_count"] = len(matches)
+    if len(matches) < 4:
+        debug["fallback_reason"] = "insufficient_correspondences"
+        return debug
+
+    def _fit_axis(template_values: np.ndarray, query_values: np.ndarray) -> tuple[float, float]:
+        matrix = np.vstack([template_values, np.ones(len(template_values))]).T
+        scale, translate = np.linalg.lstsq(matrix, query_values, rcond=None)[0]
+        return float(scale), float(translate)
+
+    template_x = np.array([float(item["template_box"]["center_x"]) for item in matches], dtype=np.float64)
+    template_y = np.array([float(item["template_box"]["center_y"]) for item in matches], dtype=np.float64)
+    query_x = np.array([float(item["query_box"]["center_x"]) for item in matches], dtype=np.float64)
+    query_y = np.array([float(item["query_box"]["center_y"]) for item in matches], dtype=np.float64)
+    scale_x, translate_x = _fit_axis(template_x, query_x)
+    scale_y, translate_y = _fit_axis(template_y, query_y)
+    pred_x = scale_x * template_x + translate_x
+    pred_y = scale_y * template_y + translate_y
+    residuals = np.sqrt(np.square(pred_x - query_x) + np.square(pred_y - query_y))
+    median_residual = float(np.median(residuals)) if len(residuals) else 1.0
+    inlier_threshold = max(0.025, median_residual * 2.5)
+    inlier_mask = residuals <= inlier_threshold
+    inlier_count = int(np.count_nonzero(inlier_mask))
+    if inlier_count < 4:
+        debug["fallback_reason"] = "insufficient_correspondence_inliers"
+        return debug
+    if inlier_count < len(matches):
+        scale_x, translate_x = _fit_axis(template_x[inlier_mask], query_x[inlier_mask])
+        scale_y, translate_y = _fit_axis(template_y[inlier_mask], query_y[inlier_mask])
+        pred_x = scale_x * template_x[inlier_mask] + translate_x
+        pred_y = scale_y * template_y[inlier_mask] + translate_y
+        residuals = np.sqrt(np.square(pred_x - query_x[inlier_mask]) + np.square(pred_y - query_y[inlier_mask]))
+    rmse = float(np.sqrt(np.mean(np.square(residuals)))) if len(residuals) else 1.0
+    inlier_ratio = inlier_count / max(len(matches), 1)
+    if scale_x <= 0.05 or scale_y <= 0.05 or scale_x > 3.0 or scale_y > 3.0:
+        debug["fallback_reason"] = "correspondence_scale_unreliable"
+        return debug
+    scale_consistency = min(scale_x, scale_y) / max(scale_x, scale_y, 1e-6)
+    confidence = max(0.0, min(1.0, inlier_ratio * scale_consistency * (1.0 - min(1.0, rmse / 0.08))))
+    if confidence < 0.45 or rmse > 0.08:
+        debug["fallback_reason"] = "correspondence_confidence_too_low"
+        debug.update({"rmse": round(rmse, 6), "confidence": round(confidence, 6), "inlier_count": inlier_count, "inlier_ratio": round(inlier_ratio, 6)})
+        return debug
+
+    left_ratio = translate_x
+    top_ratio = translate_y
+    right_ratio = scale_x + translate_x
+    bottom_ratio = scale_y + translate_y
+    margin_x = min(0.015, max(0.004, (right_ratio - left_ratio) * 0.006))
+    margin_y = min(0.015, max(0.004, (bottom_ratio - top_ratio) * 0.006))
+    projected = [
+        int(round(left_ratio * image_width)),
+        int(round(top_ratio * image_height)),
+        int(round(right_ratio * image_width)),
+        int(round(bottom_ratio * image_height)),
+    ]
+    final_box = [
+        max(0, int(round((left_ratio - margin_x) * image_width))),
+        max(0, int(round((top_ratio - margin_y) * image_height))),
+        min(image_width, int(round((right_ratio + margin_x) * image_width))),
+        min(image_height, int(round((bottom_ratio + margin_y) * image_height))),
+    ]
+    if final_box[2] <= final_box[0] or final_box[3] <= final_box[1]:
+        debug["fallback_reason"] = "correspondence_crop_empty"
+        return debug
+    coverage_x = (final_box[2] - final_box[0]) / max(1, image_width)
+    coverage_y = (final_box[3] - final_box[1]) / max(1, image_height)
+    if coverage_x < LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO or coverage_y < LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO:
+        debug["fallback_reason"] = "correspondence_crop_too_small"
+        return debug
+    if coverage_x > LAYOUT_REFERENCE_PROJECTED_MAX_COVERAGE_RATIO or coverage_y > LAYOUT_REFERENCE_PROJECTED_MAX_COVERAGE_RATIO:
+        debug["fallback_reason"] = "correspondence_crop_too_large"
+        return debug
+    debug.update(
+        {
+            "passed": True,
+            "reason": "layout_correspondence_crop_valid",
+            "inlier_count": inlier_count,
+            "inlier_ratio": round(inlier_ratio, 6),
+            "scale_x": round(float(scale_x), 6),
+            "scale_y": round(float(scale_y), 6),
+            "translate_x": round(float(translate_x), 6),
+            "translate_y": round(float(translate_y), 6),
+            "rmse": round(float(rmse), 6),
+            "confidence": round(float(confidence), 6),
+            "projected_document_box": projected,
+            "final_crop_box": final_box,
+            "safety_margin": [round(float(margin_x), 6), round(float(margin_y), 6)],
+            "coverage": [round(float(coverage_x), 6), round(float(coverage_y), 6)],
+        }
+    )
+    return debug
+
+
 def _signature_template_page_size(signature: Optional[Dict[str, Any]]) -> Optional[tuple[int, int]]:
     if not isinstance(signature, dict):
         return None
@@ -1300,52 +1494,88 @@ def _layout_reference_adjusted_image(
         debug["fallback_reason"] = "image_unreadable"
         return debug
     image_height, image_width = image.shape[:2]
+    correspondence_crop_debug = _layout_correspondence_crop_box(
+        query_signature,
+        template_signature,
+        image_width,
+        image_height,
+    )
+    debug["layout_correspondence_crop"] = correspondence_crop_debug
+    debug["correspondence_count"] = correspondence_crop_debug.get("correspondence_count")
+    debug["inlier_count"] = correspondence_crop_debug.get("inlier_count")
+    debug["inlier_ratio"] = correspondence_crop_debug.get("inlier_ratio")
+    debug["scale_x"] = correspondence_crop_debug.get("scale_x")
+    debug["scale_y"] = correspondence_crop_debug.get("scale_y")
+    debug["translate_x"] = correspondence_crop_debug.get("translate_x")
+    debug["translate_y"] = correspondence_crop_debug.get("translate_y")
+    debug["rmse"] = correspondence_crop_debug.get("rmse")
+    debug["confidence"] = correspondence_crop_debug.get("confidence")
+    debug["template_page_size"] = correspondence_crop_debug.get("template_page_size")
+    if correspondence_crop_debug.get("passed"):
+        crop_debug = {
+            "passed": True,
+            "reason": "layout_correspondence_crop_applied",
+            "method": "layout_correspondence",
+            "original_box": correspondence_crop_debug.get("projected_document_box"),
+            "final_box": correspondence_crop_debug.get("final_crop_box"),
+            "projected_box_before_margin": correspondence_crop_debug.get("projected_document_box"),
+            "projected_box_after_margin": correspondence_crop_debug.get("final_crop_box"),
+            "coverage": correspondence_crop_debug.get("coverage"),
+            "confidence": correspondence_crop_debug.get("confidence"),
+        }
+        debug["projected_document_box"] = correspondence_crop_debug
+        debug["final_crop_box"] = correspondence_crop_debug.get("final_crop_box")
+        debug["fallback_reason"] = None
+    else:
+        debug["layout_correspondence_fallback_reason"] = correspondence_crop_debug.get("fallback_reason")
+        crop_debug = None
     x_axis = _solve_reference_crop_axis(query_bounds["left"], query_bounds["right"], template_bounds["left"], template_bounds["right"], image_width)
     y_axis = _solve_reference_crop_axis(query_bounds["top"], query_bounds["bottom"], template_bounds["top"], template_bounds["bottom"], image_height)
-    if x_axis is None or y_axis is None:
+    if crop_debug is None and (x_axis is None or y_axis is None):
         debug["reason"] = "reference_crop_axis_unavailable"
         debug["fallback_reason"] = "reference_crop_axis_unavailable"
         return debug
-    projected_crop_debug = _projected_reference_crop_box(
-        x_axis[0],
-        y_axis[0],
-        x_axis[1],
-        y_axis[1],
-        image_width,
-        image_height,
-        query_bounds,
-        template_bounds,
-        query_raw_bounds=query_raw_bounds if isinstance(query_raw_bounds, dict) else None,
-        template_raw_bounds=template_raw_bounds if isinstance(template_raw_bounds, dict) else None,
-    )
-    debug["projected_document_box"] = projected_crop_debug
-    debug["base_margin"] = projected_crop_debug.get("base_margin")
-    debug["base_safety_margin"] = projected_crop_debug.get("base_safety_margin")
-    debug["edge_margin_contribution"] = projected_crop_debug.get("edge_margin_contribution")
-    debug["robust_shrink_margin_contribution"] = projected_crop_debug.get("robust_shrink_margin_contribution")
-    debug["confidence_margin_contribution"] = projected_crop_debug.get("confidence_margin_contribution")
-    debug["adaptive_safety_margin"] = projected_crop_debug.get("adaptive_safety_margin")
-    debug["final_adaptive_margin"] = projected_crop_debug.get("final_adaptive_margin")
-    debug["edge_uncertainty"] = projected_crop_debug.get("edge_uncertainty")
-    debug["robust_shrink_uncertainty"] = projected_crop_debug.get("robust_shrink_uncertainty")
-    debug["projection_confidence"] = projected_crop_debug.get("projection_confidence")
-    debug["projected_box_before_margin"] = projected_crop_debug.get("projected_box_before_margin")
-    debug["safety_margin"] = projected_crop_debug.get("safety_margin")
-    debug["projected_box_after_margin"] = projected_crop_debug.get("projected_box_after_margin")
-    debug["projected_frame_coverage"] = projected_crop_debug.get("coverage")
-    if projected_crop_debug.get("passed"):
-        crop_debug = projected_crop_debug
-        debug["fallback_reason"] = None
-    else:
-        debug["fallback_reason"] = projected_crop_debug.get("reason") or "projected_document_box_invalid"
-        if debug["fallback_reason"] == "projected_document_box_too_large":
-            debug["reason"] = "projected_document_box_too_large_no_crop_required"
-            debug["crop_required"] = False
-            debug["crop_skip_reason"] = "projected_document_box_too_large"
-            return debug
-        crop_debug = _clamp_reference_crop_box(x_axis[0], y_axis[0], x_axis[1], y_axis[1], image_width, image_height)
-        crop_debug["fallback_from_projected"] = True
-        crop_debug["fallback_reason"] = debug["fallback_reason"]
+    if crop_debug is None:
+        projected_crop_debug = _projected_reference_crop_box(
+            x_axis[0],
+            y_axis[0],
+            x_axis[1],
+            y_axis[1],
+            image_width,
+            image_height,
+            query_bounds,
+            template_bounds,
+            query_raw_bounds=query_raw_bounds if isinstance(query_raw_bounds, dict) else None,
+            template_raw_bounds=template_raw_bounds if isinstance(template_raw_bounds, dict) else None,
+        )
+        debug["projected_document_box"] = projected_crop_debug
+        debug["base_margin"] = projected_crop_debug.get("base_margin")
+        debug["base_safety_margin"] = projected_crop_debug.get("base_safety_margin")
+        debug["edge_margin_contribution"] = projected_crop_debug.get("edge_margin_contribution")
+        debug["robust_shrink_margin_contribution"] = projected_crop_debug.get("robust_shrink_margin_contribution")
+        debug["confidence_margin_contribution"] = projected_crop_debug.get("confidence_margin_contribution")
+        debug["adaptive_safety_margin"] = projected_crop_debug.get("adaptive_safety_margin")
+        debug["final_adaptive_margin"] = projected_crop_debug.get("final_adaptive_margin")
+        debug["edge_uncertainty"] = projected_crop_debug.get("edge_uncertainty")
+        debug["robust_shrink_uncertainty"] = projected_crop_debug.get("robust_shrink_uncertainty")
+        debug["projection_confidence"] = projected_crop_debug.get("projection_confidence")
+        debug["projected_box_before_margin"] = projected_crop_debug.get("projected_box_before_margin")
+        debug["safety_margin"] = projected_crop_debug.get("safety_margin")
+        debug["projected_box_after_margin"] = projected_crop_debug.get("projected_box_after_margin")
+        debug["projected_frame_coverage"] = projected_crop_debug.get("coverage")
+        if projected_crop_debug.get("passed"):
+            crop_debug = projected_crop_debug
+            debug["fallback_reason"] = None
+        else:
+            debug["fallback_reason"] = projected_crop_debug.get("reason") or "projected_document_box_invalid"
+            if debug["fallback_reason"] == "projected_document_box_too_large":
+                debug["reason"] = "projected_document_box_too_large_no_crop_required"
+                debug["crop_required"] = False
+                debug["crop_skip_reason"] = "projected_document_box_too_large"
+                return debug
+            crop_debug = _clamp_reference_crop_box(x_axis[0], y_axis[0], x_axis[1], y_axis[1], image_width, image_height)
+            crop_debug["fallback_from_projected"] = True
+            crop_debug["fallback_reason"] = debug["fallback_reason"]
     debug["crop"] = crop_debug
     if not crop_debug.get("passed"):
         debug["reason"] = str(crop_debug.get("reason") or "reference_crop_invalid")
@@ -1353,6 +1583,7 @@ def _layout_reference_adjusted_image(
         return debug
 
     crop_left, crop_top, crop_right, crop_bottom = crop_debug["final_box"]
+    debug["final_crop_box"] = [int(crop_left), int(crop_top), int(crop_right), int(crop_bottom)]
     debug["crop_size"] = [int(crop_right - crop_left), int(crop_bottom - crop_top)]
     debug["crop_image_size"] = [int(crop_right - crop_left), int(crop_bottom - crop_top)]
     delta = max(
