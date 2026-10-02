@@ -1474,32 +1474,20 @@ def _layout_reference_adjusted_image(
         debug["reason"] = "missing_signature_bounds"
         debug["fallback_reason"] = "missing_signature_bounds"
         return debug
-    full_frame_debug = _detect_full_frame_document(
-        query_bounds,
-        template_bounds,
-        query_signature,
-        template_signature,
-        query_raw_bounds=query_raw_bounds if isinstance(query_raw_bounds, dict) else None,
-        template_raw_bounds=template_raw_bounds if isinstance(template_raw_bounds, dict) else None,
-    )
-    debug.update(full_frame_debug)
-    if full_frame_debug.get("full_frame_document_detected"):
-        debug["reason"] = "full_frame_document_no_crop_required"
-        debug["fallback_reason"] = None
-        return debug
-
     image = cv2.imread(str(image_path))
     if image is None:
         debug["reason"] = "image_unreadable"
         debug["fallback_reason"] = "image_unreadable"
         return debug
     image_height, image_width = image.shape[:2]
+    debug["multi_region_attempted"] = True
     correspondence_crop_debug = _layout_correspondence_crop_box(
         query_signature,
         template_signature,
         image_width,
         image_height,
     )
+    debug["multi_region_passed"] = bool(correspondence_crop_debug.get("passed"))
     debug["layout_correspondence_crop"] = correspondence_crop_debug
     debug["correspondence_count"] = correspondence_crop_debug.get("correspondence_count")
     debug["inlier_count"] = correspondence_crop_debug.get("inlier_count")
@@ -1512,6 +1500,41 @@ def _layout_reference_adjusted_image(
     debug["confidence"] = correspondence_crop_debug.get("confidence")
     debug["template_page_size"] = correspondence_crop_debug.get("template_page_size")
     if correspondence_crop_debug.get("passed"):
+        debug["projected_document_box"] = correspondence_crop_debug
+        debug["final_crop_box"] = correspondence_crop_debug.get("final_crop_box")
+        projected_box = correspondence_crop_debug.get("projected_document_box")
+        projected_frame_coverage = None
+        projected_edge_inset = None
+        if isinstance(projected_box, list) and len(projected_box) == 4:
+            left, top, right, bottom = [float(value) for value in projected_box]
+            projected_frame_coverage = [
+                round(float((right - left) / max(1, image_width)), 6),
+                round(float((bottom - top) / max(1, image_height)), 6),
+            ]
+            projected_edge_inset = {
+                "left": round(float(left / max(1, image_width)), 6),
+                "top": round(float(top / max(1, image_height)), 6),
+                "right": round(float((image_width - right) / max(1, image_width)), 6),
+                "bottom": round(float((image_height - bottom) / max(1, image_height)), 6),
+            }
+        debug["projected_frame_coverage"] = projected_frame_coverage
+        debug["projected_edge_inset"] = projected_edge_inset
+        classified_full_frame = bool(
+            projected_frame_coverage
+            and projected_edge_inset
+            and projected_frame_coverage[0] >= 0.94
+            and projected_frame_coverage[1] >= 0.94
+            and max(float(value) for value in projected_edge_inset.values()) <= 0.04
+        )
+        debug["classified_full_frame"] = classified_full_frame
+        if classified_full_frame:
+            debug["full_frame_document_detected"] = True
+            debug["reason"] = "multi_region_projected_boundary_matches_image_frame"
+            debug["fallback_reason"] = None
+            debug["crop_required"] = False
+            debug["crop_skip_reason"] = "multi_region_projected_boundary_near_image_frame"
+            return debug
+        debug["crop_required"] = True
         crop_debug = {
             "passed": True,
             "reason": "layout_correspondence_crop_applied",
@@ -1523,12 +1546,23 @@ def _layout_reference_adjusted_image(
             "coverage": correspondence_crop_debug.get("coverage"),
             "confidence": correspondence_crop_debug.get("confidence"),
         }
-        debug["projected_document_box"] = correspondence_crop_debug
-        debug["final_crop_box"] = correspondence_crop_debug.get("final_crop_box")
         debug["fallback_reason"] = None
     else:
         debug["layout_correspondence_fallback_reason"] = correspondence_crop_debug.get("fallback_reason")
         crop_debug = None
+        full_frame_debug = _detect_full_frame_document(
+            query_bounds,
+            template_bounds,
+            query_signature,
+            template_signature,
+            query_raw_bounds=query_raw_bounds if isinstance(query_raw_bounds, dict) else None,
+            template_raw_bounds=template_raw_bounds if isinstance(template_raw_bounds, dict) else None,
+        )
+        debug.update(full_frame_debug)
+        if full_frame_debug.get("full_frame_document_detected"):
+            debug["reason"] = "full_frame_document_no_crop_required"
+            debug["fallback_reason"] = None
+            return debug
     x_axis = _solve_reference_crop_axis(query_bounds["left"], query_bounds["right"], template_bounds["left"], template_bounds["right"], image_width)
     y_axis = _solve_reference_crop_axis(query_bounds["top"], query_bounds["bottom"], template_bounds["top"], template_bounds["bottom"], image_height)
     if crop_debug is None and (x_axis is None or y_axis is None):
@@ -2705,6 +2739,7 @@ def _candidate_from_result(
     verification = normalized_verification
     base_verification_source = "layout_reference_crop" if layout_reference_crop_debug.get("applied") else "normalized"
     verification_source_used = base_verification_source
+    layout_reference_crop_debug["selected_processing_source"] = base_verification_source
     pre_alignment_processing_source = base_verification_source
     post_alignment_processing_source = base_verification_source
     alignment_required = not bool(normalized_verification.get("passed"))
