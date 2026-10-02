@@ -1680,6 +1680,174 @@ def _layout_correspondence_crop_box(
     return debug
 
 
+def _template_guided_layout_bounds(
+    query_signature: Optional[Dict[str, Any]],
+    template_signature: Optional[Dict[str, Any]],
+    raw_bounds: Optional[Dict[str, float]],
+) -> Dict[str, Any]:
+    debug: Dict[str, Any] = {
+        "attempted": True,
+        "used": False,
+        "fallback_reason": None,
+        "correspondence_count": 0,
+        "inlier_count": 0,
+        "inlier_ratio": 0.0,
+        "rmse": None,
+        "confidence": 0.0,
+        "document_layout_bounds": raw_bounds,
+        "raw_layout_bounds": raw_bounds,
+    }
+    if not isinstance(query_signature, dict) or not isinstance(template_signature, dict):
+        debug["fallback_reason"] = "missing_signature_for_template_guided_bounds"
+        return debug
+    query_regions = [item for item in query_signature.get("regions", []) if isinstance(item, dict)]
+    template_regions = [item for item in template_signature.get("regions", []) if isinstance(item, dict)]
+    if len(query_regions) < 4 or len(template_regions) < 4:
+        debug["fallback_reason"] = "insufficient_regions_for_template_guided_bounds"
+        return debug
+
+    candidates: List[Dict[str, Any]] = []
+    for qi, query_region in enumerate(query_regions):
+        q_match_box = _region_bbox(query_region, "bbox")
+        q_source_box = _region_bbox(query_region, "source_bbox")
+        if not q_match_box or not q_source_box:
+            continue
+        q_label = str(query_region.get("label") or "text")
+        for ti, template_region in enumerate(template_regions):
+            if str(template_region.get("label") or "text") != q_label:
+                continue
+            t_match_box = _region_bbox(template_region, "bbox")
+            if not t_match_box:
+                continue
+            center_dist = abs(q_match_box["center_x"] - t_match_box["center_x"]) + abs(q_match_box["center_y"] - t_match_box["center_y"])
+            size_delta = abs(q_match_box["width"] - t_match_box["width"]) + abs(q_match_box["height"] - t_match_box["height"])
+            aspect_delta = abs(q_match_box["aspect"] - t_match_box["aspect"]) / max(t_match_box["aspect"], 1e-6)
+            area_delta = abs(q_match_box["area"] - t_match_box["area"]) / max(t_match_box["area"], 1e-6)
+            score = 1.0 - min(1.0, (center_dist * 1.8) + (size_delta * 1.4) + (aspect_delta * 0.20) + (area_delta * 0.08))
+            if score < 0.45:
+                continue
+            candidates.append(
+                {
+                    "score": score,
+                    "query_index": qi,
+                    "template_index": ti,
+                    "query_box": q_source_box,
+                    "template_box": t_match_box,
+                }
+            )
+    candidates.sort(key=lambda item: float(item["score"]), reverse=True)
+    matches: List[Dict[str, Any]] = []
+    used_query: set[int] = set()
+    used_template: set[int] = set()
+    for item in candidates:
+        if int(item["query_index"]) in used_query or int(item["template_index"]) in used_template:
+            continue
+        matches.append(item)
+        used_query.add(int(item["query_index"]))
+        used_template.add(int(item["template_index"]))
+        if len(matches) >= 30:
+            break
+    debug["correspondence_count"] = len(matches)
+    if len(matches) < 4:
+        debug["fallback_reason"] = "insufficient_template_guided_correspondences"
+        return debug
+
+    def _fit_axis(template_values: np.ndarray, query_values: np.ndarray) -> tuple[float, float]:
+        matrix = np.vstack([template_values, np.ones(len(template_values))]).T
+        scale, translate = np.linalg.lstsq(matrix, query_values, rcond=None)[0]
+        return float(scale), float(translate)
+
+    template_x = np.array([float(item["template_box"]["center_x"]) for item in matches], dtype=np.float64)
+    template_y = np.array([float(item["template_box"]["center_y"]) for item in matches], dtype=np.float64)
+    query_x = np.array([float(item["query_box"]["center_x"]) for item in matches], dtype=np.float64)
+    query_y = np.array([float(item["query_box"]["center_y"]) for item in matches], dtype=np.float64)
+    scale_x, translate_x = _fit_axis(template_x, query_x)
+    scale_y, translate_y = _fit_axis(template_y, query_y)
+    pred_x = scale_x * template_x + translate_x
+    pred_y = scale_y * template_y + translate_y
+    residuals = np.sqrt(np.square(pred_x - query_x) + np.square(pred_y - query_y))
+    median_residual = float(np.median(residuals)) if len(residuals) else 1.0
+    inlier_threshold = max(0.025, median_residual * 2.5)
+    inlier_mask = residuals <= inlier_threshold
+    inlier_count = int(np.count_nonzero(inlier_mask))
+    if inlier_count < 4:
+        debug["fallback_reason"] = "insufficient_template_guided_inliers"
+        return debug
+    inlier_matches = [item for item, keep in zip(matches, inlier_mask) if bool(keep)]
+    if inlier_count < len(matches):
+        scale_x, translate_x = _fit_axis(template_x[inlier_mask], query_x[inlier_mask])
+        scale_y, translate_y = _fit_axis(template_y[inlier_mask], query_y[inlier_mask])
+        pred_x = scale_x * template_x[inlier_mask] + translate_x
+        pred_y = scale_y * template_y[inlier_mask] + translate_y
+        residuals = np.sqrt(np.square(pred_x - query_x[inlier_mask]) + np.square(pred_y - query_y[inlier_mask]))
+    rmse = float(np.sqrt(np.mean(np.square(residuals)))) if len(residuals) else 1.0
+    inlier_ratio = inlier_count / max(len(matches), 1)
+    if scale_x <= 0.05 or scale_y <= 0.05 or scale_x > 3.0 or scale_y > 3.0:
+        debug["fallback_reason"] = "template_guided_scale_unreliable"
+        return debug
+    scale_consistency = min(scale_x, scale_y) / max(scale_x, scale_y, 1e-6)
+    confidence = max(0.0, min(1.0, inlier_ratio * scale_consistency * (1.0 - min(1.0, rmse / 0.08))))
+    debug.update(
+        {
+            "inlier_count": int(inlier_count),
+            "inlier_ratio": round(float(inlier_ratio), 6),
+            "scale_x": round(float(scale_x), 6),
+            "scale_y": round(float(scale_y), 6),
+            "translate_x": round(float(translate_x), 6),
+            "translate_y": round(float(translate_y), 6),
+            "rmse": round(float(rmse), 6),
+            "confidence": round(float(confidence), 6),
+        }
+    )
+    if confidence < 0.45 or rmse > 0.08:
+        debug["fallback_reason"] = "template_guided_confidence_too_low"
+        return debug
+
+    inlier_bounds = _union_region_boxes([item["query_box"] for item in inlier_matches])
+    if not inlier_bounds:
+        debug["fallback_reason"] = "template_guided_bounds_unavailable"
+        return debug
+    include_pad_x = max(0.04, float(inlier_bounds.get("width") or 0.0) * 0.12)
+    include_pad_y = max(0.04, float(inlier_bounds.get("height") or 0.0) * 0.12)
+    include_bounds = {
+        "left": max(0.0, float(inlier_bounds["left"]) - include_pad_x),
+        "top": max(0.0, float(inlier_bounds["top"]) - include_pad_y),
+        "right": min(1.0, float(inlier_bounds["right"]) + include_pad_x),
+        "bottom": min(1.0, float(inlier_bounds["bottom"]) + include_pad_y),
+    }
+    query_boxes: List[Dict[str, float]] = []
+    for region in query_regions:
+        box = _region_bbox(region, "source_bbox")
+        if not box:
+            continue
+        if (
+            include_bounds["left"] <= box["center_x"] <= include_bounds["right"]
+            and include_bounds["top"] <= box["center_y"] <= include_bounds["bottom"]
+        ):
+            query_boxes.append(box)
+    guided_bounds = _union_region_boxes(query_boxes) or inlier_bounds
+    if not guided_bounds:
+        debug["fallback_reason"] = "template_guided_union_unavailable"
+        return debug
+    raw_area = float((raw_bounds or {}).get("width") or 0.0) * float((raw_bounds or {}).get("height") or 0.0)
+    guided_area = float(guided_bounds.get("width") or 0.0) * float(guided_bounds.get("height") or 0.0)
+    if raw_area > 0.0 and guided_area < raw_area * 0.55:
+        debug["fallback_reason"] = "template_guided_bounds_too_small"
+        debug["guided_bounds"] = guided_bounds
+        return debug
+    debug.update(
+        {
+            "used": True,
+            "reason": "template_guided_layout_bounds",
+            "document_layout_bounds": guided_bounds,
+            "inlier_layout_bounds": inlier_bounds,
+            "include_bounds": include_bounds,
+            "included_region_count": len(query_boxes),
+        }
+    )
+    return debug
+
+
 def _signature_template_page_size(signature: Optional[Dict[str, Any]]) -> Optional[tuple[int, int]]:
     if not isinstance(signature, dict):
         return None
@@ -1758,7 +1926,14 @@ def _detect_full_frame_document(
     raw_frame_coverage = min(raw_query_coverage_x, raw_query_coverage_y)
     robust_frame_coverage = min(query_coverage_x, query_coverage_y)
     raw_template_frame_coverage = min(raw_template_coverage_x, raw_template_coverage_y)
-    raw_full_frame_evidence = raw_frame_coverage >= 0.96 and aspect_delta <= 0.06
+    raw_edge_inset = max(
+        0.0,
+        float((query_raw_bounds or query_bounds).get("left") or 0.0),
+        float((query_raw_bounds or query_bounds).get("top") or 0.0),
+        1.0 - float((query_raw_bounds or query_bounds).get("right") or 1.0),
+        1.0 - float((query_raw_bounds or query_bounds).get("bottom") or 1.0),
+    )
+    raw_full_frame_evidence = raw_frame_coverage >= 0.96 and raw_edge_inset <= 0.04 and aspect_delta <= 0.06
     robust_geometry_evidence = edge_delta <= 0.055 and 0.90 <= coverage_ratio_x <= 1.12 and 0.90 <= coverage_ratio_y <= 1.12
     confidence = max(
         0.0,
@@ -1770,9 +1945,7 @@ def _detect_full_frame_document(
             ),
         ),
     )
-    full_frame = (aspect_delta <= 0.06 and robust_geometry_evidence) or (
-        raw_full_frame_evidence and raw_template_frame_coverage >= 0.90
-    )
+    full_frame = raw_full_frame_evidence
     debug.update(
         {
             "full_frame_document_detected": bool(full_frame),
@@ -1790,9 +1963,11 @@ def _detect_full_frame_document(
             },
             "raw_frame_coverage": round(float(raw_frame_coverage), 6),
             "robust_frame_coverage": round(float(robust_frame_coverage), 6),
+            "raw_edge_inset": round(float(raw_edge_inset), 6),
             "full_frame_evidence": {
                 "raw_full_frame": bool(raw_full_frame_evidence),
                 "robust_geometry": bool(robust_geometry_evidence),
+                "robust_geometry_ignored_for_full_frame": True,
                 "raw_template_frame_coverage": round(float(raw_template_frame_coverage), 6),
             },
         }
@@ -1894,7 +2069,17 @@ def _layout_reference_adjusted_image(
         debug["fallback_reason"] = None
         return debug
 
-    generic_crop_debug = _generic_layout_union_crop_box_from_bounds(query_bounds, image_width, image_height)
+    template_guided_debug = _template_guided_layout_bounds(query_signature, template_signature, query_bounds)
+    debug["template_guided_layout_bounds"] = template_guided_debug
+    crop_bounds = (
+        template_guided_debug.get("document_layout_bounds")
+        if template_guided_debug.get("used") and isinstance(template_guided_debug.get("document_layout_bounds"), dict)
+        else query_bounds
+    )
+    debug["template_guided_crop_used"] = bool(template_guided_debug.get("used"))
+    debug["template_guided_fallback_reason"] = template_guided_debug.get("fallback_reason")
+
+    generic_crop_debug = _generic_layout_union_crop_box_from_bounds(crop_bounds, image_width, image_height)
     debug["generic_layout_union_crop"] = generic_crop_debug
     if not generic_crop_debug.get("passed"):
         debug["reason"] = generic_crop_debug.get("reason") or "generic_layout_union_crop_unavailable"
@@ -1914,11 +2099,16 @@ def _layout_reference_adjusted_image(
     crop_debug = {
         "passed": True,
         "reason": "layout_union_crop_applied",
-        "method": "generic_layout_union_bounds_crop",
+        "method": "template_guided_layout_union_bounds_crop" if template_guided_debug.get("used") else "generic_layout_union_bounds_crop",
         "final_box": generic_crop_debug.get("final_box"),
-        "document_layout_bounds": query_bounds,
+        "document_layout_bounds": crop_bounds,
+        "raw_document_layout_bounds": query_bounds,
         "expanded_layout_bounds": expanded_layout_bounds,
-        "matched_region_count": query_bounds.get("region_count"),
+        "matched_region_count": (
+            template_guided_debug.get("included_region_count")
+            if template_guided_debug.get("used")
+            else query_bounds.get("region_count")
+        ),
         "safety_margin": generic_crop_debug.get("padding"),
         "layout_union_box": generic_crop_debug.get("layout_union_box"),
         "margin_x_px": generic_crop_debug.get("margin_x_px"),
@@ -1926,6 +2116,7 @@ def _layout_reference_adjusted_image(
         "expanded_crop_box": generic_crop_debug.get("expanded_crop_box"),
         "final_crop_coverage": generic_crop_debug.get("final_crop_coverage"),
         "generic_layout_crop": generic_crop_debug,
+        "template_guided_layout_bounds": template_guided_debug,
     }
     debug["crop_required"] = True
     debug["fallback_reason"] = None
@@ -3150,21 +3341,38 @@ def _candidate_from_result(
             aligned_score = float(aligned_verification.get("score") or 0.0)
             aligned_improvement = aligned_score - normalized_score
 
-            # 3) Alignment is optional refinement. Never use a warped image if it
-            # hurts OCR verification; fallback to the normalized image instead.
-            if alignment_required and aligned_improvement > 0.0001:
+            # 3) Once a template is known, prefer the template-reference image
+            # when alignment is accepted and verification is preserved. This
+            # keeps ROI/OCR in template canvas space without changing the
+            # verification algorithm itself.
+            aligned_verification_preserved = bool(aligned_verification.get("passed")) and aligned_score >= (normalized_score - 0.0001)
+            template_reference_processing_required = bool(layout_reference_crop_debug.get("applied"))
+            if (alignment_required and aligned_improvement > 0.0001) or (
+                template_reference_processing_required and aligned_verification_preserved
+            ):
                 verification = aligned_verification
                 verification_source_used = "aligned"
                 post_alignment_processing_source = "aligned"
                 alignment_processing_image_selected = True
+                if template_reference_processing_required and not alignment_required:
+                    alignment_skip_reason = "template_reference_alignment_selected"
+                alignment_debug = alignment.get("alignment_debug") or {}
+                alignment_debug["aligned_verification_preserved"] = aligned_verification_preserved
+                alignment_debug["template_reference_processing_required"] = template_reference_processing_required
+                alignment_debug["alignment_selection_reason"] = alignment_skip_reason or "aligned_verification_improved"
+                alignment["alignment_debug"] = alignment_debug
             else:
                 alignment["alignment_status"] = "fallback"
                 alignment_debug = alignment.get("alignment_debug") or {}
                 alignment_debug["reason"] = (
-                    "pre_alignment_verification_already_passed"
+                    "aligned_verification_not_preserved"
+                    if template_reference_processing_required
+                    else "pre_alignment_verification_already_passed"
                     if not alignment_required
                     else "aligned_verification_did_not_improve_base_verification"
                 )
+                alignment_debug["aligned_verification_preserved"] = aligned_verification_preserved
+                alignment_debug["template_reference_processing_required"] = template_reference_processing_required
                 alignment_debug["alignment_status"] = "fallback"
                 alignment_debug["verification_source_used"] = base_verification_source
                 alignment["alignment_debug"] = alignment_debug
