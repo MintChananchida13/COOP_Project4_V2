@@ -79,6 +79,47 @@ const normalizeMatchingWeights = (weights: {
 
 const formatWeightPercent = (value: number) => `${Math.round(value * 100)}%`;
 
+const compactTemplateNamePart = (value?: string | null) => String(value || "").trim();
+
+const stripRepeatedNamePrefix = (value: string, prefix: string) => {
+  let result = value.trim();
+  const cleanPrefix = prefix.trim();
+  if (!cleanPrefix) return result;
+  const separators = [" - ", "-", " – ", "_"];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const separator of separators) {
+      const repeated = `${cleanPrefix}${separator}`;
+      if (result.toLowerCase().startsWith(repeated.toLowerCase())) {
+        result = result.slice(repeated.length).trim();
+        changed = true;
+      }
+    }
+  }
+  return result;
+};
+
+const prepublishTemplateDisplayName = (candidate?: PrepublishCandidate | null) => {
+  if (!candidate) return "N/A";
+  const metadata = candidate.metadata || {};
+  const folderName = compactTemplateNamePart(
+    (metadata.template_group_name as string | undefined) ||
+      (metadata.document_type as string | undefined) ||
+      (metadata.template_name as string | undefined)
+  );
+  const versionName = compactTemplateNamePart(
+    (metadata.version_name as string | undefined) ||
+      (metadata.template_version_name as string | undefined) ||
+      candidate.templateName
+  );
+  if (folderName && versionName) {
+    const suffix = stripRepeatedNamePrefix(versionName, folderName) || versionName;
+    return `${folderName}-${suffix}`;
+  }
+  return versionName || folderName || candidate.templateName || candidate.templateId || "N/A";
+};
+
 const roundWeight = (value: number) => Number(clampUnit(value).toFixed(4));
 
 const calculateMatchingWeights = ({
@@ -408,7 +449,7 @@ function DraftCandidateCard({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-black text-slate-900">#{candidate.rank}</span>
-            <span className="text-xs font-black text-slate-900">{candidate.templateName || candidate.templateId}</span>
+            <span className="text-xs font-black text-slate-900">{prepublishTemplateDisplayName(candidate)}</span>
             {candidate.isCurrentDraft && <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[9px] font-black uppercase text-indigo-700">Draft ปัจจุบัน</span>}
             <DraftStatusPill passed={candidate.finalPassed} label={candidate.decision || (candidate.finalPassed ? "PASS" : "REVIEW")} />
           </div>
@@ -1460,7 +1501,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
               <div className="rounded-xl border border-slate-100 bg-white p-3">
                 <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                   <DraftOverviewMetric label="ผลการจับคู่" value={detectionTest.matched ? "ตรวจพบ" : "ตรวจไม่พบ"} tone={detectionTest.matched ? "emerald" : "slate"} />
-                  <DraftOverviewMetric label="Template ที่ตรวจพบ" value={detectionTest.selectedTemplate?.templateName || detectionTest.selectedTemplate?.templateId || "N/A"} />
+                  <DraftOverviewMetric label="Template ที่ตรวจพบ" value={prepublishTemplateDisplayName(detectionTest.selectedTemplate)} />
                   <DraftOverviewMetric label="ประเภทของ Template" value={detectionTest.selectedTemplateType || "N/A"} />
                   <DraftOverviewMetric label="คะแนนความมั่นใจในการจับคู่" value={formatPrepublishScore(detectionTest.finalConfidence)} tone="indigo" />
                   <DraftOverviewMetric label="เหตุผลที่เลือก Template" value={detectionTest.decisionReason || "N/A"} />
@@ -1503,7 +1544,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
                 (detectionTest?.candidates || []).slice(0, 5).map((candidate) => (
                   <tr key={`${candidate.templateId}-${candidate.rank}-test`} className={candidate.isCurrentDraft ? "bg-indigo-50" : undefined}>
                     <td className="px-3 py-2 font-black text-slate-900">#{candidate.rank}</td>
-                    <td className="px-3 py-2 font-bold text-slate-800">{candidate.templateName || candidate.templateId}</td>
+                    <td className="px-3 py-2 font-bold text-slate-800">{prepublishTemplateDisplayName(candidate)}</td>
                     <td className="px-3 py-2 font-semibold text-slate-600">
                       <div>{candidate.sourceLabel || (candidate.isCurrentDraft ? "Template ฉบับร่าง" : "Template ที่เผยแพร่")}</div>
                       {candidate.isCurrentDraft && candidate.layoutReferenceCount ? (

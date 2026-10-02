@@ -922,7 +922,7 @@ def _retrieval_precrop_signature(
         debug["reason"] = "invalid_signature"
         return signature, debug
     robust_debug = _signature_robust_content_bounds(signature)
-    bounds = robust_debug.get("robust_content_bounds") or robust_debug.get("raw_content_bounds")
+    bounds = _signature_content_bounds(signature) or robust_debug.get("raw_content_bounds")
     if not isinstance(bounds, dict):
         debug["reason"] = "missing_content_bounds"
         return signature, debug
@@ -941,6 +941,8 @@ def _retrieval_precrop_signature(
     )
     debug["retrieval_precrop_coverage"] = coverage
     debug["retrieval_crop"]["layout_bounds"] = {key: round(float(value), 6) for key, value in bounds.items()}
+    debug["retrieval_crop"]["raw_content_bounds"] = robust_debug.get("raw_content_bounds")
+    debug["retrieval_crop"]["robust_content_bounds"] = robust_debug.get("robust_content_bounds")
     full_frame_like = width >= 0.92 and height >= 0.92 and edge_inset <= 0.04
     if full_frame_like:
         debug["reason"] = "content_already_full_frame"
@@ -1770,9 +1772,9 @@ def _layout_reference_adjusted_image(
         return debug
     query_robust_debug = _signature_robust_content_bounds(query_signature)
     template_robust_debug = _signature_robust_content_bounds(template_signature)
-    query_raw_bounds = query_robust_debug.get("raw_content_bounds")
+    query_raw_bounds = _signature_content_bounds(query_signature) or query_robust_debug.get("raw_content_bounds")
     template_raw_bounds = template_robust_debug.get("raw_content_bounds")
-    query_bounds = query_robust_debug.get("robust_content_bounds") or query_raw_bounds
+    query_bounds = query_raw_bounds
     template_bounds = template_robust_debug.get("robust_content_bounds") or template_raw_bounds
     debug["query_bounds"] = query_bounds
     debug["template_bounds"] = template_bounds
@@ -1810,144 +1812,87 @@ def _layout_reference_adjusted_image(
         debug["fallback_reason"] = "image_unreadable"
         return debug
     image_height, image_width = image.shape[:2]
-    debug["multi_region_attempted"] = True
-    correspondence_crop_debug = _layout_correspondence_crop_box(
+    debug["multi_region_attempted"] = False
+    debug["multi_region_passed"] = False
+    debug["layout_correspondence_crop"] = {
+        "attempted": False,
+        "used": False,
+        "reason": "disabled_for_generic_layout_union_crop",
+    }
+    debug["correspondence_count"] = None
+    debug["inlier_count"] = None
+    debug["inlier_ratio"] = None
+    debug["scale_x"] = None
+    debug["scale_y"] = None
+    debug["translate_x"] = None
+    debug["translate_y"] = None
+    debug["rmse"] = None
+    debug["confidence"] = None
+    debug["projected_document_box"] = None
+    debug["classified_full_frame"] = False
+    full_frame_debug = _detect_full_frame_document(
+        query_bounds,
+        template_bounds,
         query_signature,
         template_signature,
-        image_width,
-        image_height,
+        query_raw_bounds=query_raw_bounds if isinstance(query_raw_bounds, dict) else None,
+        template_raw_bounds=template_raw_bounds if isinstance(template_raw_bounds, dict) else None,
     )
-    debug["multi_region_passed"] = bool(correspondence_crop_debug.get("passed"))
-    debug["layout_correspondence_crop"] = correspondence_crop_debug
-    debug["correspondence_count"] = correspondence_crop_debug.get("correspondence_count")
-    debug["inlier_count"] = correspondence_crop_debug.get("inlier_count")
-    debug["inlier_ratio"] = correspondence_crop_debug.get("inlier_ratio")
-    debug["scale_x"] = correspondence_crop_debug.get("scale_x")
-    debug["scale_y"] = correspondence_crop_debug.get("scale_y")
-    debug["translate_x"] = correspondence_crop_debug.get("translate_x")
-    debug["translate_y"] = correspondence_crop_debug.get("translate_y")
-    debug["rmse"] = correspondence_crop_debug.get("rmse")
-    debug["confidence"] = correspondence_crop_debug.get("confidence")
-    debug["template_page_size"] = correspondence_crop_debug.get("template_page_size")
-    if correspondence_crop_debug.get("passed"):
-        debug["projected_document_box"] = correspondence_crop_debug.get("projected_document_box")
-        debug["final_crop_box"] = correspondence_crop_debug.get("final_crop_box")
-        debug["document_layout_bounds"] = correspondence_crop_debug.get("document_layout_bounds")
-        debug["expanded_layout_bounds"] = correspondence_crop_debug.get("expanded_layout_bounds")
-        debug["matched_region_count"] = correspondence_crop_debug.get("matched_region_count")
-        projected_box = correspondence_crop_debug.get("projected_document_box")
-        projected_frame_coverage = None
-        projected_edge_inset = None
-        if isinstance(projected_box, list) and len(projected_box) == 4:
-            left, top, right, bottom = [float(value) for value in projected_box]
-            projected_frame_coverage = [
-                round(float((right - left) / max(1, image_width)), 6),
-                round(float((bottom - top) / max(1, image_height)), 6),
-            ]
-            projected_edge_inset = {
-                "left": round(float(left / max(1, image_width)), 6),
-                "top": round(float(top / max(1, image_height)), 6),
-                "right": round(float((image_width - right) / max(1, image_width)), 6),
-                "bottom": round(float((image_height - bottom) / max(1, image_height)), 6),
-            }
-        debug["projected_frame_coverage"] = projected_frame_coverage
-        debug["projected_edge_inset"] = projected_edge_inset
-        classified_full_frame = bool(
-            projected_frame_coverage
-            and projected_edge_inset
-            and projected_frame_coverage[0] >= 0.94
-            and projected_frame_coverage[1] >= 0.94
-            and max(float(value) for value in projected_edge_inset.values()) <= 0.04
-        )
-        debug["classified_full_frame"] = classified_full_frame
-        if classified_full_frame:
-            debug["full_frame_document_detected"] = True
-            debug["reason"] = "multi_region_projected_boundary_matches_image_frame"
-            debug["fallback_reason"] = None
-            debug["crop_required"] = False
-            debug["crop_skip_reason"] = "multi_region_projected_boundary_near_image_frame"
-            return debug
-        debug["crop_required"] = True
-        crop_debug = {
-            "passed": True,
-            "reason": "layout_correspondence_crop_applied",
-            "method": "layout_correspondence_layout_bounds",
-            "original_box": correspondence_crop_debug.get("projected_document_box"),
-            "final_box": correspondence_crop_debug.get("final_crop_box"),
-            "document_layout_bounds": correspondence_crop_debug.get("document_layout_bounds"),
-            "expanded_layout_bounds": correspondence_crop_debug.get("expanded_layout_bounds"),
-            "matched_region_count": correspondence_crop_debug.get("matched_region_count"),
-            "projected_box_before_margin": correspondence_crop_debug.get("projected_document_box"),
-            "projected_box_after_margin": correspondence_crop_debug.get("final_crop_box"),
-            "coverage": correspondence_crop_debug.get("coverage"),
-            "confidence": correspondence_crop_debug.get("confidence"),
-            "safety_margin": correspondence_crop_debug.get("safety_margin"),
-            "old_layout_crop": correspondence_crop_debug.get("old_layout_crop"),
-        }
+    debug.update(full_frame_debug)
+    if full_frame_debug.get("full_frame_document_detected"):
+        debug["reason"] = "full_frame_document_no_crop_required"
         debug["fallback_reason"] = None
-    else:
-        debug["layout_correspondence_fallback_reason"] = correspondence_crop_debug.get("fallback_reason")
-        crop_debug = None
-        full_frame_debug = _detect_full_frame_document(
-            query_bounds,
-            template_bounds,
-            query_signature,
-            template_signature,
-            query_raw_bounds=query_raw_bounds if isinstance(query_raw_bounds, dict) else None,
-            template_raw_bounds=template_raw_bounds if isinstance(template_raw_bounds, dict) else None,
-        )
-        debug.update(full_frame_debug)
-        if full_frame_debug.get("full_frame_document_detected"):
+        return debug
+
+    old_crop_debug = _old_layout_crop_box_from_bounds(query_bounds, image_width, image_height)
+    debug["old_layout_crop_fallback"] = old_crop_debug
+    if not old_crop_debug.get("passed"):
+        debug["reason"] = old_crop_debug.get("reason") or "old_layout_crop_unavailable"
+        debug["fallback_reason"] = debug["reason"]
+        return debug
+    final_box = old_crop_debug.get("final_box")
+    expanded_layout_bounds = None
+    if isinstance(final_box, list) and len(final_box) == 4:
+        expanded_layout_bounds = {
+            "left": final_box[0] / max(1, image_width),
+            "top": final_box[1] / max(1, image_height),
+            "right": final_box[2] / max(1, image_width),
+            "bottom": final_box[3] / max(1, image_height),
+            "width": (final_box[2] - final_box[0]) / max(1, image_width),
+            "height": (final_box[3] - final_box[1]) / max(1, image_height),
+        }
+        frame_coverage = [
+            round(float(expanded_layout_bounds["width"]), 6),
+            round(float(expanded_layout_bounds["height"]), 6),
+        ]
+        frame_edge_inset = {
+            "left": round(float(expanded_layout_bounds["left"]), 6),
+            "top": round(float(expanded_layout_bounds["top"]), 6),
+            "right": round(float(1.0 - expanded_layout_bounds["right"]), 6),
+            "bottom": round(float(1.0 - expanded_layout_bounds["bottom"]), 6),
+        }
+        debug["projected_frame_coverage"] = frame_coverage
+        debug["projected_edge_inset"] = frame_edge_inset
+        if frame_coverage[0] >= 0.94 and frame_coverage[1] >= 0.94 and max(float(value) for value in frame_edge_inset.values()) <= 0.04:
+            debug["full_frame_document_detected"] = True
+            debug["crop_required"] = False
+            debug["crop_skip_reason"] = "expanded_layout_bounds_near_image_frame"
             debug["reason"] = "full_frame_document_no_crop_required"
             debug["fallback_reason"] = None
             return debug
-    x_axis = _solve_reference_crop_axis(query_bounds["left"], query_bounds["right"], template_bounds["left"], template_bounds["right"], image_width)
-    y_axis = _solve_reference_crop_axis(query_bounds["top"], query_bounds["bottom"], template_bounds["top"], template_bounds["bottom"], image_height)
-    if crop_debug is None and (x_axis is None or y_axis is None):
-        debug["reason"] = "reference_crop_axis_unavailable"
-        debug["fallback_reason"] = "reference_crop_axis_unavailable"
-        return debug
-    if crop_debug is None:
-        projected_crop_debug = _projected_reference_crop_box(
-            x_axis[0],
-            y_axis[0],
-            x_axis[1],
-            y_axis[1],
-            image_width,
-            image_height,
-            query_bounds,
-            template_bounds,
-            query_raw_bounds=query_raw_bounds if isinstance(query_raw_bounds, dict) else None,
-            template_raw_bounds=template_raw_bounds if isinstance(template_raw_bounds, dict) else None,
-        )
-        debug["projected_document_box"] = projected_crop_debug
-        debug["base_margin"] = projected_crop_debug.get("base_margin")
-        debug["base_safety_margin"] = projected_crop_debug.get("base_safety_margin")
-        debug["edge_margin_contribution"] = projected_crop_debug.get("edge_margin_contribution")
-        debug["robust_shrink_margin_contribution"] = projected_crop_debug.get("robust_shrink_margin_contribution")
-        debug["confidence_margin_contribution"] = projected_crop_debug.get("confidence_margin_contribution")
-        debug["adaptive_safety_margin"] = projected_crop_debug.get("adaptive_safety_margin")
-        debug["final_adaptive_margin"] = projected_crop_debug.get("final_adaptive_margin")
-        debug["edge_uncertainty"] = projected_crop_debug.get("edge_uncertainty")
-        debug["robust_shrink_uncertainty"] = projected_crop_debug.get("robust_shrink_uncertainty")
-        debug["projection_confidence"] = projected_crop_debug.get("projection_confidence")
-        debug["projected_box_before_margin"] = projected_crop_debug.get("projected_box_before_margin")
-        debug["safety_margin"] = projected_crop_debug.get("safety_margin")
-        debug["projected_box_after_margin"] = projected_crop_debug.get("projected_box_after_margin")
-        debug["projected_frame_coverage"] = projected_crop_debug.get("coverage")
-        if projected_crop_debug.get("passed"):
-            crop_debug = projected_crop_debug
-            debug["fallback_reason"] = None
-        else:
-            debug["fallback_reason"] = projected_crop_debug.get("reason") or "projected_document_box_invalid"
-            if debug["fallback_reason"] == "projected_document_box_too_large":
-                debug["reason"] = "projected_document_box_too_large_no_crop_required"
-                debug["crop_required"] = False
-                debug["crop_skip_reason"] = "projected_document_box_too_large"
-                return debug
-            crop_debug = _clamp_reference_crop_box(x_axis[0], y_axis[0], x_axis[1], y_axis[1], image_width, image_height)
-            crop_debug["fallback_from_projected"] = True
-            crop_debug["fallback_reason"] = debug["fallback_reason"]
+    crop_debug = {
+        "passed": True,
+        "reason": "layout_union_crop_applied",
+        "method": "generic_layout_union_bounds_crop",
+        "final_box": old_crop_debug.get("final_box"),
+        "document_layout_bounds": query_bounds,
+        "expanded_layout_bounds": expanded_layout_bounds,
+        "matched_region_count": query_bounds.get("region_count"),
+        "safety_margin": old_crop_debug.get("padding"),
+        "old_layout_crop": old_crop_debug,
+    }
+    debug["crop_required"] = True
+    debug["fallback_reason"] = None
     debug["crop"] = crop_debug
     if not crop_debug.get("passed"):
         debug["reason"] = str(crop_debug.get("reason") or "reference_crop_invalid")

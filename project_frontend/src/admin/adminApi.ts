@@ -721,6 +721,7 @@ export interface PrepublishCandidate {
   fieldCount?: number | null;
   matchedLayoutReference?: Record<string, unknown> | null;
   layoutReferenceCount?: number | null;
+  metadata?: Record<string, unknown>;
   verification?: Record<string, unknown>;
   verificationDetails?: Record<string, unknown>[];
 }
@@ -2187,6 +2188,7 @@ function mapPrepublishCandidate(candidate: Record<string, unknown>): PrepublishC
   fieldCount: typeof candidate.field_count === "number" ? candidate.field_count : null,
   matchedLayoutReference: (candidate.matched_layout_reference as Record<string, unknown> | null | undefined) ?? null,
   layoutReferenceCount: typeof candidate.layout_reference_count === "number" ? candidate.layout_reference_count : null,
+  metadata: (candidate.metadata as Record<string, unknown> | undefined) || {},
   verification: (candidate.verification as Record<string, unknown> | undefined) || {},
   verificationDetails: Array.isArray(candidate.verification_details)
     ? (candidate.verification_details as Record<string, unknown>[])
