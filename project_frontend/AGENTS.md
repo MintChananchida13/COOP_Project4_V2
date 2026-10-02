@@ -13,8 +13,8 @@ This version may have breaking changes in APIs, conventions, and file structure.
 - Preserve user processing behavior when editing UI. Upload, detect, ROI, OCR, Ground Truth, export, and Processing Logs must remain compatible.
 - System Maintenance is backend source of truth. UI may display state and reset workspace, but processing enforcement must remain backend-side.
 - Verification labels shown to users:
-  - `standard` -> `การตรวจสอบแบบถ่วงน้ำหนักคะแนน`
-  - `strict` -> `การตรวจสอบแบบลำดับเงื่อนไข`
+  - `standard` -> `แบบมาตรฐาน (standard)`
+  - `strict` -> `แบบเข้มงวด (strict)`
 - Internal API values remain `standard` and `strict`.
 - Do not reintroduce frontend mocks for Processing Logs or Admin Dashboard data.
 - When rendering authenticated images, use authenticated fetch to blob/object URL and clean up object URLs.

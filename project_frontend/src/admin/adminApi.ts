@@ -20,8 +20,8 @@ const sleep = (milliseconds: number) => new Promise((resolve) => globalThis.setT
 
 const verificationStrategyDisplayLabel = (value: unknown) => {
   const normalized = String(value || "").trim().toLowerCase();
-  if (normalized === "strict") return "การตรวจสอบแบบลำดับเงื่อนไข";
-  if (normalized === "standard") return "การตรวจสอบแบบถ่วงน้ำหนักคะแนน";
+  if (normalized === "strict") return "แบบเข้มงวด (strict)";
+  if (normalized === "standard") return "แบบมาตรฐาน (standard)";
   return String(value || "-");
 };
 

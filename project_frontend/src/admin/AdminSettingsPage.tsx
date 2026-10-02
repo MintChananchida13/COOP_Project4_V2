@@ -22,18 +22,18 @@ import { InlineState, LoadingState } from "../shared/ui";
 const verificationStrategyOptions: { value: VerificationStrategy; label: string; description: string }[] = [
   {
     value: "standard",
-    label: "การตรวจสอบแบบถ่วงน้ำหนักคะแนน",
+    label: "แบบมาตรฐาน (standard)",
     description: "ใช้คะแนนรวมจาก Layout, Text Anchor และ Image Anchor ตามค่าน้ำหนักของ Template แล้วเทียบกับเกณฑ์ความมั่นใจ โดย Anchor ที่บังคับต้องผ่านเสมอ",
   },
   {
     value: "strict",
-    label: "การตรวจสอบแบบลำดับเงื่อนไข",
+    label: "แบบเข้มงวด (strict)",
     description: "ต้องผ่านเกณฑ์ Layout ก่อน จากนั้นตรวจ Text Anchor และ Image Anchor ทีละรายการ หาก Anchor ใดไม่ผ่าน ระบบจะไม่เลือก Template นั้นโดยไม่ใช้คะแนนรวมเป็นตัวตัดสินสุดท้าย",
   },
 ];
 
 const verificationStrategyLabel = (strategy: VerificationStrategy) =>
-  strategy === "strict" ? "การตรวจสอบแบบลำดับเงื่อนไข" : "การตรวจสอบแบบถ่วงน้ำหนักคะแนน";
+  strategy === "strict" ? "แบบเข้มงวด (strict)" : "แบบมาตรฐาน (standard)";
 
 const emptyModelSettings: OcrModelSettings = {
   active: { text_detection: "", text_recognition: "" },

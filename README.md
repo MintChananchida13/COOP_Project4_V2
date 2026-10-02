@@ -123,8 +123,8 @@ Use mainPageAutoRoiPages / Auto ROI
 
 Verification strategy labels in UI:
 
-- `standard` = `การตรวจสอบแบบถ่วงน้ำหนักคะแนน`
-- `strict` = `การตรวจสอบแบบลำดับเงื่อนไข`
+- `standard` = `แบบมาตรฐาน (standard)`
+- `strict` = `แบบเข้มงวด (strict)`
 
 Internal values remain `standard` and `strict`.
 

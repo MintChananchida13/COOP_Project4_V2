@@ -124,11 +124,11 @@ interface TemplateDetectionNotice {
 const isStrictVerificationStrategy = (value?: string | null) => value === "strict";
 
 const verificationStrategyLabel = (value?: string | null) =>
-  isStrictVerificationStrategy(value) ? "การตรวจสอบแบบลำดับเงื่อนไข" : "การตรวจสอบแบบถ่วงน้ำหนักคะแนน";
+  isStrictVerificationStrategy(value) ? "แบบเข้มงวด (strict)" : "แบบมาตรฐาน (standard)";
 
 const detectionFailureDetail = (detection: DetectionDevResult) =>
   isStrictVerificationStrategy(detection.bestCandidate?.verificationStrategy || (detection.debug?.verification_strategy as string | null | undefined))
-    ? "ไม่ผ่านการตรวจสอบแบบลำดับเงื่อนไข"
+    ? "ไม่ผ่านแบบเข้มงวด (strict)"
     : "ไม่โหลด ROI จาก Template ใด ๆ";
 
 const detectionVerificationStrategy = (detection: DetectionDevResult) =>

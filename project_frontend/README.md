@@ -44,8 +44,8 @@ http://localhost:3000
 
 Verification labels:
 
-- `standard` displays as `การตรวจสอบแบบถ่วงน้ำหนักคะแนน`
-- `strict` displays as `การตรวจสอบแบบลำดับเงื่อนไข`
+- `standard` displays as `แบบมาตรฐาน (standard)`
+- `strict` displays as `แบบเข้มงวด (strict)`
 
 System Maintenance:
 

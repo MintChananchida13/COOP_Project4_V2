@@ -143,8 +143,8 @@ Internal values:
 
 User-facing labels:
 
-- `standard` -> `การตรวจสอบแบบถ่วงน้ำหนักคะแนน`
-- `strict` -> `การตรวจสอบแบบลำดับเงื่อนไข`
+- `standard` -> `แบบมาตรฐาน (standard)`
+- `strict` -> `แบบเข้มงวด (strict)`
 
 Do not rename internal values without migration and API changes.
 
