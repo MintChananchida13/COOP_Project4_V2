@@ -5323,6 +5323,34 @@ class AdminTemplateService:
             differences,
         )
 
+    def _update_extraction_field_from_pending_payload(self, conn: Any, template_id: str, field_id: str, payload: TemplateFieldCreate) -> None:
+        conn.execute(
+            """
+            UPDATE extraction_fields
+            SET template_page_id = ?, field_name = ?, display_label = ?, data_type = ?, extraction_method = ?,
+                roi_x_ratio = ?, roi_y_ratio = ?, roi_width_ratio = ?, roi_height_ratio = ?, roi_points_json = ?,
+                roi_mode = ?, expected_content = ?, required = FALSE, sort_order = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)
+            """,
+            (
+                payload.template_page_id,
+                payload.field_name,
+                payload.display_label,
+                _normalize_data_type(payload.data_type),
+                _normalize_extraction_method(payload.extraction_method),
+                payload.roi.x_ratio,
+                payload.roi.y_ratio,
+                payload.roi.width_ratio,
+                payload.roi.height_ratio,
+                _roi_points_json_from_payload(payload.roi),
+                _normalize_roi_mode(payload.roi_mode),
+                _normalize_expected_content(payload.expected_content),
+                payload.sort_order,
+                field_id,
+                template_id,
+            ),
+        )
+
     @staticmethod
     def _coalesce_pending_template_field_ops(ops: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         coalesced: List[Dict[str, Any]] = []
@@ -5417,17 +5445,13 @@ class AdminTemplateService:
                         (next_field_id, template_id),
                     ).fetchone() if not payload.use_for_verification else None
                     if existing_by_id is not None:
-                        if self._pending_extraction_field_matches_payload(existing_by_id, payload):
-                            continue
-                        self._log_pending_field_mismatch(template_id, existing_by_id, payload)
-                        self._raise_pending_field_conflict(template_id, payload, existing_by_id["id"])
+                        self._update_extraction_field_from_pending_payload(conn, template_id, existing_by_id["id"], payload)
+                        continue
                     if not payload.use_for_verification:
                         existing = self._pending_extraction_field_by_page_name(conn, template_id, payload)
                         if existing is not None:
-                            if self._pending_extraction_field_matches_payload(existing, payload):
-                                continue
-                            self._log_pending_field_mismatch(template_id, existing, payload)
-                            self._raise_pending_field_conflict(template_id, payload, existing["id"])
+                            self._update_extraction_field_from_pending_payload(conn, template_id, existing["id"], payload)
+                            continue
                 else:
                     continue
                 if payload.use_for_verification:
