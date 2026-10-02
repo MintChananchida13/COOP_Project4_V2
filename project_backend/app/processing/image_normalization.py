@@ -43,7 +43,7 @@ class ImageNormalizationService:
 
         original_height, original_width = image.shape[:2]
         bypass_requested = os.getenv("IMAGE_NORMALIZATION_BYPASS", "").strip().lower() in {"1", "true", "yes"}
-        crop_disabled = os.getenv("IMAGE_NORMALIZATION_PRE_TEMPLATE_CROP_DISABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+        crop_enabled = os.getenv("IMAGE_NORMALIZATION_PRE_TEMPLATE_CROP_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
         if bypass_requested:
             normalized = image.copy()
             debug = {
@@ -69,7 +69,7 @@ class ImageNormalizationService:
                     "height": original_height,
                 },
             }
-        elif not crop_disabled:
+        elif crop_enabled:
             layout_normalized, layout_debug = self._layout_assisted_crop(
                 image,
                 "pre_template_perspective_crop_disabled",
