@@ -776,12 +776,19 @@ def _signature_metrics_for_regions(regions: List[Dict[str, Any]]) -> Dict[str, A
     }
 
 
-def _retrieval_precrop_signature(signature: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:
+def _retrieval_precrop_signature(
+    signature: Dict[str, Any],
+    image_path: Optional[str] = None,
+    output_dir: Optional[Path] = None,
+    page_number: int = 1,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
     debug: Dict[str, Any] = {
         "retrieval_precrop_attempted": True,
         "retrieval_precrop_applied": False,
         "retrieval_precrop_box": None,
         "retrieval_precrop_coverage": None,
+        "retrieval_precrop_image_path": None,
+        "retrieval_precrop_preview_url": None,
         "retrieval_source": "original_layout_signature",
         "reason": None,
     }
@@ -882,10 +889,24 @@ def _retrieval_precrop_signature(signature: Dict[str, Any]) -> tuple[Dict[str, A
             "retrieval_precrop_applied": True,
             "retrieval_precrop_box": {key: round(float(value), 6) for key, value in crop.items()},
             "retrieval_precrop_coverage": round(float(crop["width"] * crop["height"]), 6),
-            "retrieval_source": "retrieval_precrop_signature",
+            "retrieval_source": "retrieval_precrop_image_signature",
             "reason": "background_content_bounds_rebased_for_retrieval",
         }
     )
+    if image_path and output_dir is not None:
+        image = cv2.imread(str(image_path))
+        if image is not None:
+            image_height_px, image_width_px = image.shape[:2]
+            left_px = max(0, int(round(crop["left"] * image_width_px)))
+            top_px = max(0, int(round(crop["top"] * image_height_px)))
+            right_px = min(image_width_px, int(round(crop["right"] * image_width_px)))
+            bottom_px = min(image_height_px, int(round(crop["bottom"] * image_height_px)))
+            if right_px > left_px and bottom_px > top_px:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                output_path = output_dir / f"page_{page_number}_retrieval_crop.png"
+                if cv2.imwrite(str(output_path), image[top_px:bottom_px, left_px:right_px].copy()):
+                    debug["retrieval_precrop_image_path"] = str(output_path)
+                    debug["retrieval_precrop_preview_url"] = _detection_preview_url(str(output_path))
     return next_signature, debug
 
 
@@ -3412,7 +3433,14 @@ def _detect_page(
     processing_image_path = str(page_info.get("original_path") or normalized_image_path)
     matching_image_path = str(page_info.get("matching_path") or normalized_image_path)
     query_signature = _layout_signature_for_image_path(matching_image_path, timing=timing)
-    retrieval_signature, retrieval_precrop_debug = _retrieval_precrop_signature(query_signature)
+    matching_path_obj = Path(matching_image_path)
+    retrieval_output_root = matching_path_obj.parent.parent if matching_path_obj.parent.name == "normalized" else matching_path_obj.parent
+    retrieval_signature, retrieval_precrop_debug = _retrieval_precrop_signature(
+        query_signature,
+        image_path=matching_image_path,
+        output_dir=retrieval_output_root / "retrieval_crop",
+        page_number=page_index,
+    )
     step_started = time.perf_counter()
     raw_results = search_layout_candidates(
         retrieval_signature,
@@ -3598,6 +3626,8 @@ def _detect_page(
             "retrieval_precrop_applied": retrieval_precrop_debug.get("retrieval_precrop_applied"),
             "retrieval_precrop_box": retrieval_precrop_debug.get("retrieval_precrop_box"),
             "retrieval_precrop_coverage": retrieval_precrop_debug.get("retrieval_precrop_coverage"),
+            "retrieval_precrop_image_path": retrieval_precrop_debug.get("retrieval_precrop_image_path"),
+            "retrieval_precrop_preview_url": retrieval_precrop_debug.get("retrieval_precrop_preview_url"),
             "retrieval_source": retrieval_precrop_debug.get("retrieval_source"),
             "query_version": query_signature.get("version"),
             "query_model_name": query_signature.get("model"),
