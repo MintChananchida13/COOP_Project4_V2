@@ -19,16 +19,16 @@ class ImageNormalizationService:
     MIN_IMAGE_STDDEV = 3.0
     LAYOUT_CROP_MIN_REGIONS = 3
     LAYOUT_CROP_MIN_CONTENT_AREA_RATIO = 0.025
-    LAYOUT_CROP_PADDING_X_RATIO = 0.24
-    LAYOUT_CROP_PADDING_TOP_RATIO = 0.32
-    LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.32
+    LAYOUT_CROP_PADDING_X_RATIO = 0.40
+    LAYOUT_CROP_PADDING_TOP_RATIO = 0.48
+    LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.48
     LAYOUT_DESKEW_MAX_ANGLE_DEG = 2.5
     LAYOUT_DESKEW_MIN_ANGLE_DEG = 0.25
     LAYOUT_DESKEW_MIN_RECTANGULARITY = 0.70
-    LAYOUT_CROP_MAX_INSET_X_RATIO = 0.10
-    LAYOUT_CROP_MAX_INSET_Y_RATIO = 0.10
-    LAYOUT_CROP_MIN_WIDTH_RATIO = 0.80
-    LAYOUT_CROP_MIN_HEIGHT_RATIO = 0.80
+    LAYOUT_CROP_MAX_INSET_X_RATIO = 0.05
+    LAYOUT_CROP_MAX_INSET_Y_RATIO = 0.05
+    LAYOUT_CROP_MIN_WIDTH_RATIO = 0.90
+    LAYOUT_CROP_MIN_HEIGHT_RATIO = 0.90
 
     def normalize_document(self, image_path: str, output_path: Optional[str] = None) -> Dict[str, Any]:
         source_path = Path(image_path)
@@ -69,21 +69,36 @@ class ImageNormalizationService:
                 },
             }
         else:
-            normalized, debug = self._perspective_correct(image)
-            if debug.get("normalization_status") == "fallback":
-                layout_normalized, layout_debug = self._layout_assisted_crop(image, debug.get("fallback_reason"))
-                if layout_debug.get("normalization_status") == "layout_cropped":
-                    normalized = layout_normalized
-                    debug = layout_debug
-                else:
-                    normalized = image.copy()
-                    debug.update(
-                        {
-                            "layout_crop_attempted": True,
-                            "layout_crop": layout_debug.get("layout_crop"),
-                            "layout_crop_fallback_reason": layout_debug.get("fallback_reason"),
-                        }
-                    )
+            layout_normalized, layout_debug = self._layout_assisted_crop(
+                image,
+                "pre_template_perspective_crop_disabled",
+                allow_deskew=False,
+                success_status="pre_template_layout_loose_crop",
+            )
+            if layout_debug.get("normalization_status") in {"layout_cropped", "pre_template_layout_loose_crop"}:
+                normalized = layout_normalized
+                debug = layout_debug
+            else:
+                normalized = image.copy()
+                debug = {
+                    **layout_debug,
+                    "document_detected": False,
+                    "crop_applied": False,
+                    "perspective_applied": False,
+                    "normalization_status": "fallback",
+                    "validation_passed": True,
+                    "fallback_used": True,
+                    "fallback_reason": layout_debug.get("fallback_reason") or "layout_crop_unavailable",
+                    "layout_crop_attempted": True,
+                    "layout_crop": layout_debug.get("layout_crop"),
+                    "layout_crop_fallback_reason": layout_debug.get("fallback_reason"),
+                    "transform_validation": {
+                        "passed": True,
+                        "reason": "layout_crop_fallback_to_original",
+                        "width": original_width,
+                        "height": original_height,
+                    },
+                }
 
         normalized = self._resize_longest_side(normalized, self.LONGEST_SIDE)
         normalized_height, normalized_width = normalized.shape[:2]
@@ -483,7 +498,14 @@ class ImageNormalizationService:
 
         return validation
 
-    def _layout_assisted_crop(self, image: np.ndarray, previous_fallback_reason: Optional[str] = None) -> tuple[np.ndarray, Dict[str, Any]]:
+    def _layout_assisted_crop(
+        self,
+        image: np.ndarray,
+        previous_fallback_reason: Optional[str] = None,
+        *,
+        allow_deskew: bool = True,
+        success_status: str = "layout_cropped",
+    ) -> tuple[np.ndarray, Dict[str, Any]]:
         height, width = image.shape[:2]
         debug: Dict[str, Any] = {
             "document_detected": False,
@@ -538,10 +560,18 @@ class ImageNormalizationService:
 
         deskew_image = image
         deskew_boxes = boxes
-        deskew_debug = self._layout_deskew_candidate(image, boxes)
-        if deskew_debug.get("applied"):
-            deskew_image = deskew_debug["image"]
-            deskew_boxes = deskew_debug["boxes"]
+        if allow_deskew:
+            deskew_debug = self._layout_deskew_candidate(image, boxes)
+            if deskew_debug.get("applied"):
+                deskew_image = deskew_debug["image"]
+                deskew_boxes = deskew_debug["boxes"]
+        else:
+            deskew_debug = {
+                "applied": False,
+                "reason": "disabled_for_pre_template_loose_crop",
+                "angle_deg": 0.0,
+                "rectangularity": None,
+            }
 
         left = min(box[0] for box in deskew_boxes)
         top = min(box[1] for box in deskew_boxes)
@@ -627,7 +657,7 @@ class ImageNormalizationService:
                 "document_detected": True,
                 "crop_applied": True,
                 "perspective_applied": False,
-                "normalization_status": "layout_cropped",
+                "normalization_status": success_status,
                 "validation_passed": True,
                 "fallback_used": False,
                 "fallback_reason": None,
