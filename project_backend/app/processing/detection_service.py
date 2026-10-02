@@ -738,6 +738,157 @@ def _signature_robust_content_bounds(signature: Optional[Dict[str, Any]]) -> Dic
     return result
 
 
+def _signature_metrics_for_regions(regions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    labels = ("text", "table", "image")
+    grid_size = 4
+    label_counts = {label: 0 for label in labels}
+    area_by_label = {label: 0.0 for label in labels}
+    grid_counts = {label: [0 for _ in range(grid_size * grid_size)] for label in labels}
+    grid_area = {label: [0.0 for _ in range(grid_size * grid_size)] for label in labels}
+    for region in regions:
+        label = str(region.get("label") or "text")
+        if label not in label_counts:
+            label = "text"
+        label_counts[label] += 1
+        area = max(0.0, min(1.0, float(region.get("area_ratio") or 0.0)))
+        area_by_label[label] += area
+        center = region.get("center") if isinstance(region.get("center"), list) else [0.0, 0.0]
+        try:
+            cx = max(0.0, min(1.0, float(center[0])))
+            cy = max(0.0, min(1.0, float(center[1])))
+        except (TypeError, ValueError, IndexError):
+            cx = 0.0
+            cy = 0.0
+        gx = min(grid_size - 1, max(0, int(cx * grid_size)))
+        gy = min(grid_size - 1, max(0, int(cy * grid_size)))
+        cell = gy * grid_size + gx
+        grid_counts[label][cell] += 1
+        grid_area[label][cell] += area
+    return {
+        "region_count": len(regions),
+        "label_counts": label_counts,
+        "area_by_label": {label: round(max(0.0, min(1.0, value)), 6) for label, value in area_by_label.items()},
+        "grid_counts": grid_counts,
+        "grid_area": {
+            label: [round(max(0.0, min(1.0, value)), 6) for value in values]
+            for label, values in grid_area.items()
+        },
+    }
+
+
+def _retrieval_precrop_signature(signature: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    debug: Dict[str, Any] = {
+        "retrieval_precrop_attempted": True,
+        "retrieval_precrop_applied": False,
+        "retrieval_precrop_box": None,
+        "retrieval_precrop_coverage": None,
+        "retrieval_source": "original_layout_signature",
+        "reason": None,
+    }
+    if not isinstance(signature, dict):
+        debug["reason"] = "invalid_signature"
+        return signature, debug
+    robust_debug = _signature_robust_content_bounds(signature)
+    bounds = robust_debug.get("robust_content_bounds") or robust_debug.get("raw_content_bounds")
+    if not isinstance(bounds, dict):
+        debug["reason"] = "missing_content_bounds"
+        return signature, debug
+    width = float(bounds.get("width") or 0.0)
+    height = float(bounds.get("height") or 0.0)
+    if width <= 0.0 or height <= 0.0:
+        debug["reason"] = "invalid_content_bounds"
+        return signature, debug
+    coverage = round(float(width * height), 6)
+    edge_inset = max(
+        0.0,
+        float(bounds.get("left") or 0.0),
+        float(bounds.get("top") or 0.0),
+        1.0 - float(bounds.get("right") or 1.0),
+        1.0 - float(bounds.get("bottom") or 1.0),
+    )
+    debug["retrieval_precrop_coverage"] = coverage
+    full_frame_like = width >= 0.92 and height >= 0.92 and edge_inset <= 0.04
+    if full_frame_like:
+        debug["reason"] = "content_already_full_frame"
+        return signature, debug
+    if coverage >= 0.88 and width >= 0.90 and height >= 0.90:
+        debug["reason"] = "content_coverage_too_large_for_precrop"
+        return signature, debug
+    margin_x = max(0.06, width * 0.12)
+    margin_y = max(0.06, height * 0.12)
+    crop = {
+        "left": max(0.0, float(bounds.get("left") or 0.0) - margin_x),
+        "top": max(0.0, float(bounds.get("top") or 0.0) - margin_y),
+        "right": min(1.0, float(bounds.get("right") or 1.0) + margin_x),
+        "bottom": min(1.0, float(bounds.get("bottom") or 1.0) + margin_y),
+    }
+    crop["width"] = crop["right"] - crop["left"]
+    crop["height"] = crop["bottom"] - crop["top"]
+    if crop["width"] <= 0.05 or crop["height"] <= 0.05:
+        debug["reason"] = "precrop_box_too_small"
+        return signature, debug
+
+    rebased_regions: List[Dict[str, Any]] = []
+    for region in signature.get("regions", []) if isinstance(signature.get("regions"), list) else []:
+        if not isinstance(region, dict):
+            continue
+        bbox = _region_bbox(region, "source_bbox")
+        if not bbox:
+            continue
+        left = max(0.0, min(1.0, (bbox["left"] - crop["left"]) / crop["width"]))
+        top = max(0.0, min(1.0, (bbox["top"] - crop["top"]) / crop["height"]))
+        right = max(0.0, min(1.0, (bbox["right"] - crop["left"]) / crop["width"]))
+        bottom = max(0.0, min(1.0, (bbox["bottom"] - crop["top"]) / crop["height"]))
+        if right <= left or bottom <= top:
+            continue
+        next_bbox = {
+            "x_ratio": round(left, 6),
+            "y_ratio": round(top, 6),
+            "width_ratio": round(right - left, 6),
+            "height_ratio": round(bottom - top, 6),
+        }
+        rebased_regions.append(
+            {
+                **region,
+                "bbox": next_bbox,
+                "source_bbox": region.get("source_bbox") if isinstance(region.get("source_bbox"), dict) else region.get("bbox"),
+                "center": [round(left + (right - left) / 2.0, 6), round(top + (bottom - top) / 2.0, 6)],
+                "area_ratio": round(max(0.0, min(1.0, (right - left) * (bottom - top))), 6),
+            }
+        )
+    if len(rebased_regions) < 2:
+        debug["reason"] = "insufficient_precrop_regions"
+        return signature, debug
+    image_width = max(float(signature.get("image_width") or 1.0), 1.0)
+    image_height = max(float(signature.get("image_height") or 1.0), 1.0)
+    metrics = _signature_metrics_for_regions(rebased_regions)
+    next_signature = {
+        **signature,
+        **metrics,
+        "page_aspect_ratio": round((image_width * crop["width"]) / max(1.0, image_height * crop["height"]), 6),
+        "image_width": int(round(image_width * crop["width"])),
+        "image_height": int(round(image_height * crop["height"])),
+        "regions": rebased_regions,
+        "layout_space_normalization": {
+            "applied": True,
+            "source": "retrieval_precrop_content_bounds",
+            "bounds": {key: round(float(value), 6) for key, value in crop.items()},
+            "original_image_width": int(image_width),
+            "original_image_height": int(image_height),
+        },
+    }
+    debug.update(
+        {
+            "retrieval_precrop_applied": True,
+            "retrieval_precrop_box": {key: round(float(value), 6) for key, value in crop.items()},
+            "retrieval_precrop_coverage": round(float(crop["width"] * crop["height"]), 6),
+            "retrieval_source": "retrieval_precrop_signature",
+            "reason": "background_content_bounds_rebased_for_retrieval",
+        }
+    )
+    return next_signature, debug
+
+
 def _solve_reference_crop_axis(
     query_min: float,
     query_max: float,
@@ -3261,9 +3412,10 @@ def _detect_page(
     processing_image_path = str(page_info.get("original_path") or normalized_image_path)
     matching_image_path = str(page_info.get("matching_path") or normalized_image_path)
     query_signature = _layout_signature_for_image_path(matching_image_path, timing=timing)
+    retrieval_signature, retrieval_precrop_debug = _retrieval_precrop_signature(query_signature)
     step_started = time.perf_counter()
     raw_results = search_layout_candidates(
-        query_signature,
+        retrieval_signature,
         page_number=page_index,
         limit=retrieval_limit,
         include_template_id=include_template_id,
@@ -3436,7 +3588,17 @@ def _detect_page(
             "normalized_image_preview_url": _detection_preview_url(normalized_image_path),
             "matching_image_preview_url": _detection_preview_url(matching_image_path),
             "query_engine": "layout_signature",
-            "query_signature_source": "original_layout_space" if matching_image_path != normalized_image_path else "normalized_image",
+            "query_signature_source": (
+                "retrieval_precrop_layout_space"
+                if retrieval_precrop_debug.get("retrieval_precrop_applied")
+                else "original_layout_space" if matching_image_path != normalized_image_path else "normalized_image"
+            ),
+            "retrieval_precrop": retrieval_precrop_debug,
+            "retrieval_precrop_attempted": retrieval_precrop_debug.get("retrieval_precrop_attempted"),
+            "retrieval_precrop_applied": retrieval_precrop_debug.get("retrieval_precrop_applied"),
+            "retrieval_precrop_box": retrieval_precrop_debug.get("retrieval_precrop_box"),
+            "retrieval_precrop_coverage": retrieval_precrop_debug.get("retrieval_precrop_coverage"),
+            "retrieval_source": retrieval_precrop_debug.get("retrieval_source"),
             "query_version": query_signature.get("version"),
             "query_model_name": query_signature.get("model"),
             "query_vector_dimension": 0,
