@@ -69,32 +69,21 @@ class ImageNormalizationService:
                 },
             }
         else:
-            normalized = image.copy()
-            debug = {
-                "document_detected": False,
-                "crop_applied": False,
-                "perspective_applied": False,
-                "normalization_status": "uncropped",
-                "validation_passed": True,
-                "fallback_used": False,
-                "fallback_reason": None,
-                "original_size": [original_width, original_height],
-                "detected_contour_area": None,
-                "contour_area_ratio": None,
-                "contour_source": None,
-                "contour_score": None,
-                "contour_aspect_ratio": None,
-                "contour_center_score": None,
-                "detected_points": None,
-                "layout_crop_attempted": False,
-                "layout_crop": None,
-                "transform_validation": {
-                    "passed": True,
-                    "reason": "pre_template_normalization_uncropped",
-                    "width": original_width,
-                    "height": original_height,
-                },
-            }
+            normalized, debug = self._perspective_correct(image)
+            if debug.get("normalization_status") == "fallback":
+                layout_normalized, layout_debug = self._layout_assisted_crop(image, debug.get("fallback_reason"))
+                if layout_debug.get("normalization_status") == "layout_cropped":
+                    normalized = layout_normalized
+                    debug = layout_debug
+                else:
+                    normalized = image.copy()
+                    debug.update(
+                        {
+                            "layout_crop_attempted": True,
+                            "layout_crop": layout_debug.get("layout_crop"),
+                            "layout_crop_fallback_reason": layout_debug.get("fallback_reason"),
+                        }
+                    )
 
         normalized = self._resize_longest_side(normalized, self.LONGEST_SIDE)
         normalized_height, normalized_width = normalized.shape[:2]
