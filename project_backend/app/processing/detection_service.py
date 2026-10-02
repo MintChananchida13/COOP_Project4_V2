@@ -3063,6 +3063,7 @@ def _align_candidate_page(
     query_signature: Optional[Dict[str, Any]] = None,
     template_signature: Optional[Dict[str, Any]] = None,
     template_image_source: Optional[str] = None,
+    force_alignment: bool = False,
 ) -> Dict[str, Any]:
     align_candidate_started = time.perf_counter()
     alignment_timing: Dict[str, Any] = {}
@@ -3102,6 +3103,7 @@ def _align_candidate_page(
             str(output_path),
             query_signature=query_signature,
             template_signature=template_signature,
+            force_alignment=force_alignment,
         )
         alignment_timing["align_to_template_ms"] = _ms(time.perf_counter() - align_started)
         post_started = time.perf_counter()
@@ -3110,6 +3112,7 @@ def _align_candidate_page(
         layout_alignment["alignment_match_image_preview_url"] = _detection_preview_url(layout_alignment.get("alignment_match_image_path"))
         layout_debug = layout_alignment.get("alignment_debug") or {}
         layout_debug["layout_alignment_executed"] = layout_status != "skipped"
+        layout_debug["force_alignment"] = bool(force_alignment)
         layout_debug["orb_executed"] = False
         layout_debug["verification_source_used"] = "aligned" if layout_status == "aligned" else "normalized"
         alignment_timing["post_layout_alignment_ms"] = _ms(time.perf_counter() - post_started)
@@ -3379,6 +3382,7 @@ def _candidate_from_result(
             query_signature=alignment_query_signature,
             template_signature=template_signature,
             template_image_source=metadata.get("matched_layout_reference_image_url"),
+            force_alignment=bool(layout_reference_crop_debug.get("applied")),
         )
         candidate_timing["alignment"] = time.perf_counter() - step_started
 
@@ -3425,21 +3429,19 @@ def _candidate_from_result(
             aligned_score = float(aligned_verification.get("score") or 0.0)
             aligned_improvement = aligned_score - normalized_score
 
-            # 3) Once a template is known, prefer the template-reference image
-            # when alignment is accepted and verification is preserved. This
-            # keeps ROI/OCR in template canvas space without changing the
-            # verification algorithm itself.
-            aligned_verification_preserved = bool(aligned_verification.get("passed")) and aligned_score >= (normalized_score - 0.0001)
+            # 3) Once a template is known and a reference crop exists, the
+            # aligned template-reference image is the processing image. This
+            # keeps ROI/OCR in template canvas space instead of silently
+            # falling back to a plain crop/resize.
             template_reference_processing_required = bool(layout_reference_crop_debug.get("applied"))
-            if (alignment_required and aligned_improvement > 0.0001) or (
-                template_reference_processing_required and aligned_verification_preserved
-            ):
+            aligned_verification_preserved = bool(aligned_verification.get("passed")) and aligned_score >= (normalized_score - 0.0001)
+            if template_reference_processing_required or (alignment_required and aligned_improvement > 0.0001):
                 verification = aligned_verification
                 verification_source_used = "aligned"
                 post_alignment_processing_source = "aligned"
                 alignment_processing_image_selected = True
                 if template_reference_processing_required and not alignment_required:
-                    alignment_skip_reason = "template_reference_alignment_selected"
+                    alignment_skip_reason = "template_reference_alignment_required"
                 alignment_debug = alignment.get("alignment_debug") or {}
                 alignment_debug["aligned_verification_preserved"] = aligned_verification_preserved
                 alignment_debug["template_reference_processing_required"] = template_reference_processing_required
@@ -3494,6 +3496,7 @@ def _candidate_from_result(
     alignment_debug["layout_reference_crop"] = layout_reference_crop_debug
     alignment_debug["alignment_query_signature_source"] = alignment_query_signature_source
     alignment_debug["alignment_query_image_path"] = verification_query_image_path
+    alignment_debug["force_template_reference_alignment"] = bool(layout_reference_crop_debug.get("applied"))
     if layout_reference_crop_debug.get("applied"):
         alignment_debug["layout_reference_crop_applied"] = True
         alignment_debug["layout_reference_crop_reason"] = layout_reference_crop_debug.get("reason")
