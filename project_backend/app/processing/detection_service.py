@@ -3,7 +3,6 @@ import os
 import base64
 import json
 import cv2
-import math
 import re
 import shutil
 import time
@@ -50,6 +49,14 @@ LAYOUT_REFERENCE_CROP_ENABLED = os.getenv("LAYOUT_REFERENCE_CROP_ENABLED", "true
 LAYOUT_REFERENCE_CROP_MAX_INSET_RATIO = float(os.getenv("LAYOUT_REFERENCE_CROP_MAX_INSET_RATIO", "0.35"))
 LAYOUT_REFERENCE_CROP_MIN_COVERAGE_RATIO = float(os.getenv("LAYOUT_REFERENCE_CROP_MIN_COVERAGE_RATIO", "0.55"))
 LAYOUT_REFERENCE_CROP_MIN_DELTA_RATIO = float(os.getenv("LAYOUT_REFERENCE_CROP_MIN_DELTA_RATIO", "0.015"))
+OLD_LAYOUT_CROP_PADDING_X_RATIO = 0.30
+OLD_LAYOUT_CROP_PADDING_TOP_RATIO = 0.38
+OLD_LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.38
+OLD_LAYOUT_CROP_MIN_IMAGE_PADDING_RATIO = 0.015
+OLD_LAYOUT_CROP_MAX_INSET_X_RATIO = 0.15
+OLD_LAYOUT_CROP_MAX_INSET_Y_RATIO = 0.15
+OLD_LAYOUT_CROP_MIN_WIDTH_RATIO = 0.70
+OLD_LAYOUT_CROP_MIN_HEIGHT_RATIO = 0.70
 LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO", "0.20"))
 LAYOUT_REFERENCE_PROJECTED_MAX_COVERAGE_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MAX_COVERAGE_RATIO", "0.98"))
 LAYOUT_REFERENCE_PROJECTED_MAX_SCALE_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MAX_SCALE_RATIO", "8.0"))
@@ -777,18 +784,6 @@ def _signature_metrics_for_regions(regions: List[Dict[str, Any]]) -> Dict[str, A
     }
 
 
-def _expand_layout_bounds(bounds: Dict[str, float], margin_x: float, margin_y: float) -> Dict[str, float]:
-    expanded = {
-        "left": max(0.0, float(bounds.get("left") or 0.0) - margin_x),
-        "top": max(0.0, float(bounds.get("top") or 0.0) - margin_y),
-        "right": min(1.0, float(bounds.get("right") or 1.0) + margin_x),
-        "bottom": min(1.0, float(bounds.get("bottom") or 1.0) + margin_y),
-    }
-    expanded["width"] = max(0.0, expanded["right"] - expanded["left"])
-    expanded["height"] = max(0.0, expanded["bottom"] - expanded["top"])
-    return expanded
-
-
 def _layout_bounds_to_pixel_box(bounds: Dict[str, float], image_width: int, image_height: int) -> List[int]:
     return [
         max(0, int(round(float(bounds.get("left") or 0.0) * image_width))),
@@ -798,86 +793,86 @@ def _layout_bounds_to_pixel_box(bounds: Dict[str, float], image_width: int, imag
     ]
 
 
-def _expand_box_to_aspect(
-    box: List[int],
+def _old_safe_layout_crop_box(
+    crop_left: int,
+    crop_top: int,
+    crop_right: int,
+    crop_bottom: int,
     image_width: int,
     image_height: int,
-    target_aspect: Optional[float],
 ) -> Dict[str, Any]:
-    original_box = [int(value) for value in box]
-    if not target_aspect or target_aspect <= 0 or image_width <= 0 or image_height <= 0:
-        width = max(0, original_box[2] - original_box[0])
-        height = max(0, original_box[3] - original_box[1])
-        aspect = width / max(1, height)
-        return {
-            "box": original_box,
-            "bounds_aspect_before": round(float(aspect), 6) if height > 0 else None,
-            "crop_aspect_before_constraint": round(float(aspect), 6) if height > 0 else None,
-            "final_crop_aspect_ratio": round(float(aspect), 6) if height > 0 else None,
-            "aspect_error": None,
-            "target_aspect": target_aspect,
-            "applied": False,
-            "reason": "target_aspect_unavailable",
-        }
-
-    left, top, right, bottom = original_box
-    width = max(1, right - left)
-    height = max(1, bottom - top)
-    before_aspect = width / max(1, height)
-    target_width = width
-    target_height = height
-    if before_aspect > target_aspect:
-        target_height = int(math.ceil(width / target_aspect))
-    elif before_aspect < target_aspect:
-        target_width = int(math.ceil(height * target_aspect))
-
-    target_width = min(max(target_width, width), image_width)
-    target_height = min(max(target_height, height), image_height)
-
-    center_x = (left + right) / 2.0
-    center_y = (top + bottom) / 2.0
-    next_left = int(round(center_x - (target_width / 2.0)))
-    next_top = int(round(center_y - (target_height / 2.0)))
-    next_right = next_left + target_width
-    next_bottom = next_top + target_height
-
-    if next_left < 0:
-        next_right -= next_left
-        next_left = 0
-    if next_right > image_width:
-        overflow = next_right - image_width
-        next_left = max(0, next_left - overflow)
-        next_right = image_width
-    if next_top < 0:
-        next_bottom -= next_top
-        next_top = 0
-    if next_bottom > image_height:
-        overflow = next_bottom - image_height
-        next_top = max(0, next_top - overflow)
-        next_bottom = image_height
-
-    # Guarantee the aspect expansion never shrinks the input content box.
-    next_left = min(next_left, left)
-    next_top = min(next_top, top)
-    next_right = max(next_right, right)
-    next_bottom = max(next_bottom, bottom)
-    next_left = max(0, next_left)
-    next_top = max(0, next_top)
-    next_right = min(image_width, next_right)
-    next_bottom = min(image_height, next_bottom)
-
-    final_width = max(1, next_right - next_left)
-    final_height = max(1, next_bottom - next_top)
-    final_aspect = final_width / max(1, final_height)
+    original = [int(crop_left), int(crop_top), int(crop_right), int(crop_bottom)]
+    max_left = int(round(image_width * OLD_LAYOUT_CROP_MAX_INSET_X_RATIO))
+    max_top = int(round(image_height * OLD_LAYOUT_CROP_MAX_INSET_Y_RATIO))
+    min_right = int(round(image_width * (1.0 - OLD_LAYOUT_CROP_MAX_INSET_X_RATIO)))
+    min_bottom = int(round(image_height * (1.0 - OLD_LAYOUT_CROP_MAX_INSET_Y_RATIO)))
+    safe_left = min(max(0, crop_left), max_left)
+    safe_top = min(max(0, crop_top), max_top)
+    safe_right = max(min(image_width, crop_right), min_right)
+    safe_bottom = max(min(image_height, crop_bottom), min_bottom)
+    min_width = int(round(image_width * OLD_LAYOUT_CROP_MIN_WIDTH_RATIO))
+    min_height = int(round(image_height * OLD_LAYOUT_CROP_MIN_HEIGHT_RATIO))
+    if safe_right - safe_left < min_width:
+        missing = min_width - (safe_right - safe_left)
+        safe_left = max(0, safe_left - ((missing + 1) // 2))
+        safe_right = min(image_width, safe_right + (missing // 2))
+    if safe_bottom - safe_top < min_height:
+        missing = min_height - (safe_bottom - safe_top)
+        safe_top = max(0, safe_top - ((missing + 1) // 2))
+        safe_bottom = min(image_height, safe_bottom + (missing // 2))
     return {
-        "box": [int(next_left), int(next_top), int(next_right), int(next_bottom)],
-        "bounds_aspect_before": round(float(before_aspect), 6),
-        "crop_aspect_before_constraint": round(float(before_aspect), 6),
-        "final_crop_aspect_ratio": round(float(final_aspect), 6),
-        "aspect_error": round(float(abs(final_aspect - target_aspect) / max(target_aspect, 1e-6)), 6),
-        "target_aspect": round(float(target_aspect), 6),
-        "applied": [int(next_left), int(next_top), int(next_right), int(next_bottom)] != original_box,
-        "reason": "aspect_constraint_applied",
+        "left": int(safe_left),
+        "top": int(safe_top),
+        "right": int(safe_right),
+        "bottom": int(safe_bottom),
+        "original_box": original,
+        "final_box": [int(safe_left), int(safe_top), int(safe_right), int(safe_bottom)],
+        "applied": [int(safe_left), int(safe_top), int(safe_right), int(safe_bottom)] != original,
+        "max_inset_x_ratio": OLD_LAYOUT_CROP_MAX_INSET_X_RATIO,
+        "max_inset_y_ratio": OLD_LAYOUT_CROP_MAX_INSET_Y_RATIO,
+        "min_width_ratio": OLD_LAYOUT_CROP_MIN_WIDTH_RATIO,
+        "min_height_ratio": OLD_LAYOUT_CROP_MIN_HEIGHT_RATIO,
+    }
+
+
+def _old_layout_crop_box_from_bounds(
+    bounds: Dict[str, float],
+    image_width: int,
+    image_height: int,
+) -> Dict[str, Any]:
+    left = float(bounds.get("left") or 0.0) * image_width
+    top = float(bounds.get("top") or 0.0) * image_height
+    right = float(bounds.get("right") or 1.0) * image_width
+    bottom = float(bounds.get("bottom") or 1.0) * image_height
+    content_width = max(1.0, right - left)
+    content_height = max(1.0, bottom - top)
+    pad_left = max(image_width * OLD_LAYOUT_CROP_MIN_IMAGE_PADDING_RATIO, content_width * OLD_LAYOUT_CROP_PADDING_X_RATIO)
+    pad_right = max(image_width * OLD_LAYOUT_CROP_MIN_IMAGE_PADDING_RATIO, content_width * OLD_LAYOUT_CROP_PADDING_X_RATIO)
+    pad_top = max(image_height * OLD_LAYOUT_CROP_MIN_IMAGE_PADDING_RATIO, content_height * OLD_LAYOUT_CROP_PADDING_TOP_RATIO)
+    pad_bottom = max(image_height * OLD_LAYOUT_CROP_MIN_IMAGE_PADDING_RATIO, content_height * OLD_LAYOUT_CROP_PADDING_BOTTOM_RATIO)
+    requested = [
+        int(max(0, np.floor(left - pad_left))),
+        int(max(0, np.floor(top - pad_top))),
+        int(min(image_width, np.ceil(right + pad_right))),
+        int(min(image_height, np.ceil(bottom + pad_bottom))),
+    ]
+    safe_crop = _old_safe_layout_crop_box(requested[0], requested[1], requested[2], requested[3], image_width, image_height)
+    final_box = safe_crop["final_box"]
+    return {
+        "passed": final_box[2] > final_box[0] and final_box[3] > final_box[1],
+        "reason": "old_layout_crop_box_valid" if final_box[2] > final_box[0] and final_box[3] > final_box[1] else "old_layout_crop_zero_area",
+        "content_box": [round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)],
+        "requested_expanded_box": requested,
+        "final_box": final_box,
+        "expanded_box": final_box,
+        "padding": {
+            "left": round(float(pad_left), 2),
+            "right": round(float(pad_right), 2),
+            "top": round(float(pad_top), 2),
+            "bottom": round(float(pad_bottom), 2),
+        },
+        "safe_crop": safe_crop,
+        "source": "old_layout_assisted_crop_from_layout_bounds",
     }
 
 
@@ -953,9 +948,22 @@ def _retrieval_precrop_signature(
     if coverage >= 0.88 and width >= 0.90 and height >= 0.90:
         debug["reason"] = "content_coverage_too_large_for_precrop"
         return signature, debug
-    margin_x = max(0.06, width * 0.12)
-    margin_y = max(0.06, height * 0.12)
-    crop = _expand_layout_bounds(bounds, margin_x, margin_y)
+    image_width = max(float(signature.get("image_width") or 1.0), 1.0)
+    image_height = max(float(signature.get("image_height") or 1.0), 1.0)
+    old_crop_debug = _old_layout_crop_box_from_bounds(bounds, int(round(image_width)), int(round(image_height)))
+    if not old_crop_debug.get("passed"):
+        debug["reason"] = old_crop_debug.get("reason") or "old_layout_precrop_unavailable"
+        debug["retrieval_crop"]["old_layout_crop"] = old_crop_debug
+        return signature, debug
+    crop_box = old_crop_debug["final_box"]
+    crop = {
+        "left": crop_box[0] / image_width,
+        "top": crop_box[1] / image_height,
+        "right": crop_box[2] / image_width,
+        "bottom": crop_box[3] / image_height,
+    }
+    crop["width"] = crop["right"] - crop["left"]
+    crop["height"] = crop["bottom"] - crop["top"]
     if crop["width"] <= 0.05 or crop["height"] <= 0.05:
         debug["reason"] = "precrop_box_too_small"
         return signature, debug
@@ -991,8 +999,6 @@ def _retrieval_precrop_signature(
     if len(rebased_regions) < 2:
         debug["reason"] = "insufficient_precrop_regions"
         return signature, debug
-    image_width = max(float(signature.get("image_width") or 1.0), 1.0)
-    image_height = max(float(signature.get("image_height") or 1.0), 1.0)
     metrics = _signature_metrics_for_regions(rebased_regions)
     next_signature = {
         **signature,
@@ -1018,9 +1024,10 @@ def _retrieval_precrop_signature(
                 "applied": True,
                 "layout_bounds": {key: round(float(value), 6) for key, value in bounds.items()},
                 "expanded_bounds": {key: round(float(value), 6) for key, value in crop.items()},
-                "safety_margin": {"x": round(float(margin_x), 6), "y": round(float(margin_y), 6)},
+                "safety_margin": old_crop_debug.get("padding"),
                 "crop_box": {key: round(float(value), 6) for key, value in crop.items()},
                 "crop_size": [int(next_signature["image_width"]), int(next_signature["image_height"])],
+                "old_layout_crop": old_crop_debug,
             },
             "retrieval_source": "retrieval_precrop_image_signature",
             "reason": "background_content_bounds_rebased_for_retrieval",
@@ -1571,27 +1578,20 @@ def _layout_correspondence_crop_box(
     if not document_bounds:
         debug["fallback_reason"] = "correspondence_document_bounds_unavailable"
         return debug
-    margin_x = max(0.04, float(document_bounds["width"]) * 0.10)
-    margin_y = max(0.04, float(document_bounds["height"]) * 0.10)
-    expanded_bounds = _expand_layout_bounds(document_bounds, margin_x, margin_y)
-    crop_aspect_before_constraint = None
-    template_page_size = _signature_template_page_size(template_signature)
-    template_aspect_ratio = None
-    if template_page_size:
-        template_width, template_height = template_page_size
-        if template_width > 0 and template_height > 0:
-            template_aspect_ratio = template_width / max(1.0, float(template_height))
-    pre_aspect_box = _layout_bounds_to_pixel_box(expanded_bounds, image_width, image_height)
-    pre_aspect_width = max(1, pre_aspect_box[2] - pre_aspect_box[0])
-    pre_aspect_height = max(1, pre_aspect_box[3] - pre_aspect_box[1])
-    crop_aspect_before_constraint = pre_aspect_width / max(1, pre_aspect_height)
-    aspect_debug = _expand_box_to_aspect(
-        pre_aspect_box,
-        image_width,
-        image_height,
-        template_aspect_ratio,
-    )
-    final_box = aspect_debug["box"]
+    old_crop_debug = _old_layout_crop_box_from_bounds(document_bounds, image_width, image_height)
+    if not old_crop_debug.get("passed"):
+        debug["fallback_reason"] = old_crop_debug.get("reason") or "old_layout_correspondence_crop_unavailable"
+        debug["old_layout_crop"] = old_crop_debug
+        return debug
+    final_box = old_crop_debug["final_box"]
+    expanded_bounds = {
+        "left": final_box[0] / max(1, image_width),
+        "top": final_box[1] / max(1, image_height),
+        "right": final_box[2] / max(1, image_width),
+        "bottom": final_box[3] / max(1, image_height),
+    }
+    expanded_bounds["width"] = expanded_bounds["right"] - expanded_bounds["left"]
+    expanded_bounds["height"] = expanded_bounds["bottom"] - expanded_bounds["top"]
     if final_box[2] <= final_box[0] or final_box[3] <= final_box[1]:
         debug["fallback_reason"] = "correspondence_crop_empty"
         return debug
@@ -1620,13 +1620,8 @@ def _layout_correspondence_crop_box(
             "document_layout_bounds": {key: round(float(value), 6) for key, value in document_bounds.items()},
             "expanded_layout_bounds": {key: round(float(value), 6) for key, value in expanded_bounds.items()},
             "matched_region_count": int(inlier_count),
-            "safety_margin": {"x": round(float(margin_x), 6), "y": round(float(margin_y), 6)},
-            "template_aspect_ratio": aspect_debug.get("target_aspect"),
-            "bounds_aspect_before": aspect_debug.get("bounds_aspect_before"),
-            "crop_aspect_before_constraint": round(float(crop_aspect_before_constraint), 6),
-            "aspect_constrained_crop_box": aspect_debug.get("box"),
-            "final_crop_aspect_ratio": aspect_debug.get("final_crop_aspect_ratio"),
-            "aspect_error": aspect_debug.get("aspect_error"),
+            "safety_margin": old_crop_debug.get("padding"),
+            "old_layout_crop": old_crop_debug,
             "coverage": [round(float(coverage_x), 6), round(float(coverage_y), 6)],
         }
     )
@@ -1887,12 +1882,7 @@ def _layout_reference_adjusted_image(
             "coverage": correspondence_crop_debug.get("coverage"),
             "confidence": correspondence_crop_debug.get("confidence"),
             "safety_margin": correspondence_crop_debug.get("safety_margin"),
-            "template_aspect_ratio": correspondence_crop_debug.get("template_aspect_ratio"),
-            "bounds_aspect_before": correspondence_crop_debug.get("bounds_aspect_before"),
-            "crop_aspect_before_constraint": correspondence_crop_debug.get("crop_aspect_before_constraint"),
-            "aspect_constrained_crop_box": correspondence_crop_debug.get("aspect_constrained_crop_box"),
-            "final_crop_aspect_ratio": correspondence_crop_debug.get("final_crop_aspect_ratio"),
-            "aspect_error": correspondence_crop_debug.get("aspect_error"),
+            "old_layout_crop": correspondence_crop_debug.get("old_layout_crop"),
         }
         debug["fallback_reason"] = None
     else:
@@ -1977,12 +1967,7 @@ def _layout_reference_adjusted_image(
         "final_crop_size": [int(crop_right - crop_left), int(crop_bottom - crop_top)],
         "template_page_size": debug.get("template_page_size"),
         "selected_processing_source": "layout_reference_crop",
-        "template_aspect_ratio": crop_debug.get("template_aspect_ratio"),
-        "bounds_aspect_before": crop_debug.get("bounds_aspect_before"),
-        "crop_aspect_before_constraint": crop_debug.get("crop_aspect_before_constraint"),
-        "aspect_constrained_crop_box": crop_debug.get("aspect_constrained_crop_box"),
-        "final_crop_aspect_ratio": crop_debug.get("final_crop_aspect_ratio"),
-        "aspect_error": crop_debug.get("aspect_error"),
+        "old_layout_crop": crop_debug.get("old_layout_crop"),
     }
     delta = max(
         crop_left / max(1, image_width),
