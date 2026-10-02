@@ -15,6 +15,7 @@ import {
   detectTemplateDev,
   fetchSystemMaintenance,
   fetchTemplateBundle,
+  type DetectionCandidate,
   type DetectionDevResult,
   type SystemMaintenanceState,
 } from "../admin/adminApi";
@@ -676,6 +677,14 @@ function getRoiExtractionMethod(roi: ROI) {
   return roiType === "image" ? "extract_image" : roiType === "table" ? "table_recognition_v2" : "paddle_thai_ocr";
 }
 
+function selectedDetectionProcessingPreview(candidate?: DetectionCandidate | null) {
+  if (!candidate) return null;
+  if (candidate.selectedProcessingSource === "aligned" && candidate.alignedImagePreviewUrl) {
+    return candidate.alignedImagePreviewUrl;
+  }
+  return candidate.extractionImagePreviewUrl || candidate.alignedImagePreviewUrl || null;
+}
+
 async function buildTemplateCanvasImages(
   sourceImages: string[],
   detection: DetectionDevResult,
@@ -689,7 +698,7 @@ async function buildTemplateCanvasImages(
     const pageCandidate =
       page?.candidates?.find((candidate) => candidate.templateId === templateId) ||
       (page?.bestCandidate?.templateId === templateId ? page.bestCandidate : null);
-    const extractionSrc = backendPreviewSrc(pageCandidate?.alignedImagePreviewUrl || pageCandidate?.extractionImagePreviewUrl);
+    const extractionSrc = backendPreviewSrc(selectedDetectionProcessingPreview(pageCandidate));
     if (!extractionSrc) return sourceImage;
     try {
       return await imageUrlToCanvasSafeSrc(extractionSrc);

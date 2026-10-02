@@ -563,7 +563,8 @@ export interface DetectionCandidate {
   alignmentReason?: string | null;
   normalizedVerificationScore?: number | null;
   alignedVerificationScore?: number | null;
-  verificationSourceUsed?: "normalized" | "aligned" | null;
+  verificationSourceUsed?: "normalized" | "aligned" | "layout_reference_crop" | string | null;
+  selectedProcessingSource?: "normalized" | "aligned" | "layout_reference_crop" | string | null;
   beforeAlignmentVerification?: number | null;
   afterAlignmentVerification?: number | null;
   verificationImprovement?: number | null;
@@ -1167,10 +1168,8 @@ function mapDetectionCandidate(candidate: Record<string, unknown>): DetectionCan
     alignmentReason: (candidate.alignment_reason as string | null | undefined) ?? null,
     normalizedVerificationScore: typeof candidate.normalized_verification_score === "number" ? candidate.normalized_verification_score : null,
     alignedVerificationScore: typeof candidate.aligned_verification_score === "number" ? candidate.aligned_verification_score : null,
-    verificationSourceUsed:
-      candidate.verification_source_used === "normalized" || candidate.verification_source_used === "aligned"
-        ? candidate.verification_source_used
-        : null,
+    verificationSourceUsed: (candidate.verification_source_used as string | null | undefined) ?? null,
+    selectedProcessingSource: (candidate.selected_processing_source as string | null | undefined) ?? null,
     beforeAlignmentVerification: typeof candidate.before_alignment_verification === "number" ? candidate.before_alignment_verification : null,
     afterAlignmentVerification: typeof candidate.after_alignment_verification === "number" ? candidate.after_alignment_verification : null,
     verificationImprovement: typeof candidate.verification_improvement === "number" ? candidate.verification_improvement : null,
