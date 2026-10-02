@@ -49,6 +49,9 @@ LAYOUT_REFERENCE_CROP_ENABLED = os.getenv("LAYOUT_REFERENCE_CROP_ENABLED", "true
 LAYOUT_REFERENCE_CROP_MAX_INSET_RATIO = float(os.getenv("LAYOUT_REFERENCE_CROP_MAX_INSET_RATIO", "0.35"))
 LAYOUT_REFERENCE_CROP_MIN_COVERAGE_RATIO = float(os.getenv("LAYOUT_REFERENCE_CROP_MIN_COVERAGE_RATIO", "0.55"))
 LAYOUT_REFERENCE_CROP_MIN_DELTA_RATIO = float(os.getenv("LAYOUT_REFERENCE_CROP_MIN_DELTA_RATIO", "0.015"))
+LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO", "0.20"))
+LAYOUT_REFERENCE_PROJECTED_MAX_COVERAGE_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MAX_COVERAGE_RATIO", "0.98"))
+LAYOUT_REFERENCE_PROJECTED_MAX_SCALE_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MAX_SCALE_RATIO", "8.0"))
 verification_service = VerificationService()
 decision_service = DecisionService()
 global_settings_service = GlobalSettingsService()
@@ -645,6 +648,82 @@ def _clamp_reference_crop_box(left: int, top: int, right: int, bottom: int, imag
     }
 
 
+def _projected_reference_crop_box(
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+    image_width: int,
+    image_height: int,
+    query_bounds: Dict[str, float],
+    template_bounds: Dict[str, float],
+) -> Dict[str, Any]:
+    original = [left, top, right, bottom]
+    if image_width <= 0 or image_height <= 0:
+        return {"passed": False, "reason": "invalid_source_image_size", "original_box": original}
+    crop_left = max(0, min(image_width, left))
+    crop_top = max(0, min(image_height, top))
+    crop_right = max(0, min(image_width, right))
+    crop_bottom = max(0, min(image_height, bottom))
+    if crop_right <= crop_left or crop_bottom <= crop_top:
+        return {"passed": False, "reason": "projected_document_box_empty", "original_box": original}
+    crop_width = crop_right - crop_left
+    crop_height = crop_bottom - crop_top
+    coverage_x = crop_width / max(1, image_width)
+    coverage_y = crop_height / max(1, image_height)
+    template_width = max(float(template_bounds.get("width") or 0.0), 1e-6)
+    template_height = max(float(template_bounds.get("height") or 0.0), 1e-6)
+    query_width = max(float(query_bounds.get("width") or 0.0), 1e-6)
+    query_height = max(float(query_bounds.get("height") or 0.0), 1e-6)
+    scale_x = query_width / template_width
+    scale_y = query_height / template_height
+    if (
+        coverage_x < LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO
+        or coverage_y < LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO
+    ):
+        return {
+            "passed": False,
+            "reason": "projected_document_box_too_small",
+            "original_box": original,
+            "final_box": [crop_left, crop_top, crop_right, crop_bottom],
+            "coverage": [round(float(coverage_x), 6), round(float(coverage_y), 6)],
+        }
+    if (
+        coverage_x > LAYOUT_REFERENCE_PROJECTED_MAX_COVERAGE_RATIO
+        or coverage_y > LAYOUT_REFERENCE_PROJECTED_MAX_COVERAGE_RATIO
+    ):
+        return {
+            "passed": False,
+            "reason": "projected_document_box_too_large",
+            "original_box": original,
+            "final_box": [crop_left, crop_top, crop_right, crop_bottom],
+            "coverage": [round(float(coverage_x), 6), round(float(coverage_y), 6)],
+        }
+    if (
+        scale_x <= 0
+        or scale_y <= 0
+        or scale_x > LAYOUT_REFERENCE_PROJECTED_MAX_SCALE_RATIO
+        or scale_y > LAYOUT_REFERENCE_PROJECTED_MAX_SCALE_RATIO
+        or max(scale_x, scale_y) / max(min(scale_x, scale_y), 1e-6) > LAYOUT_REFERENCE_PROJECTED_MAX_SCALE_RATIO
+    ):
+        return {
+            "passed": False,
+            "reason": "projected_document_scale_unreliable",
+            "original_box": original,
+            "final_box": [crop_left, crop_top, crop_right, crop_bottom],
+            "scale": [round(float(scale_x), 6), round(float(scale_y), 6)],
+        }
+    return {
+        "passed": True,
+        "reason": "projected_document_box_valid",
+        "original_box": original,
+        "final_box": [crop_left, crop_top, crop_right, crop_bottom],
+        "clamped": [crop_left, crop_top, crop_right, crop_bottom] != original,
+        "coverage": [round(float(coverage_x), 6), round(float(coverage_y), 6)],
+        "scale": [round(float(scale_x), 6), round(float(scale_y), 6)],
+    }
+
+
 def _layout_reference_adjusted_image(
     image_path: str,
     query_signature: Optional[Dict[str, Any]],
@@ -661,27 +740,52 @@ def _layout_reference_adjusted_image(
     template_bounds = _signature_layout_space_source_bounds(template_signature) or _signature_content_bounds(template_signature)
     debug["query_bounds"] = query_bounds
     debug["template_bounds"] = template_bounds
+    debug["query_content_bounds"] = query_bounds
+    debug["template_content_bounds"] = template_bounds
     if not query_bounds or not template_bounds:
         debug["reason"] = "missing_signature_bounds"
+        debug["fallback_reason"] = "missing_signature_bounds"
         return debug
 
     image = cv2.imread(str(image_path))
     if image is None:
         debug["reason"] = "image_unreadable"
+        debug["fallback_reason"] = "image_unreadable"
         return debug
     image_height, image_width = image.shape[:2]
     x_axis = _solve_reference_crop_axis(query_bounds["left"], query_bounds["right"], template_bounds["left"], template_bounds["right"], image_width)
     y_axis = _solve_reference_crop_axis(query_bounds["top"], query_bounds["bottom"], template_bounds["top"], template_bounds["bottom"], image_height)
     if x_axis is None or y_axis is None:
         debug["reason"] = "reference_crop_axis_unavailable"
+        debug["fallback_reason"] = "reference_crop_axis_unavailable"
         return debug
-    crop_debug = _clamp_reference_crop_box(x_axis[0], y_axis[0], x_axis[1], y_axis[1], image_width, image_height)
+    projected_crop_debug = _projected_reference_crop_box(
+        x_axis[0],
+        y_axis[0],
+        x_axis[1],
+        y_axis[1],
+        image_width,
+        image_height,
+        query_bounds,
+        template_bounds,
+    )
+    debug["projected_document_box"] = projected_crop_debug
+    if projected_crop_debug.get("passed"):
+        crop_debug = projected_crop_debug
+        debug["fallback_reason"] = None
+    else:
+        debug["fallback_reason"] = projected_crop_debug.get("reason") or "projected_document_box_invalid"
+        crop_debug = _clamp_reference_crop_box(x_axis[0], y_axis[0], x_axis[1], y_axis[1], image_width, image_height)
+        crop_debug["fallback_from_projected"] = True
+        crop_debug["fallback_reason"] = debug["fallback_reason"]
     debug["crop"] = crop_debug
     if not crop_debug.get("passed"):
         debug["reason"] = str(crop_debug.get("reason") or "reference_crop_invalid")
+        debug["fallback_reason"] = debug.get("fallback_reason") or debug["reason"]
         return debug
 
     crop_left, crop_top, crop_right, crop_bottom = crop_debug["final_box"]
+    debug["crop_size"] = [int(crop_right - crop_left), int(crop_bottom - crop_top)]
     delta = max(
         crop_left / max(1, image_width),
         crop_top / max(1, image_height),
@@ -691,16 +795,19 @@ def _layout_reference_adjusted_image(
     debug["max_delta_ratio"] = round(float(delta), 6)
     if delta < LAYOUT_REFERENCE_CROP_MIN_DELTA_RATIO:
         debug["reason"] = "reference_crop_delta_too_small"
+        debug["fallback_reason"] = debug["reason"]
         return debug
 
     cropped = image[crop_top:crop_bottom, crop_left:crop_right].copy()
     if cropped.size == 0:
         debug["reason"] = "reference_crop_empty"
+        debug["fallback_reason"] = debug["reason"]
         return debug
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{_safe_file_token(template_id)}_page_{page_number}_layout_reference_crop.png"
     if not cv2.imwrite(str(output_path), cropped):
         debug["reason"] = "reference_crop_write_failed"
+        debug["fallback_reason"] = debug["reason"]
         return debug
     debug.update(
         {
@@ -1787,8 +1894,8 @@ def _candidate_from_result(
     # ค่าเริ่มต้น: ยังไม่ align
     alignment = _alignment_result(
         "skipped",
-        "normalized_verification_checked_first",
-        precheck={"reason": "alignment_deferred_until_needed"},
+        "layout_reference_verification_checked_first",
+        precheck={"reason": "alignment_deferred_until_needed", "base_verification_source": base_verification_source},
     )
 
     aligned_verification = None
@@ -1862,7 +1969,7 @@ def _candidate_from_result(
             else:
                 alignment["alignment_status"] = "fallback"
                 alignment_debug = alignment.get("alignment_debug") or {}
-                alignment_debug["reason"] = "aligned_verification_worse_than_normalized"
+                alignment_debug["reason"] = "aligned_verification_worse_than_base_verification"
                 alignment_debug["alignment_status"] = "fallback"
                 alignment_debug["verification_source_used"] = base_verification_source
                 alignment["alignment_debug"] = alignment_debug
@@ -2067,7 +2174,7 @@ def _candidate_from_result(
         "alignment_debug": alignment_debug,
         "alignment_score": alignment_score,
         "alignment_passed": alignment_status == "aligned",
-        "alignment_fallback_used": verification_source_used == "normalized",
+        "alignment_fallback_used": verification_source_used != "aligned",
         "alignment_reason": alignment_reason,
 
         "normalized_verification_score": round(normalized_verification_score, 4),
