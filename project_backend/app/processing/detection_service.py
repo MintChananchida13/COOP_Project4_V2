@@ -1102,6 +1102,66 @@ def _retrieval_precrop_signature(
     return next_signature, debug
 
 
+def _rebase_layout_signature_to_crop(
+    signature: Optional[Dict[str, Any]],
+    crop: Dict[str, float],
+    image_width: int,
+    image_height: int,
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(signature, dict):
+        return None
+    crop_width = float(crop.get("width") or 0.0)
+    crop_height = float(crop.get("height") or 0.0)
+    if crop_width <= 0.0 or crop_height <= 0.0:
+        return None
+    rebased_regions: List[Dict[str, Any]] = []
+    for region in signature.get("regions", []) if isinstance(signature.get("regions"), list) else []:
+        if not isinstance(region, dict):
+            continue
+        bbox = _region_bbox(region, "source_bbox")
+        if not bbox:
+            continue
+        left = max(0.0, min(1.0, (bbox["left"] - float(crop["left"])) / crop_width))
+        top = max(0.0, min(1.0, (bbox["top"] - float(crop["top"])) / crop_height))
+        right = max(0.0, min(1.0, (bbox["right"] - float(crop["left"])) / crop_width))
+        bottom = max(0.0, min(1.0, (bbox["bottom"] - float(crop["top"])) / crop_height))
+        if right <= left or bottom <= top:
+            continue
+        next_bbox = {
+            "x_ratio": round(left, 6),
+            "y_ratio": round(top, 6),
+            "width_ratio": round(right - left, 6),
+            "height_ratio": round(bottom - top, 6),
+        }
+        rebased_regions.append(
+            {
+                **region,
+                "bbox": next_bbox,
+                "source_bbox": region.get("source_bbox") if isinstance(region.get("source_bbox"), dict) else region.get("bbox"),
+                "center": [round(left + (right - left) / 2.0, 6), round(top + (bottom - top) / 2.0, 6)],
+                "area_ratio": round(max(0.0, min(1.0, (right - left) * (bottom - top))), 6),
+            }
+        )
+    if len(rebased_regions) < 2:
+        return None
+    metrics = _signature_metrics_for_regions(rebased_regions)
+    return {
+        **signature,
+        **metrics,
+        "page_aspect_ratio": round(image_width / max(1.0, float(image_height)), 6),
+        "image_width": int(image_width),
+        "image_height": int(image_height),
+        "regions": rebased_regions,
+        "layout_space_normalization": {
+            "applied": True,
+            "source": "layout_reference_crop",
+            "bounds": {key: round(float(value), 6) for key, value in crop.items()},
+            "original_image_width": int(image_width),
+            "original_image_height": int(image_height),
+        },
+    }
+
+
 def _solve_reference_crop_axis(
     query_min: float,
     query_max: float,
@@ -2146,6 +2206,14 @@ def _layout_reference_adjusted_image(
         "final_crop_coverage": crop_debug.get("final_crop_coverage"),
         "generic_layout_crop": crop_debug.get("generic_layout_crop"),
     }
+    crop_ratio = {
+        "left": crop_left / max(1, image_width),
+        "top": crop_top / max(1, image_height),
+        "right": crop_right / max(1, image_width),
+        "bottom": crop_bottom / max(1, image_height),
+        "width": (crop_right - crop_left) / max(1, image_width),
+        "height": (crop_bottom - crop_top) / max(1, image_height),
+    }
     delta = max(
         crop_left / max(1, image_width),
         crop_top / max(1, image_height),
@@ -2179,6 +2247,11 @@ def _layout_reference_adjusted_image(
         debug["fallback_reason"] = debug["reason"]
         return debug
     output_height, output_width = output_image.shape[:2]
+    adjusted_signature = _rebase_layout_signature_to_crop(query_signature, crop_ratio, output_width, output_height)
+    debug["adjusted_query_signature_source"] = "layout_reference_crop_rebased" if adjusted_signature else None
+    debug["adjusted_query_signature_region_count"] = int((adjusted_signature or {}).get("region_count") or 0) if adjusted_signature else 0
+    if adjusted_signature:
+        debug["_adjusted_query_signature"] = adjusted_signature
     debug.update(
         {
             "applied": True,
@@ -3197,6 +3270,17 @@ def _candidate_from_result(
     candidate_timing["layout_reference_crop"] = time.perf_counter() - step_started
     if layout_reference_crop_debug.get("applied") and layout_reference_crop_debug.get("image_path"):
         verification_query_image_path = str(layout_reference_crop_debug["image_path"])
+    alignment_query_signature = (
+        layout_reference_crop_debug.get("_adjusted_query_signature")
+        if isinstance(layout_reference_crop_debug.get("_adjusted_query_signature"), dict)
+        else query_signature
+    )
+    alignment_query_signature_source = (
+        "layout_reference_crop_rebased"
+        if alignment_query_signature is not query_signature
+        else "original_query_signature"
+    )
+    layout_reference_crop_debug.pop("_adjusted_query_signature", None)
     step_started = time.perf_counter()
     candidate_page_image_paths = dict(page_image_paths)
     candidate_page_image_paths[template_page_number] = verification_query_image_path
@@ -3292,7 +3376,7 @@ def _candidate_from_result(
             template_page_number,
             verification_query_image_path,
             normalization_info,
-            query_signature=query_signature,
+            query_signature=alignment_query_signature,
             template_signature=template_signature,
             template_image_source=metadata.get("matched_layout_reference_image_url"),
         )
@@ -3408,6 +3492,8 @@ def _candidate_from_result(
     alignment_debug["post_alignment_processing_source"] = post_alignment_processing_source
     alignment_debug["alignment_processing_image_selected"] = alignment_processing_image_selected
     alignment_debug["layout_reference_crop"] = layout_reference_crop_debug
+    alignment_debug["alignment_query_signature_source"] = alignment_query_signature_source
+    alignment_debug["alignment_query_image_path"] = verification_query_image_path
     if layout_reference_crop_debug.get("applied"):
         alignment_debug["layout_reference_crop_applied"] = True
         alignment_debug["layout_reference_crop_reason"] = layout_reference_crop_debug.get("reason")
