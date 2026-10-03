@@ -155,17 +155,17 @@ class ImageNormalizationService:
         width_b = np.linalg.norm(top_right - top_left)
         height_a = np.linalg.norm(top_right - bottom_right)
         height_b = np.linalg.norm(top_left - bottom_left)
-        width_imbalance = max(width_a, width_b) / max(1.0, min(width_a, width_b))
-        height_imbalance = max(height_a, height_b) / max(1.0, min(height_a, height_b))
+        width_distortion = (max(width_a, width_b) / max(1.0, min(width_a, width_b))) - 1.0
+        height_distortion = (max(height_a, height_b) / max(1.0, min(height_a, height_b))) - 1.0
         top_vector = top_right - top_left
         left_vector = bottom_left - top_left
         corner_angle = abs(float(np.degrees(np.arctan2(
             abs(float(top_vector[0] * left_vector[1] - top_vector[1] * left_vector[0])),
             float(np.dot(top_vector, left_vector)),
         ))))
-        angle_deviation_ratio = abs(90.0 - corner_angle) / 90.0
-        distortion_score = max(width_imbalance - 1.0, height_imbalance - 1.0, angle_deviation_ratio)
-        perspective_required = distortion_score > 0.10
+        angle_distortion = abs(90.0 - corner_angle) / 90.0
+        distortion_score = max(width_distortion, height_distortion)
+        perspective_required = distortion_score > 0.12
         max_width = max(1, int(max(width_a, width_b)))
         max_height = max(1, int(max(height_a, height_b)))
 
@@ -200,6 +200,9 @@ class ImageNormalizationService:
                     "perspective_safety_margin_ratio": margin_ratio,
                     "perspective_required": False,
                     "perspective_distortion_score": round(float(distortion_score), 4),
+                    "width_distortion": round(float(width_distortion), 4),
+                    "height_distortion": round(float(height_distortion), 4),
+                    "angle_distortion": round(float(angle_distortion), 4),
                     "normalization_transform": "conservative_crop",
                     "warped_size": [crop_right - crop_left, crop_bottom - crop_top],
                     "transform_validation": validation,
@@ -250,6 +253,9 @@ class ImageNormalizationService:
                 "perspective_safety_margin_ratio": margin_ratio,
                 "perspective_required": True,
                 "perspective_distortion_score": round(float(distortion_score), 4),
+                "width_distortion": round(float(width_distortion), 4),
+                "height_distortion": round(float(height_distortion), 4),
+                "angle_distortion": round(float(angle_distortion), 4),
                 "normalization_transform": "perspective",
                 "warped_size": [max_width, max_height],
                 "transform_validation": validation,
