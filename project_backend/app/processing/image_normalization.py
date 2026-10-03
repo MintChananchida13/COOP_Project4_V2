@@ -13,10 +13,6 @@ class ImageNormalizationService:
     MAX_CONTOUR_AREA_RATIO = 0.98
     MIN_ASPECT_RATIO = 0.20
     MAX_ASPECT_RATIO = 5.0
-    MIN_DOCUMENT_RECTANGULARITY = 0.50
-    MIN_DOCUMENT_EXTENT_RATIO = 0.40
-    MAX_DOCUMENT_SIDE_IMBALANCE = 2.4
-    MAX_DOCUMENT_AREA_GAIN_RATIO = 1.8
     MIN_TRANSFORMED_DIMENSION = 80
     MIN_TRANSFORMED_AREA_RATIO = 0.03
     MAX_TRANSFORMED_ASPECT_RATIO = 8.0
@@ -26,13 +22,6 @@ class ImageNormalizationService:
     LAYOUT_CROP_PADDING_X_RATIO = 0.16
     LAYOUT_CROP_PADDING_TOP_RATIO = 0.24
     LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.24
-    LAYOUT_DESKEW_MAX_ANGLE_DEG = 2.5
-    LAYOUT_DESKEW_MIN_ANGLE_DEG = 0.25
-    LAYOUT_DESKEW_MIN_RECTANGULARITY = 0.70
-    LAYOUT_CROP_MAX_INSET_X_RATIO = 0.15
-    LAYOUT_CROP_MAX_INSET_Y_RATIO = 0.15
-    LAYOUT_CROP_MIN_WIDTH_RATIO = 0.70
-    LAYOUT_CROP_MIN_HEIGHT_RATIO = 0.70
 
     def normalize_document(self, image_path: str, output_path: Optional[str] = None) -> Dict[str, Any]:
         source_path = Path(image_path)
@@ -75,34 +64,19 @@ class ImageNormalizationService:
         else:
             normalized, debug = self._perspective_correct(image)
             if debug.get("normalization_status") == "fallback":
-                layout_normalized, layout_debug = self._layout_assisted_crop(
-                    image,
-                    debug.get("fallback_reason") or "perspective_unavailable",
-                )
+                layout_normalized, layout_debug = self._layout_assisted_crop(image, debug.get("fallback_reason"))
                 if layout_debug.get("normalization_status") == "layout_cropped":
                     normalized = layout_normalized
                     debug = layout_debug
                 else:
                     normalized = image.copy()
-                    debug = {
-                        **layout_debug,
-                        "document_detected": False,
-                        "crop_applied": False,
-                        "perspective_applied": False,
-                        "normalization_status": "fallback",
-                        "validation_passed": True,
-                        "fallback_used": True,
-                        "fallback_reason": layout_debug.get("fallback_reason") or "layout_crop_unavailable",
-                        "layout_crop_attempted": True,
-                        "layout_crop": layout_debug.get("layout_crop"),
-                        "layout_crop_fallback_reason": layout_debug.get("fallback_reason"),
-                        "transform_validation": {
-                            "passed": True,
-                            "reason": "layout_crop_fallback_to_original",
-                            "width": original_width,
-                            "height": original_height,
-                        },
-                    }
+                    debug.update(
+                        {
+                            "layout_crop_attempted": True,
+                            "layout_crop": layout_debug.get("layout_crop"),
+                            "layout_crop_fallback_reason": layout_debug.get("fallback_reason"),
+                        }
+                    )
 
         normalized = self._resize_longest_side(normalized, self.LONGEST_SIDE)
         normalized_height, normalized_width = normalized.shape[:2]
@@ -144,84 +118,6 @@ class ImageNormalizationService:
             "normalization_debug": debug,
         }
 
-    def create_layout_matching_image(self, image_path: str, output_path: str) -> Dict[str, Any]:
-        source_path = Path(image_path)
-        target_path = Path(output_path)
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-
-        image = cv2.imread(str(source_path))
-        if image is None:
-            raise ValueError(f"Unable to read image for layout matching normalization: {image_path}")
-
-        original_height, original_width = image.shape[:2]
-        matching_image, debug = self._perspective_correct(image)
-        if debug.get("normalization_status") == "fallback":
-            layout_normalized, layout_debug = self._layout_assisted_crop(
-                image,
-                debug.get("fallback_reason") or "layout_matching_crop",
-            )
-            if layout_debug.get("normalization_status") == "layout_cropped":
-                matching_image = layout_normalized
-                debug = layout_debug
-            else:
-                matching_image = image.copy()
-                debug = {
-                    **layout_debug,
-                    "document_detected": False,
-                    "crop_applied": False,
-                    "perspective_applied": False,
-                    "normalization_status": "layout_matching_uncropped",
-                    "validation_passed": True,
-                    "fallback_used": True,
-                    "fallback_reason": layout_debug.get("fallback_reason") or "layout_matching_crop_unavailable",
-                    "layout_crop_attempted": True,
-                    "layout_crop": layout_debug.get("layout_crop"),
-                    "layout_crop_fallback_reason": layout_debug.get("fallback_reason"),
-                    "transform_validation": {
-                        "passed": True,
-                        "reason": "layout_matching_crop_fallback_to_original",
-                        "width": original_width,
-                        "height": original_height,
-                    },
-                }
-
-        matching_image = self._resize_longest_side(matching_image, self.LONGEST_SIDE)
-        matching_height, matching_width = matching_image.shape[:2]
-        debug.update(
-            {
-                "original_size": [original_width, original_height],
-                "normalized_size": [matching_width, matching_height],
-                "output_size": [matching_width, matching_height],
-                "matching_only": True,
-            }
-        )
-
-        write_success = bool(cv2.imwrite(str(target_path), matching_image))
-        decoded_output = cv2.imread(str(target_path)) if write_success else None
-        if not write_success or decoded_output is None:
-            cv2.imwrite(str(target_path), image)
-            debug.update(
-                {
-                    "normalization_status": "layout_matching_fallback",
-                    "validation_passed": False,
-                    "fallback_used": True,
-                    "fallback_reason": "layout_matching_output_decode_failed",
-                }
-            )
-
-        return {
-            "matching_image_path": str(target_path),
-            "normalization_status": debug["normalization_status"],
-            "crop_applied": debug["crop_applied"],
-            "fallback_used": debug["fallback_used"],
-            "fallback_reason": debug["fallback_reason"],
-            "original_size": [original_width, original_height],
-            "output_size": debug["output_size"],
-            "resize_policy": "longest_side",
-            "longest_side": self.LONGEST_SIDE,
-            "normalization_debug": debug,
-        }
-
     def _perspective_correct(self, image: np.ndarray) -> tuple[np.ndarray, Dict[str, Any]]:
         contour_info = self._find_document_contour(image)
         contour = contour_info.get("contour") if contour_info else None
@@ -253,38 +149,6 @@ class ImageNormalizationService:
         width_b = np.linalg.norm(top_right - top_left)
         height_a = np.linalg.norm(top_right - bottom_right)
         height_b = np.linalg.norm(top_left - bottom_left)
-        width_imbalance = max(width_a, width_b) / max(1.0, min(width_a, width_b))
-        height_imbalance = max(height_a, height_b) / max(1.0, min(height_a, height_b))
-        contour_area = float(contour_info.get("area") or 0.0)
-        warped_area = float(max(width_a, width_b) * max(height_a, height_b))
-        area_gain_ratio = warped_area / max(1.0, contour_area)
-        geometry_validation = {
-            "width_imbalance": round(float(width_imbalance), 4),
-            "height_imbalance": round(float(height_imbalance), 4),
-            "area_gain_ratio": round(float(area_gain_ratio), 4),
-            "rectangularity": contour_info.get("rectangularity"),
-            "extent_ratio": contour_info.get("extent_ratio"),
-        }
-        if (
-            width_imbalance > self.MAX_DOCUMENT_SIDE_IMBALANCE
-            or height_imbalance > self.MAX_DOCUMENT_SIDE_IMBALANCE
-            or area_gain_ratio > self.MAX_DOCUMENT_AREA_GAIN_RATIO
-        ):
-            reason = "document_contour_geometry_unstable"
-            debug.update(
-                {
-                    "validation_passed": False,
-                    "fallback_used": True,
-                    "fallback_reason": reason,
-                    "normalization_status": "fallback",
-                    "transform_validation": {
-                        "passed": False,
-                        "reason": reason,
-                        **geometry_validation,
-                    },
-                }
-            )
-            return image.copy(), debug
         max_width = max(1, int(max(width_a, width_b)))
         max_height = max(1, int(max(height_a, height_b)))
 
@@ -305,12 +169,7 @@ class ImageNormalizationService:
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=(255, 255, 255),
         )
-        validation = self._validate_transformed_image(
-            warped,
-            image,
-            expected_aspect_ratio=contour_info.get("aspect_ratio"),
-        )
-        validation.update(geometry_validation)
+        validation = self._validate_transformed_image(warped, image)
         if not validation["passed"]:
             debug.update(
                 {
@@ -392,8 +251,6 @@ class ImageNormalizationService:
             "score": round(float(best["score"]), 4),
             "aspect_ratio": round(float(best["aspect_ratio"]), 4),
             "center_score": round(float(best["center_score"]), 4),
-            "rectangularity": round(float(best["rectangularity"]), 4),
-            "extent_ratio": round(float(best["extent_ratio"]), 4),
             "fallback_reason": None,
         }
 
@@ -440,20 +297,11 @@ class ImageNormalizationService:
         if aspect_ratio < self.MIN_ASPECT_RATIO or aspect_ratio > self.MAX_ASPECT_RATIO:
             return None
 
-        quad_area = float(cv2.contourArea(ordered.reshape(4, 1, 2)))
-        rectangularity = area / max(1.0, quad_area)
-        extent_ratio = area / max(1.0, width * height)
-        if rectangularity < self.MIN_DOCUMENT_RECTANGULARITY:
-            return None
-        if extent_ratio < self.MIN_DOCUMENT_EXTENT_RATIO:
-            return None
-
         contour_center = ordered.mean(axis=0)
         center_distance = np.linalg.norm(contour_center - image_center)
         center_score = 1.0 - min(1.0, center_distance / max(1.0, max_center_distance))
         area_score = min(1.0, area_ratio / 0.75)
-        geometry_score = min(1.0, rectangularity) * min(1.0, extent_ratio)
-        score = (0.55 * area_score) + (0.30 * center_score) + (0.15 * geometry_score)
+        score = (0.65 * area_score) + (0.35 * center_score)
 
         return {
             "points_array": ordered,
@@ -461,8 +309,6 @@ class ImageNormalizationService:
             "area": area,
             "area_ratio": area_ratio,
             "aspect_ratio": aspect_ratio,
-            "rectangularity": rectangularity,
-            "extent_ratio": extent_ratio,
             "center_score": center_score,
             "source": source,
             "score": score,
@@ -538,8 +384,7 @@ class ImageNormalizationService:
     def _validate_transformed_image(
     self,
     transformed: Optional[np.ndarray],
-    original: np.ndarray,
-    expected_aspect_ratio: Optional[float] = None,) -> Dict[str, Any]:
+    original: np.ndarray,) -> Dict[str, Any]:
 
         if transformed is None or not isinstance(transformed, np.ndarray):
             return {"passed": False, "reason": "perspective_transform_failed"}
@@ -557,11 +402,10 @@ class ImageNormalizationService:
 
         aspect_ratio = width / max(1, height)
         original_aspect_ratio = original_width / max(1, original_height)
-        reference_aspect_ratio = expected_aspect_ratio or original_aspect_ratio
 
         aspect_change_ratio = max(
-            aspect_ratio / reference_aspect_ratio,
-            reference_aspect_ratio / aspect_ratio,
+            aspect_ratio / original_aspect_ratio,
+            original_aspect_ratio / aspect_ratio,
         )
 
         gray = (
@@ -580,7 +424,6 @@ class ImageNormalizationService:
             "area_ratio": round(float(area_ratio), 4),
             "aspect_ratio": round(float(aspect_ratio), 4),
             "original_aspect_ratio": round(float(original_aspect_ratio), 4),
-            "reference_aspect_ratio": round(float(reference_aspect_ratio), 4),
             "aspect_change_ratio": round(float(aspect_change_ratio), 4),
             "stddev": round(stddev, 4),
         }
@@ -633,14 +476,7 @@ class ImageNormalizationService:
 
         return validation
 
-    def _layout_assisted_crop(
-        self,
-        image: np.ndarray,
-        previous_fallback_reason: Optional[str] = None,
-        *,
-        allow_deskew: bool = True,
-        success_status: str = "layout_cropped",
-    ) -> tuple[np.ndarray, Dict[str, Any]]:
+    def _layout_assisted_crop(self, image: np.ndarray, previous_fallback_reason: Optional[str] = None) -> tuple[np.ndarray, Dict[str, Any]]:
         height, width = image.shape[:2]
         debug: Dict[str, Any] = {
             "document_detected": False,
@@ -664,12 +500,9 @@ class ImageNormalizationService:
         }
 
         try:
-            from app.model_runtime.layout_analysis_service import analyze_layout
+            from .layout_analysis_service import analyze_layout
 
-            analysis = analyze_layout(
-                image,
-                expand_text_rois=False,
-            )
+            analysis = analyze_layout(image, expand_text_rois=False)
         except Exception as error:
             debug.update(
                 {
@@ -764,13 +597,12 @@ class ImageNormalizationService:
                 "document_detected": True,
                 "crop_applied": True,
                 "perspective_applied": False,
-                "normalization_status": success_status,
+                "normalization_status": "layout_cropped",
                 "validation_passed": True,
                 "fallback_used": False,
                 "fallback_reason": None,
                 "detected_contour_area": round(float((crop_right - crop_left) * (crop_bottom - crop_top)), 2),
                 "contour_area_ratio": round(float(((crop_right - crop_left) * (crop_bottom - crop_top)) / max(1, width * height)), 4),
-                "contour_score": None,
                 "contour_aspect_ratio": round(float((crop_right - crop_left) / max(1, crop_bottom - crop_top)), 4),
                 "detected_points": [
                     [float(crop_left), float(crop_top)],
@@ -784,188 +616,6 @@ class ImageNormalizationService:
             }
         )
         return cropped, debug
-
-    def _layout_deskew_candidate(self, image: np.ndarray, boxes: List[List[float]]) -> Dict[str, Any]:
-        height, width = image.shape[:2]
-        result: Dict[str, Any] = {
-            "applied": False,
-            "reason": "not_evaluated",
-            "angle_deg": 0.0,
-            "rectangularity": None,
-        }
-        if len(boxes) < self.LAYOUT_CROP_MIN_REGIONS:
-            result["reason"] = "insufficient_layout_regions"
-            return result
-
-        points: List[List[float]] = []
-        for left, top, right, bottom in boxes:
-            points.extend([[left, top], [right, top], [right, bottom], [left, bottom]])
-        if len(points) < 8:
-            result["reason"] = "insufficient_layout_points"
-            return result
-
-        point_array = np.array(points, dtype=np.float32)
-        rect = cv2.minAreaRect(point_array)
-        (_, _), (rect_width, rect_height), rect_angle = rect
-        if rect_width <= 2 or rect_height <= 2:
-            result["reason"] = "invalid_layout_rect"
-            return result
-
-        axis_left = min(box[0] for box in boxes)
-        axis_top = min(box[1] for box in boxes)
-        axis_right = max(box[2] for box in boxes)
-        axis_bottom = max(box[3] for box in boxes)
-        axis_area = max(1.0, float((axis_right - axis_left) * (axis_bottom - axis_top)))
-        rect_area = max(1.0, float(rect_width * rect_height))
-        rectangularity = min(axis_area, rect_area) / max(axis_area, rect_area)
-        angle = self._normalized_layout_angle(float(rect_width), float(rect_height), float(rect_angle))
-        result.update(
-            {
-                "reason": "candidate_evaluated",
-                "angle_deg": round(float(angle), 4),
-                "rectangularity": round(float(rectangularity), 4),
-            }
-        )
-
-        if rectangularity < self.LAYOUT_DESKEW_MIN_RECTANGULARITY:
-            result["reason"] = "layout_rectangularity_too_low"
-            return result
-        if abs(angle) < self.LAYOUT_DESKEW_MIN_ANGLE_DEG:
-            result["reason"] = "layout_angle_too_small"
-            return result
-        if abs(angle) > self.LAYOUT_DESKEW_MAX_ANGLE_DEG:
-            result["reason"] = "layout_angle_too_large"
-            return result
-
-        matrix = cv2.getRotationMatrix2D((width / 2.0, height / 2.0), angle, 1.0)
-        rotated = cv2.warpAffine(
-            image,
-            matrix,
-            (width, height),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(255, 255, 255),
-        )
-        rotated_boxes = self._transform_layout_boxes(boxes, matrix, width, height)
-        if len(rotated_boxes) < self.LAYOUT_CROP_MIN_REGIONS:
-            result["reason"] = "rotated_layout_boxes_invalid"
-            return result
-
-        result.update(
-            {
-                "applied": True,
-                "reason": "layout_gentle_deskew_applied",
-                "image": rotated,
-                "boxes": rotated_boxes,
-            }
-        )
-        return result
-
-    def _safe_layout_crop_box(
-        self,
-        crop_left: int,
-        crop_top: int,
-        crop_right: int,
-        crop_bottom: int,
-        image_width: int,
-        image_height: int,
-    ) -> Dict[str, Any]:
-        original = [crop_left, crop_top, crop_right, crop_bottom]
-        max_left = int(round(image_width * self.LAYOUT_CROP_MAX_INSET_X_RATIO))
-        max_top = int(round(image_height * self.LAYOUT_CROP_MAX_INSET_Y_RATIO))
-        min_right = int(round(image_width * (1.0 - self.LAYOUT_CROP_MAX_INSET_X_RATIO)))
-        min_bottom = int(round(image_height * (1.0 - self.LAYOUT_CROP_MAX_INSET_Y_RATIO)))
-
-        safe_left = min(max(0, crop_left), max_left)
-        safe_top = min(max(0, crop_top), max_top)
-        safe_right = max(min(image_width, crop_right), min_right)
-        safe_bottom = max(min(image_height, crop_bottom), min_bottom)
-
-        min_width = int(round(image_width * self.LAYOUT_CROP_MIN_WIDTH_RATIO))
-        min_height = int(round(image_height * self.LAYOUT_CROP_MIN_HEIGHT_RATIO))
-        if safe_right - safe_left < min_width:
-            missing = min_width - (safe_right - safe_left)
-            safe_left = max(0, safe_left - ((missing + 1) // 2))
-            safe_right = min(image_width, safe_right + (missing // 2))
-            if safe_right - safe_left < min_width:
-                safe_left = max(0, safe_right - min_width)
-                safe_right = min(image_width, safe_left + min_width)
-        if safe_bottom - safe_top < min_height:
-            missing = min_height - (safe_bottom - safe_top)
-            safe_top = max(0, safe_top - ((missing + 1) // 2))
-            safe_bottom = min(image_height, safe_bottom + (missing // 2))
-            if safe_bottom - safe_top < min_height:
-                safe_top = max(0, safe_bottom - min_height)
-                safe_bottom = min(image_height, safe_top + min_height)
-
-        final_box = [safe_left, safe_top, safe_right, safe_bottom]
-        return {
-            "left": safe_left,
-            "top": safe_top,
-            "right": safe_right,
-            "bottom": safe_bottom,
-            "original_box": original,
-            "final_box": final_box,
-            "applied": final_box != original,
-            "max_inset_x_ratio": self.LAYOUT_CROP_MAX_INSET_X_RATIO,
-            "max_inset_y_ratio": self.LAYOUT_CROP_MAX_INSET_Y_RATIO,
-            "min_width_ratio": self.LAYOUT_CROP_MIN_WIDTH_RATIO,
-            "min_height_ratio": self.LAYOUT_CROP_MIN_HEIGHT_RATIO,
-        }
-
-    def _safe_layout_crop_debug_payload(self, safe_crop: Dict[str, Any]) -> Dict[str, Any]:
-        return {
-            "applied": bool(safe_crop.get("applied")),
-            "original_box": safe_crop.get("original_box"),
-            "final_box": safe_crop.get("final_box"),
-            "max_inset_x_ratio": safe_crop.get("max_inset_x_ratio"),
-            "max_inset_y_ratio": safe_crop.get("max_inset_y_ratio"),
-            "min_width_ratio": safe_crop.get("min_width_ratio"),
-            "min_height_ratio": safe_crop.get("min_height_ratio"),
-        }
-
-    def _layout_deskew_debug_payload(self, deskew_debug: Dict[str, Any]) -> Dict[str, Any]:
-        return {
-            "applied": bool(deskew_debug.get("applied")),
-            "reason": deskew_debug.get("reason"),
-            "angle_deg": deskew_debug.get("angle_deg"),
-            "rectangularity": deskew_debug.get("rectangularity"),
-            "max_angle_deg": self.LAYOUT_DESKEW_MAX_ANGLE_DEG,
-        }
-
-    def _normalized_layout_angle(self, rect_width: float, rect_height: float, rect_angle: float) -> float:
-        angle = rect_angle
-        if rect_width < rect_height:
-            angle += 90.0
-        while angle <= -45.0:
-            angle += 90.0
-        while angle > 45.0:
-            angle -= 90.0
-        return -angle
-
-    def _transform_layout_boxes(
-        self,
-        boxes: List[List[float]],
-        matrix: np.ndarray,
-        image_width: int,
-        image_height: int,
-    ) -> List[List[float]]:
-        transformed_boxes: List[List[float]] = []
-        for left, top, right, bottom in boxes:
-            points = np.array(
-                [[[left, top]], [[right, top]], [[right, bottom]], [[left, bottom]]],
-                dtype=np.float32,
-            )
-            transformed = cv2.transform(points, matrix).reshape(-1, 2)
-            x_values = transformed[:, 0]
-            y_values = transformed[:, 1]
-            new_left = max(0.0, min(float(image_width), float(x_values.min())))
-            new_top = max(0.0, min(float(image_height), float(y_values.min())))
-            new_right = max(0.0, min(float(image_width), float(x_values.max())))
-            new_bottom = max(0.0, min(float(image_height), float(y_values.max())))
-            if new_right > new_left and new_bottom > new_top:
-                transformed_boxes.append([new_left, new_top, new_right, new_bottom])
-        return transformed_boxes
 
     def _layout_region_boxes(self, analysis: Dict[str, Any], image_width: int, image_height: int) -> List[List[float]]:
         regions = analysis.get("regions") if isinstance(analysis, dict) else None

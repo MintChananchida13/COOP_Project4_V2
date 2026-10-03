@@ -45,25 +45,6 @@ DETECTION_FULL_EVAL_LIMIT = max(1, int(os.getenv("DETECTION_FULL_EVAL_LIMIT", st
 DETECTION_ALIGNMENT_LIMIT = max(0, int(os.getenv("DETECTION_ALIGNMENT_LIMIT", "1")))
 SAVE_DEBUG_ARTIFACTS = os.getenv("SAVE_DEBUG_ARTIFACTS", "false").strip().lower() in {"1", "true", "yes", "on"}
 DETECTION_COORDINATE_DEBUG = os.getenv("DETECTION_COORDINATE_DEBUG", "false").strip().lower() in {"1", "true", "yes", "on"}
-LAYOUT_REFERENCE_CROP_ENABLED = os.getenv("LAYOUT_REFERENCE_CROP_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
-LAYOUT_REFERENCE_CROP_MAX_INSET_RATIO = float(os.getenv("LAYOUT_REFERENCE_CROP_MAX_INSET_RATIO", "0.35"))
-LAYOUT_REFERENCE_CROP_MIN_COVERAGE_RATIO = float(os.getenv("LAYOUT_REFERENCE_CROP_MIN_COVERAGE_RATIO", "0.55"))
-LAYOUT_REFERENCE_CROP_MIN_DELTA_RATIO = float(os.getenv("LAYOUT_REFERENCE_CROP_MIN_DELTA_RATIO", "0.015"))
-OLD_LAYOUT_CROP_PADDING_X_RATIO = 0.30
-OLD_LAYOUT_CROP_PADDING_TOP_RATIO = 0.38
-OLD_LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.38
-OLD_LAYOUT_CROP_MIN_IMAGE_PADDING_RATIO = 0.015
-OLD_LAYOUT_CROP_MAX_INSET_X_RATIO = 0.15
-OLD_LAYOUT_CROP_MAX_INSET_Y_RATIO = 0.15
-OLD_LAYOUT_CROP_MIN_WIDTH_RATIO = 0.70
-OLD_LAYOUT_CROP_MIN_HEIGHT_RATIO = 0.70
-LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO", "0.20"))
-LAYOUT_REFERENCE_PROJECTED_MAX_COVERAGE_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MAX_COVERAGE_RATIO", "0.98"))
-LAYOUT_REFERENCE_PROJECTED_MAX_SCALE_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MAX_SCALE_RATIO", "8.0"))
-LAYOUT_REFERENCE_PROJECTED_MIN_SAFETY_MARGIN_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MIN_SAFETY_MARGIN_RATIO", "0.005"))
-LAYOUT_REFERENCE_PROJECTED_MAX_SAFETY_MARGIN_RATIO = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_MAX_SAFETY_MARGIN_RATIO", "0.10"))
-LAYOUT_REFERENCE_PROJECTED_TEMPLATE_MARGIN_WEIGHT = float(os.getenv("LAYOUT_REFERENCE_PROJECTED_TEMPLATE_MARGIN_WEIGHT", "0.50"))
-GENERIC_LAYOUT_UNION_CROP_MARGIN_RATIO = float(os.getenv("GENERIC_LAYOUT_UNION_CROP_MARGIN_RATIO", "0.02"))
 verification_service = VerificationService()
 decision_service = DecisionService()
 global_settings_service = GlobalSettingsService()
@@ -543,1731 +524,6 @@ def _image_source_dimensions(source: Optional[str]) -> Optional[List[int]]:
         return None
 
 
-def _signature_content_bounds(signature: Optional[Dict[str, Any]]) -> Optional[Dict[str, float]]:
-    regions = signature.get("regions") if isinstance(signature, dict) else None
-    if not isinstance(regions, list) or not regions:
-        return None
-    left = 1.0
-    top = 1.0
-    right = 0.0
-    bottom = 0.0
-    valid_count = 0
-    for region in regions:
-        if not isinstance(region, dict):
-            continue
-        bbox = region.get("bbox") if isinstance(region.get("bbox"), dict) else {}
-        try:
-            x = float(bbox.get("x_ratio") or 0.0)
-            y = float(bbox.get("y_ratio") or 0.0)
-            box_width = float(bbox.get("width_ratio") or 0.0)
-            box_height = float(bbox.get("height_ratio") or 0.0)
-        except (TypeError, ValueError):
-            continue
-        if box_width <= 0.0 or box_height <= 0.0:
-            continue
-        left = min(left, max(0.0, min(1.0, x)))
-        top = min(top, max(0.0, min(1.0, y)))
-        right = max(right, max(0.0, min(1.0, x + box_width)))
-        bottom = max(bottom, max(0.0, min(1.0, y + box_height)))
-        valid_count += 1
-    if valid_count <= 0 or right <= left or bottom <= top:
-        return None
-    return {
-        "left": left,
-        "top": top,
-        "right": right,
-        "bottom": bottom,
-        "width": right - left,
-        "height": bottom - top,
-        "region_count": valid_count,
-    }
-
-
-def _signature_layout_space_source_bounds(signature: Optional[Dict[str, Any]]) -> Optional[Dict[str, float]]:
-    if not isinstance(signature, dict):
-        return None
-    normalization = signature.get("layout_space_normalization")
-    if not isinstance(normalization, dict) or not normalization.get("applied"):
-        return None
-    bounds = normalization.get("bounds")
-    if not isinstance(bounds, dict):
-        return None
-    try:
-        left = float(bounds.get("left"))
-        top = float(bounds.get("top"))
-        right = float(bounds.get("right"))
-        bottom = float(bounds.get("bottom"))
-    except (TypeError, ValueError):
-        return None
-    if right <= left or bottom <= top:
-        return None
-    return {
-        "left": max(0.0, min(1.0, left)),
-        "top": max(0.0, min(1.0, top)),
-        "right": max(0.0, min(1.0, right)),
-        "bottom": max(0.0, min(1.0, bottom)),
-        "width": max(0.0, min(1.0, right) - max(0.0, min(1.0, left))),
-        "height": max(0.0, min(1.0, bottom) - max(0.0, min(1.0, top))),
-        "region_count": int(normalization.get("region_count") or signature.get("region_count") or 0),
-    }
-
-
-def _bounds_from_boxes(boxes: List[Dict[str, float]]) -> Optional[Dict[str, float]]:
-    if not boxes:
-        return None
-    left = min(box["left"] for box in boxes)
-    top = min(box["top"] for box in boxes)
-    right = max(box["right"] for box in boxes)
-    bottom = max(box["bottom"] for box in boxes)
-    if right <= left or bottom <= top:
-        return None
-    return {
-        "left": round(float(left), 6),
-        "top": round(float(top), 6),
-        "right": round(float(right), 6),
-        "bottom": round(float(bottom), 6),
-        "width": round(float(right - left), 6),
-        "height": round(float(bottom - top), 6),
-        "region_count": len(boxes),
-    }
-
-
-def _quantile(values: List[float], ratio: float) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * ratio))))
-    return float(ordered[index])
-
-
-def _signature_robust_content_bounds(signature: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    raw_bounds = _signature_layout_space_source_bounds(signature) or _signature_content_bounds(signature)
-    result: Dict[str, Any] = {
-        "raw_content_bounds": raw_bounds,
-        "robust_content_bounds": None,
-        "regions_used": 0,
-        "regions_excluded": 0,
-        "fallback_reason": None,
-    }
-    regions = signature.get("regions") if isinstance(signature, dict) else None
-    if not isinstance(regions, list) or len(regions) < 6:
-        result["fallback_reason"] = "insufficient_regions_for_robust_bounds"
-        return result
-
-    boxes: List[Dict[str, float]] = []
-    for index, region in enumerate(regions):
-        if not isinstance(region, dict):
-            continue
-        bbox = region.get("source_bbox") if isinstance(region.get("source_bbox"), dict) else region.get("bbox")
-        if not isinstance(bbox, dict):
-            continue
-        try:
-            x = max(0.0, min(1.0, float(bbox.get("x_ratio") or 0.0)))
-            y = max(0.0, min(1.0, float(bbox.get("y_ratio") or 0.0)))
-            width = max(0.0, min(1.0, float(bbox.get("width_ratio") or 0.0)))
-            height = max(0.0, min(1.0, float(bbox.get("height_ratio") or 0.0)))
-        except (TypeError, ValueError):
-            continue
-        if width <= 0.0 or height <= 0.0:
-            continue
-        area = width * height
-        boxes.append(
-            {
-                "index": float(index),
-                "left": x,
-                "top": y,
-                "right": min(1.0, x + width),
-                "bottom": min(1.0, y + height),
-                "center_x": min(1.0, x + width / 2.0),
-                "center_y": min(1.0, y + height / 2.0),
-                "area": area,
-            }
-        )
-    if len(boxes) < 6:
-        result["fallback_reason"] = "insufficient_valid_boxes_for_robust_bounds"
-        return result
-
-    median_area = _quantile([box["area"] for box in boxes], 0.5)
-    min_area = max(0.000005, median_area * 0.10)
-    area_filtered = [box for box in boxes if box["area"] >= min_area]
-    if len(area_filtered) < max(4, int(len(boxes) * 0.45)):
-        area_filtered = boxes
-
-    low_x = _quantile([box["center_x"] for box in area_filtered], 0.03)
-    high_x = _quantile([box["center_x"] for box in area_filtered], 0.97)
-    low_y = _quantile([box["center_y"] for box in area_filtered], 0.03)
-    high_y = _quantile([box["center_y"] for box in area_filtered], 0.97)
-    center_filtered = [
-        box
-        for box in area_filtered
-        if low_x <= box["center_x"] <= high_x and low_y <= box["center_y"] <= high_y
-    ]
-    if len(center_filtered) < max(4, int(len(boxes) * 0.45)):
-        result["fallback_reason"] = "robust_filter_removed_too_many_regions"
-        return result
-
-    robust_bounds = _bounds_from_boxes(center_filtered)
-    if not robust_bounds:
-        result["fallback_reason"] = "robust_bounds_empty"
-        return result
-
-    normalization = signature.get("layout_space_normalization") if isinstance(signature, dict) else None
-    source_bounds = None
-    if isinstance(normalization, dict) and normalization.get("applied") and isinstance(normalization.get("bounds"), dict):
-        source = _signature_layout_space_source_bounds(signature)
-        if source:
-            source_bounds = {
-                "left": source["left"] + robust_bounds["left"] * source["width"],
-                "top": source["top"] + robust_bounds["top"] * source["height"],
-                "right": source["left"] + robust_bounds["right"] * source["width"],
-                "bottom": source["top"] + robust_bounds["bottom"] * source["height"],
-            }
-            source_bounds["width"] = source_bounds["right"] - source_bounds["left"]
-            source_bounds["height"] = source_bounds["bottom"] - source_bounds["top"]
-            source_bounds["region_count"] = robust_bounds["region_count"]
-
-    final_bounds = source_bounds or robust_bounds
-    raw_area = float((raw_bounds or {}).get("width") or 0.0) * float((raw_bounds or {}).get("height") or 0.0)
-    robust_area = float(final_bounds.get("width") or 0.0) * float(final_bounds.get("height") or 0.0)
-    if raw_area > 0 and robust_area < raw_area * 0.35:
-        result["fallback_reason"] = "robust_bounds_too_small_vs_raw_bounds"
-        return result
-
-    result.update(
-        {
-            "robust_content_bounds": {
-                key: round(float(value), 6) if isinstance(value, float) else value
-                for key, value in final_bounds.items()
-            },
-            "regions_used": len(center_filtered),
-            "regions_excluded": max(0, len(boxes) - len(center_filtered)),
-            "fallback_reason": None,
-        }
-    )
-    return result
-
-
-def _signature_metrics_for_regions(regions: List[Dict[str, Any]]) -> Dict[str, Any]:
-    labels = ("text", "table", "image")
-    grid_size = 4
-    label_counts = {label: 0 for label in labels}
-    area_by_label = {label: 0.0 for label in labels}
-    grid_counts = {label: [0 for _ in range(grid_size * grid_size)] for label in labels}
-    grid_area = {label: [0.0 for _ in range(grid_size * grid_size)] for label in labels}
-    for region in regions:
-        label = str(region.get("label") or "text")
-        if label not in label_counts:
-            label = "text"
-        label_counts[label] += 1
-        area = max(0.0, min(1.0, float(region.get("area_ratio") or 0.0)))
-        area_by_label[label] += area
-        center = region.get("center") if isinstance(region.get("center"), list) else [0.0, 0.0]
-        try:
-            cx = max(0.0, min(1.0, float(center[0])))
-            cy = max(0.0, min(1.0, float(center[1])))
-        except (TypeError, ValueError, IndexError):
-            cx = 0.0
-            cy = 0.0
-        gx = min(grid_size - 1, max(0, int(cx * grid_size)))
-        gy = min(grid_size - 1, max(0, int(cy * grid_size)))
-        cell = gy * grid_size + gx
-        grid_counts[label][cell] += 1
-        grid_area[label][cell] += area
-    return {
-        "region_count": len(regions),
-        "label_counts": label_counts,
-        "area_by_label": {label: round(max(0.0, min(1.0, value)), 6) for label, value in area_by_label.items()},
-        "grid_counts": grid_counts,
-        "grid_area": {
-            label: [round(max(0.0, min(1.0, value)), 6) for value in values]
-            for label, values in grid_area.items()
-        },
-    }
-
-
-def _layout_bounds_to_pixel_box(bounds: Dict[str, float], image_width: int, image_height: int) -> List[int]:
-    return [
-        max(0, int(round(float(bounds.get("left") or 0.0) * image_width))),
-        max(0, int(round(float(bounds.get("top") or 0.0) * image_height))),
-        min(image_width, int(round(float(bounds.get("right") or 1.0) * image_width))),
-        min(image_height, int(round(float(bounds.get("bottom") or 1.0) * image_height))),
-    ]
-
-
-def _old_safe_layout_crop_box(
-    crop_left: int,
-    crop_top: int,
-    crop_right: int,
-    crop_bottom: int,
-    image_width: int,
-    image_height: int,
-) -> Dict[str, Any]:
-    original = [int(crop_left), int(crop_top), int(crop_right), int(crop_bottom)]
-    max_left = int(round(image_width * OLD_LAYOUT_CROP_MAX_INSET_X_RATIO))
-    max_top = int(round(image_height * OLD_LAYOUT_CROP_MAX_INSET_Y_RATIO))
-    min_right = int(round(image_width * (1.0 - OLD_LAYOUT_CROP_MAX_INSET_X_RATIO)))
-    min_bottom = int(round(image_height * (1.0 - OLD_LAYOUT_CROP_MAX_INSET_Y_RATIO)))
-    safe_left = min(max(0, crop_left), max_left)
-    safe_top = min(max(0, crop_top), max_top)
-    safe_right = max(min(image_width, crop_right), min_right)
-    safe_bottom = max(min(image_height, crop_bottom), min_bottom)
-    min_width = int(round(image_width * OLD_LAYOUT_CROP_MIN_WIDTH_RATIO))
-    min_height = int(round(image_height * OLD_LAYOUT_CROP_MIN_HEIGHT_RATIO))
-    if safe_right - safe_left < min_width:
-        missing = min_width - (safe_right - safe_left)
-        safe_left = max(0, safe_left - ((missing + 1) // 2))
-        safe_right = min(image_width, safe_right + (missing // 2))
-    if safe_bottom - safe_top < min_height:
-        missing = min_height - (safe_bottom - safe_top)
-        safe_top = max(0, safe_top - ((missing + 1) // 2))
-        safe_bottom = min(image_height, safe_bottom + (missing // 2))
-    return {
-        "left": int(safe_left),
-        "top": int(safe_top),
-        "right": int(safe_right),
-        "bottom": int(safe_bottom),
-        "original_box": original,
-        "final_box": [int(safe_left), int(safe_top), int(safe_right), int(safe_bottom)],
-        "applied": [int(safe_left), int(safe_top), int(safe_right), int(safe_bottom)] != original,
-        "max_inset_x_ratio": OLD_LAYOUT_CROP_MAX_INSET_X_RATIO,
-        "max_inset_y_ratio": OLD_LAYOUT_CROP_MAX_INSET_Y_RATIO,
-        "min_width_ratio": OLD_LAYOUT_CROP_MIN_WIDTH_RATIO,
-        "min_height_ratio": OLD_LAYOUT_CROP_MIN_HEIGHT_RATIO,
-    }
-
-
-def _old_layout_crop_box_from_bounds(
-    bounds: Dict[str, float],
-    image_width: int,
-    image_height: int,
-) -> Dict[str, Any]:
-    left = float(bounds.get("left") or 0.0) * image_width
-    top = float(bounds.get("top") or 0.0) * image_height
-    right = float(bounds.get("right") or 1.0) * image_width
-    bottom = float(bounds.get("bottom") or 1.0) * image_height
-    content_width = max(1.0, right - left)
-    content_height = max(1.0, bottom - top)
-    pad_left = max(image_width * OLD_LAYOUT_CROP_MIN_IMAGE_PADDING_RATIO, content_width * OLD_LAYOUT_CROP_PADDING_X_RATIO)
-    pad_right = max(image_width * OLD_LAYOUT_CROP_MIN_IMAGE_PADDING_RATIO, content_width * OLD_LAYOUT_CROP_PADDING_X_RATIO)
-    pad_top = max(image_height * OLD_LAYOUT_CROP_MIN_IMAGE_PADDING_RATIO, content_height * OLD_LAYOUT_CROP_PADDING_TOP_RATIO)
-    pad_bottom = max(image_height * OLD_LAYOUT_CROP_MIN_IMAGE_PADDING_RATIO, content_height * OLD_LAYOUT_CROP_PADDING_BOTTOM_RATIO)
-    requested = [
-        int(max(0, np.floor(left - pad_left))),
-        int(max(0, np.floor(top - pad_top))),
-        int(min(image_width, np.ceil(right + pad_right))),
-        int(min(image_height, np.ceil(bottom + pad_bottom))),
-    ]
-    safe_crop = _old_safe_layout_crop_box(requested[0], requested[1], requested[2], requested[3], image_width, image_height)
-    final_box = safe_crop["final_box"]
-    return {
-        "passed": final_box[2] > final_box[0] and final_box[3] > final_box[1],
-        "reason": "old_layout_crop_box_valid" if final_box[2] > final_box[0] and final_box[3] > final_box[1] else "old_layout_crop_zero_area",
-        "content_box": [round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)],
-        "requested_expanded_box": requested,
-        "final_box": final_box,
-        "expanded_box": final_box,
-        "padding": {
-            "left": round(float(pad_left), 2),
-            "right": round(float(pad_right), 2),
-            "top": round(float(pad_top), 2),
-            "bottom": round(float(pad_bottom), 2),
-        },
-        "safe_crop": safe_crop,
-        "source": "old_layout_assisted_crop_from_layout_bounds",
-    }
-
-
-def _generic_layout_union_crop_box_from_bounds(
-    bounds: Dict[str, float],
-    image_width: int,
-    image_height: int,
-) -> Dict[str, Any]:
-    left = float(bounds.get("left") or 0.0) * image_width
-    top = float(bounds.get("top") or 0.0) * image_height
-    right = float(bounds.get("right") or 1.0) * image_width
-    bottom = float(bounds.get("bottom") or 1.0) * image_height
-    margin_x = max(0.0, image_width * GENERIC_LAYOUT_UNION_CROP_MARGIN_RATIO)
-    margin_y = max(0.0, image_height * GENERIC_LAYOUT_UNION_CROP_MARGIN_RATIO)
-    final_box = [
-        int(max(0, np.floor(left - margin_x))),
-        int(max(0, np.floor(top - margin_y))),
-        int(min(image_width, np.ceil(right + margin_x))),
-        int(min(image_height, np.ceil(bottom + margin_y))),
-    ]
-    crop_width = max(0, final_box[2] - final_box[0])
-    crop_height = max(0, final_box[3] - final_box[1])
-    passed = crop_width > 0 and crop_height > 0
-    coverage = round(float((crop_width / max(1, image_width)) * (crop_height / max(1, image_height))), 6)
-    return {
-        "passed": passed,
-        "reason": "generic_layout_union_crop_box_valid" if passed else "generic_layout_union_crop_zero_area",
-        "layout_union_box": [round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)],
-        "content_box": [round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)],
-        "margin_x_px": round(float(margin_x), 2),
-        "margin_y_px": round(float(margin_y), 2),
-        "expanded_crop_box": final_box,
-        "final_crop_box": final_box,
-        "final_crop_coverage": coverage,
-        "final_box": final_box,
-        "expanded_box": final_box,
-        "padding": {
-            "left": round(float(margin_x), 2),
-            "right": round(float(margin_x), 2),
-            "top": round(float(margin_y), 2),
-            "bottom": round(float(margin_y), 2),
-        },
-        "source": "generic_layout_union_crop_from_raw_layout_bounds",
-    }
-
-
-def _union_region_boxes(boxes: List[Dict[str, float]]) -> Optional[Dict[str, float]]:
-    valid = [box for box in boxes if isinstance(box, dict) and float(box.get("width") or 0.0) > 0.0 and float(box.get("height") or 0.0) > 0.0]
-    if not valid:
-        return None
-    left = min(float(box.get("left") or 0.0) for box in valid)
-    top = min(float(box.get("top") or 0.0) for box in valid)
-    right = max(float(box.get("right") or 0.0) for box in valid)
-    bottom = max(float(box.get("bottom") or 0.0) for box in valid)
-    return {
-        "left": max(0.0, min(1.0, left)),
-        "top": max(0.0, min(1.0, top)),
-        "right": max(0.0, min(1.0, right)),
-        "bottom": max(0.0, min(1.0, bottom)),
-        "width": max(0.0, min(1.0, right) - max(0.0, left)),
-        "height": max(0.0, min(1.0, bottom) - max(0.0, top)),
-    }
-
-
-def _retrieval_precrop_signature(
-    signature: Dict[str, Any],
-    image_path: Optional[str] = None,
-    output_dir: Optional[Path] = None,
-    page_number: int = 1,
-) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    debug: Dict[str, Any] = {
-        "retrieval_precrop_attempted": True,
-        "retrieval_precrop_applied": False,
-        "retrieval_precrop_box": None,
-        "retrieval_precrop_coverage": None,
-        "retrieval_precrop_image_path": None,
-        "retrieval_precrop_preview_url": None,
-        "retrieval_crop": {
-            "applied": False,
-            "layout_bounds": None,
-            "expanded_bounds": None,
-            "safety_margin": None,
-            "crop_box": None,
-            "crop_size": None,
-        },
-        "retrieval_source": "original_layout_signature",
-        "reason": None,
-    }
-    if not isinstance(signature, dict):
-        debug["reason"] = "invalid_signature"
-        return signature, debug
-    robust_debug = _signature_robust_content_bounds(signature)
-    bounds = _signature_content_bounds(signature) or robust_debug.get("raw_content_bounds")
-    if not isinstance(bounds, dict):
-        debug["reason"] = "missing_content_bounds"
-        return signature, debug
-    width = float(bounds.get("width") or 0.0)
-    height = float(bounds.get("height") or 0.0)
-    if width <= 0.0 or height <= 0.0:
-        debug["reason"] = "invalid_content_bounds"
-        return signature, debug
-    coverage = round(float(width * height), 6)
-    edge_inset = max(
-        0.0,
-        float(bounds.get("left") or 0.0),
-        float(bounds.get("top") or 0.0),
-        1.0 - float(bounds.get("right") or 1.0),
-        1.0 - float(bounds.get("bottom") or 1.0),
-    )
-    debug["retrieval_precrop_coverage"] = coverage
-    debug["retrieval_crop"]["layout_bounds"] = {key: round(float(value), 6) for key, value in bounds.items()}
-    debug["retrieval_crop"]["raw_content_bounds"] = robust_debug.get("raw_content_bounds")
-    debug["retrieval_crop"]["robust_content_bounds"] = robust_debug.get("robust_content_bounds")
-    full_frame_like = width >= 0.92 and height >= 0.92 and edge_inset <= 0.04
-    if full_frame_like:
-        debug["reason"] = "content_already_full_frame"
-        return signature, debug
-    if coverage >= 0.88 and width >= 0.90 and height >= 0.90:
-        debug["reason"] = "content_coverage_too_large_for_precrop"
-        return signature, debug
-    image_width = max(float(signature.get("image_width") or 1.0), 1.0)
-    image_height = max(float(signature.get("image_height") or 1.0), 1.0)
-    generic_crop_debug = _generic_layout_union_crop_box_from_bounds(bounds, int(round(image_width)), int(round(image_height)))
-    if not generic_crop_debug.get("passed"):
-        debug["reason"] = generic_crop_debug.get("reason") or "generic_layout_precrop_unavailable"
-        debug["retrieval_crop"]["generic_layout_crop"] = generic_crop_debug
-        return signature, debug
-    crop_box = generic_crop_debug["final_box"]
-    crop = {
-        "left": crop_box[0] / image_width,
-        "top": crop_box[1] / image_height,
-        "right": crop_box[2] / image_width,
-        "bottom": crop_box[3] / image_height,
-    }
-    crop["width"] = crop["right"] - crop["left"]
-    crop["height"] = crop["bottom"] - crop["top"]
-    if crop["width"] <= 0.05 or crop["height"] <= 0.05:
-        debug["reason"] = "precrop_box_too_small"
-        return signature, debug
-
-    rebased_regions: List[Dict[str, Any]] = []
-    for region in signature.get("regions", []) if isinstance(signature.get("regions"), list) else []:
-        if not isinstance(region, dict):
-            continue
-        bbox = _region_bbox(region, "source_bbox")
-        if not bbox:
-            continue
-        left = max(0.0, min(1.0, (bbox["left"] - crop["left"]) / crop["width"]))
-        top = max(0.0, min(1.0, (bbox["top"] - crop["top"]) / crop["height"]))
-        right = max(0.0, min(1.0, (bbox["right"] - crop["left"]) / crop["width"]))
-        bottom = max(0.0, min(1.0, (bbox["bottom"] - crop["top"]) / crop["height"]))
-        if right <= left or bottom <= top:
-            continue
-        next_bbox = {
-            "x_ratio": round(left, 6),
-            "y_ratio": round(top, 6),
-            "width_ratio": round(right - left, 6),
-            "height_ratio": round(bottom - top, 6),
-        }
-        rebased_regions.append(
-            {
-                **region,
-                "bbox": next_bbox,
-                "source_bbox": region.get("source_bbox") if isinstance(region.get("source_bbox"), dict) else region.get("bbox"),
-                "center": [round(left + (right - left) / 2.0, 6), round(top + (bottom - top) / 2.0, 6)],
-                "area_ratio": round(max(0.0, min(1.0, (right - left) * (bottom - top))), 6),
-            }
-        )
-    if len(rebased_regions) < 2:
-        debug["reason"] = "insufficient_precrop_regions"
-        return signature, debug
-    metrics = _signature_metrics_for_regions(rebased_regions)
-    next_signature = {
-        **signature,
-        **metrics,
-        "page_aspect_ratio": round((image_width * crop["width"]) / max(1.0, image_height * crop["height"]), 6),
-        "image_width": int(round(image_width * crop["width"])),
-        "image_height": int(round(image_height * crop["height"])),
-        "regions": rebased_regions,
-        "layout_space_normalization": {
-            "applied": True,
-            "source": "retrieval_precrop_content_bounds",
-            "bounds": {key: round(float(value), 6) for key, value in crop.items()},
-            "original_image_width": int(image_width),
-            "original_image_height": int(image_height),
-        },
-    }
-    debug.update(
-        {
-            "retrieval_precrop_applied": True,
-            "retrieval_precrop_box": {key: round(float(value), 6) for key, value in crop.items()},
-            "retrieval_precrop_coverage": round(float(crop["width"] * crop["height"]), 6),
-            "retrieval_crop": {
-                "applied": True,
-                "layout_bounds": {key: round(float(value), 6) for key, value in bounds.items()},
-                "expanded_bounds": {key: round(float(value), 6) for key, value in crop.items()},
-                "safety_margin": generic_crop_debug.get("padding"),
-                "layout_union_box": generic_crop_debug.get("layout_union_box"),
-                "margin_x_px": generic_crop_debug.get("margin_x_px"),
-                "margin_y_px": generic_crop_debug.get("margin_y_px"),
-                "expanded_crop_box": generic_crop_debug.get("expanded_crop_box"),
-                "final_crop_box": generic_crop_debug.get("final_crop_box"),
-                "final_crop_coverage": generic_crop_debug.get("final_crop_coverage"),
-                "crop_box": {key: round(float(value), 6) for key, value in crop.items()},
-                "crop_size": [int(next_signature["image_width"]), int(next_signature["image_height"])],
-                "generic_layout_crop": generic_crop_debug,
-            },
-            "retrieval_source": "retrieval_precrop_image_signature",
-            "reason": "background_content_bounds_rebased_for_retrieval",
-        }
-    )
-    if image_path and output_dir is not None:
-        image = cv2.imread(str(image_path))
-        if image is not None:
-            image_height_px, image_width_px = image.shape[:2]
-            left_px = max(0, int(round(crop["left"] * image_width_px)))
-            top_px = max(0, int(round(crop["top"] * image_height_px)))
-            right_px = min(image_width_px, int(round(crop["right"] * image_width_px)))
-            bottom_px = min(image_height_px, int(round(crop["bottom"] * image_height_px)))
-            if right_px > left_px and bottom_px > top_px:
-                output_dir.mkdir(parents=True, exist_ok=True)
-                output_path = output_dir / f"page_{page_number}_retrieval_crop.png"
-                if cv2.imwrite(str(output_path), image[top_px:bottom_px, left_px:right_px].copy()):
-                    debug["retrieval_precrop_image_path"] = str(output_path)
-                    debug["retrieval_precrop_preview_url"] = _detection_preview_url(str(output_path))
-    return next_signature, debug
-
-
-def _rebase_layout_signature_to_crop(
-    signature: Optional[Dict[str, Any]],
-    crop: Dict[str, float],
-    image_width: int,
-    image_height: int,
-) -> Optional[Dict[str, Any]]:
-    if not isinstance(signature, dict):
-        return None
-    crop_width = float(crop.get("width") or 0.0)
-    crop_height = float(crop.get("height") or 0.0)
-    if crop_width <= 0.0 or crop_height <= 0.0:
-        return None
-    rebased_regions: List[Dict[str, Any]] = []
-    for region in signature.get("regions", []) if isinstance(signature.get("regions"), list) else []:
-        if not isinstance(region, dict):
-            continue
-        bbox = _region_bbox(region, "source_bbox")
-        if not bbox:
-            continue
-        left = max(0.0, min(1.0, (bbox["left"] - float(crop["left"])) / crop_width))
-        top = max(0.0, min(1.0, (bbox["top"] - float(crop["top"])) / crop_height))
-        right = max(0.0, min(1.0, (bbox["right"] - float(crop["left"])) / crop_width))
-        bottom = max(0.0, min(1.0, (bbox["bottom"] - float(crop["top"])) / crop_height))
-        if right <= left or bottom <= top:
-            continue
-        next_bbox = {
-            "x_ratio": round(left, 6),
-            "y_ratio": round(top, 6),
-            "width_ratio": round(right - left, 6),
-            "height_ratio": round(bottom - top, 6),
-        }
-        rebased_regions.append(
-            {
-                **region,
-                "bbox": next_bbox,
-                "source_bbox": region.get("source_bbox") if isinstance(region.get("source_bbox"), dict) else region.get("bbox"),
-                "center": [round(left + (right - left) / 2.0, 6), round(top + (bottom - top) / 2.0, 6)],
-                "area_ratio": round(max(0.0, min(1.0, (right - left) * (bottom - top))), 6),
-            }
-        )
-    if len(rebased_regions) < 2:
-        return None
-    metrics = _signature_metrics_for_regions(rebased_regions)
-    return {
-        **signature,
-        **metrics,
-        "page_aspect_ratio": round(image_width / max(1.0, float(image_height)), 6),
-        "image_width": int(image_width),
-        "image_height": int(image_height),
-        "regions": rebased_regions,
-        "layout_space_normalization": {
-            "applied": True,
-            "source": "layout_reference_crop",
-            "bounds": {key: round(float(value), 6) for key, value in crop.items()},
-            "original_image_width": int(image_width),
-            "original_image_height": int(image_height),
-        },
-    }
-
-
-def _solve_reference_crop_axis(
-    query_min: float,
-    query_max: float,
-    template_min: float,
-    template_max: float,
-    image_size: int,
-) -> Optional[tuple[int, int]]:
-    query_span = query_max - query_min
-    template_span = template_max - template_min
-    if query_span <= 0.01 or template_span <= 0.01 or image_size <= 0:
-        return None
-    crop_size_ratio = query_span / template_span
-    crop_start_ratio = query_min - (template_min * crop_size_ratio)
-    crop_end_ratio = crop_start_ratio + crop_size_ratio
-    return int(round(crop_start_ratio * image_size)), int(round(crop_end_ratio * image_size))
-
-
-def _clamp_reference_crop_box(left: int, top: int, right: int, bottom: int, image_width: int, image_height: int) -> Dict[str, Any]:
-    original = [left, top, right, bottom]
-    max_inset_x = int(round(image_width * LAYOUT_REFERENCE_CROP_MAX_INSET_RATIO))
-    max_inset_y = int(round(image_height * LAYOUT_REFERENCE_CROP_MAX_INSET_RATIO))
-    min_width = int(round(image_width * LAYOUT_REFERENCE_CROP_MIN_COVERAGE_RATIO))
-    min_height = int(round(image_height * LAYOUT_REFERENCE_CROP_MIN_COVERAGE_RATIO))
-    safe_left = min(max(0, left), max_inset_x)
-    safe_top = min(max(0, top), max_inset_y)
-    safe_right = max(min(image_width, right), image_width - max_inset_x)
-    safe_bottom = max(min(image_height, bottom), image_height - max_inset_y)
-    if safe_right - safe_left < min_width:
-        missing = min_width - (safe_right - safe_left)
-        safe_left = max(0, safe_left - ((missing + 1) // 2))
-        safe_right = min(image_width, safe_right + (missing // 2))
-    if safe_bottom - safe_top < min_height:
-        missing = min_height - (safe_bottom - safe_top)
-        safe_top = max(0, safe_top - ((missing + 1) // 2))
-        safe_bottom = min(image_height, safe_bottom + (missing // 2))
-    if safe_right <= safe_left or safe_bottom <= safe_top:
-        return {"passed": False, "reason": "invalid_reference_crop_box", "original_box": original}
-    final_box = [safe_left, safe_top, safe_right, safe_bottom]
-    return {
-        "passed": True,
-        "original_box": original,
-        "final_box": final_box,
-        "clamped": final_box != original,
-        "max_inset_ratio": LAYOUT_REFERENCE_CROP_MAX_INSET_RATIO,
-        "min_coverage_ratio": LAYOUT_REFERENCE_CROP_MIN_COVERAGE_RATIO,
-    }
-
-
-def _reference_crop_safety_margins(
-    crop_width: int,
-    crop_height: int,
-    image_width: int,
-    image_height: int,
-    projected_box: List[int],
-    query_bounds: Dict[str, float],
-    template_bounds: Dict[str, float],
-    query_raw_bounds: Optional[Dict[str, float]] = None,
-    template_raw_bounds: Optional[Dict[str, float]] = None,
-    projection_confidence: float = 1.0,
-) -> Dict[str, Any]:
-    min_ratio = max(0.0, LAYOUT_REFERENCE_PROJECTED_MIN_SAFETY_MARGIN_RATIO)
-    max_ratio = max(min_ratio, LAYOUT_REFERENCE_PROJECTED_MAX_SAFETY_MARGIN_RATIO)
-    weight = max(0.0, LAYOUT_REFERENCE_PROJECTED_TEMPLATE_MARGIN_WEIGHT)
-    template_width = max(float(template_bounds.get("width") or 0.0), 1e-6)
-    template_height = max(float(template_bounds.get("height") or 0.0), 1e-6)
-    base_ratios = {
-        "left": (max(0.0, float(template_bounds.get("left") or 0.0)) / template_width) * weight,
-        "right": (max(0.0, 1.0 - float(template_bounds.get("right") or 1.0)) / template_width) * weight,
-        "top": (max(0.0, float(template_bounds.get("top") or 0.0)) / template_height) * weight,
-        "bottom": (max(0.0, 1.0 - float(template_bounds.get("bottom") or 1.0)) / template_height) * weight,
-    }
-    content_box = {
-        "left": float(query_bounds.get("left") or 0.0) * image_width,
-        "right": float(query_bounds.get("right") or 0.0) * image_width,
-        "top": float(query_bounds.get("top") or 0.0) * image_height,
-        "bottom": float(query_bounds.get("bottom") or 0.0) * image_height,
-    }
-    left, top, right, bottom = projected_box
-    edge_gaps = {
-        "left": max(0.0, content_box["left"] - left) / max(1.0, float(crop_width)),
-        "right": max(0.0, right - content_box["right"]) / max(1.0, float(crop_width)),
-        "top": max(0.0, content_box["top"] - top) / max(1.0, float(crop_height)),
-        "bottom": max(0.0, bottom - content_box["bottom"]) / max(1.0, float(crop_height)),
-    }
-    edge_uncertainty = {
-        side: max(0.0, min_ratio - gap)
-        for side, gap in edge_gaps.items()
-    }
-    def _shrink_uncertainty(raw_bounds: Optional[Dict[str, float]], robust_bounds: Dict[str, float]) -> Dict[str, float]:
-        if not isinstance(raw_bounds, dict):
-            return {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0}
-        robust_width = max(float(robust_bounds.get("width") or 0.0), 1e-6)
-        robust_height = max(float(robust_bounds.get("height") or 0.0), 1e-6)
-        return {
-            "left": max(0.0, float(robust_bounds.get("left") or 0.0) - float(raw_bounds.get("left") or 0.0)) / robust_width,
-            "right": max(0.0, float(raw_bounds.get("right") or 0.0) - float(robust_bounds.get("right") or 0.0)) / robust_width,
-            "top": max(0.0, float(robust_bounds.get("top") or 0.0) - float(raw_bounds.get("top") or 0.0)) / robust_height,
-            "bottom": max(0.0, float(raw_bounds.get("bottom") or 0.0) - float(robust_bounds.get("bottom") or 0.0)) / robust_height,
-        }
-    query_shrink = _shrink_uncertainty(query_raw_bounds, query_bounds)
-    template_shrink = _shrink_uncertainty(template_raw_bounds, template_bounds)
-    shrink_uncertainty = {
-        side: min(max_ratio, max(query_shrink[side], template_shrink[side]) * 0.50)
-        for side in ("left", "right", "top", "bottom")
-    }
-    confidence = max(0.0, min(1.0, float(projection_confidence)))
-    geometry_uncertainty = 1.0 - confidence
-    base_side_ratios = {
-        side: min(max_ratio, max(min_ratio, base_ratios[side]))
-        for side in ("left", "right", "top", "bottom")
-    }
-    edge_margin_ratios = {
-        side: edge_uncertainty[side]
-        for side in ("left", "right", "top", "bottom")
-    }
-    robust_shrink_margin_ratios = {
-        side: min(
-            max_ratio,
-            shrink_uncertainty[side]
-            * min(1.0, (geometry_uncertainty * 4.0) + (edge_uncertainty[side] / max(min_ratio, 1e-6))),
-        )
-        for side in ("left", "right", "top", "bottom")
-    }
-    confidence_margin_ratios = {
-        side: geometry_uncertainty * base_side_ratios[side]
-        for side in ("left", "right", "top", "bottom")
-    }
-    side_ratios = {
-        side: min(
-            max_ratio,
-            base_side_ratios[side]
-            + edge_margin_ratios[side]
-            + robust_shrink_margin_ratios[side]
-            + confidence_margin_ratios[side],
-        )
-        for side in ("left", "right", "top", "bottom")
-    }
-    adaptive_safety_margin = {
-        "left": int(round(crop_width * side_ratios["left"])),
-        "right": int(round(crop_width * side_ratios["right"])),
-        "top": int(round(crop_height * side_ratios["top"])),
-        "bottom": int(round(crop_height * side_ratios["bottom"])),
-    }
-    return {
-        "base_margin": {
-            "left": int(round(crop_width * base_side_ratios["left"])),
-            "right": int(round(crop_width * base_side_ratios["right"])),
-            "top": int(round(crop_height * base_side_ratios["top"])),
-            "bottom": int(round(crop_height * base_side_ratios["bottom"])),
-        },
-        "base_safety_margin": {
-            "left": int(round(crop_width * base_side_ratios["left"])),
-            "right": int(round(crop_width * base_side_ratios["right"])),
-            "top": int(round(crop_height * base_side_ratios["top"])),
-            "bottom": int(round(crop_height * base_side_ratios["bottom"])),
-        },
-        "adaptive_safety_margin": adaptive_safety_margin,
-        "final_adaptive_margin": adaptive_safety_margin,
-        "edge_margin_contribution": {
-            "left": int(round(crop_width * edge_margin_ratios["left"])),
-            "right": int(round(crop_width * edge_margin_ratios["right"])),
-            "top": int(round(crop_height * edge_margin_ratios["top"])),
-            "bottom": int(round(crop_height * edge_margin_ratios["bottom"])),
-        },
-        "robust_shrink_margin_contribution": {
-            "left": int(round(crop_width * robust_shrink_margin_ratios["left"])),
-            "right": int(round(crop_width * robust_shrink_margin_ratios["right"])),
-            "top": int(round(crop_height * robust_shrink_margin_ratios["top"])),
-            "bottom": int(round(crop_height * robust_shrink_margin_ratios["bottom"])),
-        },
-        "confidence_margin_contribution": {
-            "left": int(round(crop_width * confidence_margin_ratios["left"])),
-            "right": int(round(crop_width * confidence_margin_ratios["right"])),
-            "top": int(round(crop_height * confidence_margin_ratios["top"])),
-            "bottom": int(round(crop_height * confidence_margin_ratios["bottom"])),
-        },
-        "edge_uncertainty": {
-            side: round(float(value), 6)
-            for side, value in edge_uncertainty.items()
-        },
-        "robust_shrink_uncertainty": {
-            side: round(float(value), 6)
-            for side, value in shrink_uncertainty.items()
-        },
-        "projection_confidence": round(float(confidence), 6),
-        "edge_gaps": {
-            side: round(float(value), 6)
-            for side, value in edge_gaps.items()
-        },
-        "side_ratios": {
-            side: round(float(value), 6)
-            for side, value in side_ratios.items()
-        },
-    }
-
-
-def _projected_reference_crop_box(
-    left: int,
-    top: int,
-    right: int,
-    bottom: int,
-    image_width: int,
-    image_height: int,
-    query_bounds: Dict[str, float],
-    template_bounds: Dict[str, float],
-    query_raw_bounds: Optional[Dict[str, float]] = None,
-    template_raw_bounds: Optional[Dict[str, float]] = None,
-) -> Dict[str, Any]:
-    original = [left, top, right, bottom]
-    if image_width <= 0 or image_height <= 0:
-        return {"passed": False, "reason": "invalid_source_image_size", "original_box": original}
-    crop_left = max(0, min(image_width, left))
-    crop_top = max(0, min(image_height, top))
-    crop_right = max(0, min(image_width, right))
-    crop_bottom = max(0, min(image_height, bottom))
-    if crop_right <= crop_left or crop_bottom <= crop_top:
-        return {"passed": False, "reason": "projected_document_box_empty", "original_box": original}
-    crop_width = crop_right - crop_left
-    crop_height = crop_bottom - crop_top
-    template_width = max(float(template_bounds.get("width") or 0.0), 1e-6)
-    template_height = max(float(template_bounds.get("height") or 0.0), 1e-6)
-    query_width = max(float(query_bounds.get("width") or 0.0), 1e-6)
-    query_height = max(float(query_bounds.get("height") or 0.0), 1e-6)
-    scale_x = query_width / template_width
-    scale_y = query_height / template_height
-    projection_confidence = max(0.0, min(1.0, min(scale_x, scale_y) / max(scale_x, scale_y, 1e-6)))
-    projected_box_before_margin = [crop_left, crop_top, crop_right, crop_bottom]
-    safety_debug = _reference_crop_safety_margins(
-        crop_width,
-        crop_height,
-        image_width,
-        image_height,
-        projected_box_before_margin,
-        query_bounds,
-        template_bounds,
-        query_raw_bounds=query_raw_bounds,
-        template_raw_bounds=template_raw_bounds,
-        projection_confidence=projection_confidence,
-    )
-    safety_margin = safety_debug["adaptive_safety_margin"]
-    crop_left = max(0, crop_left - safety_margin["left"])
-    crop_top = max(0, crop_top - safety_margin["top"])
-    crop_right = min(image_width, crop_right + safety_margin["right"])
-    crop_bottom = min(image_height, crop_bottom + safety_margin["bottom"])
-    if crop_right <= crop_left or crop_bottom <= crop_top:
-        return {
-            "passed": False,
-            "reason": "projected_document_box_empty_after_margin",
-            "original_box": original,
-            "projected_box_before_margin": projected_box_before_margin,
-            "safety_margin": safety_margin,
-            "base_margin": safety_debug["base_margin"],
-            "base_safety_margin": safety_debug["base_safety_margin"],
-            "edge_margin_contribution": safety_debug["edge_margin_contribution"],
-            "robust_shrink_margin_contribution": safety_debug["robust_shrink_margin_contribution"],
-            "confidence_margin_contribution": safety_debug["confidence_margin_contribution"],
-            "adaptive_safety_margin": safety_debug["adaptive_safety_margin"],
-            "final_adaptive_margin": safety_debug["final_adaptive_margin"],
-            "edge_uncertainty": safety_debug["edge_uncertainty"],
-            "robust_shrink_uncertainty": safety_debug["robust_shrink_uncertainty"],
-            "projection_confidence": safety_debug["projection_confidence"],
-            "projected_box_after_margin": [crop_left, crop_top, crop_right, crop_bottom],
-        }
-    crop_width = crop_right - crop_left
-    crop_height = crop_bottom - crop_top
-    coverage_x = crop_width / max(1, image_width)
-    coverage_y = crop_height / max(1, image_height)
-    if (
-        coverage_x < LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO
-        or coverage_y < LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO
-    ):
-        return {
-            "passed": False,
-            "reason": "projected_document_box_too_small",
-            "original_box": original,
-            "final_box": [crop_left, crop_top, crop_right, crop_bottom],
-            "projected_box_before_margin": projected_box_before_margin,
-            "safety_margin": safety_margin,
-            "base_margin": safety_debug["base_margin"],
-            "base_safety_margin": safety_debug["base_safety_margin"],
-            "edge_margin_contribution": safety_debug["edge_margin_contribution"],
-            "robust_shrink_margin_contribution": safety_debug["robust_shrink_margin_contribution"],
-            "confidence_margin_contribution": safety_debug["confidence_margin_contribution"],
-            "adaptive_safety_margin": safety_debug["adaptive_safety_margin"],
-            "final_adaptive_margin": safety_debug["final_adaptive_margin"],
-            "edge_uncertainty": safety_debug["edge_uncertainty"],
-            "robust_shrink_uncertainty": safety_debug["robust_shrink_uncertainty"],
-            "projection_confidence": safety_debug["projection_confidence"],
-            "projected_box_after_margin": [crop_left, crop_top, crop_right, crop_bottom],
-            "coverage": [round(float(coverage_x), 6), round(float(coverage_y), 6)],
-        }
-    if (
-        coverage_x > LAYOUT_REFERENCE_PROJECTED_MAX_COVERAGE_RATIO
-        or coverage_y > LAYOUT_REFERENCE_PROJECTED_MAX_COVERAGE_RATIO
-    ):
-        return {
-            "passed": False,
-            "reason": "projected_document_box_too_large",
-            "original_box": original,
-            "final_box": [crop_left, crop_top, crop_right, crop_bottom],
-            "projected_box_before_margin": projected_box_before_margin,
-            "safety_margin": safety_margin,
-            "base_margin": safety_debug["base_margin"],
-            "base_safety_margin": safety_debug["base_safety_margin"],
-            "edge_margin_contribution": safety_debug["edge_margin_contribution"],
-            "robust_shrink_margin_contribution": safety_debug["robust_shrink_margin_contribution"],
-            "confidence_margin_contribution": safety_debug["confidence_margin_contribution"],
-            "adaptive_safety_margin": safety_debug["adaptive_safety_margin"],
-            "final_adaptive_margin": safety_debug["final_adaptive_margin"],
-            "edge_uncertainty": safety_debug["edge_uncertainty"],
-            "robust_shrink_uncertainty": safety_debug["robust_shrink_uncertainty"],
-            "projection_confidence": safety_debug["projection_confidence"],
-            "projected_box_after_margin": [crop_left, crop_top, crop_right, crop_bottom],
-            "coverage": [round(float(coverage_x), 6), round(float(coverage_y), 6)],
-        }
-    if (
-        scale_x <= 0
-        or scale_y <= 0
-        or scale_x > LAYOUT_REFERENCE_PROJECTED_MAX_SCALE_RATIO
-        or scale_y > LAYOUT_REFERENCE_PROJECTED_MAX_SCALE_RATIO
-        or max(scale_x, scale_y) / max(min(scale_x, scale_y), 1e-6) > LAYOUT_REFERENCE_PROJECTED_MAX_SCALE_RATIO
-    ):
-        return {
-            "passed": False,
-            "reason": "projected_document_scale_unreliable",
-            "original_box": original,
-            "final_box": [crop_left, crop_top, crop_right, crop_bottom],
-            "projected_box_before_margin": projected_box_before_margin,
-            "safety_margin": safety_margin,
-            "base_margin": safety_debug["base_margin"],
-            "base_safety_margin": safety_debug["base_safety_margin"],
-            "edge_margin_contribution": safety_debug["edge_margin_contribution"],
-            "robust_shrink_margin_contribution": safety_debug["robust_shrink_margin_contribution"],
-            "confidence_margin_contribution": safety_debug["confidence_margin_contribution"],
-            "adaptive_safety_margin": safety_debug["adaptive_safety_margin"],
-            "final_adaptive_margin": safety_debug["final_adaptive_margin"],
-            "edge_uncertainty": safety_debug["edge_uncertainty"],
-            "robust_shrink_uncertainty": safety_debug["robust_shrink_uncertainty"],
-            "projection_confidence": safety_debug["projection_confidence"],
-            "projected_box_after_margin": [crop_left, crop_top, crop_right, crop_bottom],
-            "scale": [round(float(scale_x), 6), round(float(scale_y), 6)],
-        }
-    return {
-        "passed": True,
-        "reason": "projected_document_box_valid",
-        "original_box": original,
-        "final_box": [crop_left, crop_top, crop_right, crop_bottom],
-        "projected_box_before_margin": projected_box_before_margin,
-        "safety_margin": safety_margin,
-        "base_margin": safety_debug["base_margin"],
-        "base_safety_margin": safety_debug["base_safety_margin"],
-        "edge_margin_contribution": safety_debug["edge_margin_contribution"],
-        "robust_shrink_margin_contribution": safety_debug["robust_shrink_margin_contribution"],
-        "confidence_margin_contribution": safety_debug["confidence_margin_contribution"],
-        "adaptive_safety_margin": safety_debug["adaptive_safety_margin"],
-        "final_adaptive_margin": safety_debug["final_adaptive_margin"],
-        "edge_uncertainty": safety_debug["edge_uncertainty"],
-        "robust_shrink_uncertainty": safety_debug["robust_shrink_uncertainty"],
-        "projection_confidence": safety_debug["projection_confidence"],
-        "projected_box_after_margin": [crop_left, crop_top, crop_right, crop_bottom],
-        "clamped": [crop_left, crop_top, crop_right, crop_bottom] != original,
-        "coverage": [round(float(coverage_x), 6), round(float(coverage_y), 6)],
-        "scale": [round(float(scale_x), 6), round(float(scale_y), 6)],
-    }
-
-
-def _region_bbox(region: Dict[str, Any], key: str = "bbox") -> Optional[Dict[str, float]]:
-    bbox = region.get(key) if isinstance(region.get(key), dict) else region.get("bbox")
-    if not isinstance(bbox, dict):
-        return None
-    try:
-        x = max(0.0, min(1.0, float(bbox.get("x_ratio") or 0.0)))
-        y = max(0.0, min(1.0, float(bbox.get("y_ratio") or 0.0)))
-        width = max(0.0, min(1.0, float(bbox.get("width_ratio") or 0.0)))
-        height = max(0.0, min(1.0, float(bbox.get("height_ratio") or 0.0)))
-    except (TypeError, ValueError):
-        return None
-    if width <= 0.0 or height <= 0.0:
-        return None
-    return {
-        "left": x,
-        "top": y,
-        "right": min(1.0, x + width),
-        "bottom": min(1.0, y + height),
-        "width": width,
-        "height": height,
-        "center_x": min(1.0, x + width / 2.0),
-        "center_y": min(1.0, y + height / 2.0),
-        "aspect": width / max(height, 1e-6),
-        "area": width * height,
-    }
-
-
-def _layout_correspondence_crop_box(
-    query_signature: Optional[Dict[str, Any]],
-    template_signature: Optional[Dict[str, Any]],
-    image_width: int,
-    image_height: int,
-) -> Dict[str, Any]:
-    debug: Dict[str, Any] = {
-        "passed": False,
-        "fallback_reason": None,
-        "correspondence_count": 0,
-        "inlier_count": 0,
-        "inlier_ratio": 0.0,
-        "scale_x": None,
-        "scale_y": None,
-        "translate_x": None,
-        "translate_y": None,
-        "rmse": None,
-        "confidence": 0.0,
-        "template_page_size": list(_signature_template_page_size(template_signature) or []),
-        "projected_document_box": None,
-        "final_crop_box": None,
-        "document_layout_bounds": None,
-        "expanded_layout_bounds": None,
-        "matched_region_count": 0,
-    }
-    if not isinstance(query_signature, dict) or not isinstance(template_signature, dict):
-        debug["fallback_reason"] = "missing_signature_for_correspondence_crop"
-        return debug
-    query_regions = [item for item in query_signature.get("regions", []) if isinstance(item, dict)]
-    template_regions = [item for item in template_signature.get("regions", []) if isinstance(item, dict)]
-    if len(query_regions) < 4 or len(template_regions) < 4:
-        debug["fallback_reason"] = "insufficient_regions_for_correspondence_crop"
-        return debug
-
-    candidates: List[Dict[str, Any]] = []
-    for qi, query_region in enumerate(query_regions):
-        q_match_box = _region_bbox(query_region, "bbox")
-        q_source_box = _region_bbox(query_region, "source_bbox")
-        if not q_match_box or not q_source_box:
-            continue
-        q_label = str(query_region.get("label") or "text")
-        for ti, template_region in enumerate(template_regions):
-            if str(template_region.get("label") or "text") != q_label:
-                continue
-            t_match_box = _region_bbox(template_region, "bbox")
-            t_source_box = _region_bbox(template_region, "source_bbox")
-            if not t_match_box or not t_source_box:
-                continue
-            center_dist = abs(q_match_box["center_x"] - t_match_box["center_x"]) + abs(q_match_box["center_y"] - t_match_box["center_y"])
-            size_delta = abs(q_match_box["width"] - t_match_box["width"]) + abs(q_match_box["height"] - t_match_box["height"])
-            aspect_delta = abs(q_match_box["aspect"] - t_match_box["aspect"]) / max(t_match_box["aspect"], 1e-6)
-            area_delta = abs(q_match_box["area"] - t_match_box["area"]) / max(t_match_box["area"], 1e-6)
-            score = 1.0 - min(1.0, (center_dist * 1.8) + (size_delta * 1.4) + (aspect_delta * 0.20) + (area_delta * 0.08))
-            if score < 0.45:
-                continue
-            candidates.append(
-                {
-                    "score": score,
-                    "query_index": qi,
-                    "template_index": ti,
-                    "query_box": q_source_box,
-                    "template_box": t_source_box,
-                }
-            )
-    candidates.sort(key=lambda item: float(item["score"]), reverse=True)
-    matches: List[Dict[str, Any]] = []
-    used_query: set[int] = set()
-    used_template: set[int] = set()
-    for item in candidates:
-        if int(item["query_index"]) in used_query or int(item["template_index"]) in used_template:
-            continue
-        matches.append(item)
-        used_query.add(int(item["query_index"]))
-        used_template.add(int(item["template_index"]))
-        if len(matches) >= 30:
-            break
-    debug["correspondence_count"] = len(matches)
-    if len(matches) < 4:
-        debug["fallback_reason"] = "insufficient_correspondences"
-        return debug
-
-    def _fit_axis(template_values: np.ndarray, query_values: np.ndarray) -> tuple[float, float]:
-        matrix = np.vstack([template_values, np.ones(len(template_values))]).T
-        scale, translate = np.linalg.lstsq(matrix, query_values, rcond=None)[0]
-        return float(scale), float(translate)
-
-    template_x = np.array([float(item["template_box"]["center_x"]) for item in matches], dtype=np.float64)
-    template_y = np.array([float(item["template_box"]["center_y"]) for item in matches], dtype=np.float64)
-    query_x = np.array([float(item["query_box"]["center_x"]) for item in matches], dtype=np.float64)
-    query_y = np.array([float(item["query_box"]["center_y"]) for item in matches], dtype=np.float64)
-    scale_x, translate_x = _fit_axis(template_x, query_x)
-    scale_y, translate_y = _fit_axis(template_y, query_y)
-    pred_x = scale_x * template_x + translate_x
-    pred_y = scale_y * template_y + translate_y
-    residuals = np.sqrt(np.square(pred_x - query_x) + np.square(pred_y - query_y))
-    median_residual = float(np.median(residuals)) if len(residuals) else 1.0
-    inlier_threshold = max(0.025, median_residual * 2.5)
-    inlier_mask = residuals <= inlier_threshold
-    inlier_count = int(np.count_nonzero(inlier_mask))
-    if inlier_count < 4:
-        debug["fallback_reason"] = "insufficient_correspondence_inliers"
-        return debug
-    inlier_matches = [item for item, keep in zip(matches, inlier_mask) if bool(keep)]
-    if inlier_count < len(matches):
-        scale_x, translate_x = _fit_axis(template_x[inlier_mask], query_x[inlier_mask])
-        scale_y, translate_y = _fit_axis(template_y[inlier_mask], query_y[inlier_mask])
-        pred_x = scale_x * template_x[inlier_mask] + translate_x
-        pred_y = scale_y * template_y[inlier_mask] + translate_y
-        residuals = np.sqrt(np.square(pred_x - query_x[inlier_mask]) + np.square(pred_y - query_y[inlier_mask]))
-    rmse = float(np.sqrt(np.mean(np.square(residuals)))) if len(residuals) else 1.0
-    inlier_ratio = inlier_count / max(len(matches), 1)
-    if scale_x <= 0.05 or scale_y <= 0.05 or scale_x > 3.0 or scale_y > 3.0:
-        debug["fallback_reason"] = "correspondence_scale_unreliable"
-        return debug
-    scale_consistency = min(scale_x, scale_y) / max(scale_x, scale_y, 1e-6)
-    confidence = max(0.0, min(1.0, inlier_ratio * scale_consistency * (1.0 - min(1.0, rmse / 0.08))))
-    if confidence < 0.45 or rmse > 0.08:
-        debug["fallback_reason"] = "correspondence_confidence_too_low"
-        debug.update({"rmse": round(rmse, 6), "confidence": round(confidence, 6), "inlier_count": inlier_count, "inlier_ratio": round(inlier_ratio, 6)})
-        return debug
-
-    left_ratio = translate_x
-    top_ratio = translate_y
-    right_ratio = scale_x + translate_x
-    bottom_ratio = scale_y + translate_y
-    projected = [
-        int(round(left_ratio * image_width)),
-        int(round(top_ratio * image_height)),
-        int(round(right_ratio * image_width)),
-        int(round(bottom_ratio * image_height)),
-    ]
-    document_bounds = _union_region_boxes([item["query_box"] for item in inlier_matches])
-    if not document_bounds:
-        debug["fallback_reason"] = "correspondence_document_bounds_unavailable"
-        return debug
-    old_crop_debug = _old_layout_crop_box_from_bounds(document_bounds, image_width, image_height)
-    if not old_crop_debug.get("passed"):
-        debug["fallback_reason"] = old_crop_debug.get("reason") or "old_layout_correspondence_crop_unavailable"
-        debug["old_layout_crop"] = old_crop_debug
-        return debug
-    final_box = old_crop_debug["final_box"]
-    expanded_bounds = {
-        "left": final_box[0] / max(1, image_width),
-        "top": final_box[1] / max(1, image_height),
-        "right": final_box[2] / max(1, image_width),
-        "bottom": final_box[3] / max(1, image_height),
-    }
-    expanded_bounds["width"] = expanded_bounds["right"] - expanded_bounds["left"]
-    expanded_bounds["height"] = expanded_bounds["bottom"] - expanded_bounds["top"]
-    if final_box[2] <= final_box[0] or final_box[3] <= final_box[1]:
-        debug["fallback_reason"] = "correspondence_crop_empty"
-        return debug
-    coverage_x = (final_box[2] - final_box[0]) / max(1, image_width)
-    coverage_y = (final_box[3] - final_box[1]) / max(1, image_height)
-    if coverage_x < LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO or coverage_y < LAYOUT_REFERENCE_PROJECTED_MIN_COVERAGE_RATIO:
-        debug["fallback_reason"] = "correspondence_crop_too_small"
-        return debug
-    if coverage_x > LAYOUT_REFERENCE_PROJECTED_MAX_COVERAGE_RATIO or coverage_y > LAYOUT_REFERENCE_PROJECTED_MAX_COVERAGE_RATIO:
-        debug["fallback_reason"] = "correspondence_crop_too_large"
-        return debug
-    debug.update(
-        {
-            "passed": True,
-            "reason": "layout_correspondence_crop_valid",
-            "inlier_count": inlier_count,
-            "inlier_ratio": round(inlier_ratio, 6),
-            "scale_x": round(float(scale_x), 6),
-            "scale_y": round(float(scale_y), 6),
-            "translate_x": round(float(translate_x), 6),
-            "translate_y": round(float(translate_y), 6),
-            "rmse": round(float(rmse), 6),
-            "confidence": round(float(confidence), 6),
-            "projected_document_box": projected,
-            "final_crop_box": final_box,
-            "document_layout_bounds": {key: round(float(value), 6) for key, value in document_bounds.items()},
-            "expanded_layout_bounds": {key: round(float(value), 6) for key, value in expanded_bounds.items()},
-            "matched_region_count": int(inlier_count),
-            "safety_margin": old_crop_debug.get("padding"),
-            "old_layout_crop": old_crop_debug,
-            "coverage": [round(float(coverage_x), 6), round(float(coverage_y), 6)],
-        }
-    )
-    return debug
-
-
-def _template_guided_layout_bounds(
-    query_signature: Optional[Dict[str, Any]],
-    template_signature: Optional[Dict[str, Any]],
-    raw_bounds: Optional[Dict[str, float]],
-) -> Dict[str, Any]:
-    debug: Dict[str, Any] = {
-        "attempted": True,
-        "used": False,
-        "fallback_reason": None,
-        "correspondence_count": 0,
-        "inlier_count": 0,
-        "inlier_ratio": 0.0,
-        "rmse": None,
-        "confidence": 0.0,
-        "document_layout_bounds": raw_bounds,
-        "raw_layout_bounds": raw_bounds,
-    }
-    if not isinstance(query_signature, dict) or not isinstance(template_signature, dict):
-        debug["fallback_reason"] = "missing_signature_for_template_guided_bounds"
-        return debug
-    query_regions = [item for item in query_signature.get("regions", []) if isinstance(item, dict)]
-    template_regions = [item for item in template_signature.get("regions", []) if isinstance(item, dict)]
-    if len(query_regions) < 4 or len(template_regions) < 4:
-        debug["fallback_reason"] = "insufficient_regions_for_template_guided_bounds"
-        return debug
-
-    candidates: List[Dict[str, Any]] = []
-    for qi, query_region in enumerate(query_regions):
-        q_match_box = _region_bbox(query_region, "bbox")
-        q_source_box = _region_bbox(query_region, "source_bbox")
-        if not q_match_box or not q_source_box:
-            continue
-        q_label = str(query_region.get("label") or "text")
-        for ti, template_region in enumerate(template_regions):
-            if str(template_region.get("label") or "text") != q_label:
-                continue
-            t_match_box = _region_bbox(template_region, "bbox")
-            if not t_match_box:
-                continue
-            center_dist = abs(q_match_box["center_x"] - t_match_box["center_x"]) + abs(q_match_box["center_y"] - t_match_box["center_y"])
-            size_delta = abs(q_match_box["width"] - t_match_box["width"]) + abs(q_match_box["height"] - t_match_box["height"])
-            aspect_delta = abs(q_match_box["aspect"] - t_match_box["aspect"]) / max(t_match_box["aspect"], 1e-6)
-            area_delta = abs(q_match_box["area"] - t_match_box["area"]) / max(t_match_box["area"], 1e-6)
-            score = 1.0 - min(1.0, (center_dist * 1.8) + (size_delta * 1.4) + (aspect_delta * 0.20) + (area_delta * 0.08))
-            if score < 0.45:
-                continue
-            candidates.append(
-                {
-                    "score": score,
-                    "query_index": qi,
-                    "template_index": ti,
-                    "query_box": q_source_box,
-                    "template_box": t_match_box,
-                }
-            )
-    candidates.sort(key=lambda item: float(item["score"]), reverse=True)
-    matches: List[Dict[str, Any]] = []
-    used_query: set[int] = set()
-    used_template: set[int] = set()
-    for item in candidates:
-        if int(item["query_index"]) in used_query or int(item["template_index"]) in used_template:
-            continue
-        matches.append(item)
-        used_query.add(int(item["query_index"]))
-        used_template.add(int(item["template_index"]))
-        if len(matches) >= 30:
-            break
-    debug["correspondence_count"] = len(matches)
-    if len(matches) < 4:
-        debug["fallback_reason"] = "insufficient_template_guided_correspondences"
-        return debug
-
-    def _fit_axis(template_values: np.ndarray, query_values: np.ndarray) -> tuple[float, float]:
-        matrix = np.vstack([template_values, np.ones(len(template_values))]).T
-        scale, translate = np.linalg.lstsq(matrix, query_values, rcond=None)[0]
-        return float(scale), float(translate)
-
-    template_x = np.array([float(item["template_box"]["center_x"]) for item in matches], dtype=np.float64)
-    template_y = np.array([float(item["template_box"]["center_y"]) for item in matches], dtype=np.float64)
-    query_x = np.array([float(item["query_box"]["center_x"]) for item in matches], dtype=np.float64)
-    query_y = np.array([float(item["query_box"]["center_y"]) for item in matches], dtype=np.float64)
-    scale_x, translate_x = _fit_axis(template_x, query_x)
-    scale_y, translate_y = _fit_axis(template_y, query_y)
-    pred_x = scale_x * template_x + translate_x
-    pred_y = scale_y * template_y + translate_y
-    residuals = np.sqrt(np.square(pred_x - query_x) + np.square(pred_y - query_y))
-    median_residual = float(np.median(residuals)) if len(residuals) else 1.0
-    inlier_threshold = max(0.025, median_residual * 2.5)
-    inlier_mask = residuals <= inlier_threshold
-    inlier_count = int(np.count_nonzero(inlier_mask))
-    if inlier_count < 4:
-        debug["fallback_reason"] = "insufficient_template_guided_inliers"
-        return debug
-    inlier_matches = [item for item, keep in zip(matches, inlier_mask) if bool(keep)]
-    if inlier_count < len(matches):
-        scale_x, translate_x = _fit_axis(template_x[inlier_mask], query_x[inlier_mask])
-        scale_y, translate_y = _fit_axis(template_y[inlier_mask], query_y[inlier_mask])
-        pred_x = scale_x * template_x[inlier_mask] + translate_x
-        pred_y = scale_y * template_y[inlier_mask] + translate_y
-        residuals = np.sqrt(np.square(pred_x - query_x[inlier_mask]) + np.square(pred_y - query_y[inlier_mask]))
-    rmse = float(np.sqrt(np.mean(np.square(residuals)))) if len(residuals) else 1.0
-    inlier_ratio = inlier_count / max(len(matches), 1)
-    if scale_x <= 0.05 or scale_y <= 0.05 or scale_x > 3.0 or scale_y > 3.0:
-        debug["fallback_reason"] = "template_guided_scale_unreliable"
-        return debug
-    scale_consistency = min(scale_x, scale_y) / max(scale_x, scale_y, 1e-6)
-    confidence = max(0.0, min(1.0, inlier_ratio * scale_consistency * (1.0 - min(1.0, rmse / 0.08))))
-    debug.update(
-        {
-            "inlier_count": int(inlier_count),
-            "inlier_ratio": round(float(inlier_ratio), 6),
-            "scale_x": round(float(scale_x), 6),
-            "scale_y": round(float(scale_y), 6),
-            "translate_x": round(float(translate_x), 6),
-            "translate_y": round(float(translate_y), 6),
-            "rmse": round(float(rmse), 6),
-            "confidence": round(float(confidence), 6),
-        }
-    )
-    if confidence < 0.45 or rmse > 0.08:
-        debug["fallback_reason"] = "template_guided_confidence_too_low"
-        return debug
-
-    inlier_bounds = _union_region_boxes([item["query_box"] for item in inlier_matches])
-    if not inlier_bounds:
-        debug["fallback_reason"] = "template_guided_bounds_unavailable"
-        return debug
-    include_pad_x = max(0.04, float(inlier_bounds.get("width") or 0.0) * 0.12)
-    include_pad_y = max(0.04, float(inlier_bounds.get("height") or 0.0) * 0.12)
-    include_bounds = {
-        "left": max(0.0, float(inlier_bounds["left"]) - include_pad_x),
-        "top": max(0.0, float(inlier_bounds["top"]) - include_pad_y),
-        "right": min(1.0, float(inlier_bounds["right"]) + include_pad_x),
-        "bottom": min(1.0, float(inlier_bounds["bottom"]) + include_pad_y),
-    }
-    query_boxes: List[Dict[str, float]] = []
-    for region in query_regions:
-        box = _region_bbox(region, "source_bbox")
-        if not box:
-            continue
-        if (
-            include_bounds["left"] <= box["center_x"] <= include_bounds["right"]
-            and include_bounds["top"] <= box["center_y"] <= include_bounds["bottom"]
-        ):
-            query_boxes.append(box)
-    guided_bounds = _union_region_boxes(query_boxes) or inlier_bounds
-    if not guided_bounds:
-        debug["fallback_reason"] = "template_guided_union_unavailable"
-        return debug
-    raw_area = float((raw_bounds or {}).get("width") or 0.0) * float((raw_bounds or {}).get("height") or 0.0)
-    guided_area = float(guided_bounds.get("width") or 0.0) * float(guided_bounds.get("height") or 0.0)
-    if raw_area > 0.0 and guided_area < raw_area * 0.55:
-        debug["fallback_reason"] = "template_guided_bounds_too_small"
-        debug["guided_bounds"] = guided_bounds
-        return debug
-    debug.update(
-        {
-            "used": True,
-            "reason": "template_guided_layout_bounds",
-            "document_layout_bounds": guided_bounds,
-            "inlier_layout_bounds": inlier_bounds,
-            "include_bounds": include_bounds,
-            "included_region_count": len(query_boxes),
-        }
-    )
-    return debug
-
-
-def _signature_template_page_size(signature: Optional[Dict[str, Any]]) -> Optional[tuple[int, int]]:
-    if not isinstance(signature, dict):
-        return None
-    normalization = signature.get("layout_space_normalization")
-    if isinstance(normalization, dict):
-        try:
-            width = int(float(normalization.get("original_image_width") or 0))
-            height = int(float(normalization.get("original_image_height") or 0))
-        except (TypeError, ValueError):
-            width = 0
-            height = 0
-        if width > 0 and height > 0:
-            return width, height
-    try:
-        width = int(float(signature.get("image_width") or 0))
-        height = int(float(signature.get("image_height") or 0))
-    except (TypeError, ValueError):
-        return None
-    if width > 0 and height > 0:
-        return width, height
-    return None
-
-
-def _detect_full_frame_document(
-    query_bounds: Optional[Dict[str, float]],
-    template_bounds: Optional[Dict[str, float]],
-    query_signature: Optional[Dict[str, Any]],
-    template_signature: Optional[Dict[str, Any]],
-    query_raw_bounds: Optional[Dict[str, float]] = None,
-    template_raw_bounds: Optional[Dict[str, float]] = None,
-) -> Dict[str, Any]:
-    debug: Dict[str, Any] = {
-        "full_frame_document_detected": False,
-        "full_frame_confidence": 0.0,
-        "crop_required": True,
-        "crop_skip_reason": None,
-    }
-    if not isinstance(query_bounds, dict) or not isinstance(template_bounds, dict):
-        debug["crop_skip_reason"] = "missing_bounds_for_full_frame_check"
-        return debug
-    query_page_size = _signature_template_page_size(query_signature)
-    template_page_size = _signature_template_page_size(template_signature)
-    if not query_page_size or not template_page_size:
-        debug["crop_skip_reason"] = "missing_page_size_for_full_frame_check"
-        return debug
-    query_w, query_h = query_page_size
-    template_w, template_h = template_page_size
-    if query_w <= 0 or query_h <= 0 or template_w <= 0 or template_h <= 0:
-        debug["crop_skip_reason"] = "invalid_page_size_for_full_frame_check"
-        return debug
-
-    query_aspect = query_w / max(1.0, float(query_h))
-    template_aspect = template_w / max(1.0, float(template_h))
-    aspect_delta = abs(query_aspect - template_aspect) / max(template_aspect, 1e-6)
-    query_coverage_x = float(query_bounds.get("width") or 0.0)
-    query_coverage_y = float(query_bounds.get("height") or 0.0)
-    template_coverage_x = float(template_bounds.get("width") or 0.0)
-    template_coverage_y = float(template_bounds.get("height") or 0.0)
-    raw_query_coverage_x = float((query_raw_bounds or {}).get("width") or query_coverage_x)
-    raw_query_coverage_y = float((query_raw_bounds or {}).get("height") or query_coverage_y)
-    raw_template_coverage_x = float((template_raw_bounds or {}).get("width") or template_coverage_x)
-    raw_template_coverage_y = float((template_raw_bounds or {}).get("height") or template_coverage_y)
-    coverage_ratio_x = query_coverage_x / max(template_coverage_x, 1e-6)
-    coverage_ratio_y = query_coverage_y / max(template_coverage_y, 1e-6)
-    edge_delta = max(
-        abs(float(query_bounds.get("left") or 0.0) - float(template_bounds.get("left") or 0.0)),
-        abs(float(query_bounds.get("right") or 0.0) - float(template_bounds.get("right") or 0.0)),
-        abs(float(query_bounds.get("top") or 0.0) - float(template_bounds.get("top") or 0.0)),
-        abs(float(query_bounds.get("bottom") or 0.0) - float(template_bounds.get("bottom") or 0.0)),
-    )
-    coverage_penalty = max(
-        0.0,
-        abs(1.0 - coverage_ratio_x),
-        abs(1.0 - coverage_ratio_y),
-    )
-    raw_frame_coverage = min(raw_query_coverage_x, raw_query_coverage_y)
-    robust_frame_coverage = min(query_coverage_x, query_coverage_y)
-    raw_template_frame_coverage = min(raw_template_coverage_x, raw_template_coverage_y)
-    raw_edge_inset = max(
-        0.0,
-        float((query_raw_bounds or query_bounds).get("left") or 0.0),
-        float((query_raw_bounds or query_bounds).get("top") or 0.0),
-        1.0 - float((query_raw_bounds or query_bounds).get("right") or 1.0),
-        1.0 - float((query_raw_bounds or query_bounds).get("bottom") or 1.0),
-    )
-    raw_full_frame_evidence = raw_frame_coverage >= 0.96 and raw_edge_inset <= 0.04 and aspect_delta <= 0.06
-    robust_geometry_evidence = edge_delta <= 0.055 and 0.90 <= coverage_ratio_x <= 1.12 and 0.90 <= coverage_ratio_y <= 1.12
-    confidence = max(
-        0.0,
-        min(
-            1.0,
-            max(
-                1.0 - max(aspect_delta / 0.10, edge_delta / 0.08, coverage_penalty / 0.15),
-                0.85 if raw_full_frame_evidence and raw_template_frame_coverage >= 0.90 else 0.0,
-            ),
-        ),
-    )
-    full_frame = raw_full_frame_evidence
-    debug.update(
-        {
-            "full_frame_document_detected": bool(full_frame),
-            "full_frame_confidence": round(float(confidence), 6),
-            "crop_required": not bool(full_frame),
-            "crop_skip_reason": "full_frame_document_matches_template_geometry" if full_frame else None,
-            "full_frame_geometry": {
-                "query_page_size": [int(query_w), int(query_h)],
-                "template_page_size": [int(template_w), int(template_h)],
-                "query_aspect": round(float(query_aspect), 6),
-                "template_aspect": round(float(template_aspect), 6),
-                "aspect_delta": round(float(aspect_delta), 6),
-                "coverage_ratio": [round(float(coverage_ratio_x), 6), round(float(coverage_ratio_y), 6)],
-                "edge_delta": round(float(edge_delta), 6),
-            },
-            "raw_frame_coverage": round(float(raw_frame_coverage), 6),
-            "robust_frame_coverage": round(float(robust_frame_coverage), 6),
-            "raw_edge_inset": round(float(raw_edge_inset), 6),
-            "full_frame_evidence": {
-                "raw_full_frame": bool(raw_full_frame_evidence),
-                "robust_geometry": bool(robust_geometry_evidence),
-                "robust_geometry_ignored_for_full_frame": True,
-                "raw_template_frame_coverage": round(float(raw_template_frame_coverage), 6),
-            },
-        }
-    )
-    return debug
-
-
-def _layout_reference_adjusted_image(
-    image_path: str,
-    query_signature: Optional[Dict[str, Any]],
-    template_signature: Optional[Dict[str, Any]],
-    output_dir: Path,
-    template_id: Optional[str],
-    page_number: int,
-) -> Dict[str, Any]:
-    debug: Dict[str, Any] = {
-        "enabled": LAYOUT_REFERENCE_CROP_ENABLED,
-        "applied": False,
-        "reason": "not_attempted",
-        "full_frame_document_detected": False,
-        "full_frame_confidence": 0.0,
-        "crop_required": True,
-        "crop_skip_reason": None,
-    }
-    if not LAYOUT_REFERENCE_CROP_ENABLED:
-        debug["reason"] = "disabled"
-        return debug
-    query_robust_debug = _signature_robust_content_bounds(query_signature)
-    template_robust_debug = _signature_robust_content_bounds(template_signature)
-    query_raw_bounds = _signature_content_bounds(query_signature) or query_robust_debug.get("raw_content_bounds")
-    template_raw_bounds = template_robust_debug.get("raw_content_bounds")
-    query_bounds = query_raw_bounds
-    template_bounds = template_robust_debug.get("robust_content_bounds") or template_raw_bounds
-    debug["query_bounds"] = query_bounds
-    debug["template_bounds"] = template_bounds
-    debug["query_content_bounds"] = query_bounds
-    debug["template_content_bounds"] = template_bounds
-    debug["raw_content_bounds"] = {
-        "query": query_raw_bounds,
-        "template": template_raw_bounds,
-    }
-    debug["robust_content_bounds"] = {
-        "query": query_robust_debug.get("robust_content_bounds"),
-        "template": template_robust_debug.get("robust_content_bounds"),
-    }
-    debug["regions_used"] = {
-        "query": query_robust_debug.get("regions_used"),
-        "template": template_robust_debug.get("regions_used"),
-    }
-    debug["regions_excluded"] = {
-        "query": query_robust_debug.get("regions_excluded"),
-        "template": template_robust_debug.get("regions_excluded"),
-    }
-    robust_fallback_reasons = {
-        "query": query_robust_debug.get("fallback_reason"),
-        "template": template_robust_debug.get("fallback_reason"),
-    }
-    if robust_fallback_reasons["query"] or robust_fallback_reasons["template"]:
-        debug["robust_bounds_fallback_reason"] = robust_fallback_reasons
-    if not query_bounds or not template_bounds:
-        debug["reason"] = "missing_signature_bounds"
-        debug["fallback_reason"] = "missing_signature_bounds"
-        return debug
-    image = cv2.imread(str(image_path))
-    if image is None:
-        debug["reason"] = "image_unreadable"
-        debug["fallback_reason"] = "image_unreadable"
-        return debug
-    image_height, image_width = image.shape[:2]
-    debug["multi_region_attempted"] = False
-    debug["multi_region_passed"] = False
-    debug["layout_correspondence_crop"] = {
-        "attempted": False,
-        "used": False,
-        "reason": "disabled_for_generic_layout_union_crop",
-    }
-    debug["correspondence_count"] = None
-    debug["inlier_count"] = None
-    debug["inlier_ratio"] = None
-    debug["scale_x"] = None
-    debug["scale_y"] = None
-    debug["translate_x"] = None
-    debug["translate_y"] = None
-    debug["rmse"] = None
-    debug["confidence"] = None
-    debug["projected_document_box"] = None
-    debug["classified_full_frame"] = False
-    full_frame_debug = _detect_full_frame_document(
-        query_bounds,
-        template_bounds,
-        query_signature,
-        template_signature,
-        query_raw_bounds=query_raw_bounds if isinstance(query_raw_bounds, dict) else None,
-        template_raw_bounds=template_raw_bounds if isinstance(template_raw_bounds, dict) else None,
-    )
-    debug.update(full_frame_debug)
-    if full_frame_debug.get("full_frame_document_detected"):
-        debug["reason"] = "full_frame_document_no_crop_required"
-        debug["fallback_reason"] = None
-        return debug
-
-    template_guided_debug = _template_guided_layout_bounds(query_signature, template_signature, query_bounds)
-    debug["template_guided_layout_bounds"] = template_guided_debug
-    crop_bounds = (
-        template_guided_debug.get("document_layout_bounds")
-        if template_guided_debug.get("used") and isinstance(template_guided_debug.get("document_layout_bounds"), dict)
-        else query_bounds
-    )
-    debug["template_guided_crop_used"] = bool(template_guided_debug.get("used"))
-    debug["template_guided_fallback_reason"] = template_guided_debug.get("fallback_reason")
-
-    generic_crop_debug = _generic_layout_union_crop_box_from_bounds(crop_bounds, image_width, image_height)
-    debug["generic_layout_union_crop"] = generic_crop_debug
-    if not generic_crop_debug.get("passed"):
-        debug["reason"] = generic_crop_debug.get("reason") or "generic_layout_union_crop_unavailable"
-        debug["fallback_reason"] = debug["reason"]
-        return debug
-    final_box = generic_crop_debug.get("final_box")
-    expanded_layout_bounds = None
-    if isinstance(final_box, list) and len(final_box) == 4:
-        expanded_layout_bounds = {
-            "left": final_box[0] / max(1, image_width),
-            "top": final_box[1] / max(1, image_height),
-            "right": final_box[2] / max(1, image_width),
-            "bottom": final_box[3] / max(1, image_height),
-            "width": (final_box[2] - final_box[0]) / max(1, image_width),
-            "height": (final_box[3] - final_box[1]) / max(1, image_height),
-        }
-    crop_debug = {
-        "passed": True,
-        "reason": "layout_union_crop_applied",
-        "method": "template_guided_layout_union_bounds_crop" if template_guided_debug.get("used") else "generic_layout_union_bounds_crop",
-        "final_box": generic_crop_debug.get("final_box"),
-        "document_layout_bounds": crop_bounds,
-        "raw_document_layout_bounds": query_bounds,
-        "expanded_layout_bounds": expanded_layout_bounds,
-        "matched_region_count": (
-            template_guided_debug.get("included_region_count")
-            if template_guided_debug.get("used")
-            else query_bounds.get("region_count")
-        ),
-        "safety_margin": generic_crop_debug.get("padding"),
-        "layout_union_box": generic_crop_debug.get("layout_union_box"),
-        "margin_x_px": generic_crop_debug.get("margin_x_px"),
-        "margin_y_px": generic_crop_debug.get("margin_y_px"),
-        "expanded_crop_box": generic_crop_debug.get("expanded_crop_box"),
-        "final_crop_coverage": generic_crop_debug.get("final_crop_coverage"),
-        "generic_layout_crop": generic_crop_debug,
-        "template_guided_layout_bounds": template_guided_debug,
-    }
-    debug["crop_required"] = True
-    debug["fallback_reason"] = None
-    debug["crop"] = crop_debug
-    if not crop_debug.get("passed"):
-        debug["reason"] = str(crop_debug.get("reason") or "reference_crop_invalid")
-        debug["fallback_reason"] = debug.get("fallback_reason") or debug["reason"]
-        return debug
-
-    crop_left, crop_top, crop_right, crop_bottom = crop_debug["final_box"]
-    debug["final_crop_box"] = [int(crop_left), int(crop_top), int(crop_right), int(crop_bottom)]
-    debug["crop_size"] = [int(crop_right - crop_left), int(crop_bottom - crop_top)]
-    debug["crop_image_size"] = [int(crop_right - crop_left), int(crop_bottom - crop_top)]
-    debug["final_crop"] = {
-        "matched_region_count": crop_debug.get("matched_region_count"),
-        "document_layout_bounds": crop_debug.get("document_layout_bounds") or debug.get("query_content_bounds"),
-        "expanded_layout_bounds": crop_debug.get("expanded_layout_bounds"),
-        "safety_margin": crop_debug.get("safety_margin") or debug.get("safety_margin"),
-        "final_crop_box": [int(crop_left), int(crop_top), int(crop_right), int(crop_bottom)],
-        "final_crop_size": [int(crop_right - crop_left), int(crop_bottom - crop_top)],
-        "template_page_size": debug.get("template_page_size"),
-        "selected_processing_source": "layout_reference_crop",
-        "layout_union_box": crop_debug.get("layout_union_box"),
-        "margin_x_px": crop_debug.get("margin_x_px"),
-        "margin_y_px": crop_debug.get("margin_y_px"),
-        "expanded_crop_box": crop_debug.get("expanded_crop_box"),
-        "final_crop_coverage": crop_debug.get("final_crop_coverage"),
-        "generic_layout_crop": crop_debug.get("generic_layout_crop"),
-    }
-    crop_ratio = {
-        "left": crop_left / max(1, image_width),
-        "top": crop_top / max(1, image_height),
-        "right": crop_right / max(1, image_width),
-        "bottom": crop_bottom / max(1, image_height),
-        "width": (crop_right - crop_left) / max(1, image_width),
-        "height": (crop_bottom - crop_top) / max(1, image_height),
-    }
-    delta = max(
-        crop_left / max(1, image_width),
-        crop_top / max(1, image_height),
-        (image_width - crop_right) / max(1, image_width),
-        (image_height - crop_bottom) / max(1, image_height),
-    )
-    debug["max_delta_ratio"] = round(float(delta), 6)
-
-    cropped = image[crop_top:crop_bottom, crop_left:crop_right].copy()
-    if cropped.size == 0:
-        debug["reason"] = "reference_crop_empty"
-        debug["fallback_reason"] = debug["reason"]
-        return debug
-    template_page_size = _signature_template_page_size(template_signature)
-    debug["template_page_size"] = list(template_page_size) if template_page_size else None
-    if isinstance(debug.get("final_crop"), dict):
-        debug["final_crop"]["template_page_size"] = debug["template_page_size"]
-    output_image = cropped
-    resize_applied = False
-    if template_page_size:
-        target_width, target_height = template_page_size
-        crop_height, crop_width = cropped.shape[:2]
-        if crop_width > 0 and crop_height > 0 and (crop_width != target_width or crop_height != target_height):
-            interpolation = cv2.INTER_AREA if crop_width > target_width or crop_height > target_height else cv2.INTER_LINEAR
-            output_image = cv2.resize(cropped, (target_width, target_height), interpolation=interpolation)
-            resize_applied = True
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{_safe_file_token(template_id)}_page_{page_number}_layout_reference_crop.png"
-    if not cv2.imwrite(str(output_path), output_image):
-        debug["reason"] = "reference_crop_write_failed"
-        debug["fallback_reason"] = debug["reason"]
-        return debug
-    output_height, output_width = output_image.shape[:2]
-    adjusted_signature = _rebase_layout_signature_to_crop(query_signature, crop_ratio, output_width, output_height)
-    debug["adjusted_query_signature_source"] = "layout_reference_crop_rebased" if adjusted_signature else None
-    debug["adjusted_query_signature_region_count"] = int((adjusted_signature or {}).get("region_count") or 0) if adjusted_signature else 0
-    if adjusted_signature:
-        debug["_adjusted_query_signature"] = adjusted_signature
-    debug.update(
-        {
-            "applied": True,
-            "reason": "layout_reference_crop_applied",
-            "image_path": str(output_path),
-            "preview_url": _detection_preview_url(str(output_path)),
-            "source_image_size": [int(image_width), int(image_height)],
-            "crop_image_size": [int(crop_right - crop_left), int(crop_bottom - crop_top)],
-            "output_image_size": [int(output_width), int(output_height)],
-            "processing_image_size": [int(output_width), int(output_height)],
-            "resize_applied": resize_applied,
-        }
-    )
-    return debug
-
-
 def _layout_signature_for_image_path(image_path: str, timing: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
     Image = _load_pillow()
     if Image is None:
@@ -2537,15 +793,15 @@ def _normalize_query_pages(
                 "page_index": index,
                 "original_path": str(page_path),
                 "normalized_path": info["normalized_image_path"],
-                "matching_path": str(page_path),
+                "matching_path": info["normalized_image_path"],
                 "normalization": info,
                 "matching_normalization": {
-                    "normalization_status": "layout_space_signature",
-                    "reason": "template_matching_uses_original_layout_space_signature",
-                    "matching_image_path": str(page_path),
-                    "crop_applied": False,
-                    "perspective_applied": False,
-                    "fallback_used": False,
+                    "normalization_status": info.get("normalization_status"),
+                    "reason": "template_matching_uses_normalized_image",
+                    "matching_image_path": info["normalized_image_path"],
+                    "crop_applied": info.get("crop_applied"),
+                    "perspective_applied": info.get("perspective_applied"),
+                    "fallback_used": info.get("fallback_used"),
                 },
             }
         )
@@ -3253,69 +1509,21 @@ def _candidate_from_result(
         or 1
     )
     detection_mode = str(metadata.get("detection_mode") or (template or {}).get("detection_mode") or "all_pages")
-    layout_reference_crop_debug: Dict[str, Any] = {
-        "enabled": LAYOUT_REFERENCE_CROP_ENABLED,
-        "applied": False,
-        "reason": "not_attempted",
-    }
-    query_path = Path(query_image_path)
-    output_root = query_path.parent.parent if query_path.parent.name == "normalized" else query_path.parent
     verification_query_image_path = query_image_path
     verification_source_used = "normalized"
-    selected_geometry_source = "original"
-    alignment_query_signature_source = "original_query_signature"
+    selected_geometry_source = "normalized"
+    alignment_query_signature_source = "normalized_query_signature"
     alignment_processing_image_selected = False
     alignment_skip_reason = None
     alignment = _alignment_result(
         "skipped",
-        "template_reference_alignment_not_attempted",
-        precheck={"reason": "template_reference_alignment_not_attempted"},
+        "normalized_verification_checked_first",
+        precheck={"reason": "alignment_deferred_until_needed"},
     )
     aligned_verification = None
     aligned_score = None
     aligned_internal_timing_ms: Dict[str, Optional[float]] = {}
-
     should_try_alignment = template_id is not None and allow_alignment
-    if should_try_alignment:
-        step_started = time.perf_counter()
-        alignment = _align_candidate_page(
-            template_id,
-            template_page_number,
-            query_image_path,
-            normalization_info,
-            query_signature=query_signature,
-            template_signature=template_signature,
-            template_image_source=metadata.get("matched_layout_reference_image_url"),
-            force_alignment=True,
-        )
-        candidate_timing["alignment"] = time.perf_counter() - step_started
-        if alignment.get("alignment_status") == "aligned" and alignment.get("aligned_image_path"):
-            verification_query_image_path = str(alignment["aligned_image_path"])
-            verification_source_used = "aligned"
-            selected_geometry_source = "template_reference_alignment"
-            alignment_processing_image_selected = True
-            alignment_skip_reason = "template_reference_alignment_selected"
-
-    if verification_source_used != "aligned":
-        step_started = time.perf_counter()
-        layout_reference_crop_debug = _layout_reference_adjusted_image(
-            query_image_path,
-            query_signature,
-            template_signature,
-            output_root / "layout_reference",
-            template_id,
-            template_page_number,
-        )
-        candidate_timing["layout_reference_crop"] = time.perf_counter() - step_started
-        layout_reference_crop_debug.pop("_adjusted_query_signature", None)
-        if layout_reference_crop_debug.get("applied") and layout_reference_crop_debug.get("image_path"):
-            verification_query_image_path = str(layout_reference_crop_debug["image_path"])
-            verification_source_used = "layout_reference_crop"
-            selected_geometry_source = "fallback_layout_union_crop"
-            alignment_skip_reason = alignment_skip_reason or "template_reference_alignment_unavailable_fallback_crop"
-    else:
-        candidate_timing["layout_reference_crop"] = 0.0
-        layout_reference_crop_debug["reason"] = "not_used_aligned_from_original"
     step_started = time.perf_counter()
     candidate_page_image_paths = dict(page_image_paths)
     candidate_page_image_paths[template_page_number] = verification_query_image_path
@@ -3326,7 +1534,7 @@ def _candidate_from_result(
     )
     candidate_timing["candidate_setup"] = float(candidate_timing.get("candidate_setup") or 0.0) + (time.perf_counter() - step_started)
 
-    # Verify after selecting the final post-template processing image.
+    # Verify normalized image first, matching the old detection flow.
     verify_template_for_strategy = (
         verification_service.verify_template_strict
         if verification_strategy == VERIFICATION_STRATEGY_STRICT
@@ -3380,25 +1588,80 @@ def _candidate_from_result(
 
     normalized_score = float(normalized_verification.get("score") or 0.0)
     verification = normalized_verification
-    layout_reference_crop_debug["selected_processing_source"] = verification_source_used
-    pre_alignment_processing_source = "original"
-    post_alignment_processing_source = verification_source_used
     alignment_required = bool(should_try_alignment)
-    if verification_source_used == "aligned":
-        aligned_verification = normalized_verification
-        aligned_score = normalized_score
-        aligned_internal_timing_ms = normalized_internal_timing_ms
-        candidate_cache_debug["verification_fields_reused_for_aligned"] = verification_fields is not None
-    else:
-        aligned_verification = None
-        aligned_score = None
-        aligned_internal_timing_ms = {}
-        if alignment_skip_reason is None:
-            alignment_skip_reason = (
-                "template_reference_alignment_unavailable_fallback_crop"
-                if verification_source_used == "layout_reference_crop"
-                else "template_reference_alignment_unavailable_original"
+    pre_alignment_processing_source = "normalized"
+    post_alignment_processing_source = "normalized"
+    aligned_internal_timing_ms = {}
+
+    if should_try_alignment:
+        step_started = time.perf_counter()
+        alignment = _align_candidate_page(
+            template_id,
+            template_page_number,
+            query_image_path,
+            normalization_info,
+        )
+        candidate_timing["alignment"] = time.perf_counter() - step_started
+
+        if alignment.get("alignment_status") == "aligned" and alignment.get("aligned_image_path"):
+            aligned_page_image_paths = dict(candidate_page_image_paths)
+            aligned_page_image_paths[template_page_number] = str(alignment["aligned_image_path"])
+            aligned_verification_paths = (
+                {template_page_number: str(alignment["aligned_image_path"])}
+                if detection_mode == "main_page"
+                else aligned_page_image_paths
             )
+
+            step_started = time.perf_counter()
+            candidate_cache_debug["verification_fields_reused_for_aligned"] = verification_fields is not None
+            aligned_verification = (
+                verify_template_for_strategy(
+                    template_id,
+                    aligned_verification_paths,
+                    verification_fields,
+                    verification_runtime_cache,
+                )
+                if verification_strategy == VERIFICATION_STRATEGY_STRICT
+                else verify_template_for_strategy(
+                    template_id,
+                    aligned_verification_paths,
+                    verification_fields,
+                )
+            )
+            candidate_timing["aligned_verification"] = time.perf_counter() - step_started
+            aligned_internal_timing = aligned_verification.get("timing") if isinstance(aligned_verification, dict) else {}
+            if isinstance(aligned_internal_timing, dict):
+                candidate_timing["text_verification"] = float(candidate_timing.get("text_verification") or 0.0) + float(aligned_internal_timing.get("text_verification") or 0.0)
+                candidate_timing["image_verification"] = float(candidate_timing.get("image_verification") or 0.0) + float(aligned_internal_timing.get("image_verification") or 0.0)
+                candidate_timing["text_ocr_inference"] = float(candidate_timing.get("text_ocr_inference") or 0.0) + float(aligned_internal_timing.get("text_ocr_inference") or 0.0)
+                candidate_timing["image_model_inference"] = float(candidate_timing.get("image_model_inference") or 0.0) + float(aligned_internal_timing.get("image_model_inference") or 0.0)
+                candidate_cache_debug["text_ocr_cache_hit"] = candidate_cache_debug["text_ocr_cache_hit"] or bool(int(aligned_internal_timing.get("text_ocr_cache_hits") or 0))
+                candidate_cache_debug["image_model_cache_hit"] = candidate_cache_debug["image_model_cache_hit"] or bool(int(aligned_internal_timing.get("image_model_cache_hits") or 0))
+                if request_cache is not None:
+                    request_cache.stats["verification_text_ocr_cache_hits"] += int(aligned_internal_timing.get("text_ocr_cache_hits") or 0)
+                    request_cache.stats["verification_text_ocr_cache_misses"] += int(aligned_internal_timing.get("text_ocr_cache_misses") or 0)
+                    request_cache.stats["verification_image_model_cache_hits"] += int(aligned_internal_timing.get("image_model_cache_hits") or 0)
+                    request_cache.stats["verification_image_model_cache_misses"] += int(aligned_internal_timing.get("image_model_cache_misses") or 0)
+            aligned_internal_timing_ms = _timing_ms_map(aligned_internal_timing)
+            aligned_score = float(aligned_verification.get("score") or 0.0)
+
+            if aligned_score >= normalized_score:
+                verification = aligned_verification
+                verification_source_used = "aligned"
+                selected_geometry_source = "aligned"
+                alignment_processing_image_selected = True
+                post_alignment_processing_source = "aligned"
+            else:
+                alignment["alignment_status"] = "fallback"
+                alignment_debug = alignment.get("alignment_debug") or {}
+                alignment_debug["reason"] = "aligned_verification_worse_than_normalized"
+                alignment_debug["alignment_status"] = "fallback"
+                alignment_debug["verification_source_used"] = "normalized"
+                alignment["alignment_debug"] = alignment_debug
+                verification = normalized_verification
+                verification_source_used = "normalized"
+                selected_geometry_source = "normalized"
+                alignment_skip_reason = "aligned_verification_worse_than_normalized"
 
     alignment_debug = alignment.get("alignment_debug") or {}
     alignment_score = float(alignment.get("alignment_score") or alignment_debug.get("alignment_score") or 0.0)
@@ -3425,14 +1688,10 @@ def _candidate_from_result(
     alignment_debug["post_alignment_processing_source"] = post_alignment_processing_source
     alignment_debug["alignment_processing_image_selected"] = alignment_processing_image_selected
     alignment_debug["selected_geometry_source"] = selected_geometry_source
-    alignment_debug["layout_reference_crop"] = layout_reference_crop_debug
     alignment_debug["alignment_query_signature_source"] = alignment_query_signature_source
     alignment_debug["alignment_query_image_path"] = query_image_path
     alignment_debug["final_processing_image_path"] = verification_query_image_path
-    alignment_debug["force_template_reference_alignment"] = bool(should_try_alignment)
-    if layout_reference_crop_debug.get("applied"):
-        alignment_debug["layout_reference_crop_applied"] = True
-        alignment_debug["layout_reference_crop_reason"] = layout_reference_crop_debug.get("reason")
+    alignment_debug["force_template_reference_alignment"] = False
 
     alignment_reason = _alignment_reason(alignment_status, alignment, alignment_debug)
     alignment_debug["alignment_status"] = alignment_status
@@ -3477,10 +1736,8 @@ def _candidate_from_result(
     selected_processing_source = verification_source_used
     selected_processing_path = extraction_image_path
     processing_image_size = _image_dimensions(extraction_image_path)
-    template_page_size = layout_reference_crop_debug.get("template_page_size")
-    if isinstance(layout_reference_crop_debug.get("final_crop"), dict):
-        layout_reference_crop_debug["final_crop"]["selected_processing_source"] = selected_processing_source
-    roi_coordinate_space = "template_canvas" if verification_source_used in {"aligned", "layout_reference_crop"} else "projected"
+    template_page_size = None
+    roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} else "projected"
 
     template_fields: List[Dict[str, Any]] = []
     template_rois: List[Dict[str, Any]] = []
@@ -3631,10 +1888,10 @@ def _candidate_from_result(
         "aligned_verification_score": round(aligned_verification_score, 4) if aligned_verification_score is not None else None,
         "verification_source_used": verification_source_used,
         "candidate_rejection_reason": candidate_rejection_reason,
-        "full_frame_document_detected": layout_reference_crop_debug.get("full_frame_document_detected"),
-        "full_frame_confidence": layout_reference_crop_debug.get("full_frame_confidence"),
-        "crop_required": layout_reference_crop_debug.get("crop_required"),
-        "crop_skip_reason": layout_reference_crop_debug.get("crop_skip_reason"),
+        "full_frame_document_detected": None,
+        "full_frame_confidence": None,
+        "crop_required": None,
+        "crop_skip_reason": None,
         "before_alignment_verification": round(normalized_verification_score, 4),
         "after_alignment_verification": round(aligned_verification_score, 4) if aligned_verification_score is not None else None,
         "verification_improvement": verification_improvement,
@@ -3649,12 +1906,10 @@ def _candidate_from_result(
         "extraction_image_preview_url": extraction_image_preview_url,
         "selected_processing_source": selected_processing_source,
         "selected_processing_path": selected_processing_path,
-        "projected_document_box": layout_reference_crop_debug.get("projected_document_box"),
+        "projected_document_box": None,
         "processing_image_size": processing_image_size,
         "template_page_size": template_page_size,
         "roi_coordinate_space": roi_coordinate_space,
-        "layout_reference_crop": layout_reference_crop_debug,
-        "final_crop": layout_reference_crop_debug.get("final_crop"),
 
         "verification": verification,
         "verification_details": (
@@ -3708,7 +1963,6 @@ def _candidate_from_result(
                 "roi_items_ms": _ms(candidate_timing.get("roi_items")),
                 "projection_ms": _ms(candidate_timing.get("projection")),
                 "extraction_test_ms": _ms(candidate_timing.get("extraction_test")),
-                "layout_reference_crop_ms": _ms(candidate_timing.get("layout_reference_crop")),
                 "coordinate_debug_ms": _ms(candidate_timing.get("coordinate_debug")),
             },
             "cache": candidate_cache_debug,
@@ -3824,20 +2078,11 @@ def _detect_page(
 ) -> Dict[str, Any]:
     page_index = int(page_info["page_index"])
     normalized_image_path = str(page_info["normalized_path"])
-    processing_image_path = str(page_info.get("original_path") or normalized_image_path)
     matching_image_path = str(page_info.get("matching_path") or normalized_image_path)
     query_signature = _layout_signature_for_image_path(matching_image_path, timing=timing)
-    matching_path_obj = Path(matching_image_path)
-    retrieval_output_root = matching_path_obj.parent.parent if matching_path_obj.parent.name == "normalized" else matching_path_obj.parent
-    retrieval_signature, retrieval_precrop_debug = _retrieval_precrop_signature(
-        query_signature,
-        image_path=matching_image_path,
-        output_dir=retrieval_output_root / "retrieval_crop",
-        page_number=page_index,
-    )
     step_started = time.perf_counter()
     raw_results = search_layout_candidates(
-        retrieval_signature,
+        query_signature,
         page_number=page_index,
         limit=retrieval_limit,
         include_template_id=include_template_id,
@@ -3896,7 +2141,7 @@ def _detect_page(
                 result,
                 page_image_paths,
                 page_index,
-                processing_image_path,
+                normalized_image_path,
                 page_info.get("normalization"),
                 query_signature=query_signature,
                 allow_alignment=index <= DETECTION_ALIGNMENT_LIMIT,
@@ -3971,7 +2216,7 @@ def _detect_page(
         else ""
     )
     if not selected_processing_path:
-        selected_processing_path = processing_image_path
+        selected_processing_path = normalized_image_path
     selected_processing_preview_url = _detection_preview_url(selected_processing_path)
     selected_processing_source = (
         str(best_candidate.get("verification_source_used") or "matched_candidate")
@@ -3990,7 +2235,7 @@ def _detect_page(
         "matching_image_preview_url": _detection_preview_url(matching_image_path),
         "original_image_path": str(page_info["original_path"]),
         "normalized_image_path": normalized_image_path,
-        "processing_image_path": processing_image_path,
+        "processing_image_path": selected_processing_path,
         "selected_processing_source": selected_processing_source,
         "selected_processing_path": selected_processing_path,
         "selected_processing_image_size": _image_dimensions(selected_processing_path),
@@ -4000,7 +2245,7 @@ def _detect_page(
         "debug": {
             "query_image_path": str(page_info["original_path"]),
             "normalized_query_image_path": normalized_image_path,
-            "processing_query_image_path": processing_image_path,
+            "processing_query_image_path": selected_processing_path,
             "selected_processing_source": selected_processing_source,
             "selected_processing_path": selected_processing_path,
             "selected_processing_preview_url": selected_processing_preview_url,
@@ -4010,20 +2255,7 @@ def _detect_page(
             "normalized_image_preview_url": _detection_preview_url(normalized_image_path),
             "matching_image_preview_url": _detection_preview_url(matching_image_path),
             "query_engine": "layout_signature",
-            "query_signature_source": (
-                "retrieval_precrop_layout_space"
-                if retrieval_precrop_debug.get("retrieval_precrop_applied")
-                else "original_layout_space" if matching_image_path != normalized_image_path else "normalized_image"
-            ),
-            "retrieval_precrop": retrieval_precrop_debug,
-            "retrieval_crop": retrieval_precrop_debug.get("retrieval_crop"),
-            "retrieval_precrop_attempted": retrieval_precrop_debug.get("retrieval_precrop_attempted"),
-            "retrieval_precrop_applied": retrieval_precrop_debug.get("retrieval_precrop_applied"),
-            "retrieval_precrop_box": retrieval_precrop_debug.get("retrieval_precrop_box"),
-            "retrieval_precrop_coverage": retrieval_precrop_debug.get("retrieval_precrop_coverage"),
-            "retrieval_precrop_image_path": retrieval_precrop_debug.get("retrieval_precrop_image_path"),
-            "retrieval_precrop_preview_url": retrieval_precrop_debug.get("retrieval_precrop_preview_url"),
-            "retrieval_source": retrieval_precrop_debug.get("retrieval_source"),
+            "query_signature_source": "normalized_image",
             "query_version": query_signature.get("version"),
             "query_model_name": query_signature.get("model"),
             "query_vector_dimension": 0,
@@ -4152,8 +2384,6 @@ def _aggregate_candidates(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "processing_image_size": best_page_cand.get("processing_image_size"),
             "template_page_size": best_page_cand.get("template_page_size"),
             "roi_coordinate_space": best_page_cand.get("roi_coordinate_space"),
-            "layout_reference_crop": best_page_cand.get("layout_reference_crop"),
-            "final_crop": best_page_cand.get("final_crop"),
             "verification": best_page_cand.get("verification"),
             "verification_details": (
                 best_page_cand.get("verification_details")
@@ -4350,7 +2580,7 @@ def detect_template_dev(
         if prepublish_timing:
             print(f"[PREPUBLISH] prepare pages done: {timing['prepare_pages']:.2f}s")
         step_started = time.perf_counter()
-        page_image_paths = {page["page_index"]: page.get("original_path") or page["normalized_path"] for page in normalized_pages}
+        page_image_paths = {page["page_index"]: page["normalized_path"] for page in normalized_pages}
         query_page_count = len(normalized_pages)
         retrieval_limit = (
             max(1, int(retrieval_limit_override))
