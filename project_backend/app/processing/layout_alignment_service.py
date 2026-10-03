@@ -24,6 +24,10 @@ class LayoutAlignmentService:
     MAX_TRANSFORM_AREA_RATIO = 1.45
     MIN_TRANSFORM_SIDE_RATIO = 0.55
     MAX_TRANSFORM_SIDE_RATIO = 1.45
+    MAX_TRANSFORM_ROTATION_DEG = 10.0
+    MAX_TRANSFORM_SCALE_RATIO = 1.20
+    MAX_TRANSFORM_SHEAR_DEG = 10.0
+    MAX_TRANSFORM_PERSPECTIVE_RATIO = 1.20
 
     def __init__(self) -> None:
         self._signature_cache: Dict[str, Dict[str, Any]] = {}
@@ -139,11 +143,11 @@ class LayoutAlignmentService:
 
         template_height, template_width = template.shape[:2]
         sanity = self._transform_sanity_check(matrix, transform_type, query.shape, template.shape)
-        signature_debug["transform_sanity"] = sanity
+        signature_debug["transform_validation"] = sanity
         if not sanity.get("passed"):
             return self._result(
                 "fallback",
-                str(sanity.get("reason") or "layout_transform_sanity_failed"),
+                "transform_rejected",
                 output_path,
                 self._save_match_visualization(query, template, usable_matches, match_output_path),
                 before_layout_score=before_score,
@@ -478,6 +482,21 @@ class LayoutAlignmentService:
         right_height = float(np.linalg.norm(transformed[2] - transformed[1]))
         width_ratio = max(top_width, bottom_width) / max(1.0, float(template_width))
         height_ratio = max(left_height, right_height) / max(1.0, float(template_height))
+        scale_x = ((top_width + bottom_width) / 2.0) / max(1.0, float(template_width))
+        scale_y = ((left_height + right_height) / 2.0) / max(1.0, float(template_height))
+        scale_ratio = max(scale_x, scale_y) / max(1e-6, min(scale_x, scale_y))
+        top_vector = transformed[1] - transformed[0]
+        left_vector = transformed[3] - transformed[0]
+        rotation_deg = float(np.degrees(np.arctan2(top_vector[1], top_vector[0])))
+        cross_value = float(top_vector[0] * left_vector[1] - top_vector[1] * left_vector[0])
+        corner_angle = abs(float(np.degrees(np.arctan2(
+            abs(cross_value),
+            float(np.dot(top_vector, left_vector)),
+        ))))
+        shear_deg = abs(90.0 - corner_angle)
+        horizontal_perspective = max(top_width, bottom_width) / max(1.0, min(top_width, bottom_width))
+        vertical_perspective = max(left_height, right_height) / max(1.0, min(left_height, right_height))
+        perspective = max(horizontal_perspective, vertical_perspective)
         if (
             width_ratio < self.MIN_TRANSFORM_SIDE_RATIO
             or width_ratio > self.MAX_TRANSFORM_SIDE_RATIO
@@ -491,10 +510,68 @@ class LayoutAlignmentService:
                 "height_ratio": round(float(height_ratio), 4),
                 "transformed_corners": transformed.round(2).tolist(),
             }
+        if abs(rotation_deg) > self.MAX_TRANSFORM_ROTATION_DEG:
+            return {
+                "passed": False,
+                "reason": "layout_transform_rotation_too_large",
+                "rejection_reason": "layout_transform_rotation_too_large",
+                "rotation_deg": round(float(rotation_deg), 4),
+                "scale_x": round(float(scale_x), 4),
+                "scale_y": round(float(scale_y), 4),
+                "scale_ratio": round(float(scale_ratio), 4),
+                "shear": round(float(shear_deg), 4),
+                "perspective": round(float(perspective), 4),
+                "transformed_corners": transformed.round(2).tolist(),
+            }
+        if scale_ratio > self.MAX_TRANSFORM_SCALE_RATIO:
+            return {
+                "passed": False,
+                "reason": "layout_transform_scale_imbalance_too_large",
+                "rejection_reason": "layout_transform_scale_imbalance_too_large",
+                "rotation_deg": round(float(rotation_deg), 4),
+                "scale_x": round(float(scale_x), 4),
+                "scale_y": round(float(scale_y), 4),
+                "scale_ratio": round(float(scale_ratio), 4),
+                "shear": round(float(shear_deg), 4),
+                "perspective": round(float(perspective), 4),
+                "transformed_corners": transformed.round(2).tolist(),
+            }
+        if shear_deg > self.MAX_TRANSFORM_SHEAR_DEG:
+            return {
+                "passed": False,
+                "reason": "layout_transform_shear_too_large",
+                "rejection_reason": "layout_transform_shear_too_large",
+                "rotation_deg": round(float(rotation_deg), 4),
+                "scale_x": round(float(scale_x), 4),
+                "scale_y": round(float(scale_y), 4),
+                "scale_ratio": round(float(scale_ratio), 4),
+                "shear": round(float(shear_deg), 4),
+                "perspective": round(float(perspective), 4),
+                "transformed_corners": transformed.round(2).tolist(),
+            }
+        if perspective > self.MAX_TRANSFORM_PERSPECTIVE_RATIO:
+            return {
+                "passed": False,
+                "reason": "layout_transform_perspective_too_large",
+                "rejection_reason": "layout_transform_perspective_too_large",
+                "rotation_deg": round(float(rotation_deg), 4),
+                "scale_x": round(float(scale_x), 4),
+                "scale_y": round(float(scale_y), 4),
+                "scale_ratio": round(float(scale_ratio), 4),
+                "shear": round(float(shear_deg), 4),
+                "perspective": round(float(perspective), 4),
+                "transformed_corners": transformed.round(2).tolist(),
+            }
 
         return {
             "passed": True,
             "reason": "layout_transform_sanity_passed",
+            "rotation_deg": round(float(rotation_deg), 4),
+            "scale_x": round(float(scale_x), 4),
+            "scale_y": round(float(scale_y), 4),
+            "scale_ratio": round(float(scale_ratio), 4),
+            "shear": round(float(shear_deg), 4),
+            "perspective": round(float(perspective), 4),
             "area_ratio": round(float(area_ratio), 4),
             "width_ratio": round(float(width_ratio), 4),
             "height_ratio": round(float(height_ratio), 4),
