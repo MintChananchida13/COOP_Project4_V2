@@ -1637,19 +1637,19 @@ def _candidate_from_result(
             aligned_internal_timing_ms = _timing_ms_map(aligned_internal_timing)
             aligned_score = float(aligned_verification.get("score") or 0.0)
 
-            if aligned_score >= normalized_score:
+            if aligned_score > normalized_score:
                 verification = aligned_verification
                 verification_source_used = "aligned"
             else:
                 alignment["alignment_status"] = "fallback"
                 alignment_debug = alignment.get("alignment_debug") or {}
-                alignment_debug["reason"] = "aligned_verification_worse_than_normalized"
+                alignment_debug["reason"] = "aligned_verification_not_better_than_normalized"
                 alignment_debug["alignment_status"] = "fallback"
                 alignment_debug["verification_source_used"] = "normalized"
                 alignment["alignment_debug"] = alignment_debug
                 verification = normalized_verification
                 verification_source_used = "normalized"
-                alignment_skip_reason = "aligned_verification_worse_than_normalized"
+                alignment_skip_reason = "aligned_verification_not_better_than_normalized"
 
     alignment_debug = alignment.get("alignment_debug") or {}
     alignment_score = float(alignment.get("alignment_score") or alignment_debug.get("alignment_score") or 0.0)
