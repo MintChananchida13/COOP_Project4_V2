@@ -35,7 +35,6 @@ class LayoutAlignmentService:
         output_path: Optional[str] = None,
         query_signature: Optional[Dict[str, Any]] = None,
         template_signature: Optional[Dict[str, Any]] = None,
-        force_alignment: bool = False,
     ) -> Dict[str, Any]:
         function_started = time.perf_counter()
         query_load_started = time.perf_counter()
@@ -83,8 +82,7 @@ class LayoutAlignmentService:
         aspect_started = time.perf_counter()
         aspect_delta = self._aspect_delta(query_signature, template_signature)
         signature_debug["aspect_delta_ms"] = round((time.perf_counter() - aspect_started) * 1000.0, 2)
-        signature_debug["force_alignment"] = bool(force_alignment)
-        if not force_alignment and before_score >= self.SKIP_SCORE and aspect_delta <= self.SKIP_ASPECT_DELTA:
+        if before_score >= self.SKIP_SCORE and aspect_delta <= self.SKIP_ASPECT_DELTA:
             signature_debug["alignment_until_skip_ms"] = round((time.perf_counter() - function_started) * 1000.0, 2)
             return self._result(
                 "skipped",

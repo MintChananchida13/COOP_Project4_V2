@@ -144,7 +144,13 @@ class ImageNormalizationService:
             return image.copy(), debug
 
         ordered = self._order_points(contour.reshape(4, 2).astype("float32"))
-        top_left, top_right, bottom_right, bottom_left = ordered
+        margin_ratio = 0.02
+        center = ordered.mean(axis=0)
+        expanded_ordered = center + (ordered - center) * (1.0 + margin_ratio)
+        expanded_ordered[:, 0] = np.clip(expanded_ordered[:, 0], 0, image.shape[1] - 1)
+        expanded_ordered[:, 1] = np.clip(expanded_ordered[:, 1], 0, image.shape[0] - 1)
+        expanded_ordered = expanded_ordered.astype("float32")
+        top_left, top_right, bottom_right, bottom_left = expanded_ordered
         width_a = np.linalg.norm(bottom_right - bottom_left)
         width_b = np.linalg.norm(top_right - top_left)
         height_a = np.linalg.norm(top_right - bottom_right)
@@ -161,7 +167,7 @@ class ImageNormalizationService:
             ],
             dtype="float32",
         )
-        matrix = cv2.getPerspectiveTransform(ordered, destination)
+        matrix = cv2.getPerspectiveTransform(expanded_ordered, destination)
         warped = cv2.warpPerspective(
             image,
             matrix,
@@ -191,7 +197,8 @@ class ImageNormalizationService:
                 "validation_passed": True,
                 "fallback_used": False,
                 "fallback_reason": None,
-                "detected_points": [[round(float(x), 2), round(float(y), 2)] for x, y in ordered.tolist()],
+                "detected_points": [[round(float(x), 2), round(float(y), 2)] for x, y in expanded_ordered.tolist()],
+                "perspective_safety_margin_ratio": margin_ratio,
                 "warped_size": [max_width, max_height],
                 "transform_validation": validation,
             }

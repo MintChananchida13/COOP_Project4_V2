@@ -1319,7 +1319,6 @@ def _align_candidate_page(
     query_signature: Optional[Dict[str, Any]] = None,
     template_signature: Optional[Dict[str, Any]] = None,
     template_image_source: Optional[str] = None,
-    force_alignment: bool = False,
 ) -> Dict[str, Any]:
     align_candidate_started = time.perf_counter()
     alignment_timing: Dict[str, Any] = {}
@@ -1359,7 +1358,6 @@ def _align_candidate_page(
             str(output_path),
             query_signature=query_signature,
             template_signature=template_signature,
-            force_alignment=force_alignment,
         )
         alignment_timing["align_to_template_ms"] = _ms(time.perf_counter() - align_started)
         post_started = time.perf_counter()
@@ -1368,7 +1366,6 @@ def _align_candidate_page(
         layout_alignment["alignment_match_image_preview_url"] = _detection_preview_url(layout_alignment.get("alignment_match_image_path"))
         layout_debug = layout_alignment.get("alignment_debug") or {}
         layout_debug["layout_alignment_executed"] = layout_status != "skipped"
-        layout_debug["force_alignment"] = bool(force_alignment)
         layout_debug["orb_executed"] = False
         layout_debug["verification_source_used"] = "aligned" if layout_status == "aligned" else "normalized"
         alignment_timing["post_layout_alignment_ms"] = _ms(time.perf_counter() - post_started)
@@ -1511,9 +1508,6 @@ def _candidate_from_result(
     detection_mode = str(metadata.get("detection_mode") or (template or {}).get("detection_mode") or "all_pages")
     verification_query_image_path = query_image_path
     verification_source_used = "normalized"
-    selected_geometry_source = "normalized"
-    alignment_query_signature_source = "normalized_query_signature"
-    alignment_processing_image_selected = False
     alignment_skip_reason = None
     alignment = _alignment_result(
         "skipped",
@@ -1589,8 +1583,6 @@ def _candidate_from_result(
     normalized_score = float(normalized_verification.get("score") or 0.0)
     verification = normalized_verification
     alignment_required = bool(should_try_alignment)
-    pre_alignment_processing_source = "normalized"
-    post_alignment_processing_source = "normalized"
     aligned_internal_timing_ms = {}
 
     if should_try_alignment:
@@ -1648,9 +1640,6 @@ def _candidate_from_result(
             if aligned_score >= normalized_score:
                 verification = aligned_verification
                 verification_source_used = "aligned"
-                selected_geometry_source = "aligned"
-                alignment_processing_image_selected = True
-                post_alignment_processing_source = "aligned"
             else:
                 alignment["alignment_status"] = "fallback"
                 alignment_debug = alignment.get("alignment_debug") or {}
@@ -1660,7 +1649,6 @@ def _candidate_from_result(
                 alignment["alignment_debug"] = alignment_debug
                 verification = normalized_verification
                 verification_source_used = "normalized"
-                selected_geometry_source = "normalized"
                 alignment_skip_reason = "aligned_verification_worse_than_normalized"
 
     alignment_debug = alignment.get("alignment_debug") or {}
@@ -1684,14 +1672,6 @@ def _candidate_from_result(
     alignment_debug["verification_source_used"] = verification_source_used
     alignment_debug["alignment_required"] = alignment_required
     alignment_debug["alignment_skip_reason"] = alignment_skip_reason
-    alignment_debug["pre_alignment_processing_source"] = pre_alignment_processing_source
-    alignment_debug["post_alignment_processing_source"] = post_alignment_processing_source
-    alignment_debug["alignment_processing_image_selected"] = alignment_processing_image_selected
-    alignment_debug["selected_geometry_source"] = selected_geometry_source
-    alignment_debug["alignment_query_signature_source"] = alignment_query_signature_source
-    alignment_debug["alignment_query_image_path"] = query_image_path
-    alignment_debug["final_processing_image_path"] = verification_query_image_path
-    alignment_debug["force_template_reference_alignment"] = False
 
     alignment_reason = _alignment_reason(alignment_status, alignment, alignment_debug)
     alignment_debug["alignment_status"] = alignment_status
@@ -1880,9 +1860,6 @@ def _candidate_from_result(
         "alignment_reason": alignment_reason,
         "alignment_required": alignment_required,
         "alignment_skip_reason": alignment_skip_reason,
-        "pre_alignment_processing_source": pre_alignment_processing_source,
-        "post_alignment_processing_source": post_alignment_processing_source,
-        "alignment_processing_image_selected": alignment_processing_image_selected,
 
         "normalized_verification_score": round(normalized_verification_score, 4),
         "aligned_verification_score": round(aligned_verification_score, 4) if aligned_verification_score is not None else None,
