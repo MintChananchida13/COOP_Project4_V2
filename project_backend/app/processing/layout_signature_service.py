@@ -19,6 +19,8 @@ COUNT_PREFILTER_THRESHOLD = float(os.getenv("LAYOUT_COUNT_PREFILTER_THRESHOLD", 
 AREA_PREFILTER_THRESHOLD = float(os.getenv("LAYOUT_AREA_PREFILTER_THRESHOLD", "0.70"))
 GRID_PREFILTER_THRESHOLD = float(os.getenv("LAYOUT_GRID_PREFILTER_THRESHOLD", "0.65"))
 ASPECT_PREFILTER_THRESHOLD = float(os.getenv("LAYOUT_ASPECT_PREFILTER_THRESHOLD", "0.70"))
+AREA_PREFILTER_HARD_FLOOR = 0.50
+GRID_PREFILTER_HARD_FLOOR = 0.50
 
 
 def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
@@ -561,7 +563,13 @@ def compare_layout_signatures(
         grid_score < GRID_PREFILTER_THRESHOLD
         and aspect_score < ASPECT_PREFILTER_THRESHOLD
     )
+    area_hard_floor_rejected = area_distribution_score < AREA_PREFILTER_HARD_FLOOR
+    grid_hard_floor_rejected = grid_score < GRID_PREFILTER_HARD_FLOOR
     prefilter_reasons = []
+    if area_hard_floor_rejected:
+        prefilter_reasons.append("area_distribution_below_hard_floor")
+    if grid_hard_floor_rejected:
+        prefilter_reasons.append("grid_below_hard_floor")
     if count_area_rejected:
         prefilter_reasons.append("label_count_and_area_distribution_below_threshold")
     if structural_rejected:
@@ -590,6 +598,10 @@ def compare_layout_signatures(
             "area_prefilter_threshold": AREA_PREFILTER_THRESHOLD,
             "grid_prefilter_threshold": GRID_PREFILTER_THRESHOLD,
             "aspect_prefilter_threshold": ASPECT_PREFILTER_THRESHOLD,
+            "area_prefilter_hard_floor": AREA_PREFILTER_HARD_FLOOR,
+            "grid_prefilter_hard_floor": GRID_PREFILTER_HARD_FLOOR,
+            "area_hard_floor_rejected": area_hard_floor_rejected,
+            "grid_hard_floor_rejected": grid_hard_floor_rejected,
             "count_area_rejected": count_area_rejected,
             "structural_rejected": structural_rejected,
         }
@@ -627,6 +639,10 @@ def compare_layout_signatures(
         "area_prefilter_threshold": AREA_PREFILTER_THRESHOLD,
         "grid_prefilter_threshold": GRID_PREFILTER_THRESHOLD,
         "aspect_prefilter_threshold": ASPECT_PREFILTER_THRESHOLD,
+        "area_prefilter_hard_floor": AREA_PREFILTER_HARD_FLOOR,
+        "grid_prefilter_hard_floor": GRID_PREFILTER_HARD_FLOOR,
+        "area_hard_floor_rejected": area_hard_floor_rejected,
+        "grid_hard_floor_rejected": grid_hard_floor_rejected,
         "count_area_rejected": count_area_rejected,
         "structural_rejected": structural_rejected,
     }
