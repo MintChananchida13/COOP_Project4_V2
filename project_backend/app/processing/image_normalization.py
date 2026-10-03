@@ -165,69 +165,13 @@ class ImageNormalizationService:
         ))))
         angle_distortion = abs(90.0 - corner_angle) / 90.0
         distortion_score = max(width_distortion, height_distortion)
-        perspective_required = distortion_score > 0.12
-        max_width = max(1, int(max(width_a, width_b)))
-        max_height = max(1, int(max(height_a, height_b)))
 
-        if not perspective_required:
-            crop_left = max(0, int(np.floor(expanded_ordered[:, 0].min())))
-            crop_top = max(0, int(np.floor(expanded_ordered[:, 1].min())))
-            crop_right = min(image.shape[1], int(np.ceil(expanded_ordered[:, 0].max())))
-            crop_bottom = min(image.shape[0], int(np.ceil(expanded_ordered[:, 1].max())))
-            cropped = image[crop_top:crop_bottom, crop_left:crop_right].copy()
-            validation = self._validate_transformed_image(cropped, image)
-            if not validation["passed"]:
-                debug.update(
-                    {
-                        "validation_passed": False,
-                        "fallback_used": True,
-                        "fallback_reason": validation["reason"],
-                        "normalization_status": "fallback",
-                        "transform_validation": validation,
-                    }
-                )
-                return image.copy(), debug
-            debug.update(
-                {
-                    "document_detected": True,
-                    "crop_applied": True,
-                    "perspective_applied": False,
-                    "normalization_status": "cropped",
-                    "validation_passed": True,
-                    "fallback_used": False,
-                    "fallback_reason": None,
-                    "detected_points": [[round(float(x), 2), round(float(y), 2)] for x, y in expanded_ordered.tolist()],
-                    "perspective_safety_margin_ratio": margin_ratio,
-                    "perspective_required": False,
-                    "perspective_distortion_score": round(float(distortion_score), 4),
-                    "width_distortion": round(float(width_distortion), 4),
-                    "height_distortion": round(float(height_distortion), 4),
-                    "angle_distortion": round(float(angle_distortion), 4),
-                    "normalization_transform": "conservative_crop",
-                    "warped_size": [crop_right - crop_left, crop_bottom - crop_top],
-                    "transform_validation": validation,
-                }
-            )
-            return cropped, debug
-
-        destination = np.array(
-            [
-                [0, 0],
-                [max_width - 1, 0],
-                [max_width - 1, max_height - 1],
-                [0, max_height - 1],
-            ],
-            dtype="float32",
-        )
-        matrix = cv2.getPerspectiveTransform(expanded_ordered, destination)
-        warped = cv2.warpPerspective(
-            image,
-            matrix,
-            (max_width, max_height),
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(255, 255, 255),
-        )
-        validation = self._validate_transformed_image(warped, image)
+        crop_left = max(0, int(np.floor(expanded_ordered[:, 0].min())))
+        crop_top = max(0, int(np.floor(expanded_ordered[:, 1].min())))
+        crop_right = min(image.shape[1], int(np.ceil(expanded_ordered[:, 0].max())))
+        crop_bottom = min(image.shape[0], int(np.ceil(expanded_ordered[:, 1].max())))
+        cropped = image[crop_top:crop_bottom, crop_left:crop_right].copy()
+        validation = self._validate_transformed_image(cropped, image)
         if not validation["passed"]:
             debug.update(
                 {
@@ -244,24 +188,24 @@ class ImageNormalizationService:
             {
                 "document_detected": True,
                 "crop_applied": True,
-                "perspective_applied": True,
+                "perspective_applied": False,
                 "normalization_status": "cropped",
                 "validation_passed": True,
                 "fallback_used": False,
                 "fallback_reason": None,
                 "detected_points": [[round(float(x), 2), round(float(y), 2)] for x, y in expanded_ordered.tolist()],
                 "perspective_safety_margin_ratio": margin_ratio,
-                "perspective_required": True,
+                "perspective_required": False,
                 "perspective_distortion_score": round(float(distortion_score), 4),
                 "width_distortion": round(float(width_distortion), 4),
                 "height_distortion": round(float(height_distortion), 4),
                 "angle_distortion": round(float(angle_distortion), 4),
-                "normalization_transform": "perspective",
-                "warped_size": [max_width, max_height],
+                "normalization_transform": "conservative_crop",
+                "warped_size": [crop_right - crop_left, crop_bottom - crop_top],
                 "transform_validation": validation,
             }
         )
-        return warped, debug
+        return cropped, debug
 
     def _find_document_contour(self, image: np.ndarray) -> Dict[str, Any]:
         resized = self._resize_to_height(image, self.DETECTION_HEIGHT)
