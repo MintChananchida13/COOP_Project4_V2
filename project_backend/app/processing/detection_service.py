@@ -3258,32 +3258,64 @@ def _candidate_from_result(
         "applied": False,
         "reason": "not_attempted",
     }
-    verification_query_image_path = query_image_path
-    step_started = time.perf_counter()
     query_path = Path(query_image_path)
     output_root = query_path.parent.parent if query_path.parent.name == "normalized" else query_path.parent
-    layout_reference_crop_debug = _layout_reference_adjusted_image(
-        query_image_path,
-        query_signature,
-        template_signature,
-        output_root / "layout_reference",
-        template_id,
-        template_page_number,
+    verification_query_image_path = query_image_path
+    verification_source_used = "normalized"
+    selected_geometry_source = "original"
+    alignment_query_signature_source = "original_query_signature"
+    alignment_processing_image_selected = False
+    alignment_skip_reason = None
+    alignment = _alignment_result(
+        "skipped",
+        "template_reference_alignment_not_attempted",
+        precheck={"reason": "template_reference_alignment_not_attempted"},
     )
-    candidate_timing["layout_reference_crop"] = time.perf_counter() - step_started
-    if layout_reference_crop_debug.get("applied") and layout_reference_crop_debug.get("image_path"):
-        verification_query_image_path = str(layout_reference_crop_debug["image_path"])
-    alignment_query_signature = (
-        layout_reference_crop_debug.get("_adjusted_query_signature")
-        if isinstance(layout_reference_crop_debug.get("_adjusted_query_signature"), dict)
-        else query_signature
-    )
-    alignment_query_signature_source = (
-        "layout_reference_crop_rebased"
-        if alignment_query_signature is not query_signature
-        else "original_query_signature"
-    )
-    layout_reference_crop_debug.pop("_adjusted_query_signature", None)
+    aligned_verification = None
+    aligned_score = None
+    aligned_internal_timing_ms: Dict[str, Optional[float]] = {}
+
+    should_try_alignment = template_id is not None and allow_alignment
+    if should_try_alignment:
+        step_started = time.perf_counter()
+        alignment = _align_candidate_page(
+            template_id,
+            template_page_number,
+            query_image_path,
+            normalization_info,
+            query_signature=query_signature,
+            template_signature=template_signature,
+            template_image_source=metadata.get("matched_layout_reference_image_url"),
+            force_alignment=True,
+        )
+        candidate_timing["alignment"] = time.perf_counter() - step_started
+        if alignment.get("alignment_status") == "aligned" and alignment.get("aligned_image_path"):
+            verification_query_image_path = str(alignment["aligned_image_path"])
+            verification_source_used = "aligned"
+            selected_geometry_source = "template_reference_alignment"
+            alignment_processing_image_selected = True
+            alignment_skip_reason = "template_reference_alignment_selected"
+
+    if verification_source_used != "aligned":
+        step_started = time.perf_counter()
+        layout_reference_crop_debug = _layout_reference_adjusted_image(
+            query_image_path,
+            query_signature,
+            template_signature,
+            output_root / "layout_reference",
+            template_id,
+            template_page_number,
+        )
+        candidate_timing["layout_reference_crop"] = time.perf_counter() - step_started
+        layout_reference_crop_debug.pop("_adjusted_query_signature", None)
+        if layout_reference_crop_debug.get("applied") and layout_reference_crop_debug.get("image_path"):
+            verification_query_image_path = str(layout_reference_crop_debug["image_path"])
+            verification_source_used = "layout_reference_crop"
+            selected_geometry_source = "fallback_layout_union_crop"
+            alignment_skip_reason = alignment_skip_reason or "template_reference_alignment_unavailable_fallback_crop"
+    else:
+        candidate_timing["layout_reference_crop"] = 0.0
+        layout_reference_crop_debug["reason"] = "not_used_aligned_from_original"
     step_started = time.perf_counter()
     candidate_page_image_paths = dict(page_image_paths)
     candidate_page_image_paths[template_page_number] = verification_query_image_path
@@ -3294,7 +3326,7 @@ def _candidate_from_result(
     )
     candidate_timing["candidate_setup"] = float(candidate_timing.get("candidate_setup") or 0.0) + (time.perf_counter() - step_started)
 
-    # 1) Verify จาก normalized ก่อน
+    # Verify after selecting the final post-template processing image.
     verify_template_for_strategy = (
         verification_service.verify_template_strict
         if verification_strategy == VERIFICATION_STRATEGY_STRICT
@@ -3348,126 +3380,25 @@ def _candidate_from_result(
 
     normalized_score = float(normalized_verification.get("score") or 0.0)
     verification = normalized_verification
-    base_verification_source = "layout_reference_crop" if layout_reference_crop_debug.get("applied") else "normalized"
-    verification_source_used = base_verification_source
-    layout_reference_crop_debug["selected_processing_source"] = base_verification_source
-    pre_alignment_processing_source = base_verification_source
-    post_alignment_processing_source = base_verification_source
-    alignment_required = not bool(normalized_verification.get("passed"))
-    alignment_skip_reason = None if alignment_required else "pre_alignment_verification_already_passed"
-    alignment_processing_image_selected = False
-
-    # ค่าเริ่มต้น: ยังไม่ align
-    alignment = _alignment_result(
-        "skipped",
-        "layout_reference_verification_checked_first",
-        precheck={"reason": "alignment_deferred_until_needed", "base_verification_source": base_verification_source},
-    )
-
-    aligned_verification = None
-    aligned_score = None
-    aligned_internal_timing_ms: Dict[str, Optional[float]] = {}
-
-    # 2) Template alignment is part of the production path.
-    # The alignment service precheck skips ORB when geometry already matches.
-    should_try_alignment = template_id is not None and allow_alignment
-
-    if should_try_alignment:
-        step_started = time.perf_counter()
-        alignment = _align_candidate_page(
-            template_id,
-            template_page_number,
-            verification_query_image_path,
-            normalization_info,
-            query_signature=alignment_query_signature,
-            template_signature=template_signature,
-            template_image_source=metadata.get("matched_layout_reference_image_url"),
-            force_alignment=bool(layout_reference_crop_debug.get("applied")),
-        )
-        candidate_timing["alignment"] = time.perf_counter() - step_started
-
-        if alignment.get("alignment_status") == "aligned" and alignment.get("aligned_image_path"):
-            aligned_page_image_paths = dict(candidate_page_image_paths)
-            aligned_page_image_paths[template_page_number] = str(alignment["aligned_image_path"])
-            aligned_verification_paths = (
-                {template_page_number: str(alignment["aligned_image_path"])}
-                if detection_mode == "main_page"
-                else aligned_page_image_paths
+    layout_reference_crop_debug["selected_processing_source"] = verification_source_used
+    pre_alignment_processing_source = "original"
+    post_alignment_processing_source = verification_source_used
+    alignment_required = bool(should_try_alignment)
+    if verification_source_used == "aligned":
+        aligned_verification = normalized_verification
+        aligned_score = normalized_score
+        aligned_internal_timing_ms = normalized_internal_timing_ms
+        candidate_cache_debug["verification_fields_reused_for_aligned"] = verification_fields is not None
+    else:
+        aligned_verification = None
+        aligned_score = None
+        aligned_internal_timing_ms = {}
+        if alignment_skip_reason is None:
+            alignment_skip_reason = (
+                "template_reference_alignment_unavailable_fallback_crop"
+                if verification_source_used == "layout_reference_crop"
+                else "template_reference_alignment_unavailable_original"
             )
-
-            step_started = time.perf_counter()
-            candidate_cache_debug["verification_fields_reused_for_aligned"] = verification_fields is not None
-            aligned_verification = (
-                verify_template_for_strategy(
-                    template_id,
-                    aligned_verification_paths,
-                    verification_fields,
-                    verification_runtime_cache,
-                )
-                if verification_strategy == VERIFICATION_STRATEGY_STRICT
-                else verify_template_for_strategy(
-                    template_id,
-                    aligned_verification_paths,
-                    verification_fields,
-                )
-            )
-            candidate_timing["aligned_verification"] = time.perf_counter() - step_started
-            aligned_internal_timing = aligned_verification.get("timing") if isinstance(aligned_verification, dict) else {}
-            if isinstance(aligned_internal_timing, dict):
-                candidate_timing["text_verification"] = float(candidate_timing.get("text_verification") or 0.0) + float(aligned_internal_timing.get("text_verification") or 0.0)
-                candidate_timing["image_verification"] = float(candidate_timing.get("image_verification") or 0.0) + float(aligned_internal_timing.get("image_verification") or 0.0)
-                candidate_timing["text_ocr_inference"] = float(candidate_timing.get("text_ocr_inference") or 0.0) + float(aligned_internal_timing.get("text_ocr_inference") or 0.0)
-                candidate_timing["image_model_inference"] = float(candidate_timing.get("image_model_inference") or 0.0) + float(aligned_internal_timing.get("image_model_inference") or 0.0)
-                candidate_cache_debug["text_ocr_cache_hit"] = candidate_cache_debug["text_ocr_cache_hit"] or bool(int(aligned_internal_timing.get("text_ocr_cache_hits") or 0))
-                candidate_cache_debug["image_model_cache_hit"] = candidate_cache_debug["image_model_cache_hit"] or bool(int(aligned_internal_timing.get("image_model_cache_hits") or 0))
-                if request_cache is not None:
-                    request_cache.stats["verification_text_ocr_cache_hits"] += int(aligned_internal_timing.get("text_ocr_cache_hits") or 0)
-                    request_cache.stats["verification_text_ocr_cache_misses"] += int(aligned_internal_timing.get("text_ocr_cache_misses") or 0)
-                    request_cache.stats["verification_image_model_cache_hits"] += int(aligned_internal_timing.get("image_model_cache_hits") or 0)
-                    request_cache.stats["verification_image_model_cache_misses"] += int(aligned_internal_timing.get("image_model_cache_misses") or 0)
-            aligned_internal_timing_ms = _timing_ms_map(aligned_internal_timing)
-            aligned_score = float(aligned_verification.get("score") or 0.0)
-            aligned_improvement = aligned_score - normalized_score
-
-            # 3) Once a template is known and a reference crop exists, the
-            # aligned template-reference image is the processing image. This
-            # keeps ROI/OCR in template canvas space instead of silently
-            # falling back to a plain crop/resize.
-            template_reference_processing_required = bool(layout_reference_crop_debug.get("applied"))
-            aligned_verification_preserved = bool(aligned_verification.get("passed")) and aligned_score >= (normalized_score - 0.0001)
-            if template_reference_processing_required or (alignment_required and aligned_improvement > 0.0001):
-                verification = aligned_verification
-                verification_source_used = "aligned"
-                post_alignment_processing_source = "aligned"
-                alignment_processing_image_selected = True
-                if template_reference_processing_required and not alignment_required:
-                    alignment_skip_reason = "template_reference_alignment_required"
-                alignment_debug = alignment.get("alignment_debug") or {}
-                alignment_debug["aligned_verification_preserved"] = aligned_verification_preserved
-                alignment_debug["template_reference_processing_required"] = template_reference_processing_required
-                alignment_debug["alignment_selection_reason"] = alignment_skip_reason or "aligned_verification_improved"
-                alignment["alignment_debug"] = alignment_debug
-            else:
-                alignment["alignment_status"] = "fallback"
-                alignment_debug = alignment.get("alignment_debug") or {}
-                alignment_debug["reason"] = (
-                    "aligned_verification_not_preserved"
-                    if template_reference_processing_required
-                    else "pre_alignment_verification_already_passed"
-                    if not alignment_required
-                    else "aligned_verification_did_not_improve_base_verification"
-                )
-                alignment_debug["aligned_verification_preserved"] = aligned_verification_preserved
-                alignment_debug["template_reference_processing_required"] = template_reference_processing_required
-                alignment_debug["alignment_status"] = "fallback"
-                alignment_debug["verification_source_used"] = base_verification_source
-                alignment["alignment_debug"] = alignment_debug
-                verification = normalized_verification
-                verification_source_used = base_verification_source
-                post_alignment_processing_source = base_verification_source
-                alignment_processing_image_selected = False
-                if alignment_skip_reason is None:
-                    alignment_skip_reason = alignment_debug["reason"]
 
     alignment_debug = alignment.get("alignment_debug") or {}
     alignment_score = float(alignment.get("alignment_score") or alignment_debug.get("alignment_score") or 0.0)
@@ -3493,10 +3424,12 @@ def _candidate_from_result(
     alignment_debug["pre_alignment_processing_source"] = pre_alignment_processing_source
     alignment_debug["post_alignment_processing_source"] = post_alignment_processing_source
     alignment_debug["alignment_processing_image_selected"] = alignment_processing_image_selected
+    alignment_debug["selected_geometry_source"] = selected_geometry_source
     alignment_debug["layout_reference_crop"] = layout_reference_crop_debug
     alignment_debug["alignment_query_signature_source"] = alignment_query_signature_source
-    alignment_debug["alignment_query_image_path"] = verification_query_image_path
-    alignment_debug["force_template_reference_alignment"] = bool(layout_reference_crop_debug.get("applied"))
+    alignment_debug["alignment_query_image_path"] = query_image_path
+    alignment_debug["final_processing_image_path"] = verification_query_image_path
+    alignment_debug["force_template_reference_alignment"] = bool(should_try_alignment)
     if layout_reference_crop_debug.get("applied"):
         alignment_debug["layout_reference_crop_applied"] = True
         alignment_debug["layout_reference_crop_reason"] = layout_reference_crop_debug.get("reason")
@@ -3547,7 +3480,7 @@ def _candidate_from_result(
     template_page_size = layout_reference_crop_debug.get("template_page_size")
     if isinstance(layout_reference_crop_debug.get("final_crop"), dict):
         layout_reference_crop_debug["final_crop"]["selected_processing_source"] = selected_processing_source
-    roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} else "projected"
+    roi_coordinate_space = "template_canvas" if verification_source_used in {"aligned", "layout_reference_crop"} else "projected"
 
     template_fields: List[Dict[str, Any]] = []
     template_rois: List[Dict[str, Any]] = []
