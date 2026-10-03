@@ -2563,7 +2563,7 @@ def detect_template_dev(
         timing["source_type_detection"] = time.perf_counter() - step_started
         step_started = time.perf_counter()
         page_paths = _prepare_query_pages(query_id, file_bytes, timing=timing)
-        skip_normalization = source_type == "pdf"
+        skip_normalization = False
         normalized_pages = _normalize_query_pages(query_id, page_paths, skip_normalization=skip_normalization, timing=timing)
         timing["prepare_pages"] = time.perf_counter() - step_started
         if prepublish_timing:
