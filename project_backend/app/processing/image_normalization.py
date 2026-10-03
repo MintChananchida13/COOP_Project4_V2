@@ -201,6 +201,7 @@ class ImageNormalizationService:
                 "height_distortion": round(float(height_distortion), 4),
                 "angle_distortion": round(float(angle_distortion), 4),
                 "normalization_transform": "conservative_crop",
+                "crop_box": [crop_left, crop_top, crop_right, crop_bottom],
                 "warped_size": [crop_right - crop_left, crop_bottom - crop_top],
                 "transform_validation": validation,
             }
@@ -619,6 +620,7 @@ class ImageNormalizationService:
                     [float(crop_right), float(crop_bottom)],
                     [float(crop_left), float(crop_bottom)],
                 ],
+                "crop_box": [crop_left, crop_top, crop_right, crop_bottom],
                 "warped_size": [crop_right - crop_left, crop_bottom - crop_top],
                 "transform_validation": validation,
                 "layout_crop": layout_crop_debug,

@@ -753,6 +753,7 @@ def _normalize_query_pages(
     query_id: str,
     page_paths: List[Path],
     skip_normalization: bool = False,
+    source_type: str = "image",
     timing: Optional[Dict[str, float]] = None,
 ) -> List[Dict[str, Any]]:
     normalize_started = time.perf_counter()
@@ -788,17 +789,41 @@ def _normalize_query_pages(
         info = normalization_service.normalize_document(str(page_path), str(normalized_path))
         if timing is not None:
             timing["prepare_normalization"] = timing.get("prepare_normalization", 0.0) + (time.perf_counter() - step_started)
+        matching_path = info["normalized_image_path"]
+        matching_reason = "template_matching_uses_normalized_image"
+        matching_path_source = "normalized"
+        pdf_document_mode = None
+        pdf_crop_area_ratio = None
+        if source_type == "pdf":
+            normalization_debug = info.get("normalization_debug") if isinstance(info.get("normalization_debug"), dict) else {}
+            transform_validation = normalization_debug.get("transform_validation") if isinstance(normalization_debug.get("transform_validation"), dict) else {}
+            try:
+                pdf_crop_area_ratio = float(transform_validation.get("area_ratio"))
+            except (TypeError, ValueError):
+                pdf_crop_area_ratio = None
+            clear_sub_document = bool(info.get("crop_applied")) and pdf_crop_area_ratio is not None and pdf_crop_area_ratio <= 0.65
+            if clear_sub_document:
+                pdf_document_mode = "sub_document"
+                matching_reason = "pdf_sub_document_crop_used_for_template_matching"
+            else:
+                pdf_document_mode = "full_page"
+                matching_path = str(page_path)
+                matching_path_source = "rendered_pdf_page"
+                matching_reason = "pdf_full_page_render_used_for_template_matching"
         normalized_pages.append(
             {
                 "page_index": index,
                 "original_path": str(page_path),
                 "normalized_path": info["normalized_image_path"],
-                "matching_path": info["normalized_image_path"],
+                "matching_path": matching_path,
                 "normalization": info,
                 "matching_normalization": {
                     "normalization_status": info.get("normalization_status"),
-                    "reason": "template_matching_uses_normalized_image",
-                    "matching_image_path": info["normalized_image_path"],
+                    "reason": matching_reason,
+                    "matching_image_path": matching_path,
+                    "matching_path_source": matching_path_source,
+                    "pdf_document_mode": pdf_document_mode,
+                    "pdf_crop_area_ratio": round(pdf_crop_area_ratio, 4) if pdf_crop_area_ratio is not None else None,
                     "crop_applied": info.get("crop_applied"),
                     "perspective_applied": info.get("perspective_applied"),
                     "fallback_used": info.get("fallback_used"),
@@ -2564,7 +2589,7 @@ def detect_template_dev(
         step_started = time.perf_counter()
         page_paths = _prepare_query_pages(query_id, file_bytes, timing=timing)
         skip_normalization = False
-        normalized_pages = _normalize_query_pages(query_id, page_paths, skip_normalization=skip_normalization, timing=timing)
+        normalized_pages = _normalize_query_pages(query_id, page_paths, skip_normalization=skip_normalization, source_type=source_type, timing=timing)
         timing["prepare_pages"] = time.perf_counter() - step_started
         if prepublish_timing:
             print(f"[PREPUBLISH] prepare pages done: {timing['prepare_pages']:.2f}s")
