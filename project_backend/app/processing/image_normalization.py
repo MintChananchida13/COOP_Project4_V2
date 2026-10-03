@@ -155,8 +155,57 @@ class ImageNormalizationService:
         width_b = np.linalg.norm(top_right - top_left)
         height_a = np.linalg.norm(top_right - bottom_right)
         height_b = np.linalg.norm(top_left - bottom_left)
+        width_imbalance = max(width_a, width_b) / max(1.0, min(width_a, width_b))
+        height_imbalance = max(height_a, height_b) / max(1.0, min(height_a, height_b))
+        top_vector = top_right - top_left
+        left_vector = bottom_left - top_left
+        corner_angle = abs(float(np.degrees(np.arctan2(
+            abs(float(top_vector[0] * left_vector[1] - top_vector[1] * left_vector[0])),
+            float(np.dot(top_vector, left_vector)),
+        ))))
+        angle_deviation_ratio = abs(90.0 - corner_angle) / 90.0
+        distortion_score = max(width_imbalance - 1.0, height_imbalance - 1.0, angle_deviation_ratio)
+        perspective_required = distortion_score > 0.10
         max_width = max(1, int(max(width_a, width_b)))
         max_height = max(1, int(max(height_a, height_b)))
+
+        if not perspective_required:
+            crop_left = max(0, int(np.floor(expanded_ordered[:, 0].min())))
+            crop_top = max(0, int(np.floor(expanded_ordered[:, 1].min())))
+            crop_right = min(image.shape[1], int(np.ceil(expanded_ordered[:, 0].max())))
+            crop_bottom = min(image.shape[0], int(np.ceil(expanded_ordered[:, 1].max())))
+            cropped = image[crop_top:crop_bottom, crop_left:crop_right].copy()
+            validation = self._validate_transformed_image(cropped, image)
+            if not validation["passed"]:
+                debug.update(
+                    {
+                        "validation_passed": False,
+                        "fallback_used": True,
+                        "fallback_reason": validation["reason"],
+                        "normalization_status": "fallback",
+                        "transform_validation": validation,
+                    }
+                )
+                return image.copy(), debug
+            debug.update(
+                {
+                    "document_detected": True,
+                    "crop_applied": True,
+                    "perspective_applied": False,
+                    "normalization_status": "cropped",
+                    "validation_passed": True,
+                    "fallback_used": False,
+                    "fallback_reason": None,
+                    "detected_points": [[round(float(x), 2), round(float(y), 2)] for x, y in expanded_ordered.tolist()],
+                    "perspective_safety_margin_ratio": margin_ratio,
+                    "perspective_required": False,
+                    "perspective_distortion_score": round(float(distortion_score), 4),
+                    "normalization_transform": "conservative_crop",
+                    "warped_size": [crop_right - crop_left, crop_bottom - crop_top],
+                    "transform_validation": validation,
+                }
+            )
+            return cropped, debug
 
         destination = np.array(
             [
@@ -199,6 +248,9 @@ class ImageNormalizationService:
                 "fallback_reason": None,
                 "detected_points": [[round(float(x), 2), round(float(y), 2)] for x, y in expanded_ordered.tolist()],
                 "perspective_safety_margin_ratio": margin_ratio,
+                "perspective_required": True,
+                "perspective_distortion_score": round(float(distortion_score), 4),
+                "normalization_transform": "perspective",
                 "warped_size": [max_width, max_height],
                 "transform_validation": validation,
             }
