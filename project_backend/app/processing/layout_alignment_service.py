@@ -417,14 +417,10 @@ class LayoutAlignmentService:
         ]
 
     def _estimate_transform(self, query_points: np.ndarray, template_points: np.ndarray):
-        if len(query_points) >= 12:
-            homography, mask = cv2.findHomography(query_points.reshape(-1, 1, 2), template_points.reshape(-1, 1, 2), cv2.RANSAC, 5.0)
-            if homography is not None and mask is not None and int(mask.ravel().sum()) >= max(8, len(query_points) * 0.35):
-                return "homography", homography, int(mask.ravel().sum())
         if len(query_points) >= 6:
             affine, mask = cv2.estimateAffinePartial2D(query_points, template_points, method=cv2.RANSAC, ransacReprojThreshold=5.0)
             if affine is not None:
-                return "affine", affine, int(mask.ravel().sum()) if mask is not None else 0
+                return "similarity", affine, int(mask.ravel().sum()) if mask is not None else 0
         return "none", None, 0
 
     def _transform_sanity_check(
@@ -456,26 +452,9 @@ class LayoutAlignmentService:
         ys = transformed[:, 1]
         overflow_x = max(0.0, -float(xs.min()), float(xs.max()) - float(template_width)) / max(1.0, float(template_width))
         overflow_y = max(0.0, -float(ys.min()), float(ys.max()) - float(template_height)) / max(1.0, float(template_height))
-        if overflow_x > self.MAX_TRANSFORM_CORNER_OVERFLOW_RATIO or overflow_y > self.MAX_TRANSFORM_CORNER_OVERFLOW_RATIO:
-            return {
-                "passed": False,
-                "reason": "layout_transform_corners_outside_template",
-                "overflow_x": round(float(overflow_x), 4),
-                "overflow_y": round(float(overflow_y), 4),
-                "transformed_corners": transformed.round(2).tolist(),
-            }
-
         area = abs(float(cv2.contourArea(transformed.astype(np.float32))))
         template_area = max(1.0, float(template_width * template_height))
         area_ratio = area / template_area
-        if area_ratio < self.MIN_TRANSFORM_AREA_RATIO or area_ratio > self.MAX_TRANSFORM_AREA_RATIO:
-            return {
-                "passed": False,
-                "reason": "layout_transform_area_ratio_out_of_range",
-                "area_ratio": round(float(area_ratio), 4),
-                "transformed_corners": transformed.round(2).tolist(),
-            }
-
         top_width = float(np.linalg.norm(transformed[1] - transformed[0]))
         bottom_width = float(np.linalg.norm(transformed[2] - transformed[3]))
         left_height = float(np.linalg.norm(transformed[3] - transformed[0]))
@@ -497,6 +476,44 @@ class LayoutAlignmentService:
         horizontal_perspective = max(top_width, bottom_width) / max(1.0, min(top_width, bottom_width))
         vertical_perspective = max(left_height, right_height) / max(1.0, min(left_height, right_height))
         perspective = max(horizontal_perspective, vertical_perspective)
+        uniform_scale = None
+        translation_x = None
+        translation_y = None
+        if transform_type != "homography" and matrix.shape[0] >= 2 and matrix.shape[1] >= 3:
+            uniform_scale = float((float(matrix[0, 0]) ** 2 + float(matrix[1, 0]) ** 2) ** 0.5)
+            translation_x = float(matrix[0, 2])
+            translation_y = float(matrix[1, 2])
+        metric_debug = {
+            "rotation_deg": round(float(rotation_deg), 4),
+            "scale_x": round(float(scale_x), 4),
+            "scale_y": round(float(scale_y), 4),
+            "scale_ratio": round(float(scale_ratio), 4),
+            "uniform_scale": round(float(uniform_scale), 4) if uniform_scale is not None else None,
+            "translation_x": round(float(translation_x), 2) if translation_x is not None else None,
+            "translation_y": round(float(translation_y), 2) if translation_y is not None else None,
+            "shear": round(float(shear_deg), 4),
+            "perspective": round(float(perspective), 4),
+            "area_ratio": round(float(area_ratio), 4),
+            "width_ratio": round(float(width_ratio), 4),
+            "height_ratio": round(float(height_ratio), 4),
+            "overflow_x": round(float(overflow_x), 4),
+            "overflow_y": round(float(overflow_y), 4),
+            "transformed_corners": transformed.round(2).tolist(),
+        }
+        if overflow_x > self.MAX_TRANSFORM_CORNER_OVERFLOW_RATIO or overflow_y > self.MAX_TRANSFORM_CORNER_OVERFLOW_RATIO:
+            return {
+                "passed": False,
+                "reason": "layout_transform_corners_outside_template",
+                "rejection_reason": "layout_transform_corners_outside_template",
+                **metric_debug,
+            }
+        if area_ratio < self.MIN_TRANSFORM_AREA_RATIO or area_ratio > self.MAX_TRANSFORM_AREA_RATIO:
+            return {
+                "passed": False,
+                "reason": "layout_transform_area_ratio_out_of_range",
+                "rejection_reason": "layout_transform_area_ratio_out_of_range",
+                **metric_debug,
+            }
         if (
             width_ratio < self.MIN_TRANSFORM_SIDE_RATIO
             or width_ratio > self.MAX_TRANSFORM_SIDE_RATIO
@@ -506,77 +523,42 @@ class LayoutAlignmentService:
             return {
                 "passed": False,
                 "reason": "layout_transform_side_ratio_out_of_range",
-                "width_ratio": round(float(width_ratio), 4),
-                "height_ratio": round(float(height_ratio), 4),
-                "transformed_corners": transformed.round(2).tolist(),
+                "rejection_reason": "layout_transform_side_ratio_out_of_range",
+                **metric_debug,
             }
         if abs(rotation_deg) > self.MAX_TRANSFORM_ROTATION_DEG:
             return {
                 "passed": False,
                 "reason": "layout_transform_rotation_too_large",
                 "rejection_reason": "layout_transform_rotation_too_large",
-                "rotation_deg": round(float(rotation_deg), 4),
-                "scale_x": round(float(scale_x), 4),
-                "scale_y": round(float(scale_y), 4),
-                "scale_ratio": round(float(scale_ratio), 4),
-                "shear": round(float(shear_deg), 4),
-                "perspective": round(float(perspective), 4),
-                "transformed_corners": transformed.round(2).tolist(),
+                **metric_debug,
             }
         if scale_ratio > self.MAX_TRANSFORM_SCALE_RATIO:
             return {
                 "passed": False,
                 "reason": "layout_transform_scale_imbalance_too_large",
                 "rejection_reason": "layout_transform_scale_imbalance_too_large",
-                "rotation_deg": round(float(rotation_deg), 4),
-                "scale_x": round(float(scale_x), 4),
-                "scale_y": round(float(scale_y), 4),
-                "scale_ratio": round(float(scale_ratio), 4),
-                "shear": round(float(shear_deg), 4),
-                "perspective": round(float(perspective), 4),
-                "transformed_corners": transformed.round(2).tolist(),
+                **metric_debug,
             }
         if shear_deg > self.MAX_TRANSFORM_SHEAR_DEG:
             return {
                 "passed": False,
                 "reason": "layout_transform_shear_too_large",
                 "rejection_reason": "layout_transform_shear_too_large",
-                "rotation_deg": round(float(rotation_deg), 4),
-                "scale_x": round(float(scale_x), 4),
-                "scale_y": round(float(scale_y), 4),
-                "scale_ratio": round(float(scale_ratio), 4),
-                "shear": round(float(shear_deg), 4),
-                "perspective": round(float(perspective), 4),
-                "transformed_corners": transformed.round(2).tolist(),
+                **metric_debug,
             }
         if perspective > self.MAX_TRANSFORM_PERSPECTIVE_RATIO:
             return {
                 "passed": False,
                 "reason": "layout_transform_perspective_too_large",
                 "rejection_reason": "layout_transform_perspective_too_large",
-                "rotation_deg": round(float(rotation_deg), 4),
-                "scale_x": round(float(scale_x), 4),
-                "scale_y": round(float(scale_y), 4),
-                "scale_ratio": round(float(scale_ratio), 4),
-                "shear": round(float(shear_deg), 4),
-                "perspective": round(float(perspective), 4),
-                "transformed_corners": transformed.round(2).tolist(),
+                **metric_debug,
             }
 
         return {
             "passed": True,
             "reason": "layout_transform_sanity_passed",
-            "rotation_deg": round(float(rotation_deg), 4),
-            "scale_x": round(float(scale_x), 4),
-            "scale_y": round(float(scale_y), 4),
-            "scale_ratio": round(float(scale_ratio), 4),
-            "shear": round(float(shear_deg), 4),
-            "perspective": round(float(perspective), 4),
-            "area_ratio": round(float(area_ratio), 4),
-            "width_ratio": round(float(width_ratio), 4),
-            "height_ratio": round(float(height_ratio), 4),
-            "overflow_x": round(float(overflow_x), 4),
-            "overflow_y": round(float(overflow_y), 4),
+            **metric_debug,
         }
 
     def _save_match_visualization(
