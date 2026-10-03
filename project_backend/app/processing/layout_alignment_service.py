@@ -22,6 +22,7 @@ class LayoutAlignmentService:
     MAX_TRANSFORM_CORNER_OVERFLOW_RATIO = 0.18
     MIN_TRANSFORM_AREA_RATIO = 0.55
     MAX_TRANSFORM_AREA_RATIO = 1.45
+    MAX_TRANSFORM_WHITE_BORDER_RATIO = 0.30
     MIN_TRANSFORM_SIDE_RATIO = 0.55
     MAX_TRANSFORM_SIDE_RATIO = 1.45
     MAX_TRANSFORM_ROTATION_DEG = 10.0
@@ -455,6 +456,7 @@ class LayoutAlignmentService:
         area = abs(float(cv2.contourArea(transformed.astype(np.float32))))
         template_area = max(1.0, float(template_width * template_height))
         area_ratio = area / template_area
+        white_border_ratio = max(0.0, 1.0 - min(area_ratio, 1.0))
         top_width = float(np.linalg.norm(transformed[1] - transformed[0]))
         bottom_width = float(np.linalg.norm(transformed[2] - transformed[3]))
         left_height = float(np.linalg.norm(transformed[3] - transformed[0]))
@@ -494,6 +496,7 @@ class LayoutAlignmentService:
             "shear": round(float(shear_deg), 4),
             "perspective": round(float(perspective), 4),
             "area_ratio": round(float(area_ratio), 4),
+            "white_border_ratio": round(float(white_border_ratio), 4),
             "width_ratio": round(float(width_ratio), 4),
             "height_ratio": round(float(height_ratio), 4),
             "overflow_x": round(float(overflow_x), 4),
@@ -512,6 +515,13 @@ class LayoutAlignmentService:
                 "passed": False,
                 "reason": "layout_transform_area_ratio_out_of_range",
                 "rejection_reason": "layout_transform_area_ratio_out_of_range",
+                **metric_debug,
+            }
+        if white_border_ratio > self.MAX_TRANSFORM_WHITE_BORDER_RATIO:
+            return {
+                "passed": False,
+                "reason": "layout_transform_white_border_too_large",
+                "rejection_reason": "layout_transform_white_border_too_large",
                 **metric_debug,
             }
         if (

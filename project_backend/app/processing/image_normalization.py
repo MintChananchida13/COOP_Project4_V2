@@ -144,7 +144,7 @@ class ImageNormalizationService:
             return image.copy(), debug
 
         ordered = self._order_points(contour.reshape(4, 2).astype("float32"))
-        margin_ratio = 0.005
+        margin_ratio = 0.02
         center = ordered.mean(axis=0)
         expanded_ordered = center + (ordered - center) * (1.0 + margin_ratio)
         expanded_ordered[:, 0] = np.clip(expanded_ordered[:, 0], 0, image.shape[1] - 1)
