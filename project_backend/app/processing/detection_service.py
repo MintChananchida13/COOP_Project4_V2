@@ -1581,7 +1581,19 @@ def _candidate_from_result(
     normalized_internal_timing_ms = _timing_ms_map(normalized_internal_timing)
 
     normalized_score = float(normalized_verification.get("score") or 0.0)
+    normalized_passed = bool(normalized_verification.get("passed") or normalized_verification.get("required_passed"))
+    candidate_retrieval_score = float(result.get("score", 0.0) or 0.0)
     verification = normalized_verification
+    normalized_layout_already_good = normalized_passed and candidate_retrieval_score >= 0.93
+    if normalized_layout_already_good:
+        should_try_alignment = False
+        alignment_skip_reason = "normalized_verification_passed_and_layout_already_matches"
+        alignment_debug = alignment.get("alignment_debug") or {}
+        alignment_debug["reason"] = alignment_skip_reason
+        alignment_debug["normalized_layout_already_good"] = True
+        alignment_debug["alignment_status"] = "skipped"
+        alignment_debug["verification_source_used"] = "normalized"
+        alignment["alignment_debug"] = alignment_debug
     alignment_required = bool(should_try_alignment)
     aligned_internal_timing_ms = {}
 
