@@ -2337,6 +2337,25 @@ def _detect_page(
         if isinstance(best_candidate, dict)
         else "original"
     )
+    matching_normalization = page_info.get("matching_normalization") if isinstance(page_info.get("matching_normalization"), dict) else {}
+    pdf_runtime_debug = matching_normalization.get("pdf_runtime_debug") if isinstance(matching_normalization.get("pdf_runtime_debug"), dict) else {}
+    pdf_detector_debug = {
+        "pdf_subdocument_detector_passed": pdf_runtime_debug.get("pdf_subdocument_detector_passed"),
+        "pdf_subdocument_detector_reason": pdf_runtime_debug.get("pdf_subdocument_detector_reason"),
+        "pdf_subdocument_confidence": pdf_runtime_debug.get("pdf_subdocument_confidence"),
+        "pdf_subdocument_edge_support": pdf_runtime_debug.get("pdf_subdocument_edge_support"),
+        "pdf_subdocument_rectangularity": pdf_runtime_debug.get("pdf_subdocument_rectangularity"),
+        "pdf_subdocument_crop_box": pdf_runtime_debug.get("pdf_subdocument_crop_box"),
+        "pdf_subdocument_candidate_count": ((pdf_runtime_debug.get("pdf_subdocument_detector") or {}).get("debug") or {}).get("candidate_count")
+        if isinstance(pdf_runtime_debug.get("pdf_subdocument_detector"), dict)
+        else None,
+        "pdf_subdocument_best_candidate": ((pdf_runtime_debug.get("pdf_subdocument_detector") or {}).get("debug") or {}).get("best_candidate")
+        if isinstance(pdf_runtime_debug.get("pdf_subdocument_detector"), dict)
+        else None,
+        "pdf_subdocument_rejection_reason": (pdf_runtime_debug.get("pdf_subdocument_detector") or {}).get("reason")
+        if isinstance(pdf_runtime_debug.get("pdf_subdocument_detector"), dict)
+        else None,
+    }
     return {
         "page_index": page_index,
         "matched": matched,
@@ -2355,7 +2374,8 @@ def _detect_page(
         "selected_processing_image_size": _image_dimensions(selected_processing_path),
         "matching_image_path": matching_image_path,
         "normalization": page_info["normalization"],
-        "matching_normalization": page_info.get("matching_normalization"),
+        "matching_normalization": matching_normalization,
+        "pdf_subdocument_debug": pdf_detector_debug,
         "debug": {
             "query_image_path": str(page_info["original_path"]),
             "normalized_query_image_path": normalized_image_path,
@@ -2365,6 +2385,7 @@ def _detect_page(
             "selected_processing_preview_url": selected_processing_preview_url,
             "selected_processing_image_size": _image_dimensions(selected_processing_path),
             "matching_query_image_path": matching_image_path,
+            "pdf_subdocument_debug": pdf_detector_debug,
             "original_image_preview_url": _detection_preview_url(str(page_info["original_path"])),
             "normalized_image_preview_url": _detection_preview_url(normalized_image_path),
             "matching_image_preview_url": _detection_preview_url(matching_image_path),
