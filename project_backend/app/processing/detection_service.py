@@ -566,6 +566,38 @@ def _save_debug_crop(source: Path, crop_box: Any, target: Path) -> Optional[str]
     return None
 
 
+def _save_original_rectangular_processing_image(
+    source: Path,
+    crop_box: Any,
+    target: Path,
+    template_size: Optional[List[int]] = None,
+) -> Optional[str]:
+    if not isinstance(crop_box, list) or len(crop_box) != 4:
+        return None
+    image = cv2.imread(str(source))
+    if image is None:
+        return None
+    height, width = image.shape[:2]
+    try:
+        left = max(0, min(width, int(round(float(crop_box[0])))))
+        top = max(0, min(height, int(round(float(crop_box[1])))))
+        right = max(0, min(width, int(round(float(crop_box[2])))))
+        bottom = max(0, min(height, int(round(float(crop_box[3])))))
+    except (TypeError, ValueError):
+        return None
+    if right <= left or bottom <= top:
+        return None
+    crop = image[top:bottom, left:right].copy()
+    if template_size and len(template_size) >= 2:
+        target_width, target_height = int(template_size[0] or 0), int(template_size[1] or 0)
+        if target_width > 0 and target_height > 0:
+            crop = cv2.resize(crop, (target_width, target_height), interpolation=cv2.INTER_AREA)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if cv2.imwrite(str(target), crop):
+        return str(target)
+    return None
+
+
 def _save_debug_boundary_preview(source: Path, crop_box: Any, target: Path) -> Optional[str]:
     if not isinstance(crop_box, list) or len(crop_box) != 4:
         return None
@@ -1207,6 +1239,7 @@ def _normalize_query_pages(
                     "pdf_matching_path_promoted_to_normalized": True,
                     "pdf_matching_path_source": matching_path_source,
                     "pdf_matching_reason": matching_reason,
+                    "pdf_matching_crop_box": layout_crop_box or pdf_boundary_crop_box,
                 }
             )
         normalized_pages.append(
@@ -2191,12 +2224,44 @@ def _candidate_from_result(
     )
     candidate_timing["decision"] = time.perf_counter() - step_started
     extraction_image_path = str(alignment.get("aligned_image_path") or verification_query_image_path) if verification_source_used == "aligned" else verification_query_image_path
-    extraction_image_preview_url = _detection_preview_url(extraction_image_path)
     selected_processing_source = verification_source_used
+    template_page_size = None
+    template_image_source_for_processing = _fetch_template_page_image_source(template_id, template_page_number) if template_id else None
+    if template_image_source_for_processing:
+        template_page_size = _image_source_dimensions(template_image_source_for_processing)
+    original_rectangular_processing_path = None
+    if (
+        decision.get("final_passed")
+        and use_original_for_post_match
+        and verification_source_used != "aligned"
+        and normalization_info
+        and normalization_info.get("pdf_matching_crop_box")
+    ):
+        query_path = Path(query_image_path)
+        output_root = query_path.parent.parent if query_path.parent.name == "normalized" else query_path.parent
+        original_processing_path = (
+            output_root
+            / "aligned"
+            / f"{_safe_file_token(str(template_id or 'template'))}_page_{template_page_number}_original_rectangular_processing.png"
+        )
+        original_rectangular_processing_path = _save_original_rectangular_processing_image(
+            Path(str(original_image_path)),
+            normalization_info.get("pdf_matching_crop_box"),
+            original_processing_path,
+            template_page_size,
+        )
+        if original_rectangular_processing_path:
+            extraction_image_path = original_rectangular_processing_path
+            selected_processing_source = "original_rectangular_crop"
+            alignment_debug["original_rectangular_processing_path"] = original_rectangular_processing_path
+            alignment_debug["original_rectangular_processing_crop_box"] = normalization_info.get("pdf_matching_crop_box")
+            alignment_debug["original_rectangular_processing_template_size"] = template_page_size
+            alignment["alignment_debug"] = alignment_debug
+            alignment["original_rectangular_processing_path"] = original_rectangular_processing_path
+    extraction_image_preview_url = _detection_preview_url(extraction_image_path)
     selected_processing_path = extraction_image_path
     processing_image_size = _image_dimensions(extraction_image_path)
-    template_page_size = None
-    roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} else "projected"
+    roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} or selected_processing_source == "original_rectangular_crop" else "projected"
 
     template_fields: List[Dict[str, Any]] = []
     template_rois: List[Dict[str, Any]] = []
