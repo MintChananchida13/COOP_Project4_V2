@@ -726,8 +726,8 @@ def _pdf_layout_assisted_crop_for_matching(
             "layout_boundary_preview_path": boundary_preview,
         }
 
-    margin_x = max(width * 0.04, content_width * 0.08)
-    margin_y = max(height * 0.04, content_height * 0.08)
+    margin_x = 0.0
+    margin_y = 0.0
     crop_left = max(0, int(np.floor(left - margin_x)))
     crop_top = max(0, int(np.floor(top - margin_y)))
     crop_right = min(width, int(np.ceil(right + margin_x)))
