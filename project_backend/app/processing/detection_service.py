@@ -709,6 +709,8 @@ def _pdf_layout_assisted_crop_for_matching(
     content_width = max(1.0, right - left)
     content_height = max(1.0, bottom - top)
     area_ratio = (content_width * content_height) / max(1.0, float(width * height))
+    width_ratio = content_width / max(1.0, float(width))
+    height_ratio = content_height / max(1.0, float(height))
     layout_boundary_box = [int(np.floor(left)), int(np.floor(top)), int(np.ceil(right)), int(np.ceil(bottom))]
     if area_ratio >= 0.72:
         boundary_preview = _save_debug_boundary_preview(
@@ -722,6 +724,25 @@ def _pdf_layout_assisted_crop_for_matching(
             "layout_analysis": layout_analysis,
             "layout_boundary_box": layout_boundary_box,
             "layout_boundary_area_ratio": round(float(area_ratio), 4),
+            "layout_boundary_width_ratio": round(float(width_ratio), 4),
+            "layout_boundary_height_ratio": round(float(height_ratio), 4),
+            "layout_boundary_region_count": len(boxes),
+            "layout_boundary_preview_path": boundary_preview,
+        }
+    if area_ratio >= 0.55 or (width_ratio >= 0.88 and height_ratio >= 0.88):
+        boundary_preview = _save_debug_boundary_preview(
+            page_path,
+            layout_boundary_box,
+            debug_dir / "page_layout_boundary_not_compact_subdocument.png",
+        )
+        return {
+            "applied": False,
+            "reason": "layout_bounds_not_compact_subdocument",
+            "layout_analysis": layout_analysis,
+            "layout_boundary_box": layout_boundary_box,
+            "layout_boundary_area_ratio": round(float(area_ratio), 4),
+            "layout_boundary_width_ratio": round(float(width_ratio), 4),
+            "layout_boundary_height_ratio": round(float(height_ratio), 4),
             "layout_boundary_region_count": len(boxes),
             "layout_boundary_preview_path": boundary_preview,
         }
@@ -749,6 +770,8 @@ def _pdf_layout_assisted_crop_for_matching(
             "layout_analysis": layout_analysis,
             "layout_boundary_box": layout_boundary_box,
             "layout_boundary_area_ratio": round(float(area_ratio), 4),
+            "layout_boundary_width_ratio": round(float(width_ratio), 4),
+            "layout_boundary_height_ratio": round(float(height_ratio), 4),
             "layout_boundary_region_count": len(boxes),
             "layout_boundary_preview_path": boundary_preview,
         }
@@ -759,6 +782,8 @@ def _pdf_layout_assisted_crop_for_matching(
             "layout_analysis": layout_analysis,
             "layout_boundary_box": layout_boundary_box,
             "layout_boundary_area_ratio": round(float(area_ratio), 4),
+            "layout_boundary_width_ratio": round(float(width_ratio), 4),
+            "layout_boundary_height_ratio": round(float(height_ratio), 4),
             "layout_boundary_region_count": len(boxes),
             "layout_boundary_preview_path": boundary_preview,
             "expanded_layout_boundary_box": expanded_box,
@@ -774,6 +799,8 @@ def _pdf_layout_assisted_crop_for_matching(
             "layout_analysis": layout_analysis,
             "layout_boundary_box": layout_boundary_box,
             "layout_boundary_area_ratio": round(float(area_ratio), 4),
+            "layout_boundary_width_ratio": round(float(width_ratio), 4),
+            "layout_boundary_height_ratio": round(float(height_ratio), 4),
             "layout_boundary_region_count": len(boxes),
             "layout_boundary_preview_path": boundary_preview,
         }
@@ -785,6 +812,8 @@ def _pdf_layout_assisted_crop_for_matching(
         "layout_signature": None,
         "layout_boundary_box": layout_boundary_box,
         "layout_boundary_area_ratio": round(float(area_ratio), 4),
+        "layout_boundary_width_ratio": round(float(width_ratio), 4),
+        "layout_boundary_height_ratio": round(float(height_ratio), 4),
         "layout_boundary_region_count": len(boxes),
         "expanded_layout_boundary_box": expanded_box,
         "expanded_layout_crop_area_ratio": round(float(crop_area_ratio), 4),
@@ -1138,6 +1167,8 @@ def _normalize_query_pages(
                 },
                 "layout_boundary_box": layout_crop.get("layout_boundary_box"),
                 "layout_boundary_area_ratio": layout_crop.get("layout_boundary_area_ratio"),
+                "layout_boundary_width_ratio": layout_crop.get("layout_boundary_width_ratio"),
+                "layout_boundary_height_ratio": layout_crop.get("layout_boundary_height_ratio"),
                 "layout_boundary_region_count": layout_crop.get("layout_boundary_region_count"),
                 "layout_crop_applied": bool(layout_crop.get("applied")),
                 "pdf_subdocument_detector": pdf_boundary,
