@@ -524,6 +524,48 @@ def _image_source_dimensions(source: Optional[str]) -> Optional[List[int]]:
         return None
 
 
+def _image_aspect(dimensions: Optional[List[int]]) -> Optional[float]:
+    if not dimensions or len(dimensions) < 2:
+        return None
+    width, height = dimensions[:2]
+    if not width or not height:
+        return None
+    return round(float(width) / max(1.0, float(height)), 4)
+
+
+def _copy_debug_image(source: Path, target: Path) -> Optional[str]:
+    try:
+        if not source.exists():
+            return None
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        return str(target)
+    except Exception:
+        return None
+
+
+def _save_debug_crop(source: Path, crop_box: Any, target: Path) -> Optional[str]:
+    if not isinstance(crop_box, list) or len(crop_box) != 4:
+        return None
+    image = cv2.imread(str(source))
+    if image is None:
+        return None
+    height, width = image.shape[:2]
+    try:
+        left = max(0, min(width, int(round(float(crop_box[0])))))
+        top = max(0, min(height, int(round(float(crop_box[1])))))
+        right = max(0, min(width, int(round(float(crop_box[2])))))
+        bottom = max(0, min(height, int(round(float(crop_box[3])))))
+    except (TypeError, ValueError):
+        return None
+    if right <= left or bottom <= top:
+        return None
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if cv2.imwrite(str(target), image[top:bottom, left:right]):
+        return str(target)
+    return None
+
+
 def _layout_signature_for_image_path(image_path: str, timing: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
     Image = _load_pillow()
     if Image is None:
@@ -786,14 +828,20 @@ def _normalize_query_pages(
             continue
         normalized_path = normalized_dir / f"page_{index}_normalized.png"
         step_started = time.perf_counter()
-        info = normalization_service.normalize_document(str(page_path), str(normalized_path))
+        info = normalization_service.normalize_document(
+            str(page_path),
+            str(normalized_path),
+            allow_subdocument_aspect_change=(source_type == "pdf"),
+        )
         if timing is not None:
             timing["prepare_normalization"] = timing.get("prepare_normalization", 0.0) + (time.perf_counter() - step_started)
         matching_path = info["normalized_image_path"]
         matching_reason = "template_matching_uses_normalized_image"
         matching_path_source = "normalized"
+        matching_dimensions = _image_dimensions(matching_path)
         pdf_document_mode = None
         pdf_crop_area_ratio = None
+        pdf_debug: Dict[str, Any] = {}
         if source_type == "pdf":
             normalization_debug = info.get("normalization_debug") if isinstance(info.get("normalization_debug"), dict) else {}
             transform_validation = normalization_debug.get("transform_validation") if isinstance(normalization_debug.get("transform_validation"), dict) else {}
@@ -810,6 +858,40 @@ def _normalize_query_pages(
                 matching_path = str(page_path)
                 matching_path_source = "rendered_pdf_page"
                 matching_reason = "pdf_full_page_render_used_for_template_matching"
+            matching_dimensions = _image_dimensions(matching_path)
+            original_dimensions = _image_dimensions(str(page_path))
+            crop_box = normalization_debug.get("crop_box") or ((normalization_debug.get("layout_crop") or {}).get("expanded_box") if isinstance(normalization_debug.get("layout_crop"), dict) else None)
+            debug_dir = (_storage_path() / query_id / "pdf_normalization_debug")
+            original_preview = _copy_debug_image(page_path, debug_dir / f"page_{index}_original_rendered.png")
+            crop_preview = _save_debug_crop(page_path, crop_box, debug_dir / f"page_{index}_detected_crop_before_validation.png")
+            matching_preview = _copy_debug_image(Path(matching_path), debug_dir / f"page_{index}_final_matching.png")
+            pdf_debug = {
+                "source_type": source_type,
+                "original_image_size": original_dimensions,
+                "original_aspect_ratio": _image_aspect(original_dimensions),
+                "document_detection_method": (
+                    "layout"
+                    if info.get("normalization_status") == "layout_cropped" or normalization_debug.get("contour_source") == "paddle_layout"
+                    else ("contour" if normalization_debug.get("detected_points") or normalization_debug.get("crop_box") else "fallback")
+                ),
+                "detected_crop_box": crop_box,
+                "crop_area_ratio": round(pdf_crop_area_ratio, 4) if pdf_crop_area_ratio is not None else None,
+                "aspect_change_ratio": transform_validation.get("aspect_change_ratio"),
+                "validation_passed": transform_validation.get("passed"),
+                "validation_reason": transform_validation.get("reason"),
+                "crop_applied": info.get("crop_applied"),
+                "aspect_validation_bypass_called": bool(transform_validation.get("aspect_change_validation_bypassed")),
+                "aspect_validation_bypass_reason": transform_validation.get("aspect_change_validation_bypass_reason"),
+                "pdf_document_mode": pdf_document_mode,
+                "matching_path_source": matching_path_source,
+                "matching_image_path": matching_path,
+                "matching_image_size": matching_dimensions,
+                "matching_aspect_ratio": _image_aspect(matching_dimensions),
+                "preview_original_rendered_path": original_preview,
+                "preview_detected_crop_before_validation_path": crop_preview,
+                "preview_final_matching_path": matching_preview,
+                "normalization_debug": normalization_debug,
+            }
         normalized_pages.append(
             {
                 "page_index": index,
@@ -821,9 +903,12 @@ def _normalize_query_pages(
                     "normalization_status": info.get("normalization_status"),
                     "reason": matching_reason,
                     "matching_image_path": matching_path,
+                    "matching_image_size": matching_dimensions,
+                    "matching_aspect_ratio": _image_aspect(matching_dimensions),
                     "matching_path_source": matching_path_source,
                     "pdf_document_mode": pdf_document_mode,
                     "pdf_crop_area_ratio": round(pdf_crop_area_ratio, 4) if pdf_crop_area_ratio is not None else None,
+                    "pdf_runtime_debug": pdf_debug,
                     "crop_applied": info.get("crop_applied"),
                     "perspective_applied": info.get("perspective_applied"),
                     "fallback_used": info.get("fallback_used"),

@@ -23,7 +23,12 @@ class ImageNormalizationService:
     LAYOUT_CROP_PADDING_TOP_RATIO = 0.24
     LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.24
 
-    def normalize_document(self, image_path: str, output_path: Optional[str] = None) -> Dict[str, Any]:
+    def normalize_document(
+        self,
+        image_path: str,
+        output_path: Optional[str] = None,
+        allow_subdocument_aspect_change: bool = False,
+    ) -> Dict[str, Any]:
         source_path = Path(image_path)
         if output_path is None:
             output_path = str(source_path.with_name(f"{source_path.stem}_normalized.png"))
@@ -62,9 +67,16 @@ class ImageNormalizationService:
                 },
             }
         else:
-            normalized, debug = self._perspective_correct(image)
+            normalized, debug = self._perspective_correct(
+                image,
+                allow_subdocument_aspect_change=allow_subdocument_aspect_change,
+            )
             if debug.get("normalization_status") == "fallback":
-                layout_normalized, layout_debug = self._layout_assisted_crop(image, debug.get("fallback_reason"))
+                layout_normalized, layout_debug = self._layout_assisted_crop(
+                    image,
+                    debug.get("fallback_reason"),
+                    allow_subdocument_aspect_change=allow_subdocument_aspect_change,
+                )
                 if layout_debug.get("normalization_status") == "layout_cropped":
                     normalized = layout_normalized
                     debug = layout_debug
@@ -118,7 +130,11 @@ class ImageNormalizationService:
             "normalization_debug": debug,
         }
 
-    def _perspective_correct(self, image: np.ndarray) -> tuple[np.ndarray, Dict[str, Any]]:
+    def _perspective_correct(
+        self,
+        image: np.ndarray,
+        allow_subdocument_aspect_change: bool = False,
+    ) -> tuple[np.ndarray, Dict[str, Any]]:
         contour_info = self._find_document_contour(image)
         contour = contour_info.get("contour") if contour_info else None
         debug = {
@@ -171,7 +187,11 @@ class ImageNormalizationService:
         crop_right = min(image.shape[1], int(np.ceil(expanded_ordered[:, 0].max())))
         crop_bottom = min(image.shape[0], int(np.ceil(expanded_ordered[:, 1].max())))
         cropped = image[crop_top:crop_bottom, crop_left:crop_right].copy()
-        validation = self._validate_transformed_image(cropped, image)
+        validation = self._validate_transformed_image(
+            cropped,
+            image,
+            allow_subdocument_aspect_change=allow_subdocument_aspect_change,
+        )
         if not validation["passed"]:
             debug.update(
                 {
@@ -179,6 +199,8 @@ class ImageNormalizationService:
                     "fallback_used": True,
                     "fallback_reason": validation["reason"],
                     "normalization_status": "fallback",
+                    "crop_box": [crop_left, crop_top, crop_right, crop_bottom],
+                    "warped_size": [crop_right - crop_left, crop_bottom - crop_top],
                     "transform_validation": validation,
                 }
             )
@@ -394,7 +416,8 @@ class ImageNormalizationService:
     def _validate_transformed_image(
     self,
     transformed: Optional[np.ndarray],
-    original: np.ndarray,) -> Dict[str, Any]:
+    original: np.ndarray,
+    allow_subdocument_aspect_change: bool = False,) -> Dict[str, Any]:
 
         if transformed is None or not isinstance(transformed, np.ndarray):
             return {"passed": False, "reason": "perspective_transform_failed"}
@@ -435,6 +458,8 @@ class ImageNormalizationService:
             "aspect_ratio": round(float(aspect_ratio), 4),
             "original_aspect_ratio": round(float(original_aspect_ratio), 4),
             "aspect_change_ratio": round(float(aspect_change_ratio), 4),
+            "aspect_change_validation_bypassed": False,
+            "aspect_change_validation_bypass_reason": None,
             "stddev": round(stddev, 4),
         }
 
@@ -460,11 +485,18 @@ class ImageNormalizationService:
                 }
             )
 
-        elif aspect_change_ratio > 1.35:
+        elif aspect_change_ratio > 1.35 and not allow_subdocument_aspect_change:
             validation.update(
                 {
                     "passed": False,
                     "reason": "transformed_aspect_ratio_changed_too_much",
+                }
+            )
+        elif aspect_change_ratio > 1.35 and allow_subdocument_aspect_change:
+            validation.update(
+                {
+                    "aspect_change_validation_bypassed": True,
+                    "aspect_change_validation_bypass_reason": "pdf_sub_document_candidate_allows_aspect_change",
                 }
             )
 
@@ -486,7 +518,12 @@ class ImageNormalizationService:
 
         return validation
 
-    def _layout_assisted_crop(self, image: np.ndarray, previous_fallback_reason: Optional[str] = None) -> tuple[np.ndarray, Dict[str, Any]]:
+    def _layout_assisted_crop(
+        self,
+        image: np.ndarray,
+        previous_fallback_reason: Optional[str] = None,
+        allow_subdocument_aspect_change: bool = False,
+    ) -> tuple[np.ndarray, Dict[str, Any]]:
         height, width = image.shape[:2]
         debug: Dict[str, Any] = {
             "document_detected": False,
@@ -578,7 +615,11 @@ class ImageNormalizationService:
             return image.copy(), debug
 
         cropped = image[crop_top:crop_bottom, crop_left:crop_right].copy()
-        validation = self._validate_transformed_image(cropped, image)
+        validation = self._validate_transformed_image(
+            cropped,
+            image,
+            allow_subdocument_aspect_change=allow_subdocument_aspect_change,
+        )
         layout_crop_debug = {
             "region_count": len(boxes),
             "content_box": [round(left, 2), round(top, 2), round(right, 2), round(bottom, 2)],
