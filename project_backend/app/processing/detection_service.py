@@ -1817,6 +1817,7 @@ def _candidate_from_result(
     page_image_paths: Dict[int, str],
     page_index: int,
     query_image_path: str,
+    original_image_path: Optional[str] = None,
     normalization_info: Optional[Dict[str, Any]] = None,
     query_signature: Optional[Dict[str, Any]] = None,
     allow_alignment: bool = True,
@@ -1904,6 +1905,11 @@ def _candidate_from_result(
     )
     detection_mode = str(metadata.get("detection_mode") or (template or {}).get("detection_mode") or "all_pages")
     verification_query_image_path = query_image_path
+    post_match_alignment_query_image_path = (
+        str(original_image_path)
+        if original_image_path and normalization_info and normalization_info.get("pdf_matching_path_promoted_to_normalized")
+        else query_image_path
+    )
     verification_source_used = "normalized"
     alignment_skip_reason = None
     alignment = _alignment_result(
@@ -1999,8 +2005,10 @@ def _candidate_from_result(
         alignment = _align_candidate_page(
             template_id,
             template_page_number,
-            query_image_path,
+            post_match_alignment_query_image_path,
             normalization_info,
+            query_signature=None if post_match_alignment_query_image_path != query_image_path else query_signature,
+            template_signature=template_signature,
         )
         candidate_timing["alignment"] = time.perf_counter() - step_started
 
@@ -2081,6 +2089,9 @@ def _candidate_from_result(
     alignment_debug["verification_source_used"] = verification_source_used
     alignment_debug["alignment_required"] = alignment_required
     alignment_debug["alignment_skip_reason"] = alignment_skip_reason
+    alignment_debug["post_match_alignment_query_image_path"] = post_match_alignment_query_image_path
+    alignment_debug["post_match_alignment_source"] = "original_image" if post_match_alignment_query_image_path != query_image_path else "query_image"
+    alignment_debug["pre_match_query_image_path"] = query_image_path
 
     alignment_reason = _alignment_reason(alignment_status, alignment, alignment_debug)
     alignment_debug["alignment_status"] = alignment_status
@@ -2531,11 +2542,12 @@ def _detect_page(
             full_evaluation_count += 1
             step_started = time.perf_counter()
             candidate = _candidate_from_result(
-                result,
-                page_image_paths,
-                page_index,
-                normalized_image_path,
-                page_info.get("normalization"),
+                result=result,
+                page_image_paths=page_image_paths,
+                page_index=page_index,
+                query_image_path=normalized_image_path,
+                original_image_path=str(page_info.get("original_path") or ""),
+                normalization_info=page_info.get("normalization"),
                 query_signature=query_signature,
                 allow_alignment=index <= DETECTION_ALIGNMENT_LIMIT,
                 include_template_id=include_template_id,
