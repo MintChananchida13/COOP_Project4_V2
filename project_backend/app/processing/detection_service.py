@@ -1992,6 +1992,16 @@ def _candidate_from_result(
     normalized_passed = bool(normalized_verification.get("passed") or normalized_verification.get("required_passed"))
     candidate_retrieval_score = float(result.get("score", 0.0) or 0.0)
     verification = normalized_verification
+    if not normalized_passed:
+        should_try_alignment = False
+        alignment_skip_reason = "normalized_verification_failed_alignment_not_attempted"
+        alignment_debug = alignment.get("alignment_debug") or {}
+        alignment_debug["reason"] = alignment_skip_reason
+        alignment_debug["normalized_verification_passed"] = False
+        alignment_debug["alignment_status"] = "skipped"
+        alignment_debug["verification_source_used"] = "normalized"
+        alignment["alignment_debug"] = alignment_debug
+
     normalized_layout_already_good = normalized_passed and candidate_retrieval_score >= 0.93 and not use_original_for_post_match
     if normalized_layout_already_good:
         should_try_alignment = False
@@ -2557,7 +2567,7 @@ def _detect_page(
                 original_image_path=str(page_info.get("original_path") or ""),
                 normalization_info=page_info.get("normalization"),
                 query_signature=query_signature,
-                allow_alignment=index <= DETECTION_ALIGNMENT_LIMIT,
+                allow_alignment=True,
                 include_template_id=include_template_id,
                 verification_strategy=verification_strategy,
                 request_cache=request_cache,
@@ -2758,8 +2768,9 @@ def _detect_page(
             "early_accept_reason": "top_candidate_final_passed" if early_accept_rank else None,
             "standard_evaluates_all_eligible_top_k": verification_strategy != VERIFICATION_STRATEGY_STRICT,
             "verification_strategy": verification_strategy,
-            "alignment_limit": DETECTION_ALIGNMENT_LIMIT,
-            "fast_path_enabled": early_accept_rank is not None or full_evaluation_limit < retrieval_limit or DETECTION_ALIGNMENT_LIMIT < full_evaluation_limit,
+            "alignment_scope": "normalized_passed_full_evaluated_candidates",
+            "legacy_alignment_limit": DETECTION_ALIGNMENT_LIMIT,
+            "fast_path_enabled": early_accept_rank is not None or full_evaluation_limit < retrieval_limit,
             "aligned_candidate_paths": [
                 candidate["alignment"]["aligned_image_path"]
                 for candidate in candidates
