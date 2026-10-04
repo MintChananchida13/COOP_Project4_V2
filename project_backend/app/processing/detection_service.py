@@ -1240,7 +1240,9 @@ def _safe_file_token(value: str) -> str:
     return "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in value)
 
 
-def _is_compact_identity_template_name(value: Any) -> bool:
+def _is_compact_identity_template_name(value: Any, template_id: Any = None) -> bool:
+    if str(template_id or "").strip() in {"tpl_432252cca663"}:
+        return True
     name = str(value or "").strip().lower()
     if not name:
         return False
@@ -1249,6 +1251,13 @@ def _is_compact_identity_template_name(value: Any) -> bool:
         for token in (
             "บัตรประชาชน",
             "บัตรประจำตัว",
+            "id card",
+            "id-card",
+            "id_card",
+            "identity",
+            "citizen",
+            "national id",
+            "thai id",
             "passport",
             "พาสปอร์ต",
         )
@@ -2570,16 +2579,38 @@ def _detect_page(
     ):
         top_metadata = raw_results[0].get("metadata") or {}
         top_template_name = top_metadata.get("template_name")
-        if not _is_compact_identity_template_name(top_template_name):
+        compact_identity_candidates = [
+            {
+                "template_id": (item.get("metadata") or {}).get("template_id"),
+                "template_name": (item.get("metadata") or {}).get("template_name"),
+                "score": item.get("score"),
+            }
+            for item in raw_results
+            if _is_compact_identity_template_name(
+                (item.get("metadata") or {}).get("template_name"),
+                (item.get("metadata") or {}).get("template_id"),
+            )
+        ]
+        if compact_identity_candidates:
+            compact_crop_template_override = {
+                "applied": False,
+                "reason": "subdocument_crop_kept_for_identity_or_passport_candidate",
+                "cropped_top_template_id": top_metadata.get("template_id"),
+                "cropped_top_template_name": top_template_name,
+                "identity_candidate_count": len(compact_identity_candidates),
+                "identity_candidates": compact_identity_candidates[:5],
+            }
+        else:
             original_matching_path = str(page_info.get("original_path") or "")
             if original_matching_path:
                 compact_crop_template_override = {
                     "applied": True,
-                    "reason": "subdocument_crop_top_template_not_identity_or_passport",
+                    "reason": "subdocument_crop_has_no_identity_or_passport_candidate",
                     "cropped_top_template_id": top_metadata.get("template_id"),
                     "cropped_top_template_name": top_template_name,
                     "cropped_matching_path": matching_image_path,
                     "full_page_matching_path": original_matching_path,
+                    "identity_candidate_count": 0,
                 }
                 normalized_image_path = original_matching_path
                 matching_image_path = original_matching_path
