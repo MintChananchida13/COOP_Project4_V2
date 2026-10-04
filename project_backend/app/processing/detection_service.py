@@ -776,6 +776,7 @@ def _pdf_layout_assisted_crop_for_matching(
             "layout_boundary_region_count": len(boxes),
             "layout_boundary_preview_path": boundary_preview,
         }
+    step_started = time.perf_counter()
     rebased_layout = _rebase_layout_analysis_to_crop(
         layout_analysis,
         expanded_box,
@@ -785,6 +786,9 @@ def _pdf_layout_assisted_crop_for_matching(
         height,
     )
     signature = build_layout_signature(rebased_layout)
+    signature_build_elapsed = time.perf_counter() - step_started
+    if timing is not None:
+        timing["signature_build"] = timing.get("signature_build", 0.0) + signature_build_elapsed
     crop_preview = _copy_debug_image(output_path, debug_dir / "page_layout_crop_before_template_matching.png")
     return {
         "applied": True,
@@ -802,6 +806,7 @@ def _pdf_layout_assisted_crop_for_matching(
         "output_path": str(output_path),
         "layout_boundary_preview_path": boundary_preview,
         "crop_preview_path": crop_preview,
+        "signature_build_ms": _ms(signature_build_elapsed),
         "safety_margin": {"x": round(float(margin_x), 2), "y": round(float(margin_y), 2)},
     }
 
@@ -2647,6 +2652,16 @@ def _detect_page(
         if isinstance(pdf_runtime_debug.get("pdf_subdocument_detector"), dict)
         else None,
     }
+    document_boundary_source = pdf_detector_debug.get("document_boundary_source")
+    layout_boundary_box = pdf_detector_debug.get("layout_boundary_box")
+    layout_boundary_area_ratio = pdf_detector_debug.get("layout_boundary_area_ratio")
+    layout_boundary_region_count = pdf_detector_debug.get("layout_boundary_region_count")
+    layout_crop_applied = pdf_detector_debug.get("layout_crop_applied")
+    pre_match_image_path = pdf_detector_debug.get("pre_match_image_path")
+    matching_path_source = pdf_detector_debug.get("matching_path_source") or matching_normalization.get("matching_path_source")
+    matching_image_size = pdf_detector_debug.get("matching_image_size") or matching_normalization.get("matching_image_size")
+    matching_signature_source = pdf_detector_debug.get("matching_signature_source") or query_signature_source
+    matching_layout_signature_created = pdf_detector_debug.get("matching_layout_signature_created")
     return {
         "page_index": page_index,
         "matched": matched,
@@ -2664,6 +2679,16 @@ def _detect_page(
         "selected_processing_path": selected_processing_path,
         "selected_processing_image_size": _image_dimensions(selected_processing_path),
         "matching_image_path": matching_image_path,
+        "document_boundary_source": document_boundary_source,
+        "layout_boundary_box": layout_boundary_box,
+        "layout_boundary_area_ratio": layout_boundary_area_ratio,
+        "layout_boundary_region_count": layout_boundary_region_count,
+        "layout_crop_applied": layout_crop_applied,
+        "pre_match_image_path": pre_match_image_path,
+        "matching_path_source": matching_path_source,
+        "matching_image_size": matching_image_size,
+        "matching_signature_source": matching_signature_source,
+        "matching_layout_signature_created": matching_layout_signature_created,
         "normalization": page_info["normalization"],
         "matching_normalization": matching_normalization,
         "pdf_subdocument_debug": pdf_detector_debug,
@@ -2676,6 +2701,16 @@ def _detect_page(
             "selected_processing_preview_url": selected_processing_preview_url,
             "selected_processing_image_size": _image_dimensions(selected_processing_path),
             "matching_query_image_path": matching_image_path,
+            "document_boundary_source": document_boundary_source,
+            "layout_boundary_box": layout_boundary_box,
+            "layout_boundary_area_ratio": layout_boundary_area_ratio,
+            "layout_boundary_region_count": layout_boundary_region_count,
+            "layout_crop_applied": layout_crop_applied,
+            "pre_match_image_path": pre_match_image_path,
+            "matching_path_source": matching_path_source,
+            "matching_image_size": matching_image_size,
+            "matching_signature_source": matching_signature_source,
+            "matching_layout_signature_created": matching_layout_signature_created,
             "query_signature_source": query_signature_source,
             "pdf_subdocument_debug": pdf_detector_debug,
             "original_image_preview_url": _detection_preview_url(str(page_info["original_path"])),
