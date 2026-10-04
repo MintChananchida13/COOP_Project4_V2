@@ -726,8 +726,9 @@ def _pdf_layout_assisted_crop_for_matching(
             "layout_boundary_preview_path": boundary_preview,
         }
 
-    margin_x = 0.0
-    margin_y = 0.0
+    margin = min(width, height) * 0.015
+    margin_x = margin
+    margin_y = margin
     crop_left = max(0, int(np.floor(left - margin_x)))
     crop_top = max(0, int(np.floor(top - margin_y)))
     crop_right = min(width, int(np.ceil(right + margin_x)))
@@ -776,26 +777,12 @@ def _pdf_layout_assisted_crop_for_matching(
             "layout_boundary_region_count": len(boxes),
             "layout_boundary_preview_path": boundary_preview,
         }
-    step_started = time.perf_counter()
-    rebased_layout = _rebase_layout_analysis_to_crop(
-        layout_analysis,
-        expanded_box,
-        crop_width,
-        crop_height,
-        width,
-        height,
-    )
-    signature = build_layout_signature(rebased_layout)
-    signature_build_elapsed = time.perf_counter() - step_started
-    if timing is not None:
-        timing["signature_build"] = timing.get("signature_build", 0.0) + signature_build_elapsed
     crop_preview = _copy_debug_image(output_path, debug_dir / "page_layout_crop_before_template_matching.png")
     return {
         "applied": True,
         "reason": "pdf_layout_assisted_crop_used_for_template_matching",
         "layout_analysis": layout_analysis,
-        "rebased_layout_analysis": rebased_layout,
-        "layout_signature": signature,
+        "layout_signature": None,
         "layout_boundary_box": layout_boundary_box,
         "layout_boundary_area_ratio": round(float(area_ratio), 4),
         "layout_boundary_region_count": len(boxes),
@@ -806,7 +793,7 @@ def _pdf_layout_assisted_crop_for_matching(
         "output_path": str(output_path),
         "layout_boundary_preview_path": boundary_preview,
         "crop_preview_path": crop_preview,
-        "signature_build_ms": _ms(signature_build_elapsed),
+        "signature_source": "matching_image_path_layout_analysis",
         "safety_margin": {"x": round(float(margin_x), 2), "y": round(float(margin_y), 2)},
     }
 
@@ -1100,9 +1087,9 @@ def _normalize_query_pages(
                 pdf_crop_area_ratio = float(transform_validation.get("area_ratio"))
             except (TypeError, ValueError):
                 pdf_crop_area_ratio = None
-            layout_sub_document = bool(layout_crop.get("applied")) and bool(layout_crop.get("output_path")) and isinstance(layout_crop.get("layout_signature"), dict)
+            layout_sub_document = bool(layout_crop.get("applied")) and bool(layout_crop.get("output_path"))
             physical_sub_document = bool(pdf_boundary.get("passed")) and bool(pdf_boundary.get("output_path"))
-            matching_layout_signature = layout_crop.get("layout_signature") if layout_sub_document else None
+            matching_layout_signature = None
             document_boundary_source = "layout" if layout_sub_document else ("physical_boundary" if physical_sub_document else "full_page")
             if layout_sub_document:
                 pdf_document_mode = "sub_document"
@@ -1169,8 +1156,8 @@ def _normalize_query_pages(
                 "matching_image_size": matching_dimensions,
                 "matching_aspect_ratio": _image_aspect(matching_dimensions),
                 "pre_match_image_path": matching_path,
-                "matching_layout_signature_source": "rebased_original_pdf_layout" if matching_layout_signature else None,
-                "matching_signature_source": "rebased_original_pdf_layout" if matching_layout_signature else None,
+                "matching_layout_signature_source": None,
+                "matching_signature_source": "matching_image_path_layout_analysis",
                 "matching_layout_signature_created": bool(matching_layout_signature),
                 "preview_original_rendered_path": original_preview,
                 "preview_layout_boundary_path": layout_crop.get("layout_boundary_preview_path"),
@@ -2711,6 +2698,8 @@ def _detect_page(
             "selected_processing_path": selected_processing_path,
             "selected_processing_preview_url": selected_processing_preview_url,
             "selected_processing_image_size": _image_dimensions(selected_processing_path),
+            "image_preview_data_url_source": "selected_processing_path",
+            "image_preview_data_url_path": selected_processing_path,
             "matching_query_image_path": matching_image_path,
             "document_boundary_source": document_boundary_source,
             "layout_boundary_box": layout_boundary_box,
