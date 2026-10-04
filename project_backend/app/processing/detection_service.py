@@ -1165,6 +1165,8 @@ def _normalize_query_pages(
                 "matching_aspect_ratio": _image_aspect(matching_dimensions),
                 "pre_match_image_path": matching_path,
                 "matching_layout_signature_source": "rebased_original_pdf_layout" if matching_layout_signature else None,
+                "matching_signature_source": "rebased_original_pdf_layout" if matching_layout_signature else None,
+                "matching_layout_signature_created": bool(matching_layout_signature),
                 "preview_original_rendered_path": original_preview,
                 "preview_layout_boundary_path": layout_crop.get("layout_boundary_preview_path"),
                 "preview_layout_crop_before_template_matching_path": layout_crop.get("crop_preview_path"),
@@ -2613,6 +2615,22 @@ def _detect_page(
     )
     pdf_runtime_debug = matching_normalization.get("pdf_runtime_debug") if isinstance(matching_normalization.get("pdf_runtime_debug"), dict) else {}
     pdf_detector_debug = {
+        "document_boundary_source": pdf_runtime_debug.get("document_boundary_source"),
+        "layout_boundary_box": pdf_runtime_debug.get("layout_boundary_box"),
+        "layout_boundary_area_ratio": pdf_runtime_debug.get("layout_boundary_area_ratio"),
+        "layout_boundary_region_count": pdf_runtime_debug.get("layout_boundary_region_count"),
+        "layout_crop_applied": pdf_runtime_debug.get("layout_crop_applied"),
+        "layout_assisted_crop": pdf_runtime_debug.get("layout_assisted_crop"),
+        "pre_match_image_path": pdf_runtime_debug.get("pre_match_image_path"),
+        "matching_path_source": pdf_runtime_debug.get("matching_path_source"),
+        "matching_image_path": pdf_runtime_debug.get("matching_image_path"),
+        "matching_image_size": pdf_runtime_debug.get("matching_image_size"),
+        "matching_signature_source": pdf_runtime_debug.get("matching_signature_source")
+        or pdf_runtime_debug.get("matching_layout_signature_source"),
+        "matching_layout_signature_created": pdf_runtime_debug.get("matching_layout_signature_created"),
+        "preview_layout_boundary_path": pdf_runtime_debug.get("preview_layout_boundary_path"),
+        "preview_layout_crop_before_template_matching_path": pdf_runtime_debug.get("preview_layout_crop_before_template_matching_path"),
+        "preview_final_matching_path": pdf_runtime_debug.get("preview_final_matching_path"),
         "pdf_subdocument_detector_passed": pdf_runtime_debug.get("pdf_subdocument_detector_passed"),
         "pdf_subdocument_detector_reason": pdf_runtime_debug.get("pdf_subdocument_detector_reason"),
         "pdf_subdocument_confidence": pdf_runtime_debug.get("pdf_subdocument_confidence"),
