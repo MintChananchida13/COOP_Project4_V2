@@ -729,7 +729,7 @@ def _pdf_layout_assisted_crop_for_matching(
             "layout_boundary_region_count": len(boxes),
             "layout_boundary_preview_path": boundary_preview,
         }
-    if area_ratio >= 0.55 or (width_ratio >= 0.88 and height_ratio >= 0.88):
+    if area_ratio >= 0.55 or width_ratio >= 0.82 or height_ratio >= 0.82:
         boundary_preview = _save_debug_boundary_preview(
             page_path,
             layout_boundary_box,
