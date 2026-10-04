@@ -843,8 +843,9 @@ def _normalize_query_pages(
         pdf_crop_area_ratio = None
         pdf_debug: Dict[str, Any] = {}
         if source_type == "pdf":
+            debug_dir = (_storage_path() / query_id / "pdf_normalization_debug")
             pdf_boundary_path = normalized_dir / f"page_{index}_pdf_subdocument.png"
-            pdf_boundary = normalization_service.detect_pdf_subdocument_boundary(str(page_path), str(pdf_boundary_path))
+            pdf_boundary = normalization_service.detect_pdf_subdocument_boundary(str(page_path), str(pdf_boundary_path), str(debug_dir))
             normalization_debug = info.get("normalization_debug") if isinstance(info.get("normalization_debug"), dict) else {}
             transform_validation = normalization_debug.get("transform_validation") if isinstance(normalization_debug.get("transform_validation"), dict) else {}
             try:
@@ -865,7 +866,6 @@ def _normalize_query_pages(
             matching_dimensions = _image_dimensions(matching_path)
             original_dimensions = _image_dimensions(str(page_path))
             crop_box = normalization_debug.get("crop_box") or ((normalization_debug.get("layout_crop") or {}).get("expanded_box") if isinstance(normalization_debug.get("layout_crop"), dict) else None)
-            debug_dir = (_storage_path() / query_id / "pdf_normalization_debug")
             original_preview = _copy_debug_image(page_path, debug_dir / f"page_{index}_original_rendered.png")
             pdf_boundary_crop_box = pdf_boundary.get("crop_box") if isinstance(pdf_boundary, dict) else None
             crop_preview = _save_debug_crop(page_path, pdf_boundary_crop_box or crop_box, debug_dir / f"page_{index}_detected_crop_before_validation.png")

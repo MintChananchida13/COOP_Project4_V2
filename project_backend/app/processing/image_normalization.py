@@ -135,7 +135,12 @@ class ImageNormalizationService:
             "normalization_debug": debug,
         }
 
-    def detect_pdf_subdocument_boundary(self, image_path: str, output_path: Optional[str] = None) -> Dict[str, Any]:
+    def detect_pdf_subdocument_boundary(
+        self,
+        image_path: str,
+        output_path: Optional[str] = None,
+        debug_dir: Optional[str] = None,
+    ) -> Dict[str, Any]:
         image = cv2.imread(str(image_path))
         if image is None:
             return {"passed": False, "reason": "image_read_failed", "crop_box": None, "confidence": 0.0}
@@ -148,35 +153,76 @@ class ImageNormalizationService:
         contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         image_area = max(1.0, float(width * height))
         candidates: List[Dict[str, Any]] = []
-        for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:40]:
+        sorted_contours = sorted(contours, key=cv2.contourArea, reverse=True)
+        top_contour_debug: List[Dict[str, Any]] = []
+        top_preview = image.copy()
+        debug_paths: Dict[str, Optional[str]] = {"edge_image": None, "morphology_image": None, "top_contours": None}
+        if debug_dir:
+            target_dir = Path(debug_dir)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            edge_path = target_dir / "pdf_subdocument_edges.png"
+            morph_path = target_dir / "pdf_subdocument_morphology.png"
+            if cv2.imwrite(str(edge_path), edges):
+                debug_paths["edge_image"] = str(edge_path)
+            if cv2.imwrite(str(morph_path), closed):
+                debug_paths["morphology_image"] = str(morph_path)
+        for contour_index, contour in enumerate(sorted_contours[:40]):
             area = float(cv2.contourArea(contour))
-            if area <= 0:
-                continue
-            area_ratio = area / image_area
-            if area_ratio < self.PDF_SUBDOCUMENT_MIN_AREA_RATIO or area_ratio > self.PDF_SUBDOCUMENT_MAX_AREA_RATIO:
-                continue
             perimeter = cv2.arcLength(contour, True)
-            if perimeter <= 0:
-                continue
-            approx = cv2.approxPolyDP(contour, 0.025 * perimeter, True)
-            if len(approx) < 4:
-                continue
-            rect = cv2.minAreaRect(contour)
+            approx = cv2.approxPolyDP(contour, 0.025 * perimeter, True) if perimeter > 0 else np.array([])
+            rect = cv2.minAreaRect(contour) if area > 0 else ((0, 0), (0, 0), 0)
             (_, _), (rect_width, rect_height), _ = rect
             rect_area = float(rect_width * rect_height)
-            if rect_width <= 1 or rect_height <= 1 or rect_area <= 0:
+            rectangularity = min(1.0, area / rect_area) if rect_area > 0 else 0.0
+            box = cv2.boxPoints(rect).astype("float32") if rect_area > 0 else np.zeros((4, 2), dtype="float32")
+            ordered = self._order_points(box) if rect_area > 0 else box
+            crop_left = max(0, int(np.floor(ordered[:, 0].min()))) if rect_area > 0 else 0
+            crop_top = max(0, int(np.floor(ordered[:, 1].min()))) if rect_area > 0 else 0
+            crop_right = min(width, int(np.ceil(ordered[:, 0].max()))) if rect_area > 0 else 0
+            crop_bottom = min(height, int(np.ceil(ordered[:, 1].max()))) if rect_area > 0 else 0
+            area_ratio = area / image_area if area > 0 else 0.0
+            reject_reason = None
+            if area <= 0:
+                reject_reason = "area_zero"
+            elif area_ratio < self.PDF_SUBDOCUMENT_MIN_AREA_RATIO:
+                reject_reason = "area_too_small"
+            elif area_ratio > self.PDF_SUBDOCUMENT_MAX_AREA_RATIO:
+                reject_reason = "area_too_large"
+            elif perimeter <= 0:
+                reject_reason = "invalid_perimeter"
+            elif len(approx) < 4:
+                reject_reason = "insufficient_vertices"
+            elif rect_width <= 1 or rect_height <= 1 or rect_area <= 0:
+                reject_reason = "invalid_rect"
+            elif (crop_right - crop_left) < self.MIN_TRANSFORMED_DIMENSION or (crop_bottom - crop_top) < self.MIN_TRANSFORMED_DIMENSION:
+                reject_reason = "crop_too_small"
+            if contour_index < 10:
+                top_contour_debug.append(
+                    {
+                        "rank": contour_index + 1,
+                        "contour_area": round(float(area), 2),
+                        "area_ratio": round(float(area_ratio), 4),
+                        "perimeter": round(float(perimeter), 2),
+                        "approx_vertex_count": int(len(approx)),
+                        "min_area_rect_width": round(float(rect_width), 2),
+                        "min_area_rect_height": round(float(rect_height), 2),
+                        "rectangularity": round(float(rectangularity), 4),
+                        "crop_box": [crop_left, crop_top, crop_right, crop_bottom],
+                        "reject_reason_before_scoring": reject_reason,
+                    }
+                )
+                color = (
+                    int((37 * (contour_index + 3)) % 255),
+                    int((91 * (contour_index + 5)) % 255),
+                    int((149 * (contour_index + 7)) % 255),
+                )
+                if crop_right > crop_left and crop_bottom > crop_top:
+                    cv2.rectangle(top_preview, (crop_left, crop_top), (crop_right, crop_bottom), color, 3)
+                    cv2.putText(top_preview, str(contour_index + 1), (crop_left, max(20, crop_top - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+            if reject_reason is not None:
                 continue
-            rectangularity = min(1.0, area / rect_area)
-            box = cv2.boxPoints(rect).astype("float32")
-            ordered = self._order_points(box)
-            crop_left = max(0, int(np.floor(ordered[:, 0].min())))
-            crop_top = max(0, int(np.floor(ordered[:, 1].min())))
-            crop_right = min(width, int(np.ceil(ordered[:, 0].max())))
-            crop_bottom = min(height, int(np.ceil(ordered[:, 1].max())))
             crop_width = crop_right - crop_left
             crop_height = crop_bottom - crop_top
-            if crop_width < self.MIN_TRANSFORMED_DIMENSION or crop_height < self.MIN_TRANSFORMED_DIMENSION:
-                continue
             edge_support = self._pdf_rectangle_edge_support(edges, [crop_left, crop_top, crop_right, crop_bottom])
             aspect_ratio = max(rect_width, rect_height) / max(1.0, min(rect_width, rect_height))
             aspect_score = max(0.0, 1.0 - abs(aspect_ratio - 1.6) / 2.4)
@@ -206,12 +252,19 @@ class ImageNormalizationService:
                     "points": [[round(float(x), 2), round(float(y), 2)] for x, y in ordered.tolist()],
                 }
             )
+        if debug_dir:
+            top_path = Path(debug_dir) / "pdf_subdocument_top_contours.png"
+            if cv2.imwrite(str(top_path), top_preview):
+                debug_paths["top_contours"] = str(top_path)
         best = max(candidates, key=lambda item: float(item["confidence"]), default=None)
         debug = {
             "attempted": True,
+            "raw_contour_count": len(contours),
+            "top_contours": top_contour_debug,
             "candidate_count": len(candidates),
             "best_candidate": best,
             "image_size": [width, height],
+            "debug_preview_paths": debug_paths,
         }
         if not best:
             return {"passed": False, "reason": "no_rectangular_subdocument_candidate", "crop_box": None, "confidence": 0.0, "debug": debug}
