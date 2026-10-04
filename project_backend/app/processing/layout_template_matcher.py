@@ -54,6 +54,11 @@ def search_layout_candidates(
         "layout_compare": 0.0,
         "layout_compare_breakdown": {},
         "query_signature_summary": {},
+        "candidate_pool_templates": [],
+        "active_filtered_templates": [],
+        "invalid_signature_templates": [],
+        "compared_all": [],
+        "ranked_all": [],
         "prefilter_rejected_samples": [],
         "compared_samples": [],
         "compared_count": 0,
@@ -262,6 +267,18 @@ def search_layout_candidates(
     compare_elapsed = 0.0
     for row in rows:
         template_id = row["template_id"]
+        pool_item = {
+            "template_id": template_id,
+            "template_name": row["template_name"],
+            "template_status": row["template_status"],
+            "template_page_id": row["template_page_id"],
+            "template_page_number": row["page_number"],
+            "detection_mode": row["detection_mode"],
+            "main_page_number": row["main_page_number"],
+            "signature_loaded": row["layout_signature_json"] is not None,
+            "candidate_loaded": True,
+        }
+        breakdown["candidate_pool_templates"].append(pool_item)
 
         logger.debug(
             "[LAYOUT] checking template_id=%s status=%s include=%s",
@@ -278,6 +295,14 @@ def search_layout_candidates(
         ):
             breakdown["active_filtered_count"] += 1
             breakdown["active_filter"] += time.perf_counter() - active_filter_started
+            breakdown["active_filtered_templates"].append(
+                {
+                    **pool_item,
+                    "candidate_loaded": False,
+                    "exclude_stage": "active_filter",
+                    "exclude_reason": "template_status_not_active",
+                }
+            )
             logger.debug("[LAYOUT] skipped by active_only template_id=%s", template_id)
             continue
         breakdown["active_filter"] += time.perf_counter() - active_filter_started
@@ -288,6 +313,14 @@ def search_layout_candidates(
 
         if not signature:
             breakdown["invalid_signature_count"] += 1
+            breakdown["invalid_signature_templates"].append(
+                {
+                    **pool_item,
+                    "candidate_loaded": False,
+                    "exclude_stage": "signature_parse",
+                    "exclude_reason": "layout_signature_missing_or_invalid",
+                }
+            )
             logger.debug("[LAYOUT] skipped invalid signature template_id=%s", template_id)
             continue
 
@@ -329,6 +362,7 @@ def search_layout_candidates(
             "structural_rejected": similarity.get("structural_rejected"),
             "normalization_debug": similarity.get("normalization_debug"),
         }
+        breakdown["compared_all"].append(sample)
         if len(breakdown["compared_samples"]) < 10:
             breakdown["compared_samples"].append(sample)
         if similarity.get("prefilter_rejected"):
@@ -397,6 +431,20 @@ def search_layout_candidates(
 
     sort_started = time.perf_counter()
     ranked = sorted(best_by_template.values(), key=lambda item: item["score"], reverse=True)
+    breakdown["ranked_all"] = [
+        {
+            "rank": index,
+            "template_id": item.get("metadata", {}).get("template_id"),
+            "template_name": item.get("metadata", {}).get("template_name"),
+            "template_status": item.get("metadata", {}).get("template_status"),
+            "template_page_id": item.get("metadata", {}).get("template_page_id"),
+            "template_page_number": item.get("metadata", {}).get("page_number"),
+            "vector_id": item.get("vector_id"),
+            "score": item.get("score"),
+            "layout_debug": item.get("layout_debug"),
+        }
+        for index, item in enumerate(ranked, start=1)
+    ]
     breakdown["sort"] = time.perf_counter() - sort_started
     slice_started = time.perf_counter()
     limited = ranked[:limit]
