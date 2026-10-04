@@ -338,6 +338,11 @@ def search_layout_candidates(
         for key, value in compare_timing.items():
             compare_breakdown[key] = float(compare_breakdown.get(key) or 0.0) + float(value or 0.0)
         compared_count += 1
+        normalization_debug = similarity.get("normalization_debug") if isinstance(similarity.get("normalization_debug"), dict) else {}
+        query_after = normalization_debug.get("query_after") if isinstance(normalization_debug.get("query_after"), dict) else {}
+        template_after = normalization_debug.get("template_after") if isinstance(normalization_debug.get("template_after"), dict) else {}
+        query_before = normalization_debug.get("query_before") if isinstance(normalization_debug.get("query_before"), dict) else {}
+        template_before = normalization_debug.get("template_before") if isinstance(normalization_debug.get("template_before"), dict) else {}
         sample = {
             "template_id": template_id,
             "template_name": row["template_name"],
@@ -349,6 +354,12 @@ def search_layout_candidates(
             "aspect_score": similarity.get("aspect_score"),
             "grid_score": similarity.get("grid_score"),
             "spatial_score": similarity.get("spatial_score"),
+            "query_page_aspect_ratio": query_after.get("page_aspect_ratio"),
+            "template_page_aspect_ratio": template_after.get("page_aspect_ratio"),
+            "query_page_aspect_ratio_before_normalize": query_before.get("page_aspect_ratio"),
+            "template_page_aspect_ratio_before_normalize": template_before.get("page_aspect_ratio"),
+            "query_region_count": similarity.get("query_region_count"),
+            "template_region_count": similarity.get("template_region_count"),
             "prefilter_rejected": similarity.get("prefilter_rejected"),
             "prefilter_reason": similarity.get("prefilter_reason"),
             "prefilter_reasons": similarity.get("prefilter_reasons"),
@@ -360,7 +371,9 @@ def search_layout_candidates(
             },
             "count_area_rejected": similarity.get("count_area_rejected"),
             "structural_rejected": similarity.get("structural_rejected"),
-            "normalization_debug": similarity.get("normalization_debug"),
+            "area_hard_floor_rejected": similarity.get("area_hard_floor_rejected"),
+            "grid_hard_floor_rejected": similarity.get("grid_hard_floor_rejected"),
+            "normalization_debug": normalization_debug,
         }
         breakdown["compared_all"].append(sample)
         if len(breakdown["compared_samples"]) < 10:
