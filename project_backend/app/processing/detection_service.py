@@ -1180,15 +1180,26 @@ def _normalize_query_pages(
                 "preview_final_matching_path": matching_preview,
                 "normalization_debug": normalization_debug,
             }
+        effective_normalized_path = matching_path if source_type == "pdf" else info["normalized_image_path"]
+        effective_normalization = dict(info)
+        if source_type == "pdf":
+            effective_normalization.update(
+                {
+                    "normalized_image_path": effective_normalized_path,
+                    "pdf_matching_path_promoted_to_normalized": True,
+                    "pdf_matching_path_source": matching_path_source,
+                    "pdf_matching_reason": matching_reason,
+                }
+            )
         normalized_pages.append(
             {
                 "page_index": index,
                 "original_path": str(page_path),
-                "normalized_path": info["normalized_image_path"],
+                "normalized_path": effective_normalized_path,
                 "matching_path": matching_path,
-                "normalization": info,
+                "normalization": effective_normalization,
                 "matching_normalization": {
-                    "normalization_status": info.get("normalization_status"),
+                    "normalization_status": effective_normalization.get("normalization_status"),
                     "reason": matching_reason,
                     "matching_image_path": matching_path,
                     "matching_image_size": matching_dimensions,
@@ -1198,9 +1209,9 @@ def _normalize_query_pages(
                     "pdf_document_mode": pdf_document_mode,
                     "pdf_crop_area_ratio": round(pdf_crop_area_ratio, 4) if pdf_crop_area_ratio is not None else None,
                     "pdf_runtime_debug": pdf_debug,
-                    "crop_applied": info.get("crop_applied"),
-                    "perspective_applied": info.get("perspective_applied"),
-                    "fallback_used": info.get("fallback_used"),
+                    "crop_applied": effective_normalization.get("crop_applied"),
+                    "perspective_applied": effective_normalization.get("perspective_applied"),
+                    "fallback_used": effective_normalization.get("fallback_used"),
                 },
             }
         )
