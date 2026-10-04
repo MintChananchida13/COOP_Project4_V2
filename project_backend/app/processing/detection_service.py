@@ -1998,6 +1998,8 @@ def _candidate_from_result(
         if use_original_for_post_match
         else query_image_path
     )
+    post_match_alignment_source = "original_image" if use_original_for_post_match else "query_image"
+    post_match_original_crop_path = None
     verification_source_used = "normalized"
     alignment_skip_reason = None
     alignment = _alignment_result(
@@ -2075,6 +2077,29 @@ def _candidate_from_result(
     normalized_passed = bool(normalized_verification.get("passed") or normalized_verification.get("required_passed"))
     candidate_retrieval_score = float(result.get("score", 0.0) or 0.0)
     verification = normalized_verification
+    if (
+        normalized_passed
+        and use_original_for_post_match
+        and normalization_info
+        and normalization_info.get("pdf_matching_crop_box")
+    ):
+        query_path = Path(query_image_path)
+        output_root = query_path.parent.parent if query_path.parent.name == "normalized" else query_path.parent
+        post_match_crop_path = (
+            output_root
+            / "aligned"
+            / f"{_safe_file_token(str(template_id or 'template'))}_page_{template_page_number}_original_crop_for_layout_alignment.png"
+        )
+        post_match_original_crop_path = _save_original_rectangular_processing_image(
+            Path(str(original_image_path)),
+            normalization_info.get("pdf_matching_crop_box"),
+            post_match_crop_path,
+            None,
+        )
+        if post_match_original_crop_path:
+            post_match_alignment_query_image_path = post_match_original_crop_path
+            post_match_alignment_source = "original_image_crop"
+
     if not normalized_passed:
         should_try_alignment = False
         alignment_skip_reason = "normalized_verification_failed_alignment_not_attempted"
@@ -2188,7 +2213,8 @@ def _candidate_from_result(
     alignment_debug["alignment_required"] = alignment_required
     alignment_debug["alignment_skip_reason"] = alignment_skip_reason
     alignment_debug["post_match_alignment_query_image_path"] = post_match_alignment_query_image_path
-    alignment_debug["post_match_alignment_source"] = "original_image" if post_match_alignment_query_image_path != query_image_path else "query_image"
+    alignment_debug["post_match_alignment_source"] = post_match_alignment_source
+    alignment_debug["post_match_original_crop_path"] = post_match_original_crop_path
     alignment_debug["pre_match_query_image_path"] = query_image_path
     alignment_debug["retrieval_only_pre_crop"] = bool(use_original_for_post_match)
     alignment_debug["verification_base_image_path"] = verification_query_image_path
