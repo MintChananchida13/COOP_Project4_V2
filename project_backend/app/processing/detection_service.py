@@ -591,7 +591,16 @@ def _save_original_rectangular_processing_image(
     if template_size and len(template_size) >= 2:
         target_width, target_height = int(template_size[0] or 0), int(template_size[1] or 0)
         if target_width > 0 and target_height > 0:
-            crop = cv2.resize(crop, (target_width, target_height), interpolation=cv2.INTER_AREA)
+            crop_height, crop_width = crop.shape[:2]
+            scale = min(target_width / max(1, crop_width), target_height / max(1, crop_height))
+            resized_width = max(1, min(target_width, int(round(crop_width * scale))))
+            resized_height = max(1, min(target_height, int(round(crop_height * scale))))
+            resized = cv2.resize(crop, (resized_width, resized_height), interpolation=cv2.INTER_AREA)
+            canvas = np.full((target_height, target_width, 3), 255, dtype=np.uint8)
+            offset_x = max(0, (target_width - resized_width) // 2)
+            offset_y = max(0, (target_height - resized_height) // 2)
+            canvas[offset_y:offset_y + resized_height, offset_x:offset_x + resized_width] = resized
+            crop = canvas
     target.parent.mkdir(parents=True, exist_ok=True)
     if cv2.imwrite(str(target), crop):
         return str(target)
