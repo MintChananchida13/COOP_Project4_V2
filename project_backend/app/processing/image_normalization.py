@@ -22,6 +22,11 @@ class ImageNormalizationService:
     LAYOUT_CROP_PADDING_X_RATIO = 0.16
     LAYOUT_CROP_PADDING_TOP_RATIO = 0.24
     LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.24
+    PDF_SUBDOCUMENT_MIN_AREA_RATIO = 0.03
+    PDF_SUBDOCUMENT_MAX_AREA_RATIO = 0.65
+    PDF_SUBDOCUMENT_MIN_CONFIDENCE = 0.75
+    PDF_SUBDOCUMENT_MIN_EDGE_SUPPORT = 0.55
+    PDF_SUBDOCUMENT_MIN_RECTANGULARITY = 0.70
 
     def normalize_document(
         self,
@@ -129,6 +134,125 @@ class ImageNormalizationService:
             "longest_side": self.LONGEST_SIDE,
             "normalization_debug": debug,
         }
+
+    def detect_pdf_subdocument_boundary(self, image_path: str, output_path: Optional[str] = None) -> Dict[str, Any]:
+        image = cv2.imread(str(image_path))
+        if image is None:
+            return {"passed": False, "reason": "image_read_failed", "crop_box": None, "confidence": 0.0}
+        height, width = image.shape[:2]
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blurred, 45, 150)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
+        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        image_area = max(1.0, float(width * height))
+        candidates: List[Dict[str, Any]] = []
+        for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:40]:
+            area = float(cv2.contourArea(contour))
+            if area <= 0:
+                continue
+            area_ratio = area / image_area
+            if area_ratio < self.PDF_SUBDOCUMENT_MIN_AREA_RATIO or area_ratio > self.PDF_SUBDOCUMENT_MAX_AREA_RATIO:
+                continue
+            perimeter = cv2.arcLength(contour, True)
+            if perimeter <= 0:
+                continue
+            approx = cv2.approxPolyDP(contour, 0.025 * perimeter, True)
+            if len(approx) < 4:
+                continue
+            rect = cv2.minAreaRect(contour)
+            (_, _), (rect_width, rect_height), _ = rect
+            rect_area = float(rect_width * rect_height)
+            if rect_width <= 1 or rect_height <= 1 or rect_area <= 0:
+                continue
+            rectangularity = min(1.0, area / rect_area)
+            box = cv2.boxPoints(rect).astype("float32")
+            ordered = self._order_points(box)
+            crop_left = max(0, int(np.floor(ordered[:, 0].min())))
+            crop_top = max(0, int(np.floor(ordered[:, 1].min())))
+            crop_right = min(width, int(np.ceil(ordered[:, 0].max())))
+            crop_bottom = min(height, int(np.ceil(ordered[:, 1].max())))
+            crop_width = crop_right - crop_left
+            crop_height = crop_bottom - crop_top
+            if crop_width < self.MIN_TRANSFORMED_DIMENSION or crop_height < self.MIN_TRANSFORMED_DIMENSION:
+                continue
+            edge_support = self._pdf_rectangle_edge_support(edges, [crop_left, crop_top, crop_right, crop_bottom])
+            aspect_ratio = max(rect_width, rect_height) / max(1.0, min(rect_width, rect_height))
+            aspect_score = max(0.0, 1.0 - abs(aspect_ratio - 1.6) / 2.4)
+            area_score = 1.0 - min(1.0, abs(area_ratio - 0.20) / 0.45)
+            center_x = (crop_left + crop_right) / 2.0
+            center_y = (crop_top + crop_bottom) / 2.0
+            center_distance = ((center_x - width / 2.0) ** 2 + (center_y - height / 2.0) ** 2) ** 0.5
+            center_score = 1.0 - min(1.0, center_distance / max(1.0, (width ** 2 + height ** 2) ** 0.5 / 2.0))
+            confidence = (
+                rectangularity * 0.35
+                + edge_support * 0.35
+                + aspect_score * 0.15
+                + area_score * 0.10
+                + center_score * 0.05
+            )
+            candidates.append(
+                {
+                    "crop_box": [crop_left, crop_top, crop_right, crop_bottom],
+                    "confidence": round(float(confidence), 4),
+                    "area_ratio": round(float(area_ratio), 4),
+                    "rectangularity": round(float(rectangularity), 4),
+                    "edge_support": round(float(edge_support), 4),
+                    "aspect_ratio": round(float(aspect_ratio), 4),
+                    "aspect_score": round(float(aspect_score), 4),
+                    "area_score": round(float(area_score), 4),
+                    "center_score": round(float(center_score), 4),
+                    "points": [[round(float(x), 2), round(float(y), 2)] for x, y in ordered.tolist()],
+                }
+            )
+        best = max(candidates, key=lambda item: float(item["confidence"]), default=None)
+        debug = {
+            "attempted": True,
+            "candidate_count": len(candidates),
+            "best_candidate": best,
+            "image_size": [width, height],
+        }
+        if not best:
+            return {"passed": False, "reason": "no_rectangular_subdocument_candidate", "crop_box": None, "confidence": 0.0, "debug": debug}
+        if float(best["rectangularity"]) < self.PDF_SUBDOCUMENT_MIN_RECTANGULARITY:
+            return {"passed": False, "reason": "rectangularity_below_threshold", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
+        if float(best["edge_support"]) < self.PDF_SUBDOCUMENT_MIN_EDGE_SUPPORT:
+            return {"passed": False, "reason": "edge_support_below_threshold", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
+        if float(best["confidence"]) < self.PDF_SUBDOCUMENT_MIN_CONFIDENCE:
+            return {"passed": False, "reason": "confidence_below_threshold", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
+        crop_left, crop_top, crop_right, crop_bottom = [int(value) for value in best["crop_box"]]
+        crop = image[crop_top:crop_bottom, crop_left:crop_right].copy()
+        if output_path:
+            target = Path(output_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(target), self._resize_longest_side(crop, self.LONGEST_SIDE))
+        return {
+            "passed": True,
+            "reason": "physical_rectangular_subdocument_detected",
+            "crop_box": best["crop_box"],
+            "confidence": best["confidence"],
+            "area_ratio": best["area_ratio"],
+            "edge_support": best["edge_support"],
+            "rectangularity": best["rectangularity"],
+            "output_path": str(output_path) if output_path else None,
+            "debug": debug,
+        }
+
+    def _pdf_rectangle_edge_support(self, edge_image: np.ndarray, crop_box: List[int]) -> float:
+        height, width = edge_image.shape[:2]
+        left, top, right, bottom = crop_box
+        band = max(2, int(round(min(max(1, right - left), max(1, bottom - top)) * 0.012)))
+
+        def density(region: np.ndarray) -> float:
+            return float(np.mean(region > 0)) if region.size else 0.0
+
+        top_band = edge_image[max(0, top - band):min(height, top + band + 1), max(0, left):min(width, right)]
+        bottom_band = edge_image[max(0, bottom - band - 1):min(height, bottom + band), max(0, left):min(width, right)]
+        left_band = edge_image[max(0, top):min(height, bottom), max(0, left - band):min(width, left + band + 1)]
+        right_band = edge_image[max(0, top):min(height, bottom), max(0, right - band - 1):min(width, right + band)]
+        raw = [density(top_band), density(bottom_band), density(left_band), density(right_band)]
+        return max(0.0, min(1.0, sum(min(1.0, value / 0.10) for value in raw) / 4.0))
 
     def _perspective_correct(
         self,

@@ -843,16 +843,20 @@ def _normalize_query_pages(
         pdf_crop_area_ratio = None
         pdf_debug: Dict[str, Any] = {}
         if source_type == "pdf":
+            pdf_boundary_path = normalized_dir / f"page_{index}_pdf_subdocument.png"
+            pdf_boundary = normalization_service.detect_pdf_subdocument_boundary(str(page_path), str(pdf_boundary_path))
             normalization_debug = info.get("normalization_debug") if isinstance(info.get("normalization_debug"), dict) else {}
             transform_validation = normalization_debug.get("transform_validation") if isinstance(normalization_debug.get("transform_validation"), dict) else {}
             try:
                 pdf_crop_area_ratio = float(transform_validation.get("area_ratio"))
             except (TypeError, ValueError):
                 pdf_crop_area_ratio = None
-            clear_sub_document = bool(info.get("crop_applied")) and pdf_crop_area_ratio is not None and pdf_crop_area_ratio <= 0.65
+            clear_sub_document = bool(pdf_boundary.get("passed")) and bool(pdf_boundary.get("output_path"))
             if clear_sub_document:
                 pdf_document_mode = "sub_document"
-                matching_reason = "pdf_sub_document_crop_used_for_template_matching"
+                matching_path = str(pdf_boundary["output_path"])
+                matching_path_source = "pdf_physical_subdocument"
+                matching_reason = "pdf_physical_subdocument_crop_used_for_template_matching"
             else:
                 pdf_document_mode = "full_page"
                 matching_path = str(page_path)
@@ -863,7 +867,9 @@ def _normalize_query_pages(
             crop_box = normalization_debug.get("crop_box") or ((normalization_debug.get("layout_crop") or {}).get("expanded_box") if isinstance(normalization_debug.get("layout_crop"), dict) else None)
             debug_dir = (_storage_path() / query_id / "pdf_normalization_debug")
             original_preview = _copy_debug_image(page_path, debug_dir / f"page_{index}_original_rendered.png")
-            crop_preview = _save_debug_crop(page_path, crop_box, debug_dir / f"page_{index}_detected_crop_before_validation.png")
+            pdf_boundary_crop_box = pdf_boundary.get("crop_box") if isinstance(pdf_boundary, dict) else None
+            crop_preview = _save_debug_crop(page_path, pdf_boundary_crop_box or crop_box, debug_dir / f"page_{index}_detected_crop_before_validation.png")
+            boundary_preview = _copy_debug_image(Path(str(pdf_boundary.get("output_path"))), debug_dir / f"page_{index}_physical_boundary_crop.png") if pdf_boundary.get("output_path") else None
             matching_preview = _copy_debug_image(Path(matching_path), debug_dir / f"page_{index}_final_matching.png")
             pdf_debug = {
                 "source_type": source_type,
@@ -880,6 +886,14 @@ def _normalize_query_pages(
                 "validation_passed": transform_validation.get("passed"),
                 "validation_reason": transform_validation.get("reason"),
                 "crop_applied": info.get("crop_applied"),
+                "pdf_subdocument_detector": pdf_boundary,
+                "pdf_subdocument_detector_attempted": True,
+                "pdf_subdocument_detector_passed": bool(pdf_boundary.get("passed")),
+                "pdf_subdocument_detector_reason": pdf_boundary.get("reason"),
+                "pdf_subdocument_crop_box": pdf_boundary.get("crop_box"),
+                "pdf_subdocument_confidence": pdf_boundary.get("confidence"),
+                "pdf_subdocument_edge_support": pdf_boundary.get("edge_support"),
+                "pdf_subdocument_rectangularity": pdf_boundary.get("rectangularity"),
                 "aspect_validation_bypass_called": bool(transform_validation.get("aspect_change_validation_bypassed")),
                 "aspect_validation_bypass_reason": transform_validation.get("aspect_change_validation_bypass_reason"),
                 "pdf_document_mode": pdf_document_mode,
@@ -889,6 +903,7 @@ def _normalize_query_pages(
                 "matching_aspect_ratio": _image_aspect(matching_dimensions),
                 "preview_original_rendered_path": original_preview,
                 "preview_detected_crop_before_validation_path": crop_preview,
+                "preview_physical_boundary_crop_path": boundary_preview,
                 "preview_final_matching_path": matching_preview,
                 "normalization_debug": normalization_debug,
             }
