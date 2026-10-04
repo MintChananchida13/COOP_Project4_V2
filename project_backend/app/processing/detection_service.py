@@ -1904,10 +1904,15 @@ def _candidate_from_result(
         or 1
     )
     detection_mode = str(metadata.get("detection_mode") or (template or {}).get("detection_mode") or "all_pages")
-    verification_query_image_path = query_image_path
+    use_original_for_post_match = bool(
+        original_image_path
+        and normalization_info
+        and normalization_info.get("pdf_matching_path_promoted_to_normalized")
+    )
+    verification_query_image_path = str(original_image_path) if use_original_for_post_match else query_image_path
     post_match_alignment_query_image_path = (
         str(original_image_path)
-        if original_image_path and normalization_info and normalization_info.get("pdf_matching_path_promoted_to_normalized")
+        if use_original_for_post_match
         else query_image_path
     )
     verification_source_used = "normalized"
@@ -1987,7 +1992,7 @@ def _candidate_from_result(
     normalized_passed = bool(normalized_verification.get("passed") or normalized_verification.get("required_passed"))
     candidate_retrieval_score = float(result.get("score", 0.0) or 0.0)
     verification = normalized_verification
-    normalized_layout_already_good = normalized_passed and candidate_retrieval_score >= 0.93
+    normalized_layout_already_good = normalized_passed and candidate_retrieval_score >= 0.93 and not use_original_for_post_match
     if normalized_layout_already_good:
         should_try_alignment = False
         alignment_skip_reason = "normalized_verification_passed_and_layout_already_matches"
@@ -2092,6 +2097,8 @@ def _candidate_from_result(
     alignment_debug["post_match_alignment_query_image_path"] = post_match_alignment_query_image_path
     alignment_debug["post_match_alignment_source"] = "original_image" if post_match_alignment_query_image_path != query_image_path else "query_image"
     alignment_debug["pre_match_query_image_path"] = query_image_path
+    alignment_debug["retrieval_only_pre_crop"] = bool(use_original_for_post_match)
+    alignment_debug["post_match_base_image_path"] = verification_query_image_path
 
     alignment_reason = _alignment_reason(alignment_status, alignment, alignment_debug)
     alignment_debug["alignment_status"] = alignment_status
