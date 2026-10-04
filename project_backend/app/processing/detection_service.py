@@ -1240,6 +1240,21 @@ def _safe_file_token(value: str) -> str:
     return "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in value)
 
 
+def _is_compact_identity_template_name(value: Any) -> bool:
+    name = str(value or "").strip().lower()
+    if not name:
+        return False
+    return any(
+        token in name
+        for token in (
+            "บัตรประชาชน",
+            "บัตรประจำตัว",
+            "passport",
+            "พาสปอร์ต",
+        )
+    )
+
+
 def _alignment_result(
     status: str,
     reason: str,
@@ -2543,6 +2558,43 @@ def _detect_page(
     )
     if timing is not None:
         timing["template_matching"] = timing.get("template_matching", 0.0) + (time.perf_counter() - step_started)
+    compact_crop_template_override: Dict[str, Any] = {
+        "applied": False,
+        "reason": None,
+    }
+    if (
+        str(matching_normalization.get("matching_path_source") or "").startswith("pdf_")
+        and str(matching_normalization.get("matching_path_source") or "").endswith("_subdocument")
+        and raw_results
+        and not include_template_id
+    ):
+        top_metadata = raw_results[0].get("metadata") or {}
+        top_template_name = top_metadata.get("template_name")
+        if not _is_compact_identity_template_name(top_template_name):
+            original_matching_path = str(page_info.get("original_path") or "")
+            if original_matching_path:
+                compact_crop_template_override = {
+                    "applied": True,
+                    "reason": "subdocument_crop_top_template_not_identity_or_passport",
+                    "cropped_top_template_id": top_metadata.get("template_id"),
+                    "cropped_top_template_name": top_template_name,
+                    "cropped_matching_path": matching_image_path,
+                    "full_page_matching_path": original_matching_path,
+                }
+                normalized_image_path = original_matching_path
+                matching_image_path = original_matching_path
+                query_signature = _layout_signature_for_image_path(matching_image_path, timing=timing)
+                query_signature_source = "full_page_layout_analysis_after_subdocument_template_guard"
+                step_started = time.perf_counter()
+                raw_results = search_layout_candidates(
+                    query_signature,
+                    page_number=page_index,
+                    limit=retrieval_limit,
+                    include_template_id=include_template_id,
+                    timing=timing,
+                )
+                if timing is not None:
+                    timing["template_matching"] = timing.get("template_matching", 0.0) + (time.perf_counter() - step_started)
     candidates = []
     full_evaluation_count = 0
     early_reject_count = 0
@@ -2692,6 +2744,7 @@ def _detect_page(
         "matching_signature_source": pdf_runtime_debug.get("matching_signature_source")
         or pdf_runtime_debug.get("matching_layout_signature_source"),
         "matching_layout_signature_created": pdf_runtime_debug.get("matching_layout_signature_created"),
+        "compact_crop_template_override": compact_crop_template_override,
         "preview_layout_boundary_path": pdf_runtime_debug.get("preview_layout_boundary_path"),
         "preview_layout_crop_before_template_matching_path": pdf_runtime_debug.get("preview_layout_crop_before_template_matching_path"),
         "preview_final_matching_path": pdf_runtime_debug.get("preview_final_matching_path"),
@@ -2721,6 +2774,11 @@ def _detect_page(
     matching_image_size = pdf_detector_debug.get("matching_image_size") or matching_normalization.get("matching_image_size")
     matching_signature_source = pdf_detector_debug.get("matching_signature_source") or query_signature_source
     matching_layout_signature_created = pdf_detector_debug.get("matching_layout_signature_created")
+    if compact_crop_template_override.get("applied"):
+        matching_path_source = "rendered_pdf_page_after_subdocument_template_guard"
+        matching_image_size = _image_dimensions(matching_image_path)
+        matching_signature_source = query_signature_source
+        matching_layout_signature_created = False
     return {
         "page_index": page_index,
         "matched": matched,
