@@ -566,6 +566,246 @@ def _save_debug_crop(source: Path, crop_box: Any, target: Path) -> Optional[str]
     return None
 
 
+def _save_debug_boundary_preview(source: Path, crop_box: Any, target: Path) -> Optional[str]:
+    if not isinstance(crop_box, list) or len(crop_box) != 4:
+        return None
+    image = cv2.imread(str(source))
+    if image is None:
+        return None
+    height, width = image.shape[:2]
+    try:
+        left = max(0, min(width, int(round(float(crop_box[0])))))
+        top = max(0, min(height, int(round(float(crop_box[1])))))
+        right = max(0, min(width, int(round(float(crop_box[2])))))
+        bottom = max(0, min(height, int(round(float(crop_box[3])))))
+    except (TypeError, ValueError):
+        return None
+    if right <= left or bottom <= top:
+        return None
+    target.parent.mkdir(parents=True, exist_ok=True)
+    preview = image.copy()
+    cv2.rectangle(preview, (left, top), (right, bottom), (0, 180, 255), 6)
+    if cv2.imwrite(str(target), preview):
+        return str(target)
+    return None
+
+
+def _layout_region_boxes_from_analysis(layout_analysis: Dict[str, Any], image_width: int, image_height: int) -> List[List[float]]:
+    regions = layout_analysis.get("regions") if isinstance(layout_analysis.get("regions"), list) else []
+    boxes: List[List[float]] = []
+    for region in regions:
+        if not isinstance(region, dict):
+            continue
+        roi = region.get("roi") if isinstance(region.get("roi"), dict) else {}
+        try:
+            x = float(roi.get("x_ratio") or 0.0) * image_width
+            y = float(roi.get("y_ratio") or 0.0) * image_height
+            box_width = float(roi.get("width_ratio") or 0.0) * image_width
+            box_height = float(roi.get("height_ratio") or 0.0) * image_height
+        except (TypeError, ValueError):
+            continue
+        if box_width <= 0 or box_height <= 0:
+            continue
+        area_ratio = (box_width * box_height) / max(1.0, float(image_width * image_height))
+        if area_ratio <= 0:
+            continue
+        boxes.append([x, y, min(float(image_width), x + box_width), min(float(image_height), y + box_height)])
+    return boxes
+
+
+def _rebase_layout_analysis_to_crop(
+    layout_analysis: Dict[str, Any],
+    crop_box: List[int],
+    crop_width: int,
+    crop_height: int,
+    original_width: int,
+    original_height: int,
+) -> Dict[str, Any]:
+    left, top, right, bottom = crop_box
+    rebased_regions: List[Dict[str, Any]] = []
+    for region in layout_analysis.get("regions") or []:
+        if not isinstance(region, dict):
+            continue
+        roi = region.get("roi") if isinstance(region.get("roi"), dict) else {}
+        try:
+            region_left = float(roi.get("x_ratio") or 0.0) * original_width
+            region_top = float(roi.get("y_ratio") or 0.0) * original_height
+            region_width = float(roi.get("width_ratio") or 0.0) * original_width
+            region_height = float(roi.get("height_ratio") or 0.0) * original_height
+        except (TypeError, ValueError):
+            continue
+        region_right = region_left + region_width
+        region_bottom = region_top + region_height
+        clipped_left = max(float(left), region_left)
+        clipped_top = max(float(top), region_top)
+        clipped_right = min(float(right), region_right)
+        clipped_bottom = min(float(bottom), region_bottom)
+        if clipped_right <= clipped_left or clipped_bottom <= clipped_top:
+            continue
+        next_region = dict(region)
+        next_roi = dict(roi)
+        next_roi.update(
+            {
+                "x_ratio": round((clipped_left - left) / max(1, crop_width), 6),
+                "y_ratio": round((clipped_top - top) / max(1, crop_height), 6),
+                "width_ratio": round((clipped_right - clipped_left) / max(1, crop_width), 6),
+                "height_ratio": round((clipped_bottom - clipped_top) / max(1, crop_height), 6),
+            }
+        )
+        next_region["roi"] = next_roi
+        rebased_regions.append(next_region)
+
+    return {
+        **layout_analysis,
+        "image_width": crop_width,
+        "image_height": crop_height,
+        "regions": rebased_regions,
+        "layout_rebased_from_pdf_crop": {
+            "original_image_width": original_width,
+            "original_image_height": original_height,
+            "crop_box": crop_box,
+        },
+    }
+
+
+def _pdf_layout_assisted_crop_for_matching(
+    page_path: Path,
+    output_path: Path,
+    debug_dir: Path,
+    timing: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
+    image = cv2.imread(str(page_path))
+    if image is None:
+        return {"applied": False, "reason": "image_read_failed"}
+    height, width = image.shape[:2]
+    step_started = time.perf_counter()
+    layout_timing: Dict[str, Any] = {}
+    layout_analysis = analyze_layout_signature(image, timing=layout_timing)
+    if timing is not None:
+        timing["layout_analysis"] = timing.get("layout_analysis", 0.0) + (time.perf_counter() - step_started)
+        timing.setdefault("layout_analysis_breakdown", []).append(
+            {
+                "image_path": str(page_path),
+                "image_size": [width, height],
+                "analyze_layout_signature_ms": _ms(time.perf_counter() - step_started),
+                "analyze_layout_signature": layout_timing,
+                "source": "pdf_layout_assisted_crop",
+            }
+        )
+    boxes = _layout_region_boxes_from_analysis(layout_analysis, width, height)
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    if len(boxes) < 3:
+        return {
+            "applied": False,
+            "reason": "insufficient_layout_regions",
+            "layout_analysis": layout_analysis,
+            "layout_boundary_region_count": len(boxes),
+        }
+
+    left = min(box[0] for box in boxes)
+    top = min(box[1] for box in boxes)
+    right = max(box[2] for box in boxes)
+    bottom = max(box[3] for box in boxes)
+    content_width = max(1.0, right - left)
+    content_height = max(1.0, bottom - top)
+    area_ratio = (content_width * content_height) / max(1.0, float(width * height))
+    layout_boundary_box = [int(np.floor(left)), int(np.floor(top)), int(np.ceil(right)), int(np.ceil(bottom))]
+    if area_ratio >= 0.72:
+        boundary_preview = _save_debug_boundary_preview(
+            page_path,
+            layout_boundary_box,
+            debug_dir / "page_layout_boundary_full_page.png",
+        )
+        return {
+            "applied": False,
+            "reason": "layout_bounds_cover_most_of_pdf_page",
+            "layout_analysis": layout_analysis,
+            "layout_boundary_box": layout_boundary_box,
+            "layout_boundary_area_ratio": round(float(area_ratio), 4),
+            "layout_boundary_region_count": len(boxes),
+            "layout_boundary_preview_path": boundary_preview,
+        }
+
+    margin_x = max(width * 0.04, content_width * 0.08)
+    margin_y = max(height * 0.04, content_height * 0.08)
+    crop_left = max(0, int(np.floor(left - margin_x)))
+    crop_top = max(0, int(np.floor(top - margin_y)))
+    crop_right = min(width, int(np.ceil(right + margin_x)))
+    crop_bottom = min(height, int(np.ceil(bottom + margin_y)))
+    crop_width = crop_right - crop_left
+    crop_height = crop_bottom - crop_top
+    crop_area_ratio = (crop_width * crop_height) / max(1.0, float(width * height))
+    expanded_box = [crop_left, crop_top, crop_right, crop_bottom]
+    boundary_preview = _save_debug_boundary_preview(
+        page_path,
+        expanded_box,
+        debug_dir / "page_layout_document_boundary.png",
+    )
+    if crop_width < 80 or crop_height < 80:
+        return {
+            "applied": False,
+            "reason": "layout_crop_too_small",
+            "layout_analysis": layout_analysis,
+            "layout_boundary_box": layout_boundary_box,
+            "layout_boundary_area_ratio": round(float(area_ratio), 4),
+            "layout_boundary_region_count": len(boxes),
+            "layout_boundary_preview_path": boundary_preview,
+        }
+    if crop_area_ratio >= 0.86:
+        return {
+            "applied": False,
+            "reason": "expanded_layout_crop_covers_most_of_pdf_page",
+            "layout_analysis": layout_analysis,
+            "layout_boundary_box": layout_boundary_box,
+            "layout_boundary_area_ratio": round(float(area_ratio), 4),
+            "layout_boundary_region_count": len(boxes),
+            "layout_boundary_preview_path": boundary_preview,
+            "expanded_layout_boundary_box": expanded_box,
+            "expanded_layout_crop_area_ratio": round(float(crop_area_ratio), 4),
+        }
+
+    crop = image[crop_top:crop_bottom, crop_left:crop_right].copy()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(output_path), crop):
+        return {
+            "applied": False,
+            "reason": "layout_crop_write_failed",
+            "layout_analysis": layout_analysis,
+            "layout_boundary_box": layout_boundary_box,
+            "layout_boundary_area_ratio": round(float(area_ratio), 4),
+            "layout_boundary_region_count": len(boxes),
+            "layout_boundary_preview_path": boundary_preview,
+        }
+    rebased_layout = _rebase_layout_analysis_to_crop(
+        layout_analysis,
+        expanded_box,
+        crop_width,
+        crop_height,
+        width,
+        height,
+    )
+    signature = build_layout_signature(rebased_layout)
+    crop_preview = _copy_debug_image(output_path, debug_dir / "page_layout_crop_before_template_matching.png")
+    return {
+        "applied": True,
+        "reason": "pdf_layout_assisted_crop_used_for_template_matching",
+        "layout_analysis": layout_analysis,
+        "rebased_layout_analysis": rebased_layout,
+        "layout_signature": signature,
+        "layout_boundary_box": layout_boundary_box,
+        "layout_boundary_area_ratio": round(float(area_ratio), 4),
+        "layout_boundary_region_count": len(boxes),
+        "expanded_layout_boundary_box": expanded_box,
+        "expanded_layout_crop_area_ratio": round(float(crop_area_ratio), 4),
+        "crop_box": expanded_box,
+        "crop_size": [crop_width, crop_height],
+        "output_path": str(output_path),
+        "layout_boundary_preview_path": boundary_preview,
+        "crop_preview_path": crop_preview,
+        "safety_margin": {"x": round(float(margin_x), 2), "y": round(float(margin_y), 2)},
+    }
+
+
 def _layout_signature_for_image_path(image_path: str, timing: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
     Image = _load_pillow()
     if Image is None:
@@ -842,8 +1082,11 @@ def _normalize_query_pages(
         pdf_document_mode = None
         pdf_crop_area_ratio = None
         pdf_debug: Dict[str, Any] = {}
+        matching_layout_signature = None
         if source_type == "pdf":
             debug_dir = (_storage_path() / query_id / "pdf_normalization_debug")
+            layout_crop_path = normalized_dir / f"page_{index}_pdf_layout_crop.png"
+            layout_crop = _pdf_layout_assisted_crop_for_matching(page_path, layout_crop_path, debug_dir, timing=timing)
             pdf_boundary_path = normalized_dir / f"page_{index}_pdf_subdocument.png"
             pdf_boundary = normalization_service.detect_pdf_subdocument_boundary(str(page_path), str(pdf_boundary_path), str(debug_dir))
             normalization_debug = info.get("normalization_debug") if isinstance(info.get("normalization_debug"), dict) else {}
@@ -852,8 +1095,16 @@ def _normalize_query_pages(
                 pdf_crop_area_ratio = float(transform_validation.get("area_ratio"))
             except (TypeError, ValueError):
                 pdf_crop_area_ratio = None
-            clear_sub_document = bool(pdf_boundary.get("passed")) and bool(pdf_boundary.get("output_path"))
-            if clear_sub_document:
+            layout_sub_document = bool(layout_crop.get("applied")) and bool(layout_crop.get("output_path")) and isinstance(layout_crop.get("layout_signature"), dict)
+            physical_sub_document = bool(pdf_boundary.get("passed")) and bool(pdf_boundary.get("output_path"))
+            matching_layout_signature = layout_crop.get("layout_signature") if layout_sub_document else None
+            document_boundary_source = "layout" if layout_sub_document else ("physical_boundary" if physical_sub_document else "full_page")
+            if layout_sub_document:
+                pdf_document_mode = "sub_document"
+                matching_path = str(layout_crop["output_path"])
+                matching_path_source = "pdf_layout_assisted_subdocument"
+                matching_reason = "pdf_layout_assisted_crop_used_for_template_matching"
+            elif physical_sub_document:
                 pdf_document_mode = "sub_document"
                 matching_path = str(pdf_boundary["output_path"])
                 matching_path_source = "pdf_physical_subdocument"
@@ -868,7 +1119,8 @@ def _normalize_query_pages(
             crop_box = normalization_debug.get("crop_box") or ((normalization_debug.get("layout_crop") or {}).get("expanded_box") if isinstance(normalization_debug.get("layout_crop"), dict) else None)
             original_preview = _copy_debug_image(page_path, debug_dir / f"page_{index}_original_rendered.png")
             pdf_boundary_crop_box = pdf_boundary.get("crop_box") if isinstance(pdf_boundary, dict) else None
-            crop_preview = _save_debug_crop(page_path, pdf_boundary_crop_box or crop_box, debug_dir / f"page_{index}_detected_crop_before_validation.png")
+            layout_crop_box = layout_crop.get("crop_box") if isinstance(layout_crop, dict) else None
+            crop_preview = _save_debug_crop(page_path, layout_crop_box or pdf_boundary_crop_box or crop_box, debug_dir / f"page_{index}_detected_crop_before_validation.png")
             boundary_preview = _copy_debug_image(Path(str(pdf_boundary.get("output_path"))), debug_dir / f"page_{index}_physical_boundary_crop.png") if pdf_boundary.get("output_path") else None
             matching_preview = _copy_debug_image(Path(matching_path), debug_dir / f"page_{index}_final_matching.png")
             pdf_debug = {
@@ -886,6 +1138,16 @@ def _normalize_query_pages(
                 "validation_passed": transform_validation.get("passed"),
                 "validation_reason": transform_validation.get("reason"),
                 "crop_applied": info.get("crop_applied"),
+                "document_boundary_source": document_boundary_source,
+                "layout_assisted_crop": {
+                    key: value
+                    for key, value in layout_crop.items()
+                    if key not in {"layout_analysis", "rebased_layout_analysis", "layout_signature"}
+                },
+                "layout_boundary_box": layout_crop.get("layout_boundary_box"),
+                "layout_boundary_area_ratio": layout_crop.get("layout_boundary_area_ratio"),
+                "layout_boundary_region_count": layout_crop.get("layout_boundary_region_count"),
+                "layout_crop_applied": bool(layout_crop.get("applied")),
                 "pdf_subdocument_detector": pdf_boundary,
                 "pdf_subdocument_detector_attempted": True,
                 "pdf_subdocument_detector_passed": bool(pdf_boundary.get("passed")),
@@ -901,7 +1163,11 @@ def _normalize_query_pages(
                 "matching_image_path": matching_path,
                 "matching_image_size": matching_dimensions,
                 "matching_aspect_ratio": _image_aspect(matching_dimensions),
+                "pre_match_image_path": matching_path,
+                "matching_layout_signature_source": "rebased_original_pdf_layout" if matching_layout_signature else None,
                 "preview_original_rendered_path": original_preview,
+                "preview_layout_boundary_path": layout_crop.get("layout_boundary_preview_path"),
+                "preview_layout_crop_before_template_matching_path": layout_crop.get("crop_preview_path"),
                 "preview_detected_crop_before_validation_path": crop_preview,
                 "preview_physical_boundary_crop_path": boundary_preview,
                 "preview_final_matching_path": matching_preview,
@@ -921,6 +1187,7 @@ def _normalize_query_pages(
                     "matching_image_size": matching_dimensions,
                     "matching_aspect_ratio": _image_aspect(matching_dimensions),
                     "matching_path_source": matching_path_source,
+                    "matching_layout_signature": matching_layout_signature,
                     "pdf_document_mode": pdf_document_mode,
                     "pdf_crop_area_ratio": round(pdf_crop_area_ratio, 4) if pdf_crop_area_ratio is not None else None,
                     "pdf_runtime_debug": pdf_debug,
@@ -2193,7 +2460,14 @@ def _detect_page(
     page_index = int(page_info["page_index"])
     normalized_image_path = str(page_info["normalized_path"])
     matching_image_path = str(page_info.get("matching_path") or normalized_image_path)
-    query_signature = _layout_signature_for_image_path(matching_image_path, timing=timing)
+    matching_normalization = page_info.get("matching_normalization") if isinstance(page_info.get("matching_normalization"), dict) else {}
+    prepared_signature = matching_normalization.get("matching_layout_signature")
+    if isinstance(prepared_signature, dict):
+        query_signature = prepared_signature
+        query_signature_source = "prepared_rebased_layout"
+    else:
+        query_signature = _layout_signature_for_image_path(matching_image_path, timing=timing)
+        query_signature_source = "matching_image_layout_analysis"
     step_started = time.perf_counter()
     raw_results = search_layout_candidates(
         query_signature,
@@ -2337,7 +2611,6 @@ def _detect_page(
         if isinstance(best_candidate, dict)
         else "original"
     )
-    matching_normalization = page_info.get("matching_normalization") if isinstance(page_info.get("matching_normalization"), dict) else {}
     pdf_runtime_debug = matching_normalization.get("pdf_runtime_debug") if isinstance(matching_normalization.get("pdf_runtime_debug"), dict) else {}
     pdf_detector_debug = {
         "pdf_subdocument_detector_passed": pdf_runtime_debug.get("pdf_subdocument_detector_passed"),
@@ -2385,12 +2658,12 @@ def _detect_page(
             "selected_processing_preview_url": selected_processing_preview_url,
             "selected_processing_image_size": _image_dimensions(selected_processing_path),
             "matching_query_image_path": matching_image_path,
+            "query_signature_source": query_signature_source,
             "pdf_subdocument_debug": pdf_detector_debug,
             "original_image_preview_url": _detection_preview_url(str(page_info["original_path"])),
             "normalized_image_preview_url": _detection_preview_url(normalized_image_path),
             "matching_image_preview_url": _detection_preview_url(matching_image_path),
             "query_engine": "layout_signature",
-            "query_signature_source": "normalized_image",
             "query_version": query_signature.get("version"),
             "query_model_name": query_signature.get("model"),
             "query_vector_dimension": 0,
