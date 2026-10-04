@@ -2238,39 +2238,10 @@ def _candidate_from_result(
     template_image_source_for_processing = _fetch_template_page_image_source(template_id, template_page_number) if template_id else None
     if template_image_source_for_processing:
         template_page_size = _image_source_dimensions(template_image_source_for_processing)
-    original_rectangular_processing_path = None
-    if (
-        decision.get("final_passed")
-        and use_original_for_post_match
-        and verification_source_used != "aligned"
-        and normalization_info
-        and normalization_info.get("pdf_matching_crop_box")
-    ):
-        query_path = Path(query_image_path)
-        output_root = query_path.parent.parent if query_path.parent.name == "normalized" else query_path.parent
-        original_processing_path = (
-            output_root
-            / "aligned"
-            / f"{_safe_file_token(str(template_id or 'template'))}_page_{template_page_number}_original_rectangular_processing.png"
-        )
-        original_rectangular_processing_path = _save_original_rectangular_processing_image(
-            Path(str(original_image_path)),
-            normalization_info.get("pdf_matching_crop_box"),
-            original_processing_path,
-            template_page_size,
-        )
-        if original_rectangular_processing_path:
-            extraction_image_path = original_rectangular_processing_path
-            selected_processing_source = "original_rectangular_crop"
-            alignment_debug["original_rectangular_processing_path"] = original_rectangular_processing_path
-            alignment_debug["original_rectangular_processing_crop_box"] = normalization_info.get("pdf_matching_crop_box")
-            alignment_debug["original_rectangular_processing_template_size"] = template_page_size
-            alignment["alignment_debug"] = alignment_debug
-            alignment["original_rectangular_processing_path"] = original_rectangular_processing_path
     extraction_image_preview_url = _detection_preview_url(extraction_image_path)
     selected_processing_path = extraction_image_path
     processing_image_size = _image_dimensions(extraction_image_path)
-    roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} or selected_processing_source == "original_rectangular_crop" else "projected"
+    roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} else "projected"
 
     template_fields: List[Dict[str, Any]] = []
     template_rois: List[Dict[str, Any]] = []
