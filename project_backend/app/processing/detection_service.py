@@ -1158,7 +1158,17 @@ def _normalize_query_pages(
             except (TypeError, ValueError):
                 pdf_crop_area_ratio = None
             layout_sub_document = bool(layout_crop.get("applied")) and bool(layout_crop.get("output_path"))
-            physical_sub_document = bool(pdf_boundary.get("passed")) and bool(pdf_boundary.get("output_path"))
+            layout_full_page_policy_reasons = {
+                "layout_bounds_cover_most_of_pdf_page",
+                "layout_bounds_not_compact_subdocument",
+                "expanded_layout_crop_covers_most_of_pdf_page",
+            }
+            physical_allowed_by_layout = str(layout_crop.get("reason") or "") not in layout_full_page_policy_reasons
+            physical_sub_document = (
+                physical_allowed_by_layout
+                and bool(pdf_boundary.get("passed"))
+                and bool(pdf_boundary.get("output_path"))
+            )
             matching_layout_signature = None
             document_boundary_source = "layout" if layout_sub_document else ("physical_boundary" if physical_sub_document else "full_page")
             if layout_sub_document:
@@ -1216,6 +1226,8 @@ def _normalize_query_pages(
                 "pdf_subdocument_detector_attempted": True,
                 "pdf_subdocument_detector_passed": bool(pdf_boundary.get("passed")),
                 "pdf_subdocument_detector_reason": pdf_boundary.get("reason"),
+                "pdf_subdocument_detector_allowed_by_layout": physical_allowed_by_layout,
+                "pdf_subdocument_detector_blocked_by_layout_reason": None if physical_allowed_by_layout else layout_crop.get("reason"),
                 "pdf_subdocument_crop_box": pdf_boundary.get("crop_box"),
                 "pdf_subdocument_confidence": pdf_boundary.get("confidence"),
                 "pdf_subdocument_edge_support": pdf_boundary.get("edge_support"),
