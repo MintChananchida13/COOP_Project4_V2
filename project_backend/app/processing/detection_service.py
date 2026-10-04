@@ -1828,36 +1828,22 @@ def _align_candidate_page(
             layout_alignment["alignment_debug"] = layout_debug
             return layout_alignment
 
-        precheck = alignment_service.alignment_precheck(query_image_path, template_image_source, normalization_info)
-        if not precheck.get("should_run_orb"):
-            precheck["layout_alignment"] = layout_debug
-            if precheck.get("reason") == "normalized_geometry_matches_template":
-                result = _alignment_result("skipped", str(precheck["reason"]), precheck=precheck)
-            else:
-                result = _alignment_result("fallback", str(precheck.get("reason") or "alignment_precheck_unavailable"), precheck=precheck)
-            result_debug = result.get("alignment_debug") or {}
-            result_debug.update(alignment_timing)
-            result_debug["align_candidate_page_total_ms"] = _ms(time.perf_counter() - align_candidate_started)
-            result["alignment_debug"] = result_debug
-            return result
-
-        alignment = alignment_service.align_to_template(query_image_path, template_image_source, str(output_path))
-        service_status = str(alignment.get("alignment_status") or "")
-        alignment_status = "aligned" if alignment.get("aligned_image_path") and service_status == "aligned" else "fallback"
-        alignment["alignment_status"] = alignment_status
-        alignment["aligned_image_preview_url"] = _detection_preview_url(alignment.get("aligned_image_path"))
-        alignment["alignment_match_image_preview_url"] = _detection_preview_url(alignment.get("alignment_match_image_path"))
-        alignment_debug = alignment.get("alignment_debug") or {}
-        alignment_debug["orb_executed"] = True
-        alignment_debug["precheck"] = precheck
-        alignment_debug["layout_alignment"] = layout_debug
-        alignment_debug["layout_alignment_status"] = layout_status
-        if alignment_status == "fallback" and alignment_debug.get("reason") == "aligned":
-            alignment_debug["reason"] = "alignment_output_unavailable"
-        alignment_debug.update(alignment_timing)
-        alignment_debug["align_candidate_page_total_ms"] = _ms(time.perf_counter() - align_candidate_started)
-        alignment["alignment_debug"] = alignment_debug
-        return alignment
+        result = _alignment_result(
+            "fallback",
+            "layout_alignment_fallback_orb_homography_disabled",
+            precheck={
+                "reason": "orb_homography_disabled_for_rectangular_processing",
+                "layout_alignment": layout_debug,
+            },
+        )
+        result_debug = result.get("alignment_debug") or {}
+        result_debug.update(alignment_timing)
+        result_debug["layout_alignment"] = layout_debug
+        result_debug["layout_alignment_status"] = layout_status
+        result_debug["orb_executed"] = False
+        result_debug["align_candidate_page_total_ms"] = _ms(time.perf_counter() - align_candidate_started)
+        result["alignment_debug"] = result_debug
+        return result
     except Exception as error:
         alignment_timing["align_candidate_page_total_ms"] = _ms(time.perf_counter() - align_candidate_started)
         result = _alignment_result("failed", "alignment_runtime_error", error=f"Alignment failed: {error}")
@@ -2591,41 +2577,14 @@ def _detect_page(
                 (item.get("metadata") or {}).get("template_id"),
             )
         ]
-        if compact_identity_candidates:
-            compact_crop_template_override = {
-                "applied": False,
-                "reason": "subdocument_crop_kept_for_identity_or_passport_candidate",
-                "cropped_top_template_id": top_metadata.get("template_id"),
-                "cropped_top_template_name": top_template_name,
-                "identity_candidate_count": len(compact_identity_candidates),
-                "identity_candidates": compact_identity_candidates[:5],
-            }
-        else:
-            original_matching_path = str(page_info.get("original_path") or "")
-            if original_matching_path:
-                compact_crop_template_override = {
-                    "applied": True,
-                    "reason": "subdocument_crop_has_no_identity_or_passport_candidate",
-                    "cropped_top_template_id": top_metadata.get("template_id"),
-                    "cropped_top_template_name": top_template_name,
-                    "cropped_matching_path": matching_image_path,
-                    "full_page_matching_path": original_matching_path,
-                    "identity_candidate_count": 0,
-                }
-                normalized_image_path = original_matching_path
-                matching_image_path = original_matching_path
-                query_signature = _layout_signature_for_image_path(matching_image_path, timing=timing)
-                query_signature_source = "full_page_layout_analysis_after_subdocument_template_guard"
-                step_started = time.perf_counter()
-                raw_results = search_layout_candidates(
-                    query_signature,
-                    page_number=page_index,
-                    limit=retrieval_limit,
-                    include_template_id=include_template_id,
-                    timing=timing,
-                )
-                if timing is not None:
-                    timing["template_matching"] = timing.get("template_matching", 0.0) + (time.perf_counter() - step_started)
+        compact_crop_template_override = {
+            "applied": False,
+            "reason": "subdocument_crop_kept_after_retrieval",
+            "cropped_top_template_id": top_metadata.get("template_id"),
+            "cropped_top_template_name": top_template_name,
+            "identity_candidate_count": len(compact_identity_candidates),
+            "identity_candidates": compact_identity_candidates[:5],
+        }
     candidates = []
     full_evaluation_count = 0
     early_reject_count = 0
