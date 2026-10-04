@@ -2260,6 +2260,18 @@ def _candidate_from_result(
     candidate_timing["decision"] = time.perf_counter() - step_started
     extraction_image_path = str(alignment.get("aligned_image_path") or verification_query_image_path) if verification_source_used == "aligned" else verification_query_image_path
     selected_processing_source = verification_source_used
+    if (
+        decision.get("final_passed")
+        and use_original_for_post_match
+        and verification_source_used != "aligned"
+        and post_match_original_crop_path
+    ):
+        extraction_image_path = post_match_original_crop_path
+        selected_processing_source = "original_image_crop"
+        alignment_debug["verification_source_used"] = verification_source_used
+        alignment_debug["selected_processing_source"] = selected_processing_source
+        alignment_debug["selected_processing_reason"] = "final_passed_uses_original_crop_instead_of_retrieval_precrop"
+        alignment["alignment_debug"] = alignment_debug
     template_page_size = None
     template_image_source_for_processing = _fetch_template_page_image_source(template_id, template_page_number) if template_id else None
     if template_image_source_for_processing:
@@ -2267,7 +2279,7 @@ def _candidate_from_result(
     extraction_image_preview_url = _detection_preview_url(extraction_image_path)
     selected_processing_path = extraction_image_path
     processing_image_size = _image_dimensions(extraction_image_path)
-    roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} else "projected"
+    roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} or selected_processing_source == "original_image_crop" else "projected"
 
     template_fields: List[Dict[str, Any]] = []
     template_rois: List[Dict[str, Any]] = []
