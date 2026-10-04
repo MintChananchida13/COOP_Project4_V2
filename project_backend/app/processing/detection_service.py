@@ -1909,7 +1909,7 @@ def _candidate_from_result(
         and normalization_info
         and normalization_info.get("pdf_matching_path_promoted_to_normalized")
     )
-    verification_query_image_path = str(original_image_path) if use_original_for_post_match else query_image_path
+    verification_query_image_path = query_image_path
     post_match_alignment_query_image_path = (
         str(original_image_path)
         if use_original_for_post_match
@@ -2098,7 +2098,8 @@ def _candidate_from_result(
     alignment_debug["post_match_alignment_source"] = "original_image" if post_match_alignment_query_image_path != query_image_path else "query_image"
     alignment_debug["pre_match_query_image_path"] = query_image_path
     alignment_debug["retrieval_only_pre_crop"] = bool(use_original_for_post_match)
-    alignment_debug["post_match_base_image_path"] = verification_query_image_path
+    alignment_debug["verification_base_image_path"] = verification_query_image_path
+    alignment_debug["post_match_base_image_path"] = post_match_alignment_query_image_path
 
     alignment_reason = _alignment_reason(alignment_status, alignment, alignment_debug)
     alignment_debug["alignment_status"] = alignment_status
