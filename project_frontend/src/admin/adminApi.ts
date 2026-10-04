@@ -671,6 +671,7 @@ export interface DetectionPageResult {
   imagePreviewDataUrl?: string | null;
   originalImagePreviewUrl?: string | null;
   normalizedImagePreviewUrl?: string | null;
+  matchingImagePreviewUrl?: string | null;
   originalImagePath?: string | null;
   normalizedImagePath?: string | null;
   normalization?: Record<string, unknown>;
@@ -1211,6 +1212,7 @@ function mapDetectionPage(page: Record<string, unknown>): DetectionPageResult {
     imagePreviewDataUrl: (page.image_preview_data_url as string | null | undefined) ?? null,
     originalImagePreviewUrl: (page.original_image_preview_url as string | null | undefined) ?? null,
     normalizedImagePreviewUrl: (page.normalized_image_preview_url as string | null | undefined) ?? null,
+    matchingImagePreviewUrl: (page.matching_image_preview_url as string | null | undefined) ?? null,
     originalImagePath: (page.original_image_path as string | null | undefined) ?? null,
     normalizedImagePath: (page.normalized_image_path as string | null | undefined) ?? null,
     normalization: (page.normalization as Record<string, unknown> | undefined) || {},

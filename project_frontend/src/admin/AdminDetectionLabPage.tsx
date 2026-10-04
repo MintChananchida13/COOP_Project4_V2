@@ -283,6 +283,9 @@ export default function AdminDetectionLabPage() {
   const normalizedImagePreviewUrl = previewSrc(
     currentPage?.normalizedImagePreviewUrl || (currentPage?.debug?.normalized_image_preview_url as string | undefined) || currentPage?.imagePreviewDataUrl
   );
+  const matchingImagePreviewUrl = previewSrc(
+    currentPage?.matchingImagePreviewUrl || (currentPage?.debug?.matching_image_preview_url as string | undefined)
+  );
   const extractionImagePreviewUrl = previewSrc(alignmentCandidate?.extractionImagePreviewUrl);
   const extractionTest = alignmentCandidate?.extractionTest || null;
   const userFlowWorkspaceImageUrl = alignedImagePreviewUrl || extractionImagePreviewUrl || originalImagePreviewUrl;
@@ -759,6 +762,44 @@ export default function AdminDetectionLabPage() {
                       ))}
                     </div>
                   </section>}
+
+                  {matchingImagePreviewUrl && (
+                    <section className="mb-3 rounded-xl border border-sky-200 bg-sky-50 p-4 shadow-sm">
+                      <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+                        <div>
+                          <h3 className="text-xs font-black uppercase tracking-wider text-sky-900">PDF Crop Debug Preview</h3>
+                          <p className="mt-1 text-xs font-semibold text-sky-700">
+                            Original Image vs Matching Image (After PDF Crop)
+                          </p>
+                        </div>
+                        <span className="w-fit rounded-full bg-white px-2.5 py-1 text-[10px] font-black uppercase text-sky-700 ring-1 ring-sky-200">
+                          Page {currentPage?.pageIndex || 1}
+                        </span>
+                      </div>
+                      <div className="mt-3 grid gap-3 md:grid-cols-2">
+                        <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+                          <div className="border-b border-slate-100 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-slate-500">
+                            Original Image
+                          </div>
+                          <div className="bg-slate-50 p-3">
+                            {originalImagePreviewUrl ? (
+                              <img src={originalImagePreviewUrl} alt="Original detection input" className="max-h-[360px] w-full object-contain" />
+                            ) : (
+                              <div className="flex h-48 items-center justify-center text-xs font-bold text-slate-400">No original preview</div>
+                            )}
+                          </div>
+                        </div>
+                        <div className="overflow-hidden rounded-lg border border-sky-200 bg-white">
+                          <div className="border-b border-sky-100 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-sky-700">
+                            Matching Image (After PDF Crop)
+                          </div>
+                          <div className="bg-sky-50 p-3">
+                            <img src={matchingImagePreviewUrl} alt="Matching image after PDF crop" className="max-h-[360px] w-full object-contain" />
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+                  )}
 
                   {roiPreviewImageUrl && (
                     <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
