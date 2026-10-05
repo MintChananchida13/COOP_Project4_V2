@@ -607,76 +607,6 @@ def _save_original_rectangular_processing_image(
     return None
 
 
-def _save_layout_matched_boxes_crop(
-    source: Path,
-    matched_boxes: Any,
-    target: Path,
-    margin_ratio: float = 0.0,
-) -> Optional[str]:
-    if not isinstance(matched_boxes, list) or not matched_boxes:
-        return None
-    image = cv2.imread(str(source))
-    if image is None:
-        return None
-    image_height, image_width = image.shape[:2]
-    boxes: List[List[float]] = []
-    for match in matched_boxes:
-        if not isinstance(match, dict):
-            continue
-        region = match.get("query_region") if isinstance(match.get("query_region"), dict) else None
-        bbox = region.get("bbox") if isinstance(region, dict) and isinstance(region.get("bbox"), dict) else None
-        if not bbox:
-            continue
-        try:
-            x = float(bbox.get("x_ratio") or 0.0) * image_width
-            y = float(bbox.get("y_ratio") or 0.0) * image_height
-            width = float(bbox.get("width_ratio") or 0.0) * image_width
-            height = float(bbox.get("height_ratio") or 0.0) * image_height
-        except (TypeError, ValueError):
-            continue
-        try:
-            score = float(match.get("score") or 0.0)
-        except (TypeError, ValueError):
-            score = 0.0
-        if width <= 0 or height <= 0 or score < 0.70:
-            continue
-        boxes.append([x, y, x + width, y + height, score])
-    if len(boxes) < 3:
-        return None
-    centers_x = np.array([(box[0] + box[2]) / 2.0 for box in boxes], dtype=np.float32)
-    centers_y = np.array([(box[1] + box[3]) / 2.0 for box in boxes], dtype=np.float32)
-    median_x = float(np.median(centers_x))
-    median_y = float(np.median(centers_y))
-    mad_x = float(np.median(np.abs(centers_x - median_x)))
-    mad_y = float(np.median(np.abs(centers_y - median_y)))
-    max_dx = max(image_width * 0.22, mad_x * 3.0)
-    max_dy = max(image_height * 0.22, mad_y * 3.0)
-    filtered_boxes = [
-        box
-        for box in boxes
-        if abs(((box[0] + box[2]) / 2.0) - median_x) <= max_dx
-        and abs(((box[1] + box[3]) / 2.0) - median_y) <= max_dy
-    ]
-    if len(filtered_boxes) >= 3:
-        boxes = filtered_boxes
-    left = min(box[0] for box in boxes)
-    top = min(box[1] for box in boxes)
-    right = max(box[2] for box in boxes)
-    bottom = max(box[3] for box in boxes)
-    margin_x = image_width * margin_ratio
-    margin_y = image_height * margin_ratio
-    crop_left = max(0, int(np.floor(left - margin_x)))
-    crop_top = max(0, int(np.floor(top - margin_y)))
-    crop_right = min(image_width, int(np.ceil(right + margin_x)))
-    crop_bottom = min(image_height, int(np.ceil(bottom + margin_y)))
-    if crop_right <= crop_left or crop_bottom <= crop_top:
-        return None
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if cv2.imwrite(str(target), image[crop_top:crop_bottom, crop_left:crop_right]):
-        return str(target)
-    return None
-
-
 def _save_debug_boundary_preview(source: Path, crop_box: Any, target: Path) -> Optional[str]:
     if not isinstance(crop_box, list) or len(crop_box) != 4:
         return None
@@ -1327,9 +1257,6 @@ def _normalize_query_pages(
             effective_normalization.update(
                 {
                     "normalized_image_path": effective_normalized_path,
-                    "pdf_image_normalized_path": info.get("normalized_image_path"),
-                    "pdf_image_normalization_status": info.get("normalization_status"),
-                    "pdf_image_normalization_crop_applied": bool(info.get("crop_applied")),
                     "pdf_matching_path_promoted_to_normalized": True,
                     "pdf_matching_path_source": matching_path_source,
                     "pdf_matching_reason": matching_reason,
@@ -2329,43 +2256,6 @@ def _candidate_from_result(
         alignment_debug["selected_processing_reason"] = "post_match_original_crop_was_alignment_input_only"
         alignment_debug["post_match_original_crop_selected"] = False
         alignment["alignment_debug"] = alignment_debug
-    pdf_image_normalized_path = str((normalization_info or {}).get("pdf_image_normalized_path") or "").strip()
-    if (
-        decision.get("final_passed")
-        and use_original_for_post_match
-        and verification_source_used != "aligned"
-        and (post_match_original_crop_path or pdf_image_normalized_path)
-    ):
-        layout_box_crop_path = None
-        matched_boxes = alignment_debug.get("matched_boxes") if isinstance(alignment_debug.get("matched_boxes"), list) else []
-        layout_box_source_path = post_match_alignment_query_image_path
-        if layout_box_source_path:
-            source_path = Path(layout_box_source_path)
-            output_root = source_path.parent.parent if source_path.parent.name in {"aligned", "normalized"} else source_path.parent
-            layout_box_crop_path = _save_layout_matched_boxes_crop(
-                source_path,
-                matched_boxes,
-                output_root / "aligned" / f"{_safe_file_token(str(template_id or 'template'))}_page_{template_page_number}_layout_box_crop.png",
-            )
-        if layout_box_crop_path:
-            extraction_image_path = layout_box_crop_path
-            selected_processing_source = "pdf_layout_box_crop_after_match"
-        elif pdf_image_normalized_path and bool((normalization_info or {}).get("pdf_image_normalization_crop_applied")):
-            extraction_image_path = pdf_image_normalized_path
-            selected_processing_source = "pdf_image_normalization_after_match"
-        else:
-            layout_box_crop_path = None
-        alignment_debug["selected_processing_source"] = selected_processing_source
-        alignment_debug["selected_processing_reason"] = (
-            "final_passed_uses_layout_matched_box_crop_after_match"
-            if layout_box_crop_path
-            else "final_passed_uses_pdf_image_normalization_after_match"
-        )
-        alignment_debug["layout_box_crop_path"] = layout_box_crop_path
-        alignment_debug["layout_box_crop_matched_boxes"] = len(matched_boxes)
-        alignment_debug["pdf_image_normalized_path"] = pdf_image_normalized_path
-        alignment_debug["pdf_image_normalization_status"] = (normalization_info or {}).get("pdf_image_normalization_status")
-        alignment["alignment_debug"] = alignment_debug
     template_page_size = None
     template_image_source_for_processing = _fetch_template_page_image_source(template_id, template_page_number) if template_id else None
     if template_image_source_for_processing:
@@ -2373,7 +2263,7 @@ def _candidate_from_result(
     extraction_image_preview_url = _detection_preview_url(extraction_image_path)
     selected_processing_path = extraction_image_path
     processing_image_size = _image_dimensions(extraction_image_path)
-    roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} and selected_processing_source not in {"pdf_image_normalization_after_match", "pdf_layout_box_crop_after_match"} else "projected"
+    roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} else "projected"
 
     template_fields: List[Dict[str, Any]] = []
     template_rois: List[Dict[str, Any]] = []
