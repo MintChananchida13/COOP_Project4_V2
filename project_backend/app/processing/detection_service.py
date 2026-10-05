@@ -2338,7 +2338,7 @@ def _candidate_from_result(
     ):
         layout_box_crop_path = None
         matched_boxes = alignment_debug.get("matched_boxes") if isinstance(alignment_debug.get("matched_boxes"), list) else []
-        layout_box_source_path = post_match_original_crop_path or pdf_image_normalized_path
+        layout_box_source_path = post_match_alignment_query_image_path
         if layout_box_source_path:
             source_path = Path(layout_box_source_path)
             output_root = source_path.parent.parent if source_path.parent.name in {"aligned", "normalized"} else source_path.parent
