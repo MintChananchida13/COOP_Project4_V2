@@ -2085,6 +2085,28 @@ def _candidate_from_result(
     normalized_passed = bool(normalized_verification.get("passed") or normalized_verification.get("required_passed"))
     candidate_retrieval_score = float(result.get("score", 0.0) or 0.0)
     verification = normalized_verification
+    post_match_physical_crop: Dict[str, Any] = {"attempted": False, "passed": False}
+    if normalized_passed and use_original_for_post_match:
+        query_path = Path(query_image_path)
+        output_root = query_path.parent.parent if query_path.parent.name == "normalized" else query_path.parent
+        physical_crop_path = (
+            output_root
+            / "aligned"
+            / f"{_safe_file_token(str(template_id or 'template'))}_page_{template_page_number}_post_match_physical_crop.png"
+        )
+        physical_debug_dir = output_root / "aligned" / "post_match_physical_boundary_debug"
+        try:
+            post_match_physical_crop = normalization_service.detect_pdf_subdocument_boundary(
+                query_image_path,
+                str(physical_crop_path),
+                str(physical_debug_dir),
+            )
+            post_match_physical_crop["attempted"] = True
+        except Exception as error:
+            post_match_physical_crop = {"attempted": True, "passed": False, "reason": f"post_match_physical_crop_error: {error}"}
+        if post_match_physical_crop.get("passed") and post_match_physical_crop.get("output_path"):
+            post_match_alignment_query_image_path = str(post_match_physical_crop["output_path"])
+            post_match_alignment_source = "post_match_physical_boundary_crop"
     if not normalized_passed:
         should_try_alignment = False
         alignment_skip_reason = "normalized_verification_failed_alignment_not_attempted"
@@ -2201,6 +2223,7 @@ def _candidate_from_result(
     alignment_debug["post_match_alignment_source"] = post_match_alignment_source
     alignment_debug["post_match_original_crop_path"] = post_match_original_crop_path
     alignment_debug["post_match_original_crop_box"] = (normalization_info or {}).get("pdf_matching_crop_box") if use_original_for_post_match else None
+    alignment_debug["post_match_physical_crop"] = post_match_physical_crop if use_original_for_post_match else None
     alignment_debug["pre_match_query_image_path"] = query_image_path
     alignment_debug["retrieval_only_pre_crop"] = bool(use_original_for_post_match)
     alignment_debug["verification_base_image_path"] = verification_query_image_path
