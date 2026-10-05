@@ -1157,11 +1157,27 @@ def _normalize_query_pages(
                 pdf_crop_area_ratio = float(transform_validation.get("area_ratio"))
             except (TypeError, ValueError):
                 pdf_crop_area_ratio = None
+            original_dimensions = _image_dimensions(str(page_path))
+            crop_box = normalization_debug.get("crop_box") or ((normalization_debug.get("layout_crop") or {}).get("expanded_box") if isinstance(normalization_debug.get("layout_crop"), dict) else None)
+            normalized_crop_width_ratio = None
+            normalized_crop_height_ratio = None
+            if isinstance(crop_box, list) and len(crop_box) == 4 and original_dimensions:
+                try:
+                    normalized_crop_width_ratio = max(0.0, float(crop_box[2]) - float(crop_box[0])) / max(1.0, float(original_dimensions[0]))
+                    normalized_crop_height_ratio = max(0.0, float(crop_box[3]) - float(crop_box[1])) / max(1.0, float(original_dimensions[1]))
+                except (TypeError, ValueError):
+                    normalized_crop_width_ratio = None
+                    normalized_crop_height_ratio = None
+            normalized_pdf_compact_subdocument = (
+                (pdf_crop_area_ratio is None or pdf_crop_area_ratio < 0.55)
+                and (normalized_crop_width_ratio is None or normalized_crop_width_ratio < 0.82)
+                and (normalized_crop_height_ratio is None or normalized_crop_height_ratio < 0.82)
+            )
             normalized_pdf_sub_document = (
                 bool(info.get("crop_applied"))
                 and bool(info.get("validation_passed"))
                 and str(info.get("normalization_status") or "") in {"cropped", "layout_cropped"}
-                and (pdf_crop_area_ratio is None or pdf_crop_area_ratio < 0.86)
+                and normalized_pdf_compact_subdocument
             )
             layout_sub_document = bool(layout_crop.get("applied")) and bool(layout_crop.get("output_path"))
             layout_full_page_policy_reasons = {
@@ -1202,8 +1218,6 @@ def _normalize_query_pages(
                 matching_path_source = "rendered_pdf_page"
                 matching_reason = "pdf_full_page_render_used_for_template_matching"
             matching_dimensions = _image_dimensions(matching_path)
-            original_dimensions = _image_dimensions(str(page_path))
-            crop_box = normalization_debug.get("crop_box") or ((normalization_debug.get("layout_crop") or {}).get("expanded_box") if isinstance(normalization_debug.get("layout_crop"), dict) else None)
             original_preview = _copy_debug_image(page_path, debug_dir / f"page_{index}_original_rendered.png")
             pdf_boundary_crop_box = pdf_boundary.get("crop_box") if isinstance(pdf_boundary, dict) else None
             layout_crop_box = layout_crop.get("crop_box") if isinstance(layout_crop, dict) else None
@@ -1226,6 +1240,9 @@ def _normalize_query_pages(
                 "validation_reason": transform_validation.get("reason"),
                 "crop_applied": info.get("crop_applied"),
                 "pdf_image_normalization_subdocument": normalized_pdf_sub_document,
+                "pdf_image_normalization_compact_subdocument": normalized_pdf_compact_subdocument,
+                "pdf_image_normalization_crop_width_ratio": round(float(normalized_crop_width_ratio), 4) if normalized_crop_width_ratio is not None else None,
+                "pdf_image_normalization_crop_height_ratio": round(float(normalized_crop_height_ratio), 4) if normalized_crop_height_ratio is not None else None,
                 "document_boundary_source": document_boundary_source,
                 "layout_assisted_crop": {
                     key: value
