@@ -1173,18 +1173,20 @@ def _normalize_query_pages(
                 and (normalized_crop_width_ratio is None or normalized_crop_width_ratio < 0.82)
                 and (normalized_crop_height_ratio is None or normalized_crop_height_ratio < 0.82)
             )
-            normalized_pdf_sub_document = (
-                bool(info.get("crop_applied"))
-                and bool(info.get("validation_passed"))
-                and str(info.get("normalization_status") or "") in {"cropped", "layout_cropped"}
-                and normalized_pdf_compact_subdocument
-            )
             layout_sub_document = bool(layout_crop.get("applied")) and bool(layout_crop.get("output_path"))
             layout_full_page_policy_reasons = {
                 "layout_bounds_cover_most_of_pdf_page",
                 "layout_bounds_not_compact_subdocument",
                 "expanded_layout_crop_covers_most_of_pdf_page",
             }
+            normalized_allowed_by_layout = str(layout_crop.get("reason") or "") not in layout_full_page_policy_reasons
+            normalized_pdf_sub_document = (
+                bool(info.get("crop_applied"))
+                and bool(info.get("validation_passed"))
+                and str(info.get("normalization_status") or "") in {"cropped", "layout_cropped"}
+                and normalized_pdf_compact_subdocument
+                and normalized_allowed_by_layout
+            )
             physical_allowed_by_layout = str(layout_crop.get("reason") or "") not in layout_full_page_policy_reasons
             physical_sub_document = (
                 physical_allowed_by_layout
@@ -1241,6 +1243,8 @@ def _normalize_query_pages(
                 "crop_applied": info.get("crop_applied"),
                 "pdf_image_normalization_subdocument": normalized_pdf_sub_document,
                 "pdf_image_normalization_compact_subdocument": normalized_pdf_compact_subdocument,
+                "pdf_image_normalization_allowed_by_layout": normalized_allowed_by_layout,
+                "pdf_image_normalization_blocked_by_layout_reason": None if normalized_allowed_by_layout else layout_crop.get("reason"),
                 "pdf_image_normalization_crop_width_ratio": round(float(normalized_crop_width_ratio), 4) if normalized_crop_width_ratio is not None else None,
                 "pdf_image_normalization_crop_height_ratio": round(float(normalized_crop_height_ratio), 4) if normalized_crop_height_ratio is not None else None,
                 "document_boundary_source": document_boundary_source,
