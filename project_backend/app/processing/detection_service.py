@@ -1157,6 +1157,12 @@ def _normalize_query_pages(
                 pdf_crop_area_ratio = float(transform_validation.get("area_ratio"))
             except (TypeError, ValueError):
                 pdf_crop_area_ratio = None
+            normalized_pdf_sub_document = (
+                bool(info.get("crop_applied"))
+                and bool(info.get("validation_passed"))
+                and str(info.get("normalization_status") or "") in {"cropped", "layout_cropped"}
+                and (pdf_crop_area_ratio is None or pdf_crop_area_ratio < 0.86)
+            )
             layout_sub_document = bool(layout_crop.get("applied")) and bool(layout_crop.get("output_path"))
             layout_full_page_policy_reasons = {
                 "layout_bounds_cover_most_of_pdf_page",
@@ -1170,8 +1176,17 @@ def _normalize_query_pages(
                 and bool(pdf_boundary.get("output_path"))
             )
             matching_layout_signature = None
-            document_boundary_source = "layout" if layout_sub_document else ("physical_boundary" if physical_sub_document else "full_page")
-            if layout_sub_document:
+            document_boundary_source = (
+                "image_normalization"
+                if normalized_pdf_sub_document
+                else ("layout" if layout_sub_document else ("physical_boundary" if physical_sub_document else "full_page"))
+            )
+            if normalized_pdf_sub_document:
+                pdf_document_mode = "sub_document"
+                matching_path = str(info["normalized_image_path"])
+                matching_path_source = "pdf_image_normalization_subdocument"
+                matching_reason = "pdf_image_normalization_crop_used_for_template_matching"
+            elif layout_sub_document:
                 pdf_document_mode = "sub_document"
                 matching_path = str(layout_crop["output_path"])
                 matching_path_source = "pdf_layout_assisted_subdocument"
@@ -1210,6 +1225,7 @@ def _normalize_query_pages(
                 "validation_passed": transform_validation.get("passed"),
                 "validation_reason": transform_validation.get("reason"),
                 "crop_applied": info.get("crop_applied"),
+                "pdf_image_normalization_subdocument": normalized_pdf_sub_document,
                 "document_boundary_source": document_boundary_source,
                 "layout_assisted_crop": {
                     key: value
