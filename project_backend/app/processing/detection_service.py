@@ -1288,7 +1288,7 @@ def _normalize_query_pages(
                 "preview_final_matching_path": matching_preview,
                 "normalization_debug": normalization_debug,
             }
-        effective_normalized_path = matching_path if source_type == "pdf" else info["normalized_image_path"]
+        effective_normalized_path = matching_path if (source_type == "pdf" and pdf_document_mode == "sub_document") else (str(page_path) if source_type == "pdf" else info["normalized_image_path"])
         effective_normalization = dict(info)
         if source_type == "pdf":
             effective_normalization.update(
