@@ -611,7 +611,7 @@ def _save_layout_matched_boxes_crop(
     source: Path,
     matched_boxes: Any,
     target: Path,
-    margin_ratio: float = 0.03,
+    margin_ratio: float = 0.0,
 ) -> Optional[str]:
     if not isinstance(matched_boxes, list) or not matched_boxes:
         return None
