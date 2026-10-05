@@ -607,6 +607,72 @@ def _save_original_rectangular_processing_image(
     return None
 
 
+def _layout_signature_bounds_box(signature: Optional[Dict[str, Any]], image_width: int, image_height: int) -> Optional[List[int]]:
+    if not isinstance(signature, dict):
+        return None
+    regions = signature.get("regions") if isinstance(signature.get("regions"), list) else []
+    boxes: List[List[float]] = []
+    for region in regions:
+        bbox = region.get("bbox") if isinstance(region, dict) and isinstance(region.get("bbox"), dict) else None
+        if not bbox:
+            continue
+        try:
+            x = float(bbox.get("x_ratio") or 0.0) * image_width
+            y = float(bbox.get("y_ratio") or 0.0) * image_height
+            width = float(bbox.get("width_ratio") or 0.0) * image_width
+            height = float(bbox.get("height_ratio") or 0.0) * image_height
+        except (TypeError, ValueError):
+            continue
+        if width <= 0 or height <= 0:
+            continue
+        boxes.append([x, y, x + width, y + height])
+    if not boxes:
+        return None
+    left = max(0, int(np.floor(min(box[0] for box in boxes))))
+    top = max(0, int(np.floor(min(box[1] for box in boxes))))
+    right = min(image_width, int(np.ceil(max(box[2] for box in boxes))))
+    bottom = min(image_height, int(np.ceil(max(box[3] for box in boxes))))
+    if right <= left or bottom <= top:
+        return None
+    return [left, top, right, bottom]
+
+
+def _save_crop_box_including_layout(
+    source: Path,
+    crop_box: Any,
+    layout_box: Optional[List[int]],
+    target: Path,
+) -> tuple[Optional[str], Optional[List[int]], bool]:
+    if not isinstance(crop_box, list) or len(crop_box) != 4:
+        return None, None, False
+    image = cv2.imread(str(source))
+    if image is None:
+        return None, None, False
+    height, width = image.shape[:2]
+    try:
+        left = max(0, min(width, int(round(float(crop_box[0])))))
+        top = max(0, min(height, int(round(float(crop_box[1])))))
+        right = max(0, min(width, int(round(float(crop_box[2])))))
+        bottom = max(0, min(height, int(round(float(crop_box[3])))))
+    except (TypeError, ValueError):
+        return None, None, False
+    adjusted = False
+    if isinstance(layout_box, list) and len(layout_box) == 4:
+        layout_left, layout_top, layout_right, layout_bottom = layout_box
+        new_left = max(0, min(left, int(layout_left)))
+        new_top = max(0, min(top, int(layout_top)))
+        new_right = min(width, max(right, int(layout_right)))
+        new_bottom = min(height, max(bottom, int(layout_bottom)))
+        adjusted = [new_left, new_top, new_right, new_bottom] != [left, top, right, bottom]
+        left, top, right, bottom = new_left, new_top, new_right, new_bottom
+    if right <= left or bottom <= top:
+        return None, None, adjusted
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if cv2.imwrite(str(target), image[top:bottom, left:right]):
+        return str(target), [left, top, right, bottom], adjusted
+    return None, None, adjusted
+
+
 def _save_debug_boundary_preview(source: Path, crop_box: Any, target: Path) -> Optional[str]:
     if not isinstance(crop_box, list) or len(crop_box) != 4:
         return None
@@ -2105,8 +2171,33 @@ def _candidate_from_result(
         except Exception as error:
             post_match_physical_crop = {"attempted": True, "passed": False, "reason": f"post_match_physical_crop_error: {error}"}
         if post_match_physical_crop.get("passed") and post_match_physical_crop.get("output_path"):
-            post_match_alignment_query_image_path = str(post_match_physical_crop["output_path"])
-            post_match_alignment_source = "post_match_physical_boundary_crop"
+            query_dimensions = _image_dimensions(query_image_path)
+            layout_bounds_box = (
+                _layout_signature_bounds_box(query_signature, int(query_dimensions[0]), int(query_dimensions[1]))
+                if query_dimensions
+                else None
+            )
+            adjusted_crop_path = (
+                output_root
+                / "aligned"
+                / f"{_safe_file_token(str(template_id or 'template'))}_page_{template_page_number}_post_match_physical_layout_safe_crop.png"
+            )
+            safe_crop_path, safe_crop_box, crop_box_adjusted = _save_crop_box_including_layout(
+                Path(query_image_path),
+                post_match_physical_crop.get("crop_box"),
+                layout_bounds_box,
+                adjusted_crop_path,
+            )
+            post_match_physical_crop["layout_bounds_box"] = layout_bounds_box
+            post_match_physical_crop["layout_safe_crop_box"] = safe_crop_box
+            post_match_physical_crop["layout_safe_crop_adjusted"] = crop_box_adjusted
+            if safe_crop_path:
+                post_match_physical_crop["output_path"] = safe_crop_path
+                post_match_alignment_query_image_path = safe_crop_path
+                post_match_alignment_source = "post_match_physical_boundary_layout_safe_crop"
+            else:
+                post_match_alignment_query_image_path = str(post_match_physical_crop["output_path"])
+                post_match_alignment_source = "post_match_physical_boundary_crop"
     if not normalized_passed:
         should_try_alignment = False
         alignment_skip_reason = "normalized_verification_failed_alignment_not_attempted"
