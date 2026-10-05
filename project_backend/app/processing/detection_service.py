@@ -1157,36 +1157,12 @@ def _normalize_query_pages(
                 pdf_crop_area_ratio = float(transform_validation.get("area_ratio"))
             except (TypeError, ValueError):
                 pdf_crop_area_ratio = None
-            original_dimensions = _image_dimensions(str(page_path))
-            crop_box = normalization_debug.get("crop_box") or ((normalization_debug.get("layout_crop") or {}).get("expanded_box") if isinstance(normalization_debug.get("layout_crop"), dict) else None)
-            normalized_crop_width_ratio = None
-            normalized_crop_height_ratio = None
-            if isinstance(crop_box, list) and len(crop_box) == 4 and original_dimensions:
-                try:
-                    normalized_crop_width_ratio = max(0.0, float(crop_box[2]) - float(crop_box[0])) / max(1.0, float(original_dimensions[0]))
-                    normalized_crop_height_ratio = max(0.0, float(crop_box[3]) - float(crop_box[1])) / max(1.0, float(original_dimensions[1]))
-                except (TypeError, ValueError):
-                    normalized_crop_width_ratio = None
-                    normalized_crop_height_ratio = None
-            normalized_pdf_compact_subdocument = (
-                (pdf_crop_area_ratio is None or pdf_crop_area_ratio < 0.55)
-                and (normalized_crop_width_ratio is None or normalized_crop_width_ratio < 0.82)
-                and (normalized_crop_height_ratio is None or normalized_crop_height_ratio < 0.82)
-            )
             layout_sub_document = bool(layout_crop.get("applied")) and bool(layout_crop.get("output_path"))
             layout_full_page_policy_reasons = {
                 "layout_bounds_cover_most_of_pdf_page",
                 "layout_bounds_not_compact_subdocument",
                 "expanded_layout_crop_covers_most_of_pdf_page",
             }
-            normalized_allowed_by_layout = str(layout_crop.get("reason") or "") not in layout_full_page_policy_reasons
-            normalized_pdf_sub_document = (
-                bool(info.get("crop_applied"))
-                and bool(info.get("validation_passed"))
-                and str(info.get("normalization_status") or "") in {"cropped", "layout_cropped"}
-                and normalized_pdf_compact_subdocument
-                and normalized_allowed_by_layout
-            )
             physical_allowed_by_layout = str(layout_crop.get("reason") or "") not in layout_full_page_policy_reasons
             physical_sub_document = (
                 physical_allowed_by_layout
@@ -1194,17 +1170,8 @@ def _normalize_query_pages(
                 and bool(pdf_boundary.get("output_path"))
             )
             matching_layout_signature = None
-            document_boundary_source = (
-                "image_normalization"
-                if normalized_pdf_sub_document
-                else ("layout" if layout_sub_document else ("physical_boundary" if physical_sub_document else "full_page"))
-            )
-            if normalized_pdf_sub_document:
-                pdf_document_mode = "sub_document"
-                matching_path = str(info["normalized_image_path"])
-                matching_path_source = "pdf_image_normalization_subdocument"
-                matching_reason = "pdf_image_normalization_crop_used_for_template_matching"
-            elif layout_sub_document:
+            document_boundary_source = "layout" if layout_sub_document else ("physical_boundary" if physical_sub_document else "full_page")
+            if layout_sub_document:
                 pdf_document_mode = "sub_document"
                 matching_path = str(layout_crop["output_path"])
                 matching_path_source = "pdf_layout_assisted_subdocument"
@@ -1220,6 +1187,8 @@ def _normalize_query_pages(
                 matching_path_source = "rendered_pdf_page"
                 matching_reason = "pdf_full_page_render_used_for_template_matching"
             matching_dimensions = _image_dimensions(matching_path)
+            original_dimensions = _image_dimensions(str(page_path))
+            crop_box = normalization_debug.get("crop_box") or ((normalization_debug.get("layout_crop") or {}).get("expanded_box") if isinstance(normalization_debug.get("layout_crop"), dict) else None)
             original_preview = _copy_debug_image(page_path, debug_dir / f"page_{index}_original_rendered.png")
             pdf_boundary_crop_box = pdf_boundary.get("crop_box") if isinstance(pdf_boundary, dict) else None
             layout_crop_box = layout_crop.get("crop_box") if isinstance(layout_crop, dict) else None
@@ -1241,12 +1210,6 @@ def _normalize_query_pages(
                 "validation_passed": transform_validation.get("passed"),
                 "validation_reason": transform_validation.get("reason"),
                 "crop_applied": info.get("crop_applied"),
-                "pdf_image_normalization_subdocument": normalized_pdf_sub_document,
-                "pdf_image_normalization_compact_subdocument": normalized_pdf_compact_subdocument,
-                "pdf_image_normalization_allowed_by_layout": normalized_allowed_by_layout,
-                "pdf_image_normalization_blocked_by_layout_reason": None if normalized_allowed_by_layout else layout_crop.get("reason"),
-                "pdf_image_normalization_crop_width_ratio": round(float(normalized_crop_width_ratio), 4) if normalized_crop_width_ratio is not None else None,
-                "pdf_image_normalization_crop_height_ratio": round(float(normalized_crop_height_ratio), 4) if normalized_crop_height_ratio is not None else None,
                 "document_boundary_source": document_boundary_source,
                 "layout_assisted_crop": {
                     key: value
@@ -1288,7 +1251,7 @@ def _normalize_query_pages(
                 "preview_final_matching_path": matching_preview,
                 "normalization_debug": normalization_debug,
             }
-        effective_normalized_path = matching_path if (source_type == "pdf" and pdf_document_mode == "sub_document") else (str(page_path) if source_type == "pdf" else info["normalized_image_path"])
+        effective_normalized_path = matching_path if source_type == "pdf" else info["normalized_image_path"]
         effective_normalization = dict(info)
         if source_type == "pdf":
             effective_normalization.update(

@@ -19,9 +19,9 @@ class ImageNormalizationService:
     MIN_IMAGE_STDDEV = 3.0
     LAYOUT_CROP_MIN_REGIONS = 3
     LAYOUT_CROP_MIN_CONTENT_AREA_RATIO = 0.025
-    LAYOUT_CROP_PADDING_X_RATIO = 0.0
-    LAYOUT_CROP_PADDING_TOP_RATIO = 0.0
-    LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.0
+    LAYOUT_CROP_PADDING_X_RATIO = 0.16
+    LAYOUT_CROP_PADDING_TOP_RATIO = 0.24
+    LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.24
     PDF_SUBDOCUMENT_MIN_AREA_RATIO = 0.03
     PDF_SUBDOCUMENT_MAX_AREA_RATIO = 0.65
     PDF_SUBDOCUMENT_MIN_CONFIDENCE = 0.75
@@ -407,12 +407,9 @@ class ImageNormalizationService:
             return image.copy(), debug
 
         ordered = self._order_points(contour.reshape(4, 2).astype("float32"))
-        margin_x_ratio = 0.0
-        margin_y_ratio = 0.0
+        margin_ratio = 0.04
         center = ordered.mean(axis=0)
-        expanded_ordered = ordered.copy()
-        expanded_ordered[:, 0] = center[0] + (ordered[:, 0] - center[0]) * (1.0 + margin_x_ratio)
-        expanded_ordered[:, 1] = center[1] + (ordered[:, 1] - center[1]) * (1.0 + margin_y_ratio)
+        expanded_ordered = center + (ordered - center) * (1.0 + margin_ratio)
         expanded_ordered[:, 0] = np.clip(expanded_ordered[:, 0], 0, image.shape[1] - 1)
         expanded_ordered[:, 1] = np.clip(expanded_ordered[:, 1], 0, image.shape[0] - 1)
         expanded_ordered = expanded_ordered.astype("float32")
@@ -436,37 +433,6 @@ class ImageNormalizationService:
         crop_top = max(0, int(np.floor(expanded_ordered[:, 1].min())))
         crop_right = min(image.shape[1], int(np.ceil(expanded_ordered[:, 0].max())))
         crop_bottom = min(image.shape[0], int(np.ceil(expanded_ordered[:, 1].max())))
-        crop_width = max(0, crop_right - crop_left)
-        crop_height = max(0, crop_bottom - crop_top)
-        crop_width_ratio = crop_width / max(1.0, float(image.shape[1]))
-        crop_height_ratio = crop_height / max(1.0, float(image.shape[0]))
-        crop_area_ratio = (crop_width * crop_height) / max(1.0, float(image.shape[1] * image.shape[0]))
-        if crop_area_ratio >= 0.90 or (crop_width_ratio >= 0.94 and crop_height_ratio >= 0.94):
-            debug.update(
-                {
-                    "document_detected": True,
-                    "crop_applied": False,
-                    "perspective_applied": False,
-                    "normalization_status": "full_frame_no_crop",
-                    "validation_passed": True,
-                    "fallback_used": False,
-                    "fallback_reason": None,
-                    "detected_points": [[round(float(x), 2), round(float(y), 2)] for x, y in expanded_ordered.tolist()],
-                    "perspective_safety_margin_ratio": {"x": margin_x_ratio, "y": margin_y_ratio},
-                    "perspective_required": False,
-                    "normalization_transform": "none",
-                    "crop_box": [crop_left, crop_top, crop_right, crop_bottom],
-                    "crop_width_ratio": round(float(crop_width_ratio), 4),
-                    "crop_height_ratio": round(float(crop_height_ratio), 4),
-                    "crop_area_ratio": round(float(crop_area_ratio), 4),
-                    "transform_validation": {
-                        "passed": True,
-                        "reason": "full_frame_document_no_crop",
-                        "area_ratio": round(float(crop_area_ratio), 4),
-                    },
-                }
-            )
-            return image.copy(), debug
         cropped = image[crop_top:crop_bottom, crop_left:crop_right].copy()
         validation = self._validate_transformed_image(
             cropped,
@@ -497,7 +463,7 @@ class ImageNormalizationService:
                 "fallback_used": False,
                 "fallback_reason": None,
                 "detected_points": [[round(float(x), 2), round(float(y), 2)] for x, y in expanded_ordered.tolist()],
-                "perspective_safety_margin_ratio": {"x": margin_x_ratio, "y": margin_y_ratio},
+                "perspective_safety_margin_ratio": margin_ratio,
                 "perspective_required": False,
                 "perspective_distortion_score": round(float(distortion_score), 4),
                 "width_distortion": round(float(width_distortion), 4),
@@ -873,10 +839,10 @@ class ImageNormalizationService:
             )
             return image.copy(), debug
 
-        pad_left = content_width * self.LAYOUT_CROP_PADDING_X_RATIO
-        pad_right = content_width * self.LAYOUT_CROP_PADDING_X_RATIO
-        pad_top = content_height * self.LAYOUT_CROP_PADDING_TOP_RATIO
-        pad_bottom = content_height * self.LAYOUT_CROP_PADDING_BOTTOM_RATIO
+        pad_left = max(width * 0.015, content_width * self.LAYOUT_CROP_PADDING_X_RATIO)
+        pad_right = max(width * 0.015, content_width * self.LAYOUT_CROP_PADDING_X_RATIO)
+        pad_top = max(height * 0.015, content_height * self.LAYOUT_CROP_PADDING_TOP_RATIO)
+        pad_bottom = max(height * 0.015, content_height * self.LAYOUT_CROP_PADDING_BOTTOM_RATIO)
         crop_left = int(max(0, np.floor(left - pad_left)))
         crop_top = int(max(0, np.floor(top - pad_top)))
         crop_right = int(min(width, np.ceil(right + pad_right)))
