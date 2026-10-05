@@ -2801,6 +2801,26 @@ def _detect_page(
     best_candidate = passing_candidates[0] if passing_candidates else None
     matched = best_candidate is not None
     confident_layout_count = sum(1 for candidate in candidates if candidate.get("layout_confident"))
+    matching_path_source_for_policy = str(matching_normalization.get("matching_path_source") or "")
+    if (
+        isinstance(best_candidate, dict)
+        and matching_path_source_for_policy.startswith("pdf_")
+        and matching_path_source_for_policy.endswith("_subdocument")
+        and not _is_compact_identity_template_name(best_candidate.get("template_name"), best_candidate.get("template_id"))
+    ):
+        original_page_path = str(page_info.get("original_path") or "")
+        if original_page_path:
+            best_candidate["extraction_image_path"] = original_page_path
+            best_candidate["extraction_image_preview_url"] = _detection_preview_url(original_page_path)
+            best_candidate["selected_processing_path"] = original_page_path
+            best_candidate["selected_processing_source"] = "rendered_pdf_page_non_compact_template"
+            best_candidate["processing_image_size"] = _image_dimensions(original_page_path)
+            best_candidate["roi_coordinate_space"] = "template_canvas"
+            best_candidate["pdf_subdocument_processing_override"] = {
+                "applied": True,
+                "reason": "matched_template_not_identity_or_passport_uses_full_page",
+                "matching_path_source": matching_path_source_for_policy,
+            }
     selected_processing_path = (
         str(best_candidate.get("extraction_image_path") or "")
         if isinstance(best_candidate, dict)
@@ -2810,7 +2830,7 @@ def _detect_page(
         selected_processing_path = normalized_image_path
     selected_processing_preview_url = _detection_preview_url(selected_processing_path)
     selected_processing_source = (
-        str(best_candidate.get("verification_source_used") or "matched_candidate")
+        str(best_candidate.get("selected_processing_source") or best_candidate.get("verification_source_used") or "matched_candidate")
         if isinstance(best_candidate, dict)
         else "original"
     )
