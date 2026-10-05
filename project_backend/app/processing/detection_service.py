@@ -634,11 +634,31 @@ def _save_layout_matched_boxes_crop(
             height = float(bbox.get("height_ratio") or 0.0) * image_height
         except (TypeError, ValueError):
             continue
-        if width <= 0 or height <= 0:
+        try:
+            score = float(match.get("score") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        if width <= 0 or height <= 0 or score < 0.70:
             continue
-        boxes.append([x, y, x + width, y + height])
+        boxes.append([x, y, x + width, y + height, score])
     if len(boxes) < 3:
         return None
+    centers_x = np.array([(box[0] + box[2]) / 2.0 for box in boxes], dtype=np.float32)
+    centers_y = np.array([(box[1] + box[3]) / 2.0 for box in boxes], dtype=np.float32)
+    median_x = float(np.median(centers_x))
+    median_y = float(np.median(centers_y))
+    mad_x = float(np.median(np.abs(centers_x - median_x)))
+    mad_y = float(np.median(np.abs(centers_y - median_y)))
+    max_dx = max(image_width * 0.22, mad_x * 3.0)
+    max_dy = max(image_height * 0.22, mad_y * 3.0)
+    filtered_boxes = [
+        box
+        for box in boxes
+        if abs(((box[0] + box[2]) / 2.0) - median_x) <= max_dx
+        and abs(((box[1] + box[3]) / 2.0) - median_y) <= max_dy
+    ]
+    if len(filtered_boxes) >= 3:
+        boxes = filtered_boxes
     left = min(box[0] for box in boxes)
     top = min(box[1] for box in boxes)
     right = max(box[2] for box in boxes)
@@ -2058,12 +2078,8 @@ def _candidate_from_result(
         and normalization_info.get("pdf_matching_path_promoted_to_normalized")
     )
     verification_query_image_path = query_image_path
-    post_match_alignment_query_image_path = (
-        str(original_image_path)
-        if use_original_for_post_match
-        else query_image_path
-    )
-    post_match_alignment_source = "original_image" if use_original_for_post_match else "query_image"
+    post_match_alignment_query_image_path = query_image_path
+    post_match_alignment_source = "query_image"
     post_match_original_crop_path = None
     verification_source_used = "normalized"
     alignment_skip_reason = None
@@ -2142,29 +2158,6 @@ def _candidate_from_result(
     normalized_passed = bool(normalized_verification.get("passed") or normalized_verification.get("required_passed"))
     candidate_retrieval_score = float(result.get("score", 0.0) or 0.0)
     verification = normalized_verification
-    if (
-        normalized_passed
-        and use_original_for_post_match
-        and normalization_info
-        and normalization_info.get("pdf_matching_crop_box")
-    ):
-        query_path = Path(query_image_path)
-        output_root = query_path.parent.parent if query_path.parent.name == "normalized" else query_path.parent
-        post_match_crop_path = (
-            output_root
-            / "aligned"
-            / f"{_safe_file_token(str(template_id or 'template'))}_page_{template_page_number}_original_crop_for_layout_alignment.png"
-        )
-        post_match_original_crop_path = _save_original_rectangular_processing_image(
-            Path(str(original_image_path)),
-            normalization_info.get("pdf_matching_crop_box"),
-            post_match_crop_path,
-            None,
-        )
-        if post_match_original_crop_path:
-            post_match_alignment_query_image_path = post_match_original_crop_path
-            post_match_alignment_source = "original_image_crop_from_layout_box"
-
     if not normalized_passed:
         should_try_alignment = False
         alignment_skip_reason = "normalized_verification_failed_alignment_not_attempted"
