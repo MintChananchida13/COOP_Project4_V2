@@ -2417,12 +2417,31 @@ def _candidate_from_result(
         or "candidate_failed_final_decision"
     )
     candidate_timing["decision"] = time.perf_counter() - step_started
+    post_match_original_processing_path = (
+        post_match_alignment_query_image_path
+        if (
+            use_original_for_post_match
+            and post_match_alignment_source.startswith("post_match_original_")
+            and post_match_alignment_query_image_path
+            and post_match_alignment_query_image_path != query_image_path
+        )
+        else None
+    )
     extraction_image_path = str(alignment.get("aligned_image_path") or verification_query_image_path) if verification_source_used == "aligned" else verification_query_image_path
     selected_processing_source = verification_source_used
     if (
         decision.get("final_passed")
-        and use_original_for_post_match
         and verification_source_used != "aligned"
+        and post_match_original_processing_path
+    ):
+        extraction_image_path = post_match_original_processing_path
+        selected_processing_source = post_match_alignment_source
+        alignment_debug["post_match_original_crop_selected"] = True
+        alignment_debug["selected_processing_reason"] = "post_match_original_crop_selected_after_normalized_verification_passed"
+    if (
+        decision.get("final_passed")
+        and use_original_for_post_match
+        and selected_processing_source == "normalized"
         and post_match_original_crop_path
     ):
         alignment_debug["selected_processing_source"] = selected_processing_source
