@@ -2300,6 +2300,34 @@ def _candidate_from_result(
         query_path = Path(query_image_path)
         output_root = query_path.parent.parent if query_path.parent.name == "normalized" else query_path.parent
         original_path = Path(original_image_path) if original_image_path else query_path
+        query_dimensions = _image_dimensions(query_image_path)
+        original_dimensions = _image_dimensions(str(original_path))
+        query_layout_bounds_box = (
+            _layout_signature_bounds_box(query_signature, int(query_dimensions[0]), int(query_dimensions[1]))
+            if query_dimensions
+            else None
+        )
+        original_layout_bounds_box = _map_query_box_to_original_space(
+            query_layout_bounds_box,
+            query_dimensions,
+            original_dimensions,
+            (normalization_info or {}).get("pdf_matching_crop_box"),
+        )
+        layout_bounds_crop_path = (
+            output_root
+            / "aligned"
+            / f"{_safe_file_token(str(template_id or 'template'))}_page_{template_page_number}_post_match_original_layout_bounds_crop.png"
+        )
+        post_match_template_page_size = None
+        template_image_source_for_crop = _fetch_template_page_image_source(template_id, template_page_number) if template_id else None
+        if template_image_source_for_crop:
+            post_match_template_page_size = _image_source_dimensions(template_image_source_for_crop)
+        layout_crop_path, layout_crop_box, layout_margin_debug = _save_layout_bounds_crop(
+            original_path,
+            original_layout_bounds_box,
+            layout_bounds_crop_path,
+            post_match_template_page_size,
+        )
         physical_crop_path = (
             output_root
             / "aligned"
@@ -2316,63 +2344,39 @@ def _candidate_from_result(
             post_match_physical_crop["source_image_path"] = str(original_path)
         except Exception as error:
             post_match_physical_crop = {"attempted": True, "passed": False, "reason": f"post_match_physical_crop_error: {error}"}
+        post_match_physical_crop["query_layout_bounds_box"] = query_layout_bounds_box
+        post_match_physical_crop["original_layout_bounds_box"] = original_layout_bounds_box
+        post_match_physical_crop["layout_bounds_box"] = original_layout_bounds_box
+        post_match_physical_crop["layout_bounds_coordinate_space"] = "original"
+        post_match_physical_crop["layout_safe_crop_box"] = layout_crop_box
+        post_match_physical_crop["layout_safe_crop_adjusted"] = False
+        post_match_physical_crop["layout_safe_crop_method"] = "original_layout_bounds_crop"
+        post_match_physical_crop["layout_safe_crop_margin"] = layout_margin_debug
+        if layout_crop_path:
+            post_match_physical_crop["output_path"] = layout_crop_path
+            post_match_alignment_query_image_path = layout_crop_path
+            post_match_alignment_source = "post_match_original_layout_bounds_crop"
         if post_match_physical_crop.get("passed") and post_match_physical_crop.get("output_path"):
-            query_dimensions = _image_dimensions(query_image_path)
-            original_dimensions = _image_dimensions(str(original_path))
-            query_layout_bounds_box = (
-                _layout_signature_bounds_box(query_signature, int(query_dimensions[0]), int(query_dimensions[1]))
-                if query_dimensions
-                else None
-            )
-            original_layout_bounds_box = _map_query_box_to_original_space(
-                query_layout_bounds_box,
-                query_dimensions,
-                original_dimensions,
-                (normalization_info or {}).get("pdf_matching_crop_box"),
-            )
             adjusted_crop_path = (
                 output_root
                 / "aligned"
                 / f"{_safe_file_token(str(template_id or 'template'))}_page_{template_page_number}_post_match_physical_layout_safe_crop.png"
             )
-            layout_bounds_crop_path = (
-                output_root
-                / "aligned"
-                / f"{_safe_file_token(str(template_id or 'template'))}_page_{template_page_number}_post_match_original_layout_bounds_crop.png"
-            )
-            post_match_template_page_size = None
-            template_image_source_for_crop = _fetch_template_page_image_source(template_id, template_page_number) if template_id else None
-            if template_image_source_for_crop:
-                post_match_template_page_size = _image_source_dimensions(template_image_source_for_crop)
-            safe_crop_path, safe_crop_box, layout_margin_debug = _save_layout_bounds_crop(
-                original_path,
-                original_layout_bounds_box,
-                layout_bounds_crop_path,
-                post_match_template_page_size,
-            )
-            crop_box_adjusted = False
-            crop_method = "original_layout_bounds_crop"
-            if not safe_crop_path:
+            if not layout_crop_path:
                 safe_crop_path, safe_crop_box, crop_box_adjusted = _save_crop_box_including_layout(
                     original_path,
                     post_match_physical_crop.get("crop_box"),
                     original_layout_bounds_box,
                     adjusted_crop_path,
                 )
-                crop_method = "physical_boundary_expanded_to_layout"
-            post_match_physical_crop["query_layout_bounds_box"] = query_layout_bounds_box
-            post_match_physical_crop["original_layout_bounds_box"] = original_layout_bounds_box
-            post_match_physical_crop["layout_bounds_box"] = original_layout_bounds_box
-            post_match_physical_crop["layout_bounds_coordinate_space"] = "original"
-            post_match_physical_crop["layout_safe_crop_box"] = safe_crop_box
-            post_match_physical_crop["layout_safe_crop_adjusted"] = crop_box_adjusted
-            post_match_physical_crop["layout_safe_crop_method"] = crop_method
-            post_match_physical_crop["layout_safe_crop_margin"] = layout_margin_debug
-            if safe_crop_path:
-                post_match_physical_crop["output_path"] = safe_crop_path
-                post_match_alignment_query_image_path = safe_crop_path
-                post_match_alignment_source = "post_match_original_physical_boundary_layout_safe_crop"
-            else:
+                post_match_physical_crop["layout_safe_crop_box"] = safe_crop_box
+                post_match_physical_crop["layout_safe_crop_adjusted"] = crop_box_adjusted
+                post_match_physical_crop["layout_safe_crop_method"] = "physical_boundary_expanded_to_layout"
+                if safe_crop_path:
+                    post_match_physical_crop["output_path"] = safe_crop_path
+                    post_match_alignment_query_image_path = safe_crop_path
+                    post_match_alignment_source = "post_match_original_physical_boundary_layout_safe_crop"
+            if not post_match_alignment_query_image_path or post_match_alignment_query_image_path == query_image_path:
                 post_match_alignment_query_image_path = str(post_match_physical_crop["output_path"])
                 post_match_alignment_source = "post_match_original_physical_boundary_crop"
     if not normalized_passed:
