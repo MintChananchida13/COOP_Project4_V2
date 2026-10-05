@@ -637,6 +637,37 @@ def _layout_signature_bounds_box(signature: Optional[Dict[str, Any]], image_widt
     return [left, top, right, bottom]
 
 
+def _template_field_roi_bounds_ratio(fields: List[Dict[str, Any]], page_number: int) -> Optional[List[float]]:
+    boxes: List[List[float]] = []
+    for field in fields:
+        if int(field.get("page_number") or 0) != int(page_number):
+            continue
+        roi = field.get("roi") if isinstance(field.get("roi"), dict) else None
+        if not roi:
+            continue
+        try:
+            x = float(roi.get("x_ratio") or 0.0)
+            y = float(roi.get("y_ratio") or 0.0)
+            width = float(roi.get("width_ratio") or 0.0)
+            height = float(roi.get("height_ratio") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if width <= 0 or height <= 0:
+            continue
+        boxes.append([x, y, x + width, y + height])
+    if not boxes:
+        return None
+    left = max(0.0, min(box[0] for box in boxes))
+    top = max(0.0, min(box[1] for box in boxes))
+    right = min(1.0, max(box[2] for box in boxes))
+    bottom = min(1.0, max(box[3] for box in boxes))
+    if right <= left or bottom <= top:
+        return None
+    if (right - left) < 0.05 or (bottom - top) < 0.05:
+        return None
+    return [left, top, right, bottom]
+
+
 def _map_query_box_to_original_space(
     query_box: Optional[List[int]],
     query_dimensions: Optional[tuple[int, int]],
@@ -725,6 +756,7 @@ def _save_layout_bounds_crop(
     layout_box: Optional[List[int]],
     target: Path,
     template_size: Optional[tuple[int, int]] = None,
+    template_roi_bounds: Optional[List[float]] = None,
 ) -> tuple[Optional[str], Optional[List[int]], Optional[Dict[str, float]]]:
     if not isinstance(layout_box, list) or len(layout_box) != 4:
         return None, None, None
@@ -752,6 +784,54 @@ def _save_layout_bounds_crop(
     bottom = min(image_height, int(np.ceil(layout_bottom + margin_y)))
     if right <= left or bottom <= top:
         return None, None, None
+    roi_layout_debug: Dict[str, Any] = {"applied": False}
+    if isinstance(template_roi_bounds, list) and len(template_roi_bounds) == 4:
+        try:
+            ref_left = float(template_roi_bounds[0])
+            ref_top = float(template_roi_bounds[1])
+            ref_right = float(template_roi_bounds[2])
+            ref_bottom = float(template_roi_bounds[3])
+        except (TypeError, ValueError):
+            ref_left = ref_top = ref_right = ref_bottom = 0.0
+        ref_width = ref_right - ref_left
+        ref_height = ref_bottom - ref_top
+        if 0.05 <= ref_width <= 1.0 and 0.05 <= ref_height <= 1.0:
+            target_width = layout_width / ref_width
+            target_height = layout_height / ref_height
+            roi_left = layout_left - (ref_left * target_width)
+            roi_top = layout_top - (ref_top * target_height)
+            roi_right = roi_left + target_width
+            roi_bottom = roi_top + target_height
+            if roi_left < 0:
+                roi_right -= roi_left
+                roi_left = 0
+            if roi_top < 0:
+                roi_bottom -= roi_top
+                roi_top = 0
+            if roi_right > image_width:
+                shift = roi_right - image_width
+                roi_left = max(0.0, roi_left - shift)
+                roi_right = image_width
+            if roi_bottom > image_height:
+                shift = roi_bottom - image_height
+                roi_top = max(0.0, roi_top - shift)
+                roi_bottom = image_height
+            if roi_right > roi_left and roi_bottom > roi_top:
+                blend = 0.35
+                left = int(np.floor((left * (1.0 - blend)) + (roi_left * blend)))
+                top = int(np.floor((top * (1.0 - blend)) + (roi_top * blend)))
+                right = int(np.ceil((right * (1.0 - blend)) + (roi_right * blend)))
+                bottom = int(np.ceil((bottom * (1.0 - blend)) + (roi_bottom * blend)))
+                left = max(0, min(left, layout_left))
+                top = max(0, min(top, layout_top))
+                right = min(image_width, max(right, layout_right))
+                bottom = min(image_height, max(bottom, layout_bottom))
+                roi_layout_debug = {
+                    "applied": True,
+                    "blend": blend,
+                    "template_roi_bounds": [round(ref_left, 4), round(ref_top, 4), round(ref_right, 4), round(ref_bottom, 4)],
+                    "roi_reference_crop_box": [round(float(roi_left), 2), round(float(roi_top), 2), round(float(roi_right), 2), round(float(roi_bottom), 2)],
+                }
     aspect_debug: Dict[str, Any] = {"applied": False}
     if template_size and len(template_size) >= 2:
         try:
@@ -811,6 +891,7 @@ def _save_layout_bounds_crop(
                 "margin_y_px": round(float(margin_y), 2),
                 "margin_x_source": "max(image_width_1pct, layout_width_4pct)",
                 "margin_y_source": "max(image_height_0_5pct, layout_height_1pct)",
+                "roi_field_layout_refinement": roi_layout_debug,
                 "aspect_constraint": aspect_debug,
             },
         )
@@ -2322,11 +2403,21 @@ def _candidate_from_result(
         template_image_source_for_crop = _fetch_template_page_image_source(template_id, template_page_number) if template_id else None
         if template_image_source_for_crop:
             post_match_template_page_size = _image_source_dimensions(template_image_source_for_crop)
+        post_match_template_roi_bounds = None
+        if template_id:
+            try:
+                post_match_template_roi_bounds = _template_field_roi_bounds_ratio(
+                    _fetch_template_fields(template_id),
+                    template_page_number,
+                )
+            except Exception:
+                post_match_template_roi_bounds = None
         layout_crop_path, layout_crop_box, layout_margin_debug = _save_layout_bounds_crop(
             original_path,
             original_layout_bounds_box,
             layout_bounds_crop_path,
             post_match_template_page_size,
+            post_match_template_roi_bounds,
         )
         physical_crop_path = (
             output_root
