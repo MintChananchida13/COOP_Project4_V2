@@ -724,6 +724,7 @@ def _save_layout_bounds_crop(
     source: Path,
     layout_box: Optional[List[int]],
     target: Path,
+    template_size: Optional[tuple[int, int]] = None,
 ) -> tuple[Optional[str], Optional[List[int]], Optional[Dict[str, float]]]:
     if not isinstance(layout_box, list) or len(layout_box) != 4:
         return None, None, None
@@ -751,6 +752,55 @@ def _save_layout_bounds_crop(
     bottom = min(image_height, int(np.ceil(layout_bottom + margin_y)))
     if right <= left or bottom <= top:
         return None, None, None
+    aspect_debug: Dict[str, Any] = {"applied": False}
+    if template_size and len(template_size) >= 2:
+        try:
+            template_width = int(template_size[0] or 0)
+            template_height = int(template_size[1] or 0)
+        except (TypeError, ValueError):
+            template_width = 0
+            template_height = 0
+        if template_width > 0 and template_height > 0:
+            target_aspect = template_width / max(1, template_height)
+            box_width = right - left
+            box_height = bottom - top
+            current_aspect = box_width / max(1, box_height)
+            new_left, new_top, new_right, new_bottom = left, top, right, bottom
+            if current_aspect > target_aspect:
+                target_height = int(np.ceil(box_width / target_aspect))
+                extra = max(0, target_height - box_height)
+                new_top = top - (extra // 2)
+                new_bottom = bottom + (extra - (extra // 2))
+                if new_top < 0:
+                    new_bottom = min(image_height, new_bottom - new_top)
+                    new_top = 0
+                if new_bottom > image_height:
+                    overflow = new_bottom - image_height
+                    new_top = max(0, new_top - overflow)
+                    new_bottom = image_height
+            elif current_aspect < target_aspect:
+                target_width = int(np.ceil(box_height * target_aspect))
+                extra = max(0, target_width - box_width)
+                new_left = left - (extra // 2)
+                new_right = right + (extra - (extra // 2))
+                if new_left < 0:
+                    new_right = min(image_width, new_right - new_left)
+                    new_left = 0
+                if new_right > image_width:
+                    overflow = new_right - image_width
+                    new_left = max(0, new_left - overflow)
+                    new_right = image_width
+            if new_right > new_left and new_bottom > new_top:
+                left, top, right, bottom = new_left, new_top, new_right, new_bottom
+                final_aspect = (right - left) / max(1, bottom - top)
+                aspect_debug = {
+                    "applied": True,
+                    "template_size": [template_width, template_height],
+                    "target_aspect": round(float(target_aspect), 4),
+                    "aspect_before": round(float(current_aspect), 4),
+                    "aspect_after": round(float(final_aspect), 4),
+                    "aspect_error": round(float(abs(final_aspect - target_aspect)), 4),
+                }
     target.parent.mkdir(parents=True, exist_ok=True)
     if cv2.imwrite(str(target), image[top:bottom, left:right]):
         return (
@@ -761,6 +811,7 @@ def _save_layout_bounds_crop(
                 "margin_y_px": round(float(margin_y), 2),
                 "margin_x_source": "max(image_width_2pct, layout_width_8pct)",
                 "margin_y_source": "max(image_height_1pct, layout_height_2pct)",
+                "aspect_constraint": aspect_debug,
             },
         )
     return None, None, None
@@ -2289,10 +2340,15 @@ def _candidate_from_result(
                 / "aligned"
                 / f"{_safe_file_token(str(template_id or 'template'))}_page_{template_page_number}_post_match_original_layout_bounds_crop.png"
             )
+            post_match_template_page_size = None
+            template_image_source_for_crop = _fetch_template_page_image_source(template_id, template_page_number) if template_id else None
+            if template_image_source_for_crop:
+                post_match_template_page_size = _image_source_dimensions(template_image_source_for_crop)
             safe_crop_path, safe_crop_box, layout_margin_debug = _save_layout_bounds_crop(
                 original_path,
                 original_layout_bounds_box,
                 layout_bounds_crop_path,
+                post_match_template_page_size,
             )
             crop_box_adjusted = False
             crop_method = "original_layout_bounds_crop"
