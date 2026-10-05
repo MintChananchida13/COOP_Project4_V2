@@ -19,9 +19,9 @@ class ImageNormalizationService:
     MIN_IMAGE_STDDEV = 3.0
     LAYOUT_CROP_MIN_REGIONS = 3
     LAYOUT_CROP_MIN_CONTENT_AREA_RATIO = 0.025
-    LAYOUT_CROP_PADDING_X_RATIO = 0.16
-    LAYOUT_CROP_PADDING_TOP_RATIO = 0.24
-    LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.24
+    LAYOUT_CROP_PADDING_X_RATIO = 0.08
+    LAYOUT_CROP_PADDING_TOP_RATIO = 0.12
+    LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.12
     PDF_SUBDOCUMENT_MIN_AREA_RATIO = 0.03
     PDF_SUBDOCUMENT_MAX_AREA_RATIO = 0.65
     PDF_SUBDOCUMENT_MIN_CONFIDENCE = 0.75
@@ -407,7 +407,7 @@ class ImageNormalizationService:
             return image.copy(), debug
 
         ordered = self._order_points(contour.reshape(4, 2).astype("float32"))
-        margin_ratio = 0.04
+        margin_ratio = 0.02
         center = ordered.mean(axis=0)
         expanded_ordered = center + (ordered - center) * (1.0 + margin_ratio)
         expanded_ordered[:, 0] = np.clip(expanded_ordered[:, 0], 0, image.shape[1] - 1)
