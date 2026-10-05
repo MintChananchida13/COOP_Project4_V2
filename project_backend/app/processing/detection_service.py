@@ -2011,6 +2011,7 @@ def _candidate_from_result(
         else query_image_path
     )
     post_match_alignment_source = "original_image" if use_original_for_post_match else "query_image"
+    post_match_original_crop_path = None
     verification_source_used = "normalized"
     alignment_skip_reason = None
     alignment = _alignment_result(
@@ -2088,6 +2089,29 @@ def _candidate_from_result(
     normalized_passed = bool(normalized_verification.get("passed") or normalized_verification.get("required_passed"))
     candidate_retrieval_score = float(result.get("score", 0.0) or 0.0)
     verification = normalized_verification
+    if (
+        normalized_passed
+        and use_original_for_post_match
+        and normalization_info
+        and normalization_info.get("pdf_matching_crop_box")
+    ):
+        query_path = Path(query_image_path)
+        output_root = query_path.parent.parent if query_path.parent.name == "normalized" else query_path.parent
+        post_match_crop_path = (
+            output_root
+            / "aligned"
+            / f"{_safe_file_token(str(template_id or 'template'))}_page_{template_page_number}_original_crop_for_layout_alignment.png"
+        )
+        post_match_original_crop_path = _save_original_rectangular_processing_image(
+            Path(str(original_image_path)),
+            normalization_info.get("pdf_matching_crop_box"),
+            post_match_crop_path,
+            None,
+        )
+        if post_match_original_crop_path:
+            post_match_alignment_query_image_path = post_match_original_crop_path
+            post_match_alignment_source = "original_image_crop_from_layout_box"
+
     if not normalized_passed:
         should_try_alignment = False
         alignment_skip_reason = "normalized_verification_failed_alignment_not_attempted"
@@ -2202,6 +2226,8 @@ def _candidate_from_result(
     alignment_debug["alignment_skip_reason"] = alignment_skip_reason
     alignment_debug["post_match_alignment_query_image_path"] = post_match_alignment_query_image_path
     alignment_debug["post_match_alignment_source"] = post_match_alignment_source
+    alignment_debug["post_match_original_crop_path"] = post_match_original_crop_path
+    alignment_debug["post_match_original_crop_box"] = (normalization_info or {}).get("pdf_matching_crop_box") if use_original_for_post_match else None
     alignment_debug["pre_match_query_image_path"] = query_image_path
     alignment_debug["retrieval_only_pre_crop"] = bool(use_original_for_post_match)
     alignment_debug["verification_base_image_path"] = verification_query_image_path
@@ -2247,6 +2273,17 @@ def _candidate_from_result(
     candidate_timing["decision"] = time.perf_counter() - step_started
     extraction_image_path = str(alignment.get("aligned_image_path") or verification_query_image_path) if verification_source_used == "aligned" else verification_query_image_path
     selected_processing_source = verification_source_used
+    if (
+        decision.get("final_passed")
+        and use_original_for_post_match
+        and verification_source_used != "aligned"
+        and post_match_original_crop_path
+    ):
+        extraction_image_path = post_match_original_crop_path
+        selected_processing_source = "original_image_crop_from_layout_box"
+        alignment_debug["selected_processing_source"] = selected_processing_source
+        alignment_debug["selected_processing_reason"] = "final_passed_uses_original_crop_when_alignment_not_selected"
+        alignment["alignment_debug"] = alignment_debug
     template_page_size = None
     template_image_source_for_processing = _fetch_template_page_image_source(template_id, template_page_number) if template_id else None
     if template_image_source_for_processing:
@@ -2254,7 +2291,7 @@ def _candidate_from_result(
     extraction_image_preview_url = _detection_preview_url(extraction_image_path)
     selected_processing_path = extraction_image_path
     processing_image_size = _image_dimensions(extraction_image_path)
-    roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} else "projected"
+    roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} or selected_processing_source == "original_image_crop_from_layout_box" else "projected"
 
     template_fields: List[Dict[str, Any]] = []
     template_rois: List[Dict[str, Any]] = []
