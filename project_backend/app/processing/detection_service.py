@@ -2282,7 +2282,8 @@ def _candidate_from_result(
         extraction_image_path = post_match_original_crop_path
         selected_processing_source = "original_image_crop_from_layout_box"
         alignment_debug["selected_processing_source"] = selected_processing_source
-        alignment_debug["selected_processing_reason"] = "final_passed_uses_original_crop_when_alignment_not_selected"
+        alignment_debug["selected_processing_reason"] = "final_passed_forces_processing_crop_from_original"
+        alignment_debug["post_match_original_crop_selected"] = True
         alignment["alignment_debug"] = alignment_debug
     template_page_size = None
     template_image_source_for_processing = _fetch_template_page_image_source(template_id, template_page_number) if template_id else None
@@ -2291,7 +2292,7 @@ def _candidate_from_result(
     extraction_image_preview_url = _detection_preview_url(extraction_image_path)
     selected_processing_path = extraction_image_path
     processing_image_size = _image_dimensions(extraction_image_path)
-    roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} or selected_processing_source == "original_image_crop_from_layout_box" else "projected"
+    roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} else "projected"
 
     template_fields: List[Dict[str, Any]] = []
     template_rois: List[Dict[str, Any]] = []
