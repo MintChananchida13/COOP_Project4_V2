@@ -637,6 +637,53 @@ def _layout_signature_bounds_box(signature: Optional[Dict[str, Any]], image_widt
     return [left, top, right, bottom]
 
 
+def _map_query_box_to_original_space(
+    query_box: Optional[List[int]],
+    query_dimensions: Optional[tuple[int, int]],
+    original_dimensions: Optional[tuple[int, int]],
+    original_crop_box: Any,
+) -> Optional[List[int]]:
+    if not query_box or not query_dimensions or not original_dimensions:
+        return None
+    query_width, query_height = int(query_dimensions[0]), int(query_dimensions[1])
+    original_width, original_height = int(original_dimensions[0]), int(original_dimensions[1])
+    if query_width <= 0 or query_height <= 0 or original_width <= 0 or original_height <= 0:
+        return None
+
+    if isinstance(original_crop_box, list) and len(original_crop_box) == 4:
+        try:
+            source_left = float(original_crop_box[0])
+            source_top = float(original_crop_box[1])
+            source_right = float(original_crop_box[2])
+            source_bottom = float(original_crop_box[3])
+        except (TypeError, ValueError):
+            return None
+        source_width = source_right - source_left
+        source_height = source_bottom - source_top
+        if source_width <= 0 or source_height <= 0:
+            return None
+        scale_x = source_width / query_width
+        scale_y = source_height / query_height
+        mapped = [
+            source_left + float(query_box[0]) * scale_x,
+            source_top + float(query_box[1]) * scale_y,
+            source_left + float(query_box[2]) * scale_x,
+            source_top + float(query_box[3]) * scale_y,
+        ]
+    elif query_width == original_width and query_height == original_height:
+        mapped = [float(value) for value in query_box]
+    else:
+        return None
+
+    left = max(0, min(original_width, int(np.floor(mapped[0]))))
+    top = max(0, min(original_height, int(np.floor(mapped[1]))))
+    right = max(0, min(original_width, int(np.ceil(mapped[2]))))
+    bottom = max(0, min(original_height, int(np.ceil(mapped[3]))))
+    if right <= left or bottom <= top:
+        return None
+    return [left, top, right, bottom]
+
+
 def _save_crop_box_including_layout(
     source: Path,
     crop_box: Any,
@@ -2155,6 +2202,7 @@ def _candidate_from_result(
     if normalized_passed and use_original_for_post_match:
         query_path = Path(query_image_path)
         output_root = query_path.parent.parent if query_path.parent.name == "normalized" else query_path.parent
+        original_path = Path(original_image_path) if original_image_path else query_path
         physical_crop_path = (
             output_root
             / "aligned"
@@ -2163,19 +2211,27 @@ def _candidate_from_result(
         physical_debug_dir = output_root / "aligned" / "post_match_physical_boundary_debug"
         try:
             post_match_physical_crop = normalization_service.detect_pdf_subdocument_boundary(
-                query_image_path,
+                str(original_path),
                 str(physical_crop_path),
                 str(physical_debug_dir),
             )
             post_match_physical_crop["attempted"] = True
+            post_match_physical_crop["source_image_path"] = str(original_path)
         except Exception as error:
             post_match_physical_crop = {"attempted": True, "passed": False, "reason": f"post_match_physical_crop_error: {error}"}
         if post_match_physical_crop.get("passed") and post_match_physical_crop.get("output_path"):
             query_dimensions = _image_dimensions(query_image_path)
-            layout_bounds_box = (
+            original_dimensions = _image_dimensions(str(original_path))
+            query_layout_bounds_box = (
                 _layout_signature_bounds_box(query_signature, int(query_dimensions[0]), int(query_dimensions[1]))
                 if query_dimensions
                 else None
+            )
+            original_layout_bounds_box = _map_query_box_to_original_space(
+                query_layout_bounds_box,
+                query_dimensions,
+                original_dimensions,
+                (normalization_info or {}).get("pdf_matching_crop_box"),
             )
             adjusted_crop_path = (
                 output_root
@@ -2183,21 +2239,24 @@ def _candidate_from_result(
                 / f"{_safe_file_token(str(template_id or 'template'))}_page_{template_page_number}_post_match_physical_layout_safe_crop.png"
             )
             safe_crop_path, safe_crop_box, crop_box_adjusted = _save_crop_box_including_layout(
-                Path(query_image_path),
+                original_path,
                 post_match_physical_crop.get("crop_box"),
-                layout_bounds_box,
+                original_layout_bounds_box,
                 adjusted_crop_path,
             )
-            post_match_physical_crop["layout_bounds_box"] = layout_bounds_box
+            post_match_physical_crop["query_layout_bounds_box"] = query_layout_bounds_box
+            post_match_physical_crop["original_layout_bounds_box"] = original_layout_bounds_box
+            post_match_physical_crop["layout_bounds_box"] = original_layout_bounds_box
+            post_match_physical_crop["layout_bounds_coordinate_space"] = "original"
             post_match_physical_crop["layout_safe_crop_box"] = safe_crop_box
             post_match_physical_crop["layout_safe_crop_adjusted"] = crop_box_adjusted
             if safe_crop_path:
                 post_match_physical_crop["output_path"] = safe_crop_path
                 post_match_alignment_query_image_path = safe_crop_path
-                post_match_alignment_source = "post_match_physical_boundary_layout_safe_crop"
+                post_match_alignment_source = "post_match_original_physical_boundary_layout_safe_crop"
             else:
                 post_match_alignment_query_image_path = str(post_match_physical_crop["output_path"])
-                post_match_alignment_source = "post_match_physical_boundary_crop"
+                post_match_alignment_source = "post_match_original_physical_boundary_crop"
     if not normalized_passed:
         should_try_alignment = False
         alignment_skip_reason = "normalized_verification_failed_alignment_not_attempted"
