@@ -1257,6 +1257,9 @@ def _normalize_query_pages(
             effective_normalization.update(
                 {
                     "normalized_image_path": effective_normalized_path,
+                    "pdf_image_normalized_path": info.get("normalized_image_path"),
+                    "pdf_image_normalization_status": info.get("normalization_status"),
+                    "pdf_image_normalization_crop_applied": bool(info.get("crop_applied")),
                     "pdf_matching_path_promoted_to_normalized": True,
                     "pdf_matching_path_source": matching_path_source,
                     "pdf_matching_reason": matching_reason,
@@ -2283,6 +2286,21 @@ def _candidate_from_result(
         alignment_debug["selected_processing_reason"] = "post_match_original_crop_was_alignment_input_only"
         alignment_debug["post_match_original_crop_selected"] = False
         alignment["alignment_debug"] = alignment_debug
+    pdf_image_normalized_path = str((normalization_info or {}).get("pdf_image_normalized_path") or "").strip()
+    if (
+        decision.get("final_passed")
+        and use_original_for_post_match
+        and verification_source_used != "aligned"
+        and pdf_image_normalized_path
+        and bool((normalization_info or {}).get("pdf_image_normalization_crop_applied"))
+    ):
+        extraction_image_path = pdf_image_normalized_path
+        selected_processing_source = "pdf_image_normalization_after_match"
+        alignment_debug["selected_processing_source"] = selected_processing_source
+        alignment_debug["selected_processing_reason"] = "final_passed_uses_pdf_image_normalization_after_match"
+        alignment_debug["pdf_image_normalized_path"] = pdf_image_normalized_path
+        alignment_debug["pdf_image_normalization_status"] = (normalization_info or {}).get("pdf_image_normalization_status")
+        alignment["alignment_debug"] = alignment_debug
     template_page_size = None
     template_image_source_for_processing = _fetch_template_page_image_source(template_id, template_page_number) if template_id else None
     if template_image_source_for_processing:
@@ -2290,7 +2308,7 @@ def _candidate_from_result(
     extraction_image_preview_url = _detection_preview_url(extraction_image_path)
     selected_processing_path = extraction_image_path
     processing_image_size = _image_dimensions(extraction_image_path)
-    roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} else "projected"
+    roi_coordinate_space = "template_canvas" if alignment_status in {"aligned", "skipped"} and selected_processing_source != "pdf_image_normalization_after_match" else "projected"
 
     template_fields: List[Dict[str, Any]] = []
     template_rois: List[Dict[str, Any]] = []
