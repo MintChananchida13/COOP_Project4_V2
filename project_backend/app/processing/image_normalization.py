@@ -436,6 +436,37 @@ class ImageNormalizationService:
         crop_top = max(0, int(np.floor(expanded_ordered[:, 1].min())))
         crop_right = min(image.shape[1], int(np.ceil(expanded_ordered[:, 0].max())))
         crop_bottom = min(image.shape[0], int(np.ceil(expanded_ordered[:, 1].max())))
+        crop_width = max(0, crop_right - crop_left)
+        crop_height = max(0, crop_bottom - crop_top)
+        crop_width_ratio = crop_width / max(1.0, float(image.shape[1]))
+        crop_height_ratio = crop_height / max(1.0, float(image.shape[0]))
+        crop_area_ratio = (crop_width * crop_height) / max(1.0, float(image.shape[1] * image.shape[0]))
+        if crop_area_ratio >= 0.90 or (crop_width_ratio >= 0.94 and crop_height_ratio >= 0.94):
+            debug.update(
+                {
+                    "document_detected": True,
+                    "crop_applied": False,
+                    "perspective_applied": False,
+                    "normalization_status": "full_frame_no_crop",
+                    "validation_passed": True,
+                    "fallback_used": False,
+                    "fallback_reason": None,
+                    "detected_points": [[round(float(x), 2), round(float(y), 2)] for x, y in expanded_ordered.tolist()],
+                    "perspective_safety_margin_ratio": {"x": margin_x_ratio, "y": margin_y_ratio},
+                    "perspective_required": False,
+                    "normalization_transform": "none",
+                    "crop_box": [crop_left, crop_top, crop_right, crop_bottom],
+                    "crop_width_ratio": round(float(crop_width_ratio), 4),
+                    "crop_height_ratio": round(float(crop_height_ratio), 4),
+                    "crop_area_ratio": round(float(crop_area_ratio), 4),
+                    "transform_validation": {
+                        "passed": True,
+                        "reason": "full_frame_document_no_crop",
+                        "area_ratio": round(float(crop_area_ratio), 4),
+                    },
+                }
+            )
+            return image.copy(), debug
         cropped = image[crop_top:crop_bottom, crop_left:crop_right].copy()
         validation = self._validate_transformed_image(
             cropped,
