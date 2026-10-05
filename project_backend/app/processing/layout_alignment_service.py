@@ -20,6 +20,7 @@ class LayoutAlignmentService:
     SKIP_ASPECT_DELTA = 0.03
     MAX_SIGNATURE_CACHE = 64
     MAX_TRANSFORM_CORNER_OVERFLOW_RATIO = 0.02
+    MAX_TRANSFORM_CORNER_OVERFLOW_PX = 2.0
     MIN_TRANSFORM_AREA_RATIO = 0.55
     MAX_TRANSFORM_AREA_RATIO = 1.45
     MAX_TRANSFORM_WHITE_BORDER_RATIO = 0.25
@@ -144,6 +145,17 @@ class LayoutAlignmentService:
 
         template_height, template_width = template.shape[:2]
         sanity = self._transform_sanity_check(matrix, transform_type, query.shape, template.shape)
+        if sanity.get("passed"):
+            layout_region_sanity = self._layout_region_transform_sanity(
+                matrix,
+                transform_type,
+                query_signature.get("regions", []) if isinstance(query_signature, dict) else [],
+                query.shape,
+                template.shape,
+            )
+            signature_debug["layout_region_transform_validation"] = layout_region_sanity
+            if not layout_region_sanity.get("passed"):
+                sanity = layout_region_sanity
         signature_debug["transform_validation"] = sanity
         if not sanity.get("passed"):
             return self._result(
@@ -424,6 +436,87 @@ class LayoutAlignmentService:
                 return "similarity", affine, int(mask.ravel().sum()) if mask is not None else 0
         return "none", None, 0
 
+    def _layout_region_transform_sanity(
+        self,
+        matrix: np.ndarray,
+        transform_type: str,
+        query_regions: List[Dict[str, Any]],
+        query_shape: Tuple[int, int, int],
+        template_shape: Tuple[int, int, int],
+    ) -> Dict[str, Any]:
+        query_height, query_width = query_shape[:2]
+        template_height, template_width = template_shape[:2]
+        checked = 0
+        overflow_regions: List[Dict[str, Any]] = []
+        for index, region in enumerate(query_regions):
+            bbox = region.get("bbox") if isinstance(region, dict) else None
+            if not isinstance(bbox, dict):
+                continue
+            try:
+                x = float(bbox.get("x_ratio") or 0.0) * query_width
+                y = float(bbox.get("y_ratio") or 0.0) * query_height
+                width = float(bbox.get("width_ratio") or 0.0) * query_width
+                height = float(bbox.get("height_ratio") or 0.0) * query_height
+            except (TypeError, ValueError):
+                continue
+            if width <= 1 or height <= 1:
+                continue
+            points = np.float32(
+                [
+                    [x, y],
+                    [x + width, y],
+                    [x + width, y + height],
+                    [x, y + height],
+                    [x + width / 2.0, y + height / 2.0],
+                ]
+            )
+            if transform_type == "homography":
+                transformed = cv2.perspectiveTransform(points.reshape(-1, 1, 2), matrix).reshape(-1, 2)
+            else:
+                transformed = cv2.transform(points.reshape(-1, 1, 2), matrix).reshape(-1, 2)
+            xs = transformed[:, 0]
+            ys = transformed[:, 1]
+            overflow_left_px = max(0.0, -float(xs.min()))
+            overflow_right_px = max(0.0, float(xs.max()) - float(template_width))
+            overflow_top_px = max(0.0, -float(ys.min()))
+            overflow_bottom_px = max(0.0, float(ys.max()) - float(template_height))
+            max_overflow_px = max(overflow_left_px, overflow_right_px, overflow_top_px, overflow_bottom_px)
+            checked += 1
+            if max_overflow_px > self.MAX_TRANSFORM_CORNER_OVERFLOW_PX:
+                overflow_regions.append(
+                    {
+                        "index": index,
+                        "label": region.get("label"),
+                        "overflow_left_px": round(float(overflow_left_px), 2),
+                        "overflow_right_px": round(float(overflow_right_px), 2),
+                        "overflow_top_px": round(float(overflow_top_px), 2),
+                        "overflow_bottom_px": round(float(overflow_bottom_px), 2),
+                        "transformed_bounds": [
+                            round(float(xs.min()), 2),
+                            round(float(ys.min()), 2),
+                            round(float(xs.max()), 2),
+                            round(float(ys.max()), 2),
+                        ],
+                    }
+                )
+                if len(overflow_regions) >= 5:
+                    break
+        if overflow_regions:
+            return {
+                "passed": False,
+                "reason": "layout_transform_query_regions_outside_template",
+                "rejection_reason": "layout_transform_query_regions_outside_template",
+                "checked_region_count": checked,
+                "overflow_region_count": len(overflow_regions),
+                "overflow_regions": overflow_regions,
+            }
+        return {
+            "passed": True,
+            "reason": "layout_transform_query_regions_inside_template",
+            "checked_region_count": checked,
+            "overflow_region_count": 0,
+        }
+
     def _transform_sanity_check(
         self,
         matrix: np.ndarray,
@@ -451,8 +544,12 @@ class LayoutAlignmentService:
 
         xs = transformed[:, 0]
         ys = transformed[:, 1]
-        overflow_x = max(0.0, -float(xs.min()), float(xs.max()) - float(template_width)) / max(1.0, float(template_width))
-        overflow_y = max(0.0, -float(ys.min()), float(ys.max()) - float(template_height)) / max(1.0, float(template_height))
+        overflow_left_px = max(0.0, -float(xs.min()))
+        overflow_right_px = max(0.0, float(xs.max()) - float(template_width))
+        overflow_top_px = max(0.0, -float(ys.min()))
+        overflow_bottom_px = max(0.0, float(ys.max()) - float(template_height))
+        overflow_x = max(overflow_left_px, overflow_right_px) / max(1.0, float(template_width))
+        overflow_y = max(overflow_top_px, overflow_bottom_px) / max(1.0, float(template_height))
         area = abs(float(cv2.contourArea(transformed.astype(np.float32))))
         template_area = max(1.0, float(template_width * template_height))
         area_ratio = area / template_area
@@ -501,9 +598,20 @@ class LayoutAlignmentService:
             "height_ratio": round(float(height_ratio), 4),
             "overflow_x": round(float(overflow_x), 4),
             "overflow_y": round(float(overflow_y), 4),
+            "overflow_left_px": round(float(overflow_left_px), 2),
+            "overflow_right_px": round(float(overflow_right_px), 2),
+            "overflow_top_px": round(float(overflow_top_px), 2),
+            "overflow_bottom_px": round(float(overflow_bottom_px), 2),
             "transformed_corners": transformed.round(2).tolist(),
         }
-        if overflow_x > self.MAX_TRANSFORM_CORNER_OVERFLOW_RATIO or overflow_y > self.MAX_TRANSFORM_CORNER_OVERFLOW_RATIO:
+        if (
+            overflow_x > self.MAX_TRANSFORM_CORNER_OVERFLOW_RATIO
+            or overflow_y > self.MAX_TRANSFORM_CORNER_OVERFLOW_RATIO
+            or overflow_left_px > self.MAX_TRANSFORM_CORNER_OVERFLOW_PX
+            or overflow_right_px > self.MAX_TRANSFORM_CORNER_OVERFLOW_PX
+            or overflow_top_px > self.MAX_TRANSFORM_CORNER_OVERFLOW_PX
+            or overflow_bottom_px > self.MAX_TRANSFORM_CORNER_OVERFLOW_PX
+        ):
             return {
                 "passed": False,
                 "reason": "layout_transform_corners_outside_template",
