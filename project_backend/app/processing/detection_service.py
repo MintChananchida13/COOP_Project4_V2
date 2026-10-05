@@ -2279,11 +2279,9 @@ def _candidate_from_result(
         and verification_source_used != "aligned"
         and post_match_original_crop_path
     ):
-        extraction_image_path = post_match_original_crop_path
-        selected_processing_source = "original_image_crop_from_layout_box"
         alignment_debug["selected_processing_source"] = selected_processing_source
-        alignment_debug["selected_processing_reason"] = "final_passed_forces_processing_crop_from_original"
-        alignment_debug["post_match_original_crop_selected"] = True
+        alignment_debug["selected_processing_reason"] = "post_match_original_crop_was_alignment_input_only"
+        alignment_debug["post_match_original_crop_selected"] = False
         alignment["alignment_debug"] = alignment_debug
     template_page_size = None
     template_image_source_for_processing = _fetch_template_page_image_source(template_id, template_page_number) if template_id else None
