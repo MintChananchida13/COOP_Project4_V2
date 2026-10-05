@@ -194,6 +194,8 @@ def _load_entries(template_id: Optional[str] = None) -> Dict[str, PublishedTempl
             SELECT
                 tv.id AS template_id,
                 tg.name AS template_name,
+                tv.version_name AS version_name,
+                tv.version_number AS version_number,
                 tv.status AS template_status,
                 (
                     SELECT COUNT(*)

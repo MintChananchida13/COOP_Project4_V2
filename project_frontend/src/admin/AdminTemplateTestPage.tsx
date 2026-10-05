@@ -111,7 +111,10 @@ const prepublishTemplateDisplayName = (candidate?: PrepublishCandidate | null) =
   const versionName = compactTemplateNamePart(
     (metadata.version_name as string | undefined) ||
       (metadata.template_version_name as string | undefined) ||
-      candidate.templateName
+      candidate.versionName ||
+      (candidate.versionNumber ? `v${candidate.versionNumber}` : "") ||
+      (metadata.version_number ? `v${metadata.version_number}` : "") ||
+      (metadata.version ? `v${metadata.version}` : "")
   );
   if (folderName && versionName) {
     const suffix = stripRepeatedNamePrefix(versionName, folderName) || versionName;

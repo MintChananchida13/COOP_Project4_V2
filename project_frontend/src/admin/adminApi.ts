@@ -698,6 +698,8 @@ export interface PrepublishCandidate {
   rank: number;
   templateId: string;
   templateName?: string | null;
+  versionName?: string | null;
+  versionNumber?: number | null;
   templateStatus?: string | null;
   vectorId?: string | null;
   globalScore: number;
@@ -2162,6 +2164,8 @@ function mapPrepublishCandidate(candidate: Record<string, unknown>): PrepublishC
   rank: Number(candidate.rank || 0),
   templateId: String(candidate.template_id || ""),
   templateName: (candidate.template_name as string | null | undefined) ?? null,
+  versionName: (candidate.version_name as string | null | undefined) ?? null,
+  versionNumber: typeof candidate.version_number === "number" ? candidate.version_number : null,
   templateStatus: (candidate.template_status as string | null | undefined) ?? null,
   vectorId: (candidate.vector_id as string | null | undefined) ?? null,
   globalScore,
@@ -2190,7 +2194,15 @@ function mapPrepublishCandidate(candidate: Record<string, unknown>): PrepublishC
   fieldCount: typeof candidate.field_count === "number" ? candidate.field_count : null,
   matchedLayoutReference: (candidate.matched_layout_reference as Record<string, unknown> | null | undefined) ?? null,
   layoutReferenceCount: typeof candidate.layout_reference_count === "number" ? candidate.layout_reference_count : null,
-  metadata: (candidate.metadata as Record<string, unknown> | undefined) || {},
+  metadata: {
+    ...((candidate.metadata as Record<string, unknown> | undefined) || {}),
+    version_name:
+      ((candidate.metadata as Record<string, unknown> | undefined)?.version_name as string | undefined) ||
+      (candidate.version_name as string | undefined),
+    version_number:
+      ((candidate.metadata as Record<string, unknown> | undefined)?.version_number as number | undefined) ||
+      (candidate.version_number as number | undefined),
+  },
   verification: (candidate.verification as Record<string, unknown> | undefined) || {},
   verificationDetails: Array.isArray(candidate.verification_details)
     ? (candidate.verification_details as Record<string, unknown>[])

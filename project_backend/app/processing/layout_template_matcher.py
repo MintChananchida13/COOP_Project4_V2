@@ -115,6 +115,8 @@ def search_layout_candidates(
                     SELECT
                         tv.id AS template_id,
                         tg.name AS template_name,
+                        tv.version_name AS version_name,
+                        tv.version_number AS version_number,
                         tv.status AS template_status,
                         (
                             SELECT COUNT(*)
@@ -180,6 +182,8 @@ def search_layout_candidates(
                     SELECT
                         tv.id AS template_id,
                         tg.name AS template_name,
+                        tv.version_name AS version_name,
+                        tv.version_number AS version_number,
                         tv.status AS template_status,
                         (
                             SELECT COUNT(*)
@@ -270,6 +274,8 @@ def search_layout_candidates(
         pool_item = {
             "template_id": template_id,
             "template_name": row["template_name"],
+            "version_name": row["version_name"],
+            "version_number": row["version_number"],
             "template_status": row["template_status"],
             "template_page_id": row["template_page_id"],
             "template_page_number": row["page_number"],
@@ -346,6 +352,8 @@ def search_layout_candidates(
         sample = {
             "template_id": template_id,
             "template_name": row["template_name"],
+            "version_name": row["version_name"],
+            "version_number": row["version_number"],
             "template_page_number": row["page_number"],
             "score": similarity.get("score"),
             "prefilter_score": similarity.get("prefilter_score"),
@@ -407,6 +415,8 @@ def search_layout_candidates(
         metadata = {
             "template_id": template_id,
             "template_name": row["template_name"],
+            "version_name": row["version_name"],
+            "version_number": row["version_number"],
             "template_status": row["template_status"],
             "page_count": row["page_count"],
             "detection_mode": row["detection_mode"],
@@ -449,6 +459,8 @@ def search_layout_candidates(
             "rank": index,
             "template_id": item.get("metadata", {}).get("template_id"),
             "template_name": item.get("metadata", {}).get("template_name"),
+            "version_name": item.get("metadata", {}).get("version_name"),
+            "version_number": item.get("metadata", {}).get("version_number"),
             "template_status": item.get("metadata", {}).get("template_status"),
             "template_page_id": item.get("metadata", {}).get("template_page_id"),
             "template_page_number": item.get("metadata", {}).get("page_number"),
