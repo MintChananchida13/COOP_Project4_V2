@@ -720,6 +720,52 @@ def _save_crop_box_including_layout(
     return None, None, adjusted
 
 
+def _save_layout_bounds_crop(
+    source: Path,
+    layout_box: Optional[List[int]],
+    target: Path,
+) -> tuple[Optional[str], Optional[List[int]], Optional[Dict[str, float]]]:
+    if not isinstance(layout_box, list) or len(layout_box) != 4:
+        return None, None, None
+    image = cv2.imread(str(source))
+    if image is None:
+        return None, None, None
+    image_height, image_width = image.shape[:2]
+    try:
+        layout_left = max(0, min(image_width, int(round(float(layout_box[0])))))
+        layout_top = max(0, min(image_height, int(round(float(layout_box[1])))))
+        layout_right = max(0, min(image_width, int(round(float(layout_box[2])))))
+        layout_bottom = max(0, min(image_height, int(round(float(layout_box[3])))))
+    except (TypeError, ValueError):
+        return None, None, None
+    if layout_right <= layout_left or layout_bottom <= layout_top:
+        return None, None, None
+
+    layout_width = layout_right - layout_left
+    layout_height = layout_bottom - layout_top
+    margin_x = max(image_width * 0.02, layout_width * 0.08)
+    margin_y = max(image_height * 0.01, layout_height * 0.02)
+    left = max(0, int(np.floor(layout_left - margin_x)))
+    top = max(0, int(np.floor(layout_top - margin_y)))
+    right = min(image_width, int(np.ceil(layout_right + margin_x)))
+    bottom = min(image_height, int(np.ceil(layout_bottom + margin_y)))
+    if right <= left or bottom <= top:
+        return None, None, None
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if cv2.imwrite(str(target), image[top:bottom, left:right]):
+        return (
+            str(target),
+            [left, top, right, bottom],
+            {
+                "margin_x_px": round(float(margin_x), 2),
+                "margin_y_px": round(float(margin_y), 2),
+                "margin_x_source": "max(image_width_2pct, layout_width_8pct)",
+                "margin_y_source": "max(image_height_1pct, layout_height_2pct)",
+            },
+        )
+    return None, None, None
+
+
 def _save_debug_boundary_preview(source: Path, crop_box: Any, target: Path) -> Optional[str]:
     if not isinstance(crop_box, list) or len(crop_box) != 4:
         return None
@@ -2238,18 +2284,34 @@ def _candidate_from_result(
                 / "aligned"
                 / f"{_safe_file_token(str(template_id or 'template'))}_page_{template_page_number}_post_match_physical_layout_safe_crop.png"
             )
-            safe_crop_path, safe_crop_box, crop_box_adjusted = _save_crop_box_including_layout(
-                original_path,
-                post_match_physical_crop.get("crop_box"),
-                original_layout_bounds_box,
-                adjusted_crop_path,
+            layout_bounds_crop_path = (
+                output_root
+                / "aligned"
+                / f"{_safe_file_token(str(template_id or 'template'))}_page_{template_page_number}_post_match_original_layout_bounds_crop.png"
             )
+            safe_crop_path, safe_crop_box, layout_margin_debug = _save_layout_bounds_crop(
+                original_path,
+                original_layout_bounds_box,
+                layout_bounds_crop_path,
+            )
+            crop_box_adjusted = False
+            crop_method = "original_layout_bounds_crop"
+            if not safe_crop_path:
+                safe_crop_path, safe_crop_box, crop_box_adjusted = _save_crop_box_including_layout(
+                    original_path,
+                    post_match_physical_crop.get("crop_box"),
+                    original_layout_bounds_box,
+                    adjusted_crop_path,
+                )
+                crop_method = "physical_boundary_expanded_to_layout"
             post_match_physical_crop["query_layout_bounds_box"] = query_layout_bounds_box
             post_match_physical_crop["original_layout_bounds_box"] = original_layout_bounds_box
             post_match_physical_crop["layout_bounds_box"] = original_layout_bounds_box
             post_match_physical_crop["layout_bounds_coordinate_space"] = "original"
             post_match_physical_crop["layout_safe_crop_box"] = safe_crop_box
             post_match_physical_crop["layout_safe_crop_adjusted"] = crop_box_adjusted
+            post_match_physical_crop["layout_safe_crop_method"] = crop_method
+            post_match_physical_crop["layout_safe_crop_margin"] = layout_margin_debug
             if safe_crop_path:
                 post_match_physical_crop["output_path"] = safe_crop_path
                 post_match_alignment_query_image_path = safe_crop_path
