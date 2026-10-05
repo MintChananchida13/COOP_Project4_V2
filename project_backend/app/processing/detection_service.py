@@ -776,8 +776,8 @@ def _save_layout_bounds_crop(
 
     layout_width = layout_right - layout_left
     layout_height = layout_bottom - layout_top
-    margin_x = max(image_width * 0.01, layout_width * 0.04)
-    margin_y = max(image_height * 0.005, layout_height * 0.01)
+    margin_x = max(image_width * 0.012, layout_width * 0.045)
+    margin_y = max(image_height * 0.006, layout_height * 0.012)
     left = max(0, int(np.floor(layout_left - margin_x)))
     top = max(0, int(np.floor(layout_top - margin_y)))
     right = min(image_width, int(np.ceil(layout_right + margin_x)))
@@ -889,8 +889,8 @@ def _save_layout_bounds_crop(
             {
                 "margin_x_px": round(float(margin_x), 2),
                 "margin_y_px": round(float(margin_y), 2),
-                "margin_x_source": "max(image_width_1pct, layout_width_4pct)",
-                "margin_y_source": "max(image_height_0_5pct, layout_height_1pct)",
+                "margin_x_source": "max(image_width_1_2pct, layout_width_4_5pct)",
+                "margin_y_source": "max(image_height_0_6pct, layout_height_1_2pct)",
                 "roi_field_layout_refinement": roi_layout_debug,
                 "aspect_constraint": aspect_debug,
             },
