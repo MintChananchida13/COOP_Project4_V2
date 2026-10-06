@@ -1044,7 +1044,7 @@ def _pdf_layout_assisted_crop_for_matching(
     width_ratio = content_width / max(1.0, float(width))
     height_ratio = content_height / max(1.0, float(height))
     layout_boundary_box = [int(np.floor(left)), int(np.floor(top)), int(np.ceil(right)), int(np.ceil(bottom))]
-    if area_ratio >= 0.72:
+    if area_ratio > 0.65:
         boundary_preview = _save_debug_boundary_preview(
             page_path,
             layout_boundary_box,
@@ -1052,7 +1052,7 @@ def _pdf_layout_assisted_crop_for_matching(
         )
         return {
             "applied": False,
-            "reason": "layout_bounds_cover_most_of_pdf_page",
+            "reason": "layout_bounds_cover_full_page_document",
             "layout_analysis": layout_analysis,
             "layout_boundary_box": layout_boundary_box,
             "layout_boundary_area_ratio": round(float(area_ratio), 4),
@@ -1060,23 +1060,10 @@ def _pdf_layout_assisted_crop_for_matching(
             "layout_boundary_height_ratio": round(float(height_ratio), 4),
             "layout_boundary_region_count": len(boxes),
             "layout_boundary_preview_path": boundary_preview,
-        }
-    if area_ratio >= 0.55 or width_ratio >= 0.82 or height_ratio >= 0.82:
-        boundary_preview = _save_debug_boundary_preview(
-            page_path,
-            layout_boundary_box,
-            debug_dir / "page_layout_boundary_not_compact_subdocument.png",
-        )
-        return {
-            "applied": False,
-            "reason": "layout_bounds_not_compact_subdocument",
-            "layout_analysis": layout_analysis,
-            "layout_boundary_box": layout_boundary_box,
-            "layout_boundary_area_ratio": round(float(area_ratio), 4),
-            "layout_boundary_width_ratio": round(float(width_ratio), 4),
-            "layout_boundary_height_ratio": round(float(height_ratio), 4),
-            "layout_boundary_region_count": len(boxes),
-            "layout_boundary_preview_path": boundary_preview,
+            "crop_area_ratio": round(float(area_ratio), 4),
+            "crop_accepted": False,
+            "rejection_reason": "layout_bounds_cover_full_page_document",
+            "matching_path_source": "rendered_pdf_page",
         }
 
     margin = min(width, height) * 0.015
@@ -1106,11 +1093,17 @@ def _pdf_layout_assisted_crop_for_matching(
             "layout_boundary_height_ratio": round(float(height_ratio), 4),
             "layout_boundary_region_count": len(boxes),
             "layout_boundary_preview_path": boundary_preview,
+            "expanded_layout_boundary_box": expanded_box,
+            "expanded_layout_crop_area_ratio": round(float(crop_area_ratio), 4),
+            "crop_area_ratio": round(float(crop_area_ratio), 4),
+            "crop_accepted": False,
+            "rejection_reason": "layout_crop_too_small",
+            "matching_path_source": "rendered_pdf_page",
         }
-    if crop_area_ratio >= 0.86:
+    if crop_area_ratio > 0.65:
         return {
             "applied": False,
-            "reason": "expanded_layout_crop_covers_most_of_pdf_page",
+            "reason": "layout_crop_area_ratio_full_page_document",
             "layout_analysis": layout_analysis,
             "layout_boundary_box": layout_boundary_box,
             "layout_boundary_area_ratio": round(float(area_ratio), 4),
@@ -1120,6 +1113,10 @@ def _pdf_layout_assisted_crop_for_matching(
             "layout_boundary_preview_path": boundary_preview,
             "expanded_layout_boundary_box": expanded_box,
             "expanded_layout_crop_area_ratio": round(float(crop_area_ratio), 4),
+            "crop_area_ratio": round(float(crop_area_ratio), 4),
+            "crop_accepted": False,
+            "rejection_reason": "layout_crop_area_ratio_full_page_document",
+            "matching_path_source": "rendered_pdf_page",
         }
 
     crop = image[crop_top:crop_bottom, crop_left:crop_right].copy()
@@ -1149,6 +1146,10 @@ def _pdf_layout_assisted_crop_for_matching(
         "layout_boundary_region_count": len(boxes),
         "expanded_layout_boundary_box": expanded_box,
         "expanded_layout_crop_area_ratio": round(float(crop_area_ratio), 4),
+        "crop_area_ratio": round(float(crop_area_ratio), 4),
+        "crop_accepted": True,
+        "rejection_reason": None,
+        "matching_path_source": "pdf_layout_assisted_subdocument",
         "crop_box": expanded_box,
         "crop_size": [crop_width, crop_height],
         "output_path": str(output_path),
@@ -1451,8 +1452,10 @@ def _normalize_query_pages(
             layout_sub_document = bool(layout_crop.get("applied")) and bool(layout_crop.get("output_path"))
             layout_full_page_policy_reasons = {
                 "layout_bounds_cover_most_of_pdf_page",
+                "layout_bounds_cover_full_page_document",
                 "layout_bounds_not_compact_subdocument",
                 "expanded_layout_crop_covers_most_of_pdf_page",
+                "layout_crop_area_ratio_full_page_document",
             }
             physical_allowed_by_layout = str(layout_crop.get("reason") or "") not in layout_full_page_policy_reasons
             physical_sub_document = (
@@ -1496,7 +1499,10 @@ def _normalize_query_pages(
                     else ("contour" if normalization_debug.get("detected_points") or normalization_debug.get("crop_box") else "fallback")
                 ),
                 "detected_crop_box": crop_box,
-                "crop_area_ratio": round(pdf_crop_area_ratio, 4) if pdf_crop_area_ratio is not None else None,
+                "crop_area_ratio": layout_crop.get("crop_area_ratio") or layout_crop.get("expanded_layout_crop_area_ratio"),
+                "crop_accepted": layout_crop.get("crop_accepted"),
+                "rejection_reason": layout_crop.get("rejection_reason"),
+                "normalization_crop_area_ratio": round(pdf_crop_area_ratio, 4) if pdf_crop_area_ratio is not None else None,
                 "aspect_change_ratio": transform_validation.get("aspect_change_ratio"),
                 "validation_passed": transform_validation.get("passed"),
                 "validation_reason": transform_validation.get("reason"),
@@ -1513,6 +1519,9 @@ def _normalize_query_pages(
                 "layout_boundary_height_ratio": layout_crop.get("layout_boundary_height_ratio"),
                 "layout_boundary_region_count": layout_crop.get("layout_boundary_region_count"),
                 "layout_crop_applied": bool(layout_crop.get("applied")),
+                "layout_crop_area_ratio": layout_crop.get("crop_area_ratio") or layout_crop.get("expanded_layout_crop_area_ratio"),
+                "layout_crop_accepted": layout_crop.get("crop_accepted"),
+                "layout_crop_rejection_reason": layout_crop.get("rejection_reason"),
                 "pdf_subdocument_detector": pdf_boundary,
                 "pdf_subdocument_detector_attempted": True,
                 "pdf_subdocument_detector_passed": bool(pdf_boundary.get("passed")),
@@ -3244,6 +3253,9 @@ def _detect_page(
         "layout_boundary_area_ratio": pdf_runtime_debug.get("layout_boundary_area_ratio"),
         "layout_boundary_region_count": pdf_runtime_debug.get("layout_boundary_region_count"),
         "layout_crop_applied": pdf_runtime_debug.get("layout_crop_applied"),
+        "layout_crop_area_ratio": pdf_runtime_debug.get("layout_crop_area_ratio"),
+        "layout_crop_accepted": pdf_runtime_debug.get("layout_crop_accepted"),
+        "layout_crop_rejection_reason": pdf_runtime_debug.get("layout_crop_rejection_reason"),
         "layout_assisted_crop": pdf_runtime_debug.get("layout_assisted_crop"),
         "pre_match_image_path": pdf_runtime_debug.get("pre_match_image_path"),
         "matching_path_source": pdf_runtime_debug.get("matching_path_source"),
