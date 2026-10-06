@@ -15,9 +15,11 @@ import {
   detectTemplateDev,
   fetchSystemMaintenance,
   fetchTemplateBundle,
+  fetchUserNotifications,
   type DetectionCandidate,
   type DetectionDevResult,
   type SystemMaintenanceState,
+  type UserNotification,
 } from "../admin/adminApi";
 import AuthGate from "../auth/AuthGate";
 import { AuthSession, authHeaders, clearAuthSession, readAuthSession } from "../auth/session";
@@ -86,6 +88,19 @@ const formatMaintenanceDateTime = (value?: string | null) => {
     day: "2-digit",
     month: "long",
     year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+};
+
+const formatNotificationDateTime = (value?: string | null) => {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("th-TH", {
+    day: "2-digit",
+    month: "short",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
@@ -1664,6 +1679,8 @@ function HomeWorkspace() {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [maintenanceState, setMaintenanceState] = useState<SystemMaintenanceState | null>(null);
   const [maintenanceStatus, setMaintenanceStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [notifications, setNotifications] = useState<UserNotification[]>([]);
+  const [notificationStatus, setNotificationStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [isTemplateRequestOpen, setIsTemplateRequestOpen] = useState<boolean>(false);
   const [ocrProgress, setOcrProgress] = useState<{ currentPage: number; totalPages: number; completedPages?: number } | null>(null);
   const [classificationStatus, setClassificationStatus] = useState<string>("");
@@ -1738,6 +1755,22 @@ function HomeWorkspace() {
     maintenanceRequestRef.current = request;
     return request;
   }, [applyMaintenanceState]);
+
+  const refreshNotifications = useCallback(async () => {
+    setNotificationStatus("loading");
+    try {
+      const nextNotifications = await fetchUserNotifications(5);
+      setNotifications(nextNotifications);
+      setNotificationStatus("ready");
+    } catch (error) {
+      console.warn("Notification load failed.", error);
+      setNotificationStatus("error");
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshNotifications();
+  }, [refreshNotifications]);
 
   useEffect(() => {
     const eventSource = new EventSource(`${ADMIN_API_BASE_URL}/system/maintenance/events`);
@@ -3981,13 +4014,14 @@ function HomeWorkspace() {
 
   const renderNotificationMenu = () => {
     const hasMaintenanceNotification = Boolean(maintenanceState?.active || isMaintenanceScheduleRelevant(maintenanceState));
+    const hasNotifications = notifications.length > 0;
     return (
       <div className="absolute right-0 top-full z-50 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white text-left shadow-xl">
         <div className="border-b border-slate-100 px-4 py-3">
           <p className="text-xs font-black text-slate-900">การแจ้งเตือน</p>
-          <p className="mt-0.5 text-[11px] font-semibold text-slate-500">สถานะระบบจาก backend ล่าสุด</p>
+          <p className="mt-0.5 text-[11px] font-semibold text-slate-500">แสดง 5 รายการล่าสุดจากระบบ</p>
         </div>
-        <div className="p-3">
+        <div className="max-h-[24rem] space-y-2 overflow-y-auto p-3">
           {hasMaintenanceNotification ? (
             <div className={`rounded-xl border p-3 ${maintenanceState?.active ? "border-amber-200 bg-amber-50" : "border-blue-100 bg-blue-50"}`}>
               <div className="flex items-start gap-2">
@@ -4012,22 +4046,48 @@ function HomeWorkspace() {
                 </div>
               </div>
             </div>
-          ) : (
+          ) : null}
+
+          {hasNotifications ? (
+            notifications.map((notification) => (
+              <div key={notification.id} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-black text-slate-900">{notification.title}</p>
+                    <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">{notification.message}</p>
+                  </div>
+                  <span className="shrink-0 text-[10px] font-bold text-slate-400">
+                    {formatNotificationDateTime(notification.createdAt)}
+                  </span>
+                </div>
+                {notification.reason && (
+                  <p className="mt-2 rounded-lg bg-red-50 px-2.5 py-2 text-[11px] font-bold leading-5 text-red-700">
+                    เหตุผล: {notification.reason}
+                  </p>
+                )}
+              </div>
+            ))
+          ) : !hasMaintenanceNotification ? (
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-4 text-center">
               <p className="text-xs font-black text-slate-700">ไม่มีแจ้งเตือนสำคัญ</p>
               <p className="mt-1 text-[11px] font-semibold text-slate-500">
-                {maintenanceStatus === "error" ? "โหลดสถานะระบบไม่สำเร็จ" : "ระบบพร้อมให้บริการตามปกติ"}
+                {notificationStatus === "error" || maintenanceStatus === "error" ? "โหลดการแจ้งเตือนบางส่วนไม่สำเร็จ" : "ระบบพร้อมให้บริการตามปกติ"}
               </p>
             </div>
+          ) : (
+            null
           )}
         </div>
         <div className="flex justify-end border-t border-slate-100 bg-slate-50 px-3 py-2">
           <button
             type="button"
-            onClick={() => void refreshMaintenanceState()}
+            onClick={() => {
+              void refreshMaintenanceState();
+              void refreshNotifications();
+            }}
             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-black text-slate-700 hover:bg-slate-100"
           >
-            รีเฟรชสถานะ
+            รีเฟรช
           </button>
         </div>
       </div>
@@ -4039,6 +4099,7 @@ function HomeWorkspace() {
     exportPreviewPayload?.pages.reduce((sum, page) => sum + Object.keys(page.fields).length, 0) ?? 0;
   const isMaintenanceActive = Boolean(maintenanceState?.active);
   const hasMaintenanceNotification = Boolean(maintenanceState?.active || isMaintenanceScheduleRelevant(maintenanceState));
+  const hasAnyNotification = hasMaintenanceNotification || notifications.length > 0;
 
   return (
     <main className="min-h-screen bg-slate-50 select-none">
@@ -4056,13 +4117,13 @@ function HomeWorkspace() {
                 aria-expanded={isNotificationOpen}
                 onClick={() => setIsNotificationOpen((current) => !current)}
                 className={`relative inline-flex h-10 w-10 items-center justify-center rounded-xl border transition-colors ${
-                  hasMaintenanceNotification
+                  hasAnyNotification
                     ? "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100"
                     : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-blue-700"
                 }`}
               >
                 <Bell size={16} strokeWidth={2.2} />
-                {hasMaintenanceNotification && (
+                {hasAnyNotification && (
                   <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-amber-500 ring-2 ring-white" />
                 )}
               </button>

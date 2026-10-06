@@ -867,6 +867,20 @@ _POSTGRES_SCHEMA = [
         updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS notifications (
+        id TEXT NOT NULL PRIMARY KEY,
+        audience TEXT NOT NULL DEFAULT 'user',
+        event_type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        reason TEXT,
+        related_entity_type TEXT,
+        related_entity_id TEXT,
+        metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
     'CREATE INDEX IF NOT EXISTS template_groups_document_type_idx ON template_groups(document_type)',
     'CREATE INDEX IF NOT EXISTS template_versions_group_status_idx ON template_versions(template_group_id, status)',
     'CREATE INDEX IF NOT EXISTS template_versions_status_updated_at_idx ON template_versions(status, updated_at)',
@@ -883,6 +897,7 @@ _POSTGRES_SCHEMA = [
     'CREATE INDEX IF NOT EXISTS ocr_jobs_template_version_id_idx ON ocr_jobs(template_version_id)',
     'CREATE INDEX IF NOT EXISTS processing_logs_updated_at_idx ON processing_logs(updated_at)',
     'CREATE INDEX IF NOT EXISTS processing_logs_user_email_updated_at_idx ON processing_logs(user_email, updated_at)',
+    'CREATE INDEX IF NOT EXISTS notifications_audience_created_at_idx ON notifications(audience, created_at)',
     """
     CREATE OR REPLACE VIEW template_versions_view AS
     SELECT

@@ -121,6 +121,19 @@ export interface ProcessingLog {
   metadata?: Record<string, unknown>;
 }
 
+export interface UserNotification {
+  id: string;
+  audience: string;
+  eventType: string;
+  title: string;
+  message: string;
+  reason?: string | null;
+  relatedEntityType?: string | null;
+  relatedEntityId?: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
 export const formatProcessingLogDateTime = (value: string) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
@@ -135,6 +148,22 @@ export const formatProcessingLogDateTime = (value: string) => {
     hour12: false,
   }).format(date);
   return `${datePart} ${timePart}`;
+};
+
+const mapUserNotification = (value: unknown): UserNotification => {
+  const item = asRecord(value);
+  return {
+    id: String(item.id || ""),
+    audience: String(item.audience || "user"),
+    eventType: String(item.eventType || item.event_type || ""),
+    title: String(item.title || "การแจ้งเตือน"),
+    message: String(item.message || ""),
+    reason: (item.reason as string | null | undefined) ?? null,
+    relatedEntityType: (item.relatedEntityType as string | null | undefined) ?? (item.related_entity_type as string | null | undefined) ?? null,
+    relatedEntityId: (item.relatedEntityId as string | null | undefined) ?? (item.related_entity_id as string | null | undefined) ?? null,
+    metadata: asRecord(item.metadata ?? item.metadata_json),
+    createdAt: String(item.createdAt || item.created_at || ""),
+  };
 };
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -331,11 +360,6 @@ const upsertTemplateRequestListCache = (request: AdminTemplateRequest) => {
     index >= 0
       ? templateRequestListCache.map((item, itemIndex) => (itemIndex === index ? nextRequest : item))
       : [nextRequest, ...templateRequestListCache];
-};
-
-const removeTemplateRequestListCache = (requestId: string) => {
-  if (!templateRequestListCache) return;
-  templateRequestListCache = templateRequestListCache.filter((request) => request.id !== requestId);
 };
 
 const upsertTemplateListCache = (template: Template) => {
@@ -1361,6 +1385,17 @@ export const fetchAdminDashboard = async () => {
   };
 };
 
+export const fetchUserNotifications = async (limit = 5): Promise<UserNotification[]> => {
+  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/notifications?limit=${Math.min(Math.max(limit, 1), 5)}`, {
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(`Notifications load failed with ${response.status}`);
+  }
+  const json = await response.json().catch(() => null);
+  return asRecordArray(json?.data?.notifications).map(mapUserNotification);
+};
+
 export const fetchProcessingLogs = async (): Promise<ProcessingLog[]> => {
   const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/processing-logs`, { cache: "no-store" });
   if (!response.ok) {
@@ -1583,14 +1618,18 @@ export const deleteTemplateRequestImage = async (requestId: string, imageId: str
   return json?.data;
 };
 
-export const deleteTemplateRequest = async (requestId: string) => {
+export const deleteTemplateRequest = async (requestId: string, reason?: string) => {
   let response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/template-requests/${requestId}`, {
     method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason }),
   });
 
   if (response.status === 405) {
     response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/template-requests/${requestId}`, {
       method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason }),
     });
   }
 
@@ -1600,29 +1639,10 @@ export const deleteTemplateRequest = async (requestId: string) => {
     throw new Error(typeof detail === "string" ? detail : `Delete failed with ${response.status}`);
   }
 
-  const verifyResponse = await fetchWithAuth(`${ADMIN_API_BASE_URL}/template-requests/${requestId}`, {
-    cache: "no-store",
-  });
-  if (verifyResponse.ok) {
-    const verifyJson = await verifyResponse.json().catch(() => null);
-    const verifyData = verifyJson?.data;
-    if (verifyData && verifyData.status !== "not_found") {
-      throw new Error("Backend reported delete success, but the template request still exists. Restart the backend so the real delete service is loaded.");
-    }
-  }
+  const rejectedRequest = mapApiRequest(json?.data as ApiTemplateRequest);
+  upsertTemplateRequestListCache(rejectedRequest);
 
-  removeTemplateRequestListCache(requestId);
-
-  return json?.data as {
-    id: string;
-    deleted: boolean;
-    converted_template_id?: string | null;
-    deleted_records?: {
-      template_requests: number;
-      template_request_pages: number;
-      requested_fields: number;
-    };
-  };
+  return rejectedRequest;
 };
 
 export const fetchTemplateBundle = async (templateId: string) => {

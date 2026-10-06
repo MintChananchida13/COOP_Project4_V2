@@ -29,6 +29,7 @@ from app.api.schemas import (
     TemplatePageCreate,
     TemplatePageUpdate,
     TemplateRequestCreate,
+    TemplateRequestDelete,
     TemplateRequestImageCreate,
     TemplateRequestImageUpdate,
     TemplateRequestUpdate,
@@ -50,6 +51,7 @@ from app.business.services import (
     AdminTemplateService,
     EmbeddingService,
     GlobalSettingsService,
+    NotificationService,
     ProcessingLogService,
     StorageMaintenanceService,
     TemplateRequestService,
@@ -66,6 +68,7 @@ storage_maintenance = StorageMaintenanceService()
 image_categories = ImageVerificationCategoryService()
 global_settings = GlobalSettingsService()
 processing_logs = ProcessingLogService()
+notifications = NotificationService()
 prepublish_detection_jobs_lock = threading.Lock()
 prepublish_detection_jobs: Dict[str, Dict[str, Any]] = {}
 detect_dev_jobs_lock = threading.Lock()
@@ -205,6 +208,11 @@ def _database_unavailable_error(error: Exception) -> HTTPException:
             "error": str(error),
         },
     )
+
+
+@router.get("/notifications", response_model=ApiResponse)
+def list_public_notifications(limit: int = Query(5, ge=1, le=5)) -> ApiResponse:
+    return ok(notifications.list(audience="user", limit=limit))
 
 
 @router.post("/auth/register", response_model=ApiResponse)
@@ -428,8 +436,8 @@ def update_template_request(
 
 
 @router.delete("/template-requests/{request_id}", response_model=ApiResponse)
-def delete_template_request(request_id: str) -> ApiResponse:
-    return ok(template_requests.delete(request_id))
+def delete_template_request(request_id: str, payload: TemplateRequestDelete | None = None) -> ApiResponse:
+    return ok(template_requests.delete(request_id, payload.reason if payload else None))
 
 
 @router.post("/template-requests/{request_id}/submit", response_model=ApiResponse)
@@ -520,8 +528,8 @@ def admin_get_template_request(request_id: str) -> ApiResponse:
 
 
 @router.delete("/admin/template-requests/{request_id}", response_model=ApiResponse)
-def admin_delete_template_request(request_id: str) -> ApiResponse:
-    return ok(template_requests.delete(request_id))
+def admin_delete_template_request(request_id: str, payload: TemplateRequestDelete | None = None) -> ApiResponse:
+    return ok(template_requests.delete(request_id, payload.reason if payload else None))
 
 
 @router.post("/admin/template-requests/{request_id}/start-review", response_model=ApiResponse)
@@ -641,6 +649,21 @@ def get_admin_system_maintenance() -> ApiResponse:
 def update_admin_system_maintenance(payload: SystemMaintenanceUpdate) -> ApiResponse:
     maintenance = global_settings.update_system_maintenance(payload, updated_by="admin")
     maintenance_event_hub.publish(maintenance)
+    notifications.record(
+        audience="user",
+        event_type="system_maintenance_updated",
+        title="มีการอัปเดตสถานะระบบ",
+        message=maintenance.get("message") or "ผู้ดูแลระบบอัปเดตกำหนดการหรือสถานะระบบ",
+        reason="อัปเดตการปิดปรับปรุงระบบ",
+        related_entity_type="system_maintenance",
+        related_entity_id="system_maintenance",
+        metadata={
+            "status": maintenance.get("status"),
+            "active": maintenance.get("active"),
+            "scheduledStartAt": maintenance.get("scheduledStartAt"),
+            "expectedEndAt": maintenance.get("expectedEndAt"),
+        },
+    )
     return ok(maintenance)
 
 

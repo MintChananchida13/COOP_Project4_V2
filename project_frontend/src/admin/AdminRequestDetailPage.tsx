@@ -106,6 +106,15 @@ const templateFieldToRequestedField = (
   extractionMethod: field.extractionMethod,
 });
 
+const deleteReasonOptions = [
+  "เอกสารไม่ชัดเจนหรืออ่านรายละเอียดไม่ได้",
+  "ข้อมูล/รูปแบบเอกสารไม่ครบถ้วน",
+  "มี Template รองรับอยู่แล้ว",
+  "คำขอซ้ำกับรายการเดิม",
+  "ไม่ตรงเงื่อนไขการสร้าง Template",
+  "อื่น ๆ",
+];
+
 export default function AdminRequestDetailPage({
   requestId,
   templateId,
@@ -143,6 +152,7 @@ export default function AdminRequestDetailPage({
   const [isConverting, setIsConverting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [deleteReason, setDeleteReason] = useState(deleteReasonOptions[0]);
   const previewPanelRef = useRef<HTMLDivElement | null>(null);
   const initialCreationParamsAppliedRef = useRef(false);
   const [previewCanvasWidth, setPreviewCanvasWidth] = useState(750);
@@ -620,9 +630,9 @@ export default function AdminRequestDetailPage({
     setIsDeleting(true);
 
     try {
-      await deleteTemplateRequest(request.id);
+      await deleteTemplateRequest(request.id, deleteReason);
 
-      setActionStatus("ลบคำขอเรียบร้อยแล้ว");
+      setActionStatus("ปฏิเสธคำขอและส่งการแจ้งเตือนเรียบร้อยแล้ว");
       setIsDeleteConfirmOpen(false);
       setTimeout(() => {
         window.dispatchEvent(new Event("admin-route-transition-start"));
@@ -1200,8 +1210,25 @@ export default function AdminRequestDetailPage({
             </h3>
 
             <p className="mt-2 text-sm font-semibold text-slate-500">
-              เมื่อลบแล้วจะกู้คืนไม่ได้
+              คำขอจะถูกเปลี่ยนเป็นสถานะปฏิเสธ และเหตุผลนี้จะแสดงในกระดิ่งแจ้งเตือนของผู้ใช้
             </p>
+
+            <label className="mt-4 block text-xs font-black text-slate-700" htmlFor="delete-reason">
+              เหตุผล
+            </label>
+            <select
+              id="delete-reason"
+              value={deleteReason}
+              onChange={(event) => setDeleteReason(event.target.value)}
+              disabled={isDeleting}
+              className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-100 disabled:text-slate-400"
+            >
+              {deleteReasonOptions.map((reason) => (
+                <option key={reason} value={reason}>
+                  {reason}
+                </option>
+              ))}
+            </select>
 
             <div className="mt-5 flex justify-end gap-2">
               <button

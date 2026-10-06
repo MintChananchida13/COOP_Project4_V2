@@ -1633,6 +1633,28 @@ def _page_row_to_api(row: Any) -> Dict[str, Any]:
     }
 
 
+def _notification_row_to_api(row: Any) -> Dict[str, Any]:
+    item = _row_to_dict(row)
+    metadata = item.get("metadata_json") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except Exception:
+            metadata = {}
+    return {
+        "id": item["id"],
+        "audience": item["audience"],
+        "event_type": item["event_type"],
+        "title": item["title"],
+        "message": item["message"],
+        "reason": item.get("reason"),
+        "related_entity_type": item.get("related_entity_type"),
+        "related_entity_id": item.get("related_entity_id"),
+        "metadata": metadata if isinstance(metadata, dict) else {},
+        "created_at": item["created_at"],
+    }
+
+
 def _field_row_to_api(row: Any) -> Dict[str, Any]:
     item = _row_to_dict(row)
     return {
@@ -3338,7 +3360,7 @@ def _resolve_image_category_id(conn: Any, value: Optional[str]) -> Optional[str]
 
 class VerificationService:
     FUZZY_THRESHOLD = 0.85
-    DEFAULT_VERIFICATION_THRESHOLD = 0.70
+    DEFAULT_VERIFICATION_THRESHOLD = 0.60
     LOW_TEXT_SIMILARITY_GUARD = 0.25
     ZERO_WIDTH_CHARS = {
         "\u200b",
@@ -4948,33 +4970,39 @@ class TemplateRequestService:
             conn.commit()
         return self.get(request_id)
 
-    def delete(self, request_id: str) -> Dict[str, Any]:
+    def delete(self, request_id: str, reason: Optional[str] = None) -> Dict[str, Any]:
         with _connect() as conn:
             request_row = conn.execute("SELECT * FROM template_requests WHERE id = ?", (request_id,)).fetchone()
             if request_row is None:
                 raise HTTPException(status_code=404, detail="Template request not found.")
-            deleted_fields = conn.execute(
+            admin_note = (reason or "").strip() or request_row["admin_note"] or "ปฏิเสธคำขอจากการลบโดยผู้ดูแลระบบ"
+            conn.execute(
                 """
-                DELETE FROM requested_fields
-                WHERE template_request_page_id IN (
-                    SELECT id FROM template_request_pages WHERE template_request_id = ?
-                )
+                UPDATE template_requests
+                SET status = 'rejected',
+                    admin_note = ?,
+                    reviewed_at = CURRENT_TIMESTAMP
+                WHERE id = ?
                 """,
-                (request_id,),
-            ).rowcount
-            deleted_pages = conn.execute("DELETE FROM template_request_pages WHERE template_request_id = ?", (request_id,)).rowcount
-            deleted_requests = conn.execute("DELETE FROM template_requests WHERE id = ?", (request_id,)).rowcount
+                (admin_note, request_id),
+            )
             conn.commit()
-        return {
-            "id": request_id,
-            "deleted": True,
-            "converted_template_id": request_row.get("converted_template_version_id") if hasattr(request_row, "get") else None,
-            "deleted_records": {
-                "template_requests": deleted_requests,
-                "template_request_pages": deleted_pages,
-                "requested_fields": deleted_fields,
+        updated = self.get(request_id)
+        NotificationService().record(
+            audience="user",
+            event_type="template_request_rejected",
+            title="คำขอ Template ถูกปฏิเสธ",
+            message=f"คำขอ {updated.get('request_title') or request_id} ถูกปฏิเสธ",
+            reason=admin_note,
+            related_entity_type="template_request",
+            related_entity_id=request_id,
+            metadata={
+                "requestTitle": updated.get("request_title"),
+                "documentType": updated.get("document_type"),
+                "action": "delete_request",
             },
-        }
+        )
+        return updated
 
     def submit(self, request_id: str) -> Dict[str, Any]:
         with _connect() as conn:
@@ -5246,7 +5274,82 @@ class TemplateRequestService:
                 (reason, request_id),
             )
             conn.commit()
-        return self.get(request_id)
+        updated = self.get(request_id)
+        NotificationService().record(
+            audience="user",
+            event_type="template_request_rejected",
+            title="คำขอ Template ถูกปฏิเสธ",
+            message=f"คำขอ {updated.get('request_title') or request_id} ถูกปฏิเสธ",
+            reason=reason,
+            related_entity_type="template_request",
+            related_entity_id=request_id,
+            metadata={
+                "requestTitle": updated.get("request_title"),
+                "documentType": updated.get("document_type"),
+                "action": "reject_request",
+            },
+        )
+        return updated
+
+
+class NotificationService:
+    def record(
+        self,
+        *,
+        audience: str,
+        event_type: str,
+        title: str,
+        message: str,
+        reason: Optional[str] = None,
+        related_entity_type: Optional[str] = None,
+        related_entity_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        notification_id = _stub_id("ntf")
+        with _connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO notifications (
+                    id, audience, event_type, title, message, reason,
+                    related_entity_type, related_entity_id, metadata_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    notification_id,
+                    audience or "user",
+                    event_type,
+                    title,
+                    message,
+                    reason,
+                    related_entity_type,
+                    related_entity_id,
+                    jsonb_dump(metadata or {}),
+                ),
+            )
+            conn.commit()
+        return self.get(notification_id)
+
+    def get(self, notification_id: str) -> Dict[str, Any]:
+        with _connect() as conn:
+            row = conn.execute("SELECT * FROM notifications WHERE id = ?", (notification_id,)).fetchone()
+        if row is None:
+            return {"id": notification_id, "status": "not_found"}
+        return _notification_row_to_api(row)
+
+    def list(self, audience: str = "user", limit: int = 5) -> Dict[str, Any]:
+        safe_limit = min(max(int(limit or 5), 1), 5)
+        with _connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM notifications
+                WHERE audience = ? OR audience = 'all'
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (audience or "user", safe_limit),
+            ).fetchall()
+        return {"notifications": [_notification_row_to_api(row) for row in rows]}
 
 
 class AdminTemplateService:

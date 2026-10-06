@@ -86,6 +86,10 @@ class TemplateRequestUpdate(BaseModel):
     page_count: Optional[int] = Field(default=None, ge=1)
 
 
+class TemplateRequestDelete(BaseModel):
+    reason: Optional[str] = None
+
+
 class TemplateRequestImageCreate(BaseModel):
     sample_image_url: str
     image_source: str = "admin_upload"
