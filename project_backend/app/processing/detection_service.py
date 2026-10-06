@@ -1883,7 +1883,7 @@ def _run_extraction_test(
 
 def _auto_roi_region_items(page_info: Dict[str, Any]) -> Dict[str, Any]:
     page_index = int(page_info["page_index"])
-    image_path = str(page_info["normalized_path"])
+    image_path = str(page_info.get("original_path") or page_info["normalized_path"])
     image = cv2.imread(image_path)
     if image is None:
         return {
@@ -1938,6 +1938,8 @@ def _auto_roi_region_items(page_info: Dict[str, Any]) -> Dict[str, Any]:
         "model": analysis.get("model"),
         "image_width": analysis.get("image_width"),
         "image_height": analysis.get("image_height"),
+        "image_source": "original_path" if page_info.get("original_path") else "normalized_path",
+        "image_path": image_path,
         "image_preview_data_url": _image_to_data_url(Path(image_path)),
         "regions": regions,
     }

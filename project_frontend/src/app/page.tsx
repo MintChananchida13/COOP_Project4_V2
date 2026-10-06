@@ -503,10 +503,19 @@ function roiFromLayoutBlock(
   renderedWidth: number,
   renderedHeight: number,
   scaleX: number,
-  scaleY: number
+  scaleY: number,
+  preferRatioRoi = false
 ) {
   const bbox = block.bbox && typeof block.bbox === "object" ? block.bbox : null;
   const roi = block.roi && typeof block.roi === "object" ? block.roi : null;
+  if (preferRatioRoi && roi) {
+    return {
+      x: Number(roi.x_ratio || 0) * renderedWidth,
+      y: Number(roi.y_ratio || 0) * renderedHeight,
+      width: Number(roi.width_ratio || 0) * renderedWidth,
+      height: Number(roi.height_ratio || 0) * renderedHeight,
+    };
+  }
   if (bbox) {
     return {
       x: Number(bbox.x || 0) / Math.max(scaleX, 1e-6),
@@ -604,10 +613,12 @@ async function buildDetectionAutoRois(
     if (!pageImage) continue;
     const renderedWidth = 750;
     const renderedHeight = (pageImage.naturalHeight / pageImage.naturalWidth) * renderedWidth;
+    const scaleX = pageImage.naturalWidth / renderedWidth;
+    const scaleY = pageImage.naturalHeight / renderedHeight;
     const regions = Array.isArray(autoPage.regions) ? (autoPage.regions as Record<string, any>[]) : [];
 
     regions.forEach((block, index) => {
-      const rect = roiFromLayoutBlock(block, renderedWidth, renderedHeight, 1, 1);
+      const rect = roiFromLayoutBlock(block, renderedWidth, renderedHeight, scaleX, scaleY, true);
       if (!rect || ![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) || rect.width <= 1 || rect.height <= 1) {
         return;
       }
@@ -2377,6 +2388,28 @@ function HomeWorkspace() {
             detection.bestCandidate?.mainPageAutoRoiPages && detection.bestCandidate.mainPageAutoRoiPages.length > 0
               ? detection.bestCandidate.mainPageAutoRoiPages
               : detection.mainPageAutoRoiPages;
+          if (detectionAutoRoiPages && detectionAutoRoiPages.length > 0) {
+            const nextTemplateCanvasImages = [...templateCanvasImages];
+            let replacedAutoRoiPageImage = false;
+            for (const autoPage of detectionAutoRoiPages) {
+              const pageNumber = Number(autoPage.page_number ?? autoPage.pageNumber ?? autoPage.page_index ?? 1);
+              const pageIndex = Math.max(0, pageNumber - 1);
+              const previewSrc = String(autoPage.image_preview_data_url || autoPage.imagePreviewDataUrl || "");
+              if (!previewSrc || pageIndex < 0 || pageIndex >= nextTemplateCanvasImages.length) continue;
+              try {
+                nextTemplateCanvasImages[pageIndex] = await imageUrlToCanvasSafeSrc(previewSrc);
+                replacedAutoRoiPageImage = true;
+              } catch (error) {
+                console.warn("Unable to use backend auto ROI page preview.", error);
+              }
+            }
+            if (replacedAutoRoiPageImage) {
+              templateCanvasImages = nextTemplateCanvasImages;
+              setImagesList(templateCanvasImages);
+              setPreviewUrl(templateCanvasImages[currentIndex] || templateCanvasImages[0] || "");
+              setImage(templateCanvasImages[currentIndex] || templateCanvasImages[0] || null);
+            }
+          }
           let extraPageAutoRois = await buildDetectionAutoRois(
             templateCanvasImages,
             detectedRois,
