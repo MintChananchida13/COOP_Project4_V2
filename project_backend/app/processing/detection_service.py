@@ -1044,28 +1044,6 @@ def _pdf_layout_assisted_crop_for_matching(
     width_ratio = content_width / max(1.0, float(width))
     height_ratio = content_height / max(1.0, float(height))
     layout_boundary_box = [int(np.floor(left)), int(np.floor(top)), int(np.ceil(right)), int(np.ceil(bottom))]
-    if area_ratio > 0.65:
-        boundary_preview = _save_debug_boundary_preview(
-            page_path,
-            layout_boundary_box,
-            debug_dir / "page_layout_boundary_full_page.png",
-        )
-        return {
-            "applied": False,
-            "reason": "layout_bounds_cover_full_page_document",
-            "layout_analysis": layout_analysis,
-            "layout_boundary_box": layout_boundary_box,
-            "layout_boundary_area_ratio": round(float(area_ratio), 4),
-            "layout_boundary_width_ratio": round(float(width_ratio), 4),
-            "layout_boundary_height_ratio": round(float(height_ratio), 4),
-            "layout_boundary_region_count": len(boxes),
-            "layout_boundary_preview_path": boundary_preview,
-            "crop_area_ratio": round(float(area_ratio), 4),
-            "crop_accepted": False,
-            "rejection_reason": "layout_bounds_cover_full_page_document",
-            "matching_path_source": "rendered_pdf_page",
-        }
-
     margin = min(width, height) * 0.015
     margin_x = margin
     margin_y = margin
@@ -1100,25 +1078,6 @@ def _pdf_layout_assisted_crop_for_matching(
             "rejection_reason": "layout_crop_too_small",
             "matching_path_source": "rendered_pdf_page",
         }
-    if crop_area_ratio > 0.65:
-        return {
-            "applied": False,
-            "reason": "layout_crop_area_ratio_full_page_document",
-            "layout_analysis": layout_analysis,
-            "layout_boundary_box": layout_boundary_box,
-            "layout_boundary_area_ratio": round(float(area_ratio), 4),
-            "layout_boundary_width_ratio": round(float(width_ratio), 4),
-            "layout_boundary_height_ratio": round(float(height_ratio), 4),
-            "layout_boundary_region_count": len(boxes),
-            "layout_boundary_preview_path": boundary_preview,
-            "expanded_layout_boundary_box": expanded_box,
-            "expanded_layout_crop_area_ratio": round(float(crop_area_ratio), 4),
-            "crop_area_ratio": round(float(crop_area_ratio), 4),
-            "crop_accepted": False,
-            "rejection_reason": "layout_crop_area_ratio_full_page_document",
-            "matching_path_source": "rendered_pdf_page",
-        }
-
     crop = image[crop_top:crop_bottom, crop_left:crop_right].copy()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if not cv2.imwrite(str(output_path), crop):
@@ -1450,6 +1409,7 @@ def _normalize_query_pages(
             except (TypeError, ValueError):
                 pdf_crop_area_ratio = None
             layout_sub_document = bool(layout_crop.get("applied")) and bool(layout_crop.get("output_path"))
+            layout_crop_candidate = layout_sub_document
             layout_full_page_policy_reasons = {
                 "layout_bounds_cover_most_of_pdf_page",
                 "layout_bounds_cover_full_page_document",
@@ -1463,6 +1423,7 @@ def _normalize_query_pages(
                 and bool(pdf_boundary.get("passed"))
                 and bool(pdf_boundary.get("output_path"))
             )
+            crop_rejection_reason = None if layout_crop_candidate else (layout_crop.get("rejection_reason") or layout_crop.get("reason"))
             matching_layout_signature = None
             document_boundary_source = "layout" if layout_sub_document else ("physical_boundary" if physical_sub_document else "full_page")
             if layout_sub_document:
@@ -1501,7 +1462,12 @@ def _normalize_query_pages(
                 "detected_crop_box": crop_box,
                 "crop_area_ratio": layout_crop.get("crop_area_ratio") or layout_crop.get("expanded_layout_crop_area_ratio"),
                 "crop_accepted": layout_crop.get("crop_accepted"),
-                "rejection_reason": layout_crop.get("rejection_reason"),
+                "rejection_reason": crop_rejection_reason,
+                "layout_crop_candidate": layout_crop_candidate,
+                "physical_subdocument_confirmed": bool(physical_sub_document),
+                "physical_detector_confidence": pdf_boundary.get("confidence"),
+                "crop_rejection_reason": crop_rejection_reason,
+                "final_matching_path_source": matching_path_source,
                 "normalization_crop_area_ratio": round(pdf_crop_area_ratio, 4) if pdf_crop_area_ratio is not None else None,
                 "aspect_change_ratio": transform_validation.get("aspect_change_ratio"),
                 "validation_passed": transform_validation.get("passed"),
@@ -1521,7 +1487,7 @@ def _normalize_query_pages(
                 "layout_crop_applied": bool(layout_crop.get("applied")),
                 "layout_crop_area_ratio": layout_crop.get("crop_area_ratio") or layout_crop.get("expanded_layout_crop_area_ratio"),
                 "layout_crop_accepted": layout_crop.get("crop_accepted"),
-                "layout_crop_rejection_reason": layout_crop.get("rejection_reason"),
+                "layout_crop_rejection_reason": crop_rejection_reason,
                 "pdf_subdocument_detector": pdf_boundary,
                 "pdf_subdocument_detector_attempted": True,
                 "pdf_subdocument_detector_passed": bool(pdf_boundary.get("passed")),
@@ -1592,30 +1558,6 @@ def _normalize_query_pages(
 
 def _safe_file_token(value: str) -> str:
     return "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in value)
-
-
-def _is_compact_identity_template_name(value: Any, template_id: Any = None) -> bool:
-    if str(template_id or "").strip() in {"tpl_432252cca663"}:
-        return True
-    name = str(value or "").strip().lower()
-    if not name:
-        return False
-    return any(
-        token in name
-        for token in (
-            "บัตรประชาชน",
-            "บัตรประจำตัว",
-            "id card",
-            "id-card",
-            "id_card",
-            "identity",
-            "citizen",
-            "national id",
-            "thai id",
-            "passport",
-            "พาสปอร์ต",
-        )
-    )
 
 
 def _alignment_result(
@@ -3040,33 +2982,10 @@ def _detect_page(
         "applied": False,
         "reason": None,
     }
-    if (
-        str(matching_normalization.get("matching_path_source") or "").startswith("pdf_")
-        and str(matching_normalization.get("matching_path_source") or "").endswith("_subdocument")
-        and raw_results
-        and not include_template_id
-    ):
-        top_metadata = raw_results[0].get("metadata") or {}
-        top_template_name = top_metadata.get("template_name")
-        compact_identity_candidates = [
-            {
-                "template_id": (item.get("metadata") or {}).get("template_id"),
-                "template_name": (item.get("metadata") or {}).get("template_name"),
-                "score": item.get("score"),
-            }
-            for item in raw_results
-            if _is_compact_identity_template_name(
-                (item.get("metadata") or {}).get("template_name"),
-                (item.get("metadata") or {}).get("template_id"),
-            )
-        ]
+    if str(matching_normalization.get("matching_path_source") or "").startswith("pdf_"):
         compact_crop_template_override = {
             "applied": False,
-            "reason": "subdocument_crop_kept_after_retrieval",
-            "cropped_top_template_id": top_metadata.get("template_id"),
-            "cropped_top_template_name": top_template_name,
-            "identity_candidate_count": len(compact_identity_candidates),
-            "identity_candidates": compact_identity_candidates[:5],
+            "reason": "pdf_processing_image_selected_per_candidate_template_geometry",
         }
     candidates = []
     full_evaluation_count = 0
@@ -3114,20 +3033,63 @@ def _detect_page(
         )
         if should_fully_evaluate:
             full_evaluation_count += 1
+            candidate_processing_path = normalized_image_path
+            candidate_processing_path_source = str(matching_normalization.get("matching_path_source") or "normalized")
+            candidate_processing_switch_reason = "default_matching_image_used"
+            template_original_aspect_ratio = _template_original_aspect_ratio_from_result(result)
+            template_is_a4_like = _is_a4_portrait_like_aspect_ratio(template_original_aspect_ratio)
+            if (
+                candidate_processing_path_source.startswith("pdf_")
+                and candidate_processing_path_source.endswith("_subdocument")
+                and template_is_a4_like
+                and page_info.get("original_path")
+            ):
+                candidate_processing_path = str(page_info.get("original_path"))
+                candidate_processing_path_source = "rendered_pdf_page_a4_template"
+                candidate_processing_switch_reason = "template_original_aspect_ratio_a4_like_uses_original_pdf_page"
+            candidate_normalization_info = page_info.get("normalization")
+            if candidate_processing_path_source == "rendered_pdf_page_a4_template" and isinstance(candidate_normalization_info, dict):
+                candidate_normalization_info = {
+                    **candidate_normalization_info,
+                    "normalized_image_path": candidate_processing_path,
+                    "pdf_matching_path_promoted_to_normalized": False,
+                    "pdf_processing_image_switched_to_original": True,
+                    "pdf_processing_image_switch_reason": candidate_processing_switch_reason,
+                }
             step_started = time.perf_counter()
             candidate = _candidate_from_result(
                 result=result,
                 page_image_paths=page_image_paths,
                 page_index=page_index,
-                query_image_path=normalized_image_path,
+                query_image_path=candidate_processing_path,
                 original_image_path=str(page_info.get("original_path") or ""),
-                normalization_info=page_info.get("normalization"),
+                normalization_info=candidate_normalization_info,
                 query_signature=query_signature,
                 allow_alignment=True,
                 include_template_id=include_template_id,
                 verification_strategy=verification_strategy,
                 request_cache=request_cache,
             )
+            if isinstance(candidate, dict):
+                if (
+                    candidate_processing_path_source == "rendered_pdf_page_a4_template"
+                    and candidate.get("selected_processing_path") == candidate_processing_path
+                    and candidate.get("selected_processing_source") == "normalized"
+                ):
+                    candidate["selected_processing_source"] = candidate_processing_path_source
+                    candidate["verification_source_used"] = candidate_processing_path_source
+                candidate["template_original_aspect_ratio"] = round(float(template_original_aspect_ratio), 4) if template_original_aspect_ratio is not None else None
+                candidate["template_is_a4_like"] = template_is_a4_like
+                candidate["pdf_processing_image_before_candidate_selection"] = {
+                    "path": normalized_image_path,
+                    "source": str(matching_normalization.get("matching_path_source") or "normalized"),
+                }
+                candidate["pdf_processing_image_after_candidate_selection"] = {
+                    "path": candidate_processing_path,
+                    "source": candidate_processing_path_source,
+                }
+                candidate["candidate_processing_path_source"] = candidate_processing_path_source
+                candidate["candidate_processing_switch_reason"] = candidate_processing_switch_reason
             verification_elapsed = time.perf_counter() - step_started
             if timing is not None:
                 timing["verification"] = timing.get("verification", 0.0) + verification_elapsed
@@ -3213,26 +3175,6 @@ def _detect_page(
     best_candidate = passing_candidates[0] if passing_candidates else None
     matched = best_candidate is not None
     confident_layout_count = sum(1 for candidate in candidates if candidate.get("layout_confident"))
-    matching_path_source_for_policy = str(matching_normalization.get("matching_path_source") or "")
-    if (
-        isinstance(best_candidate, dict)
-        and matching_path_source_for_policy.startswith("pdf_")
-        and matching_path_source_for_policy.endswith("_subdocument")
-        and not _is_compact_identity_template_name(best_candidate.get("template_name"), best_candidate.get("template_id"))
-    ):
-        original_page_path = str(page_info.get("original_path") or "")
-        if original_page_path:
-            best_candidate["extraction_image_path"] = original_page_path
-            best_candidate["extraction_image_preview_url"] = _detection_preview_url(original_page_path)
-            best_candidate["selected_processing_path"] = original_page_path
-            best_candidate["selected_processing_source"] = "rendered_pdf_page_non_compact_template"
-            best_candidate["processing_image_size"] = _image_dimensions(original_page_path)
-            best_candidate["roi_coordinate_space"] = "template_canvas"
-            best_candidate["pdf_subdocument_processing_override"] = {
-                "applied": True,
-                "reason": "matched_template_not_identity_or_passport_uses_full_page",
-                "matching_path_source": matching_path_source_for_policy,
-            }
     selected_processing_path = (
         str(best_candidate.get("extraction_image_path") or "")
         if isinstance(best_candidate, dict)
@@ -3294,11 +3236,6 @@ def _detect_page(
     matching_image_size = pdf_detector_debug.get("matching_image_size") or matching_normalization.get("matching_image_size")
     matching_signature_source = pdf_detector_debug.get("matching_signature_source") or query_signature_source
     matching_layout_signature_created = pdf_detector_debug.get("matching_layout_signature_created")
-    if compact_crop_template_override.get("applied"):
-        matching_path_source = "rendered_pdf_page_after_subdocument_template_guard"
-        matching_image_size = _image_dimensions(matching_image_path)
-        matching_signature_source = query_signature_source
-        matching_layout_signature_created = False
     return {
         "page_index": page_index,
         "matched": matched,
@@ -3531,6 +3468,32 @@ def _is_confirmed_main_page_candidate(candidate: Optional[Dict[str, Any]]) -> bo
 
 def _layout_similarity_threshold(metadata: Dict[str, Any]) -> float:
     return float(metadata.get("similarity_threshold") or DETECTION_THRESHOLD)
+
+
+PDF_A4_PORTRAIT_ASPECT_RATIO = 1.0 / math.sqrt(2.0)
+PDF_A4_ASPECT_RATIO_TOLERANCE = 0.04
+
+
+def _template_original_aspect_ratio_from_result(result: Dict[str, Any]) -> Optional[float]:
+    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    layout_debug = metadata.get("layout_debug") if isinstance(metadata.get("layout_debug"), dict) else result.get("layout_debug")
+    if not isinstance(layout_debug, dict):
+        return None
+    normalization_debug = layout_debug.get("normalization_debug") if isinstance(layout_debug.get("normalization_debug"), dict) else {}
+    template_before = normalization_debug.get("template_before") if isinstance(normalization_debug.get("template_before"), dict) else {}
+    try:
+        aspect_ratio = float(template_before.get("page_aspect_ratio"))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(aspect_ratio) or aspect_ratio <= 0:
+        return None
+    return aspect_ratio
+
+
+def _is_a4_portrait_like_aspect_ratio(aspect_ratio: Optional[float]) -> bool:
+    if aspect_ratio is None:
+        return False
+    return abs(float(aspect_ratio) - PDF_A4_PORTRAIT_ASPECT_RATIO) <= PDF_A4_ASPECT_RATIO_TOLERANCE
 
 
 def _no_match_message(candidates: List[Dict[str, Any]]) -> str:
