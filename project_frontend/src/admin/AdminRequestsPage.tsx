@@ -116,15 +116,18 @@ export default function AdminRequestsPage() {
               <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                 <div className="min-w-0">
                   <h3 className="truncate text-base font-black text-slate-900">{request.requestTitle}</h3>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <StatusBadge status={request.requestMode} tone="primary" />
-                    <StatusBadge status={request.status} />
-                    <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase text-slate-600">
-                      {request.documentType || "ไม่ระบุประเภท"}
-                    </span>
-                  </div>
+                  {(request.status !== "submitted" || request.documentType) && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {request.status !== "submitted" && <StatusBadge status={request.status} />}
+                      {request.documentType && (
+                        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase text-slate-600">
+                          {request.documentType}
+                        </span>
+                      )}
+                    </div>
+                  )}
                   <p className="mt-2 text-xs font-semibold text-slate-500">
-                    {request.pageCount} หน้า | ส่งเมื่อ: {formatDate(request.createdAt)}
+                    {request.requestMode.replaceAll("_", " ")} | {request.pageCount} หน้า | ส่งเมื่อ: {formatDate(request.createdAt)}
                   </p>
                 </div>
 
