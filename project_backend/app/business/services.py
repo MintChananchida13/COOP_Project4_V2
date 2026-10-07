@@ -5935,7 +5935,12 @@ class AdminTemplateService:
             if not isinstance(page, dict):
                 continue
             page_number = int(page.get("page_index") or len(page_paths) + 1)
-            image_path = page.get("normalized_image_path") or page.get("normalized_path")
+            image_path = (
+                page.get("selected_processing_path")
+                or page.get("processing_image_path")
+                or page.get("normalized_image_path")
+                or page.get("normalized_path")
+            )
             if image_path:
                 page_paths[page_number] = str(image_path)
         if page_paths:
@@ -5971,10 +5976,19 @@ class AdminTemplateService:
                 candidate_metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
                 candidate_detection_mode = str(candidate.get("detection_mode") or candidate_metadata.get("detection_mode") or "")
                 candidate_page_paths = page_paths
+                candidate_processing_path = str(
+                    candidate.get("selected_processing_path")
+                    or candidate.get("extraction_image_path")
+                    or candidate.get("processing_image_path")
+                    or ""
+                ).strip()
+                if candidate_processing_path:
+                    candidate_query_page_number = int(candidate.get("query_page_index") or candidate_metadata.get("query_page_index") or 1)
+                    candidate_page_paths = {**page_paths, candidate_query_page_number: candidate_processing_path}
                 if candidate_detection_mode == "main_page":
                     query_page_number = int(candidate.get("query_page_index") or candidate_metadata.get("query_page_index") or 1)
                     template_page_number = int(candidate.get("template_page_number") or candidate_metadata.get("matched_layout_reference_page_number") or candidate_metadata.get("page_number") or 1)
-                    query_page_path = page_paths.get(query_page_number)
+                    query_page_path = candidate_processing_path or page_paths.get(query_page_number)
                     candidate_page_paths = {template_page_number: query_page_path} if query_page_path else {}
                 verification = verifier.verify_template(str(template_id), candidate_page_paths)
             except Exception as error:
@@ -6023,6 +6037,81 @@ class AdminTemplateService:
             )
         return enriched
 
+    def _append_prepublish_ranking_fallback_candidates(
+        self,
+        candidates: List[Dict[str, Any]],
+        detection: Dict[str, Any],
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        if len(candidates) >= limit:
+            return candidates
+
+        existing_template_ids = {
+            str(candidate.get("template_id") or "")
+            for candidate in candidates
+            if isinstance(candidate, dict) and candidate.get("template_id")
+        }
+        timing_debug = ((detection.get("debug") or {}).get("timing") or {}) if isinstance(detection.get("debug"), dict) else {}
+        searches = timing_debug.get("template_matching_breakdown") if isinstance(timing_debug, dict) else []
+        fallback_by_template: Dict[str, Dict[str, Any]] = {}
+        for search in searches if isinstance(searches, list) else []:
+            if not isinstance(search, dict):
+                continue
+            compared_items = search.get("compared_all") or []
+            for item in compared_items if isinstance(compared_items, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                template_id = str(item.get("template_id") or "").strip()
+                if not template_id or template_id in existing_template_ids:
+                    continue
+                try:
+                    score = float(item.get("score") if item.get("score") is not None else item.get("prefilter_score") or 0.0)
+                except (TypeError, ValueError):
+                    score = 0.0
+                previous = fallback_by_template.get(template_id)
+                if previous is not None and score <= float(previous.get("score") or 0.0):
+                    continue
+                fallback_by_template[template_id] = {
+                    "template_id": template_id,
+                    "template_name": item.get("template_name"),
+                    "version_name": item.get("version_name"),
+                    "version_number": item.get("version_number"),
+                    "template_status": item.get("template_status"),
+                    "score": score,
+                    "retrieval_score": score,
+                    "layout_score": score,
+                    "global_score": score,
+                    "final_score": score,
+                    "verification_score": 0.0,
+                    "text_anchor_score": 0.0,
+                    "image_anchor_score": 0.0,
+                    "final_passed": False,
+                    "verification_passed": False,
+                    "required_passed": False,
+                    "required_failed_fields": [],
+                    "decision": item.get("prefilter_reason") or "layout_prefilter_rejected",
+                    "decision_reason": item.get("prefilter_reason") or "layout_prefilter_rejected",
+                    "decision_path": item.get("prefilter_reason") or "layout_prefilter_rejected",
+                    "evaluation_status": "layout_prefilter_rejected" if item.get("prefilter_rejected") else "ranking_fallback_not_evaluated",
+                    "verification_details": [],
+                    "metadata": {
+                        "template_id": template_id,
+                        "template_name": item.get("template_name"),
+                        "version_name": item.get("version_name"),
+                        "version_number": item.get("version_number"),
+                        "template_status": item.get("template_status"),
+                        "page_number": item.get("template_page_number"),
+                        "layout_debug": item.get("layout_debug") or item,
+                    },
+                }
+
+        fallback_candidates = sorted(
+            fallback_by_template.values(),
+            key=lambda item: float(item.get("final_score") or item.get("score") or 0.0),
+            reverse=True,
+        )
+        return [*candidates, *fallback_candidates[: max(0, limit - len(candidates))]]
+
     def run_prepublish_detection_test(self, template_id: str, file_bytes: bytes) -> Dict[str, Any]:
         total_started = time.perf_counter()
         print("[PREPUBLISH] START")
@@ -6046,6 +6135,8 @@ class AdminTemplateService:
                 verification_candidate_limit_override=5,
                 full_evaluation_limit_override=5,
             )
+            candidates = [candidate for candidate in detection.get("candidates") or [] if isinstance(candidate, dict)]
+            candidates = self._append_prepublish_ranking_fallback_candidates(candidates, detection, limit=5)
             candidates = [
                 {
                     **candidate,
@@ -6054,8 +6145,7 @@ class AdminTemplateService:
                     "source": "draft" if candidate.get("template_id") == template_id else "published",
                     "source_label": "Draft Template" if candidate.get("template_id") == template_id else "Published Template",
                 }
-                for index, candidate in enumerate(detection.get("candidates") or [], start=1)
-                if isinstance(candidate, dict)
+                for index, candidate in enumerate(candidates, start=1)
             ]
             candidates = self._enrich_prepublish_candidate_verification_details(candidates, detection)
             best_candidate = detection.get("best_candidate")
