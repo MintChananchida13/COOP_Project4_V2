@@ -976,6 +976,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
               onBatchConfirm={(finalImages) => {
                 void handleConfirmAdjustedImages(finalImages);
               }}
+              confirmLabel="ยืนยันเอกสารและดำเนินการต่อ"
             />
           ) : editorStage === "roi" ? (
             <WorkspaceTemplateEditor

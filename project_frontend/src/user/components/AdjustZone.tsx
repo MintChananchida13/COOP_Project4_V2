@@ -258,6 +258,7 @@ interface AdjustZoneProps {
   pagesConfig: PageConfig[];
   setPagesConfig: React.Dispatch<React.SetStateAction<PageConfig[]>>;
   onBatchConfirm: (finalImages: string[]) => void;
+  confirmLabel?: string;
 }
 
 export default function AdjustZone({
@@ -267,6 +268,7 @@ export default function AdjustZone({
   pagesConfig,
   setPagesConfig,
   onBatchConfirm,
+  confirmLabel = "ยืนยันเอกสารและค้นหา Template",
 }: AdjustZoneProps) {
   
   // ✨ สเตตพิเศษ: ใช้ล็อกและจำ URL รูปเอกสารแรกสุดที่ component นี้เคยได้รับ (ห้ามใครเปลี่ยน)
@@ -1029,7 +1031,7 @@ return (
       ) : (
         <>
           <Check size={14} />
-          ยืนยันเอกสารและค้นหา Template
+          {confirmLabel}
         </>
       )}
     </button>
