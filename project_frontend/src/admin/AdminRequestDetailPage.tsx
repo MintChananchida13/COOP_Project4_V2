@@ -62,7 +62,7 @@ const toWorkspaceRoi = (
 
 const extractionMethodLabel = (value?: string) => {
   const method = normalizeExtractionMethod(value);
-  if (method === "paddle_thai_ocr" || method === "extract_image") return null;
+  if (method === "paddle_thai_ocr" || method === "extract_image" || method === "table_recognition_v2") return null;
   return extractionMethodOptions.find((option) => option.value === method)?.label || "อ่านข้อความใน ROI";
 };
 

@@ -947,7 +947,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
                   <div
                     key={item.id}
                     aria-current={isActive ? "step" : undefined}
-                    className={`min-h-[74px] rounded-xl border px-4 py-3 text-left ${
+                    className={`rounded-xl border px-3 py-2 text-left ${
                       isActive
                         ? "border-indigo-300 bg-indigo-50 text-indigo-800"
                         : isDone
@@ -955,13 +955,17 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
                           : "border-slate-200 bg-slate-50 text-slate-600"
                     }`}
                   >
-                    <span className={`mb-2 inline-flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-black ${
-                      isDone ? "bg-emerald-600 text-white" : isActive ? "bg-indigo-600 text-white" : "bg-white text-slate-400"
-                    }`}>
-                      {index + 1}
-                    </span>
-                    <span className="block text-xs font-black">{item.label}</span>
-                    <span className="block text-[11px] font-semibold opacity-75">{item.description}</span>
+                    <div className="flex items-start gap-2">
+                      <span className={`mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-black ${
+                        isDone ? "bg-emerald-600 text-white" : isActive ? "bg-indigo-600 text-white" : "bg-white text-slate-400"
+                      }`}>
+                        {index + 1}
+                      </span>
+                      <div className="min-w-0">
+                        <span className="block text-xs font-black leading-snug">{item.label}</span>
+                        <span className="block text-[11px] font-semibold leading-snug opacity-75">{item.description}</span>
+                      </div>
+                    </div>
                   </div>
                 );
             })}
