@@ -130,6 +130,28 @@ const maintenanceRefreshDelay = (maintenance?: Partial<SystemMaintenanceState> |
   return candidates.length > 0 ? Math.min(...candidates) : null;
 };
 
+const READ_NOTIFICATION_IDS_STORAGE_KEY = "ocr_read_notification_ids";
+const READ_MAINTENANCE_KEY_STORAGE_KEY = "ocr_read_maintenance_key";
+
+const notificationMaintenanceIsExpired = (notification: UserNotification) => {
+  if (notification.eventType !== "system_maintenance_updated") return false;
+  const expectedEndAt = String(notification.metadata?.expectedEndAt || notification.metadata?.expected_end_at || "");
+  if (!expectedEndAt) return false;
+  const expectedEnd = new Date(expectedEndAt);
+  return !Number.isNaN(expectedEnd.getTime()) && expectedEnd.getTime() <= Date.now();
+};
+
+const maintenanceReadKey = (maintenance?: Partial<SystemMaintenanceState> | null) => {
+  if (!maintenance || !isMaintenanceScheduleRelevant(maintenance)) return "";
+  return [
+    maintenance.status || "",
+    maintenance.active ? "active" : "scheduled",
+    maintenance.scheduledStartAt || "",
+    maintenance.expectedEndAt || "",
+    maintenance.message || "",
+  ].join("|");
+};
+
 interface TemplateDetectionNotice {
   title: string;
   message: string;
@@ -1709,6 +1731,8 @@ function HomeWorkspace() {
   const [exportOptions, setExportOptions] = useState<ExportDisplayOptions>({ showFieldNames: true, showDocumentTitle: true });
   const [openTableExportDropdown, setOpenTableExportDropdown] = useState<string | null>(null);
   const [isNotificationOpen, setIsNotificationOpen] = useState(false);
+  const [readNotificationIds, setReadNotificationIds] = useState<string[]>([]);
+  const [readMaintenanceKey, setReadMaintenanceKey] = useState("");
   const [excelExportMode, setExcelExportMode] = useState<"fields" | "tables" | "fields_tables">("fields_tables");
   const [textPreviewCopyStatus, setTextPreviewCopyStatus] = useState<string>("");
   const [matchedTemplate, setMatchedTemplate] = useState<{
@@ -1737,6 +1761,19 @@ function HomeWorkspace() {
     }
     setAuthSession(session);
   }, [router]);
+
+  useEffect(() => {
+    try {
+      const rawIds = window.localStorage.getItem(READ_NOTIFICATION_IDS_STORAGE_KEY);
+      const parsedIds = rawIds ? JSON.parse(rawIds) : [];
+      if (Array.isArray(parsedIds)) {
+        setReadNotificationIds(parsedIds.map((id) => String(id)).filter(Boolean));
+      }
+      setReadMaintenanceKey(window.localStorage.getItem(READ_MAINTENANCE_KEY_STORAGE_KEY) || "");
+    } catch (error) {
+      console.warn("Notification read state load failed.", error);
+    }
+  }, []);
 
   const applyMaintenanceState = useCallback((state: SystemMaintenanceState) => {
     maintenanceStateRef.current = state;
@@ -4127,12 +4164,38 @@ function HomeWorkspace() {
     );
   };
 
+  const readNotificationIdSet = new Set(readNotificationIds);
+  const currentMaintenanceReadKey = maintenanceReadKey(maintenanceState);
+  const hasMaintenanceNotification = Boolean(maintenanceState?.active || isMaintenanceScheduleRelevant(maintenanceState));
+  const hasUnreadMaintenanceNotification = Boolean(
+    hasMaintenanceNotification &&
+    currentMaintenanceReadKey &&
+    currentMaintenanceReadKey !== readMaintenanceKey
+  );
+  const unreadNotifications = notifications.filter(
+    (notification) => !readNotificationIdSet.has(notification.id) && !notificationMaintenanceIsExpired(notification)
+  );
+  const hasUnreadNotification = hasUnreadMaintenanceNotification || unreadNotifications.length > 0;
+  const markNotificationsRead = () => {
+    const nextIds = Array.from(
+      new Set([...readNotificationIds, ...notifications.map((notification) => notification.id).filter(Boolean)])
+    ).slice(-100);
+    setReadNotificationIds(nextIds);
+    try {
+      window.localStorage.setItem(READ_NOTIFICATION_IDS_STORAGE_KEY, JSON.stringify(nextIds));
+      if (currentMaintenanceReadKey) {
+        window.localStorage.setItem(READ_MAINTENANCE_KEY_STORAGE_KEY, currentMaintenanceReadKey);
+        setReadMaintenanceKey(currentMaintenanceReadKey);
+      }
+    } catch (error) {
+      console.warn("Notification read state save failed.", error);
+    }
+  };
+
   const exportPreviewPayload = exportJson || exportText ? buildExportPayload() : null;
   const exportFieldCount =
     exportPreviewPayload?.pages.reduce((sum, page) => sum + Object.keys(page.fields).length, 0) ?? 0;
   const isMaintenanceActive = Boolean(maintenanceState?.active);
-  const hasMaintenanceNotification = Boolean(maintenanceState?.active || isMaintenanceScheduleRelevant(maintenanceState));
-  const hasAnyNotification = hasMaintenanceNotification || notifications.length > 0;
 
   return (
     <main className="min-h-screen bg-slate-50 select-none">
@@ -4148,15 +4211,20 @@ function HomeWorkspace() {
                 aria-label="การแจ้งเตือน"
                 title="การแจ้งเตือน"
                 aria-expanded={isNotificationOpen}
-                onClick={() => setIsNotificationOpen((current) => !current)}
+                onClick={() => {
+                  setIsNotificationOpen((current) => {
+                    if (!current) markNotificationsRead();
+                    return !current;
+                  });
+                }}
                 className={`relative inline-flex h-10 w-10 items-center justify-center rounded-xl border transition-colors ${
-                  hasAnyNotification
+                  hasUnreadNotification
                     ? "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100"
                     : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-blue-700"
                 }`}
               >
                 <Bell size={16} strokeWidth={2.2} />
-                {hasAnyNotification && (
+                {hasUnreadNotification && (
                   <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-amber-500 ring-2 ring-white" />
                 )}
               </button>

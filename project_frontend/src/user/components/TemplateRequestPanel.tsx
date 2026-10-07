@@ -301,27 +301,8 @@ export default function TemplateRequestPanel({
           source_file_id: item.sourceFileId,
           source_file_name: item.sourceFileName,
         })),
-      }),
-    });
-
-    if (!createResponse.ok) {
-      throw new Error(`สร้างคำขอ Template ไม่สำเร็จ (${createResponse.status})`);
-    }
-
-    const createJson = await createResponse.json();
-    const createdRequest = createJson?.data as TemplateRequestCreateResponse | undefined;
-    const requestId = createdRequest?.id;
-    if (!requestId) {
-      throw new Error("Backend ไม่ได้ส่งรหัสคำขอกลับมา");
-    }
-
-    if (requestMode === "image_with_roi") {
-      await Promise.all(
-        requestedFields.map((field) => {
-          const requestedFieldPayload = {
-            template_request_page_id:
-              createdRequest?.pages?.find((page) => page.page_number === field.roi.pageNumber)?.id ||
-              `template_request_page_${field.roi.pageNumber}`,
+        requested_fields: requestMode === "image_with_roi"
+          ? requestedFields.map((field) => ({
             page_number: field.roi.pageNumber,
             field_name: field.fieldName,
             display_label: field.displayLabel,
@@ -339,16 +320,20 @@ export default function TemplateRequestPanel({
               })),
             },
             user_note: field.userNote || null,
-          };
-          console.info("Template request requested-field payload", requestedFieldPayload);
+          }))
+          : [],
+      }),
+    });
 
-          return fetch(`${API_BASE_URL}/template-requests/${requestId}/requested-fields`, {
-            method: "POST",
-            headers: authHeaders({ "Content-Type": "application/json" }),
-            body: JSON.stringify(requestedFieldPayload),
-          });
-        })
-      );
+    if (!createResponse.ok) {
+      throw new Error(`สร้างคำขอ Template ไม่สำเร็จ (${createResponse.status})`);
+    }
+
+    const createJson = await createResponse.json();
+    const createdRequest = createJson?.data as TemplateRequestCreateResponse | undefined;
+    const requestId = createdRequest?.id;
+    if (!requestId) {
+      throw new Error("Backend ไม่ได้ส่งรหัสคำขอกลับมา");
     }
 
     const submitResponse = await fetch(`${API_BASE_URL}/template-requests/${requestId}/submit`, {

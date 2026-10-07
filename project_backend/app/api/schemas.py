@@ -64,6 +64,16 @@ class CustomOcrRequest(BaseModel):
     fields: List[CustomOcrField] = Field(default_factory=list)
 
 
+class RequestedFieldInput(BaseModel):
+    page_number: int = Field(..., ge=1)
+    field_name: str
+    display_label: str
+    roi: RoiRatio
+    data_type: Optional[str] = Field(default=None, validation_alias=AliasChoices("data_type", "dataType"))
+    extraction_method: Optional[str] = Field(default=None, validation_alias=AliasChoices("extraction_method", "extractionMethod"))
+    user_note: Optional[str] = None
+
+
 class TemplateRequestCreate(BaseModel):
     requested_by: Optional[str] = None
     request_title: str
@@ -73,6 +83,7 @@ class TemplateRequestCreate(BaseModel):
     page_count: int = Field(default=1, ge=1)
     user_note: Optional[str] = None
     pages: List[PageInput] = Field(default_factory=list)
+    requested_fields: List[RequestedFieldInput] = Field(default_factory=list, validation_alias=AliasChoices("requested_fields", "requestedFields"))
 
 
 class TemplateRequestUpdate(BaseModel):
@@ -108,15 +119,8 @@ class TemplateRequestImageUpdate(BaseModel):
     source_file_name: Optional[str] = Field(default=None, validation_alias=AliasChoices("source_file_name", "sourceFileName"))
 
 
-class RequestedFieldCreate(BaseModel):
+class RequestedFieldCreate(RequestedFieldInput):
     template_request_page_id: str
-    page_number: int = Field(..., ge=1)
-    field_name: str
-    display_label: str
-    roi: RoiRatio
-    data_type: Optional[str] = Field(default=None, validation_alias=AliasChoices("data_type", "dataType"))
-    extraction_method: Optional[str] = Field(default=None, validation_alias=AliasChoices("extraction_method", "extractionMethod"))
-    user_note: Optional[str] = None
 
 
 class RequestedFieldUpdate(BaseModel):

@@ -4869,8 +4869,10 @@ class TemplateRequestService:
                     payload.user_note,
                 ),
             )
+            page_ids_by_number: Dict[int, str] = {}
             for page in source_pages:
                 page_number = page.page_number if hasattr(page, "page_number") else page.get("page_number", 1)
+                page_id = _stub_id("tpl_req_page")
                 sample_image_url = (
                     page.normalized_image_url or page.original_image_url
                     if hasattr(page, "normalized_image_url")
@@ -4891,7 +4893,57 @@ class TemplateRequestService:
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?, 'user_request', 'pending', FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
-                    (_stub_id("tpl_req_page"), request_id, page_number, f"Page {page_number}", sample_image_url, source_file_id, source_file_name),
+                    (page_id, request_id, page_number, f"Page {page_number}", sample_image_url, source_file_id, source_file_name),
+                )
+                page_ids_by_number[int(page_number)] = page_id
+            for field in payload.requested_fields or []:
+                page_number = int(field.page_number or field.roi.page_number or 1)
+                page_id = page_ids_by_number.get(page_number)
+                if not page_id:
+                    page_id = _stub_id("tpl_req_page")
+                    conn.execute(
+                        """
+                        INSERT INTO template_request_pages (
+                            id, template_request_id, page_number, page_name, sample_image_url, created_at
+                        )
+                        VALUES (?, ?, ?, ?, NULL, CURRENT_TIMESTAMP)
+                        """,
+                        (page_id, request_id, page_number, f"Page {page_number}"),
+                    )
+                    page_ids_by_number[page_number] = page_id
+                conn.execute(
+                    """
+                    INSERT INTO requested_fields (
+                        id, template_request_page_id, field_name, display_label, data_type, extraction_method,
+                        roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_points_json, user_note, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT (template_request_page_id, field_name)
+                    DO UPDATE SET
+                        display_label = EXCLUDED.display_label,
+                        data_type = EXCLUDED.data_type,
+                        extraction_method = EXCLUDED.extraction_method,
+                        roi_x_ratio = EXCLUDED.roi_x_ratio,
+                        roi_y_ratio = EXCLUDED.roi_y_ratio,
+                        roi_width_ratio = EXCLUDED.roi_width_ratio,
+                        roi_height_ratio = EXCLUDED.roi_height_ratio,
+                        roi_points_json = EXCLUDED.roi_points_json,
+                        user_note = EXCLUDED.user_note
+                    """,
+                    (
+                        _stub_id("req_field"),
+                        page_id,
+                        field.field_name,
+                        field.display_label,
+                        _normalize_data_type(field.data_type),
+                        _normalize_extraction_method(field.extraction_method),
+                        field.roi.x_ratio,
+                        field.roi.y_ratio,
+                        field.roi.width_ratio,
+                        field.roi.height_ratio,
+                        _roi_points_json_from_payload(field.roi),
+                        field.user_note,
+                    ),
                 )
             conn.commit()
         return self.get(request_id)
