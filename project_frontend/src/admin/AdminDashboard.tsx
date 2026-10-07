@@ -112,7 +112,7 @@ export default function AdminDashboard() {
       <div className="border-b border-slate-200 pb-4">
         <div>
           <h1 className="text-xl font-black tracking-tight text-slate-950">Admin Dashboard</h1>
-          <p className="mt-1 text-sm font-semibold text-slate-700">ภาพรวมคำขอและแม่แบบล่าสุดของระบบโอซีอาร์</p>
+          <p className="mt-1 text-sm font-semibold text-slate-700">ภาพรวมคำขอ Template และประวัติการประมวลผลล่าสุดของระบบ OCR</p>
         </div>
       </div>
 
@@ -145,7 +145,7 @@ export default function AdminDashboard() {
           items={recentRequests.map((request) => ({
             id: request.id,
             title: request.requestTitle,
-            meta: `${request.pageCount} หน้า · ${request.documentType || "ไม่ระบุประเภท"} · ${formatDateTime(request.updatedAt || request.createdAt)}`,
+            meta: `${request.pageCount} หน้า · ${formatDateTime(request.updatedAt || request.createdAt)}`,
             status: request.status,
             tone: "amber",
           }))}
@@ -158,7 +158,7 @@ export default function AdminDashboard() {
           items={recentTemplates.map((template) => ({
             id: template.id,
             title: formatTemplateDashboardTitle(template),
-            meta: `${template.pageCount} หน้า · ${template.documentType || "ไม่ระบุประเภท"} · ${formatDateTime(template.updatedAt || template.createdAt)}`,
+            meta: `${template.pageCount} หน้า · ${formatDateTime(template.updatedAt || template.createdAt)}`,
             status: template.status,
             tone: "indigo",
             editHref: `/admin/templates/${template.id}/edit`,
