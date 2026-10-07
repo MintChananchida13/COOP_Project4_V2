@@ -66,12 +66,12 @@ const extractionMethodLabel = (value?: string) =>
   )?.label || "อ่านข้อความใน ROI";
 
 const creationTypeLabel = (value: "new_template" | "new_version") =>
-  value === "new_version" ? "Add New Version" : "Create New Template";
+  value === "new_version" ? "สร้าง Template ฉบับใหม่" : "สร้าง Template ใหม่";
 
 const creationTypeNote = (value: "new_template" | "new_version") =>
   value === "new_version"
-    ? "เพิ่ม Version ให้ Template เดิมจากข้อมูลที่เลือกในคลัง Template"
-    : "สร้าง Template ใหม่และเริ่ม Version 1 จากไฟล์ที่อัปโหลด";
+    ? "สร้าง Template ฉบับใหม่จาก Template เดิมที่เลือกในคลัง Template"
+    : "สร้าง Template ใหม่จากไฟล์ที่อัปโหลด";
 
 const searchParamCreationType = (value: string | null): "new_template" | "new_version" | null =>
   value === "new_template" || value === "new_version" ? value : null;
@@ -476,7 +476,7 @@ export default function AdminRequestDetailPage({
     if (isTemplateEditMode && templateId) {
       const nextVersionSuffix = versionNameSuffix.trim();
       if (!nextVersionSuffix) {
-        setActionError("กรุณากรอกชื่อต่อท้าย Version ก่อนเปิดหน้าแก้ไข Template");
+        setActionError("กรุณากรอกชื่อต่อท้าย Template ฉบับนี้ก่อนเปิดหน้าแก้ไข");
         return;
       }
       setIsConverting(true);
@@ -501,7 +501,7 @@ export default function AdminRequestDetailPage({
         );
       } catch (error) {
         console.warn("Template version name update failed.", error);
-        setActionError(error instanceof Error ? error.message : "บันทึกชื่อ Version ไม่สำเร็จ");
+        setActionError(error instanceof Error ? error.message : "บันทึกชื่อ Template ฉบับนี้ไม่สำเร็จ");
         setIsConverting(false);
         return;
       }
@@ -540,15 +540,15 @@ export default function AdminRequestDetailPage({
       }
     }
     if (!nextDocumentType) {
-      setActionError(creationType === "new_template" ? "กรุณาระบุประเภทเอกสารก่อนสร้าง Template" : "กรุณาเลือก Template เดิมก่อนสร้าง Version ใหม่");
+      setActionError(creationType === "new_template" ? "กรุณาระบุประเภทเอกสารก่อนสร้าง Template" : "กรุณาเลือก Template เดิมก่อนสร้างฉบับใหม่");
       return;
     }
     if (creationType === "new_version" && !selectedBaseTemplateId) {
-      setActionError("กรุณาเลือก Template เดิมก่อนสร้าง Version ใหม่");
+      setActionError("กรุณาเลือก Template เดิมก่อนสร้างฉบับใหม่");
       return;
     }
     if (creationType === "new_version" && !nextVersionSuffix) {
-      setActionError("กรุณากรอกชื่อต่อท้าย Version ก่อนสร้าง Version ใหม่");
+      setActionError("กรุณากรอกชื่อต่อท้าย Template ฉบับใหม่ก่อนสร้าง");
       return;
     }
 
@@ -600,7 +600,7 @@ export default function AdminRequestDetailPage({
         detectionMode,
         mainPageNumber: String(safeMainPageNumber),
       });
-      setActionStatus(creationType === "new_version" ? "สร้าง Template Version ฉบับร่างเรียบร้อยแล้ว" : "สร้าง Template ฉบับร่างเรียบร้อยแล้ว");
+      setActionStatus(creationType === "new_version" ? "สร้าง Template ฉบับร่างใหม่เรียบร้อยแล้ว" : "สร้าง Template ฉบับร่างเรียบร้อยแล้ว");
       window.dispatchEvent(new Event("admin-route-transition-start"));
       router.push(`/admin/templates/${result.templateId}/edit?${params.toString()}`);
     } catch (error) {
@@ -777,7 +777,7 @@ export default function AdminRequestDetailPage({
               Creation Type
             </h3>
             <p className="mt-1 text-[11px] font-semibold leading-relaxed text-slate-500">
-              เลือกว่าจะสร้าง Template ใหม่ หรือเพิ่ม Version ให้ Template เดิม
+              เลือกว่าจะสร้าง Template ใหม่ หรือสร้างฉบับใหม่จาก Template เดิม
             </p>
 
             {isCreationTypeLocked ? (
@@ -790,8 +790,8 @@ export default function AdminRequestDetailPage({
             ) : (
               <div className="mt-3 grid gap-2">
                 {[
-                  { value: "new_template", title: "Create New Template", note: "สร้าง Template ใหม่และเริ่ม Version 1" },
-                  { value: "new_version", title: "Add New Version", note: "เลือก Template เดิม และเริ่มสร้าง Version ใหม่" },
+                  { value: "new_template", title: "สร้าง Template ใหม่", note: "สร้าง Template ใหม่จากไฟล์ที่อัปโหลด" },
+                  { value: "new_version", title: "สร้าง Template ฉบับใหม่", note: "เลือก Template เดิม แล้วสร้างฉบับใหม่" },
                 ].map((option) => (
                   <label
                     key={option.value}
@@ -892,7 +892,7 @@ export default function AdminRequestDetailPage({
                       {selectedBaseTemplateName || "Template เดิม"}
                     </div>
                     <p className="mt-1 text-[11px] font-semibold text-slate-500">
-                      ใช้ Template ที่เลือกจากคลัง Template เป็นฐานสำหรับ Version ใหม่
+                      ใช้ Template ที่เลือกจากคลัง Template เป็นฐานสำหรับฉบับใหม่
                     </p>
                   </div>
                 ) : (
@@ -925,7 +925,7 @@ export default function AdminRequestDetailPage({
 
                 <label className="block space-y-1.5">
                   <span className="text-[10px] font-black uppercase tracking-wide text-slate-500">
-                    ชื่อต่อท้าย Version
+                    ชื่อต่อท้าย Template ฉบับนี้
                   </span>
                   <div className="rounded-xl border border-slate-200 bg-white focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-100">
                     <div className="border-b border-slate-100 bg-slate-50 px-3 py-2 text-[11px] font-black leading-5 text-slate-500 break-words">
@@ -948,7 +948,7 @@ export default function AdminRequestDetailPage({
                 {versionSuggestion?.reuse_roi && versionSuggestion.suggested_base_version && !isSuggestingVersion && (
                   <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs font-semibold text-slate-600">
                     <div className="space-y-1">
-                      <div className="font-black text-emerald-700">Suggested Base Version</div>
+                      <div className="font-black text-emerald-700">Template ฐานที่แนะนำ</div>
                       <div>Reuse ROI: ใช่</div>
                       <div>Similarity Score: {Math.round(versionSuggestion.suggested_base_version.similarity_score * 100)}%</div>
                       <div>Base Template ID: {versionSuggestion.suggested_base_version.template_id}</div>
@@ -1183,8 +1183,8 @@ export default function AdminRequestDetailPage({
                   : isTemplateEditMode
                     ? "แก้ไข Template"
                     : creationType === "new_version"
-                    ? "สร้าง Template Version"
-                    : "Create Version 1"}
+                    ? "สร้าง Template ฉบับใหม่"
+                    : "สร้าง Template"}
               </button>
 
               {!isTemplateEditMode && (

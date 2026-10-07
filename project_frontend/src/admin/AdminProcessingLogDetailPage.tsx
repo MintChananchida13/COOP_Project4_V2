@@ -384,7 +384,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
         <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-5">
           <InfoTile label="ผลการตรวจจับ" value={log.templateDetection.matched ? "Matched" : "No Match"} />
           <InfoTile label="Template" value={log.templateDetection.selectedTemplate || "-"} />
-          <InfoTile label="Template Version" value={log.templateDetection.templateVersion || "-"} />
+          <InfoTile label="Template ฉบับที่ใช้" value={log.templateDetection.templateVersion || "-"} />
           <InfoTile label="Detection Mode" value={log.templateDetection.detectionMode} />
           <InfoTile label="Verification Mode" value={log.templateDetection.verificationMode} />
         </div>

@@ -330,7 +330,7 @@ export default function AdminTemplatesPage() {
   };
 
   const templateVersionSuffix = (template: Template, folderName: string) =>
-    templateNameSuffix(template.versionName || template.name, folderName) || `Version ${template.versionNumber || template.version}`;
+    templateNameSuffix(template.versionName || template.name, folderName) || `ฉบับที่ ${template.versionNumber || template.version}`;
 
   const templateVersionDisplayName = (template: Template, folderName: string) =>
     `${folderName.trim()} - ${templateVersionSuffix(template, folderName)}`;
@@ -467,7 +467,7 @@ export default function AdminTemplatesPage() {
         ? newTemplateName.trim()
         : newVersionNameSuffix.trim();
     if (!documentType || !requestTitle) {
-      setCreateRequestError(manualCreationType === "new_template" ? "กรุณากรอกชื่อ Template ก่อนอัปโหลด" : "กรุณาเลือก Template เดิมและกรอกชื่อต่อท้าย Version ก่อนอัปโหลด");
+      setCreateRequestError(manualCreationType === "new_template" ? "กรุณากรอกชื่อ Template ก่อนอัปโหลด" : "กรุณาเลือก Template เดิมและกรอกชื่อต่อท้ายฉบับใหม่ก่อนอัปโหลด");
       return;
     }
 
@@ -569,7 +569,7 @@ export default function AdminTemplatesPage() {
         <div className="min-w-0">
           <p className="ui-caption font-semibold text-blue-600">คลัง Template</p>
           <h2 className="ui-page-title mt-1 text-slate-950">คลัง Template</h2>
-          <p className="ui-body mt-1 text-slate-500">จัดการ Template และ Version ทั้งหมด</p>
+          <p className="ui-body mt-1 text-slate-500">จัดการ Template ทั้งหมดในคลัง</p>
         </div>
         <button
           type="button"
@@ -644,7 +644,7 @@ export default function AdminTemplatesPage() {
               setTemplateSearch(event.target.value);
               setExpandedFolderId(null);
             }}
-            placeholder="ค้นหาชื่อ Template หรือชื่อ Version"
+            placeholder="ค้นหาชื่อ Template หรือชื่อฉบับ"
             className="h-11 min-w-0 flex-1 bg-transparent text-sm font-semibold text-slate-800 outline-none placeholder:text-slate-400"
           />
           <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[10px] font-black text-slate-500">
@@ -746,7 +746,7 @@ export default function AdminTemplatesPage() {
                       </>
                     )}
                     <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-black text-slate-600">
-                      {folder.versions.length} Version
+                      {folder.versions.length} ฉบับ
                     </span>
                     {folder.activeCount > 0 && (
                       <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-black text-emerald-700">
@@ -1073,8 +1073,8 @@ export default function AdminTemplatesPage() {
 
             <div className="space-y-3 p-5">
               {[
-                { value: "new_template", title: "Create New Template", note: "สร้าง Template ใหม่ แล้วสร้าง Version 1" },
-                { value: "new_version", title: "Add New Version", note: "เพิ่ม Version ให้ Template เดิมและให้ระบบช่วย reuse ROI ถ้า Layout ใกล้เคียง" },
+                { value: "new_template", title: "สร้าง Template ใหม่", note: "สร้าง Template ใหม่จากไฟล์อ้างอิง" },
+                { value: "new_version", title: "สร้าง Template ฉบับใหม่", note: "เลือก Template เดิมและให้ระบบช่วย reuse ROI ถ้า Layout ใกล้เคียง" },
               ].map((option) => (
                 <label
                   key={option.value}
@@ -1104,7 +1104,7 @@ export default function AdminTemplatesPage() {
                       type="text"
                       value={newTemplateName}
                       onChange={(event) => setNewTemplateName(event.target.value)}
-                      placeholder="เช่น ใบสมัครสมาชิก Version หลัก"
+                      placeholder="เช่น ใบสมัครสมาชิก แบบหลัก"
                       className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none transition-colors focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
                     />
                   </label>
@@ -1127,7 +1127,7 @@ export default function AdminTemplatesPage() {
                   </select>
                 </label>
                 <label className="block space-y-1.5">
-                  <span className="text-[11px] font-black uppercase tracking-wide text-slate-500">ชื่อต่อท้าย Version</span>
+                  <span className="text-[11px] font-black uppercase tracking-wide text-slate-500">ชื่อต่อท้าย Template ฉบับนี้</span>
                   <div className="flex min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-100">
                     <span className="flex max-w-[45%] shrink-0 items-center truncate border-r border-slate-200 bg-slate-50 px-3 text-xs font-black text-slate-500">
                       {selectedExistingDocumentType.trim() || "Template"} -

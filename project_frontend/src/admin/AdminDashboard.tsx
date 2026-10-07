@@ -18,7 +18,7 @@ const formatTemplateDashboardTitle = (template: AdminDashboardSummary["latestTem
   const name = template.templateGroupName || template.versionName || template.name || "แม่แบบ";
   const versionNumber = Number(template.versionNumber || template.version || 1);
   if (!Number.isFinite(versionNumber) || versionNumber <= 0) return name;
-  return `${name} - V${versionNumber}`;
+  return `${name} - ฉบับที่ ${versionNumber}`;
 };
 
 const logBadgeClass = (tone: "success" | "warning" | "danger") =>
