@@ -1153,7 +1153,9 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
                     >
                       <div className="font-black">{field.displayLabel}</div>
                       <div className="mt-1 text-[10px] font-bold text-indigo-500">{field.fieldName}</div>
-                      <div className="mt-2 w-fit rounded-full bg-indigo-100 px-2 py-0.5 text-[9px] font-black uppercase text-indigo-700">{field.extractionMethod}</div>
+                      <div className="mt-2 w-fit rounded-full bg-indigo-100 px-2 py-0.5 text-[9px] font-black uppercase text-indigo-700">
+                        {field.dataType === "table" ? "table" : field.dataType === "image" ? "image" : "text"}
+                      </div>
                     </button>
                   ))
                 )}
