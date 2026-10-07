@@ -60,10 +60,11 @@ const toWorkspaceRoi = (
   };
 };
 
-const extractionMethodLabel = (value?: string) =>
-  extractionMethodOptions.find(
-    (option) => option.value === normalizeExtractionMethod(value)
-  )?.label || "อ่านข้อความใน ROI";
+const extractionMethodLabel = (value?: string) => {
+  const method = normalizeExtractionMethod(value);
+  if (method === "paddle_thai_ocr") return null;
+  return extractionMethodOptions.find((option) => option.value === method)?.label || "อ่านข้อความใน ROI";
+};
 
 const creationTypeLabel = (value: "new_template" | "new_version") =>
   value === "new_version" ? "สร้าง Template ฉบับใหม่" : "สร้าง Template ใหม่";
@@ -1139,9 +1140,11 @@ export default function AdminRequestDetailPage({
                       </span>
                     </div>
 
-                    <div className="mt-2 inline-flex rounded bg-indigo-50 px-2 py-0.5 text-[10px] font-black text-indigo-700">
-                      {extractionMethodLabel(field.extractionMethod)}
-                    </div>
+                    {extractionMethodLabel(field.extractionMethod) && (
+                      <div className="mt-2 inline-flex rounded bg-indigo-50 px-2 py-0.5 text-[10px] font-black text-indigo-700">
+                        {extractionMethodLabel(field.extractionMethod)}
+                      </div>
+                    )}
 
                     <div className="mt-3 grid grid-cols-4 gap-2 border-t border-slate-200 pt-2 text-[10px] font-bold text-slate-500">
                       <span>x: {field.roi.xRatio.toFixed(3)}</span>
