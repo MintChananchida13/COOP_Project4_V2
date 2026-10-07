@@ -101,6 +101,11 @@ export function AppHeader({
 }
 
 export function StatusBadge({ status, tone, label }: { status: string; tone?: Tone; label?: string }) {
+  const statusLabels: Record<string, string> = {
+    active: "ใช้งานอยู่",
+    converted: "เผยแพร่แล้ว",
+    draft: "ฉบับร่าง",
+  };
   const resolvedTone =
     tone ||
     (status === "active" || status === "approved" || status === "converted" || status === "completed"
@@ -112,7 +117,7 @@ export function StatusBadge({ status, tone, label }: { status: string; tone?: To
           : "neutral");
   return (
     <span className={`ui-caption inline-flex items-center rounded-full px-2.5 py-1 font-semibold ${toneClasses[resolvedTone].badge}`}>
-      {label || status.replaceAll("_", " ")}
+      {label || statusLabels[status] || status.replaceAll("_", " ")}
     </span>
   );
 }

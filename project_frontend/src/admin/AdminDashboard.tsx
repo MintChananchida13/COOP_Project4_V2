@@ -83,8 +83,8 @@ export default function AdminDashboard() {
 
   const stats = [
     ["คำขอที่รอดำเนินการ", dashboard.pendingRequests, FileClock, "bg-amber-50 text-amber-700"],
-    ["แม่แบบที่เผยแพร่แล้ว", dashboard.activeTemplates, BadgeCheck, "bg-emerald-50 text-emerald-700"],
-    ["รุ่นแบบร่าง", dashboard.draftTemplates, FilePenLine, "bg-sky-50 text-sky-700"],
+    ["Template ที่เผยแพร่แล้ว", dashboard.activeTemplates, BadgeCheck, "bg-emerald-50 text-emerald-700"],
+    ["Template ฉบับร่าง", dashboard.draftTemplates, FilePenLine, "bg-sky-50 text-sky-700"],
     ["คำขอที่ถูกปฏิเสธ", dashboard.rejectedRequests, CircleX, "bg-red-50 text-red-700"],
   ] as const;
 
@@ -96,7 +96,7 @@ export default function AdminDashboard() {
       <section className="space-y-4">
         <div className="border-b border-slate-200 pb-4">
           <div>
-            <h1 className="text-xl font-black tracking-tight text-slate-950">แดชบอร์ดผู้ดูแลระบบ</h1>
+            <h1 className="text-xl font-black tracking-tight text-slate-950">Admin Dashboard</h1>
             <p className="mt-1 text-sm font-semibold text-slate-700">กำลังโหลดข้อมูลล่าสุดจากฐานข้อมูล</p>
           </div>
         </div>
@@ -111,7 +111,7 @@ export default function AdminDashboard() {
     <section className="space-y-4">
       <div className="border-b border-slate-200 pb-4">
         <div>
-          <h1 className="text-xl font-black tracking-tight text-slate-950">แดชบอร์ดผู้ดูแลระบบ</h1>
+          <h1 className="text-xl font-black tracking-tight text-slate-950">Admin Dashboard</h1>
           <p className="mt-1 text-sm font-semibold text-slate-700">ภาพรวมคำขอและแม่แบบล่าสุดของระบบโอซีอาร์</p>
         </div>
       </div>
@@ -141,7 +141,6 @@ export default function AdminDashboard() {
       <div className="grid gap-4 xl:grid-cols-2">
         <DashboardList
           title="คำขอสร้าง Template ที่อัปเดตล่าสุด"
-          subtitle="คำขอสร้าง Template ที่อัปเดตล่าสุด"
           href="/admin/requests"
           items={recentRequests.map((request) => ({
             id: request.id,
@@ -155,7 +154,6 @@ export default function AdminDashboard() {
 
         <DashboardList
           title="Template ที่อัปเดตล่าสุด"
-          subtitle="Template ที่อัปเดตล่าสุด"
           href="/admin/templates"
           items={recentTemplates.map((template) => ({
             id: template.id,
@@ -180,7 +178,6 @@ function RecentProcessingLogs({ logs }: { logs: ProcessingLog[] }) {
       <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <h2 className="text-sm font-black tracking-tight text-slate-950">ประวัติการประมวลผลล่าสุด</h2>
-          <p className="text-xs font-semibold text-slate-700">ประวัติการประมวลผลเอกสารล่าสุด</p>
         </div>
         <Link href="/admin/logs" className="inline-flex shrink-0 items-center gap-1 text-xs font-black text-slate-700 hover:text-slate-950">
           ดูประวัติทั้งหมด
@@ -208,7 +205,7 @@ function RecentProcessingLogs({ logs }: { logs: ProcessingLog[] }) {
                 <td className="px-3 py-3 font-black text-slate-900">{log.documentName}</td>
                 <td className="px-3 py-3 font-semibold text-slate-700">{log.templateDetection.selectedTemplate || "-"}</td>
                 <td className="px-3 py-3">
-                  <LogBadge label={log.templateDetection.matched ? "พบแม่แบบ" : "ไม่พบแม่แบบ"} tone={log.templateDetection.matched ? "success" : "warning"} />
+                  <LogBadge label={log.templateDetection.matched ? "พบ Template" : "ไม่พบ Template"} tone={log.templateDetection.matched ? "success" : "warning"} />
                 </td>
                 <td className="py-3 pl-3">
                   <LogBadge label={log.status === "completed" ? "สำเร็จ" : "ล้มเหลว"} tone={log.status === "completed" ? "success" : "danger"} />
@@ -224,13 +221,11 @@ function RecentProcessingLogs({ logs }: { logs: ProcessingLog[] }) {
 
 function DashboardList({
   title,
-  subtitle,
   href,
   items,
   emptyText,
 }: {
   title: string;
-  subtitle: string;
   href: string;
   items: {
     id: string;
@@ -247,7 +242,6 @@ function DashboardList({
       <div className="mb-3 flex items-center justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-sm font-black tracking-tight text-slate-950">{title}</h2>
-          <p className="text-xs font-semibold text-slate-700">{subtitle}</p>
         </div>
         <Link href={href} className="inline-flex shrink-0 items-center gap-1 text-xs font-black text-slate-700 hover:text-slate-950">
           ดูทั้งหมด
