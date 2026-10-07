@@ -489,6 +489,8 @@ export default function WorkspaceTemplateEditorV2({
         .join("|"),
     [verificationAnchors]
   );
+  const extractionTestSignatureRef = useRef(extractionTestSignature);
+  const verificationTestSignatureRef = useRef(verificationTestSignature);
   const extractionTestPassed =
     testResultKind === "extraction" &&
     Boolean(testResult?.testedCount) &&
@@ -505,6 +507,7 @@ export default function WorkspaceTemplateEditorV2({
   }, [selectedAnchor?.id, selectedAnchor?.fieldName]);
 
   useEffect(() => {
+    extractionTestSignatureRef.current = extractionTestSignature;
     if (testResultKind === "extraction") {
       setTestResult(null);
       setTestResultKind(null);
@@ -514,6 +517,7 @@ export default function WorkspaceTemplateEditorV2({
   }, [extractionTestSignature]);
 
   useEffect(() => {
+    verificationTestSignatureRef.current = verificationTestSignature;
     if (testResultKind === "verification") {
       setTestResult(null);
       setTestResultKind(null);
@@ -907,19 +911,20 @@ export default function WorkspaceTemplateEditorV2({
       setTestError(verificationBlockedMessage || "Verification anchors are not ready.");
       return;
     }
+    const startedSignature = kind === "extraction" ? extractionTestSignature : verificationTestSignature;
     setTestAction(kind);
     setTestError("");
     setTestStatus(kind === "extraction" ? "Testing extraction fields..." : "Testing verification anchors...");
     setTestResult(null);
     try {
       let latestFieldsForTest = fields;
-      if (onBeforeRunTest) {
+      if (kind === "verification" && onBeforeRunTest) {
         setTestStatus("Saving latest ROI and field settings...");
         const flushedFields = await onBeforeRunTest();
         if (Array.isArray(flushedFields)) {
           latestFieldsForTest = flushedFields;
         }
-        setTestStatus(kind === "extraction" ? "Testing extraction fields..." : "Testing verification anchors...");
+        setTestStatus("Testing verification anchors...");
       }
       const latestExtractionFields = latestFieldsForTest.filter((field) => !isAnchor(field));
       const latestVerificationAnchors = latestFieldsForTest.filter(isAnchor);
@@ -927,6 +932,17 @@ export default function WorkspaceTemplateEditorV2({
         kind === "extraction"
           ? await testTemplateExtractionFields(templateId, latestExtractionFields, pages)
           : await testTemplateVerificationAnchors(templateId, latestVerificationAnchors, pages);
+      const currentSignature = kind === "extraction" ? extractionTestSignatureRef.current : verificationTestSignatureRef.current;
+      if (currentSignature !== startedSignature) {
+        setTestResult(null);
+        setTestResultKind(null);
+        setTestStatus("");
+        setTestError(kind === "extraction"
+          ? "ROI มีการเปลี่ยนระหว่าง Test Extraction ระบบยกเลิกผลรอบนี้แล้ว กรุณากด Test Extraction อีกครั้ง"
+          : "Verification ROI มีการเปลี่ยนระหว่าง Test Verification ระบบยกเลิกผลรอบนี้แล้ว กรุณากด Test Verification อีกครั้ง"
+        );
+        return;
+      }
       setTestResult(result);
       setTestResultKind(kind);
       setTestStatus(`${kind === "extraction" ? "Extraction" : "Verification"} test complete: ${result.passedCount}/${result.testedCount} passed.`);
