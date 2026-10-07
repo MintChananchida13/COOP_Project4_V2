@@ -307,7 +307,18 @@ const layoutRegionToDetectedField = (
 };
 
 const fieldToRoi = (field: TemplateField, metrics: WorkspaceImageMetrics): AdminRoi => {
-  const box = ratioToImageBox(field.roi, metrics);
+  const pageNumber = Number.isFinite(Number(field.roi.pageNumber)) && Number(field.roi.pageNumber) > 0
+    ? Number(field.roi.pageNumber)
+    : Number(field.pageNumber) || 1;
+  const safeRoi = {
+    ...field.roi,
+    pageNumber,
+    xRatio: Number.isFinite(Number(field.roi.xRatio)) ? field.roi.xRatio : 0,
+    yRatio: Number.isFinite(Number(field.roi.yRatio)) ? field.roi.yRatio : 0,
+    widthRatio: Number.isFinite(Number(field.roi.widthRatio)) ? field.roi.widthRatio : 0,
+    heightRatio: Number.isFinite(Number(field.roi.heightRatio)) ? field.roi.heightRatio : 0,
+  };
+  const box = ratioToImageBox(safeRoi, metrics);
   const anchor = isAnchor(field);
   return {
     id: stableNumericId(`${anchor ? "anchor" : "field"}:${field.id}`),
@@ -318,7 +329,7 @@ const fieldToRoi = (field: TemplateField, metrics: WorkspaceImageMetrics): Admin
     y: box.y,
     width: box.width,
     height: box.height,
-    pageIndex: field.pageNumber - 1,
+    pageIndex: pageNumber - 1,
     type: fieldToRoiType(field),
     points: field.roi.points && field.roi.points.length > 2
       ? field.roi.points.map((point) => ({
