@@ -4918,17 +4918,6 @@ class TemplateRequestService:
                         roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_points_json, user_note, created_at
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                    ON CONFLICT (template_request_page_id, field_name)
-                    DO UPDATE SET
-                        display_label = EXCLUDED.display_label,
-                        data_type = EXCLUDED.data_type,
-                        extraction_method = EXCLUDED.extraction_method,
-                        roi_x_ratio = EXCLUDED.roi_x_ratio,
-                        roi_y_ratio = EXCLUDED.roi_y_ratio,
-                        roi_width_ratio = EXCLUDED.roi_width_ratio,
-                        roi_height_ratio = EXCLUDED.roi_height_ratio,
-                        roi_points_json = EXCLUDED.roi_points_json,
-                        user_note = EXCLUDED.user_note
                     """,
                     (
                         _stub_id("req_field"),
@@ -5218,17 +5207,6 @@ class TemplateRequestService:
                     roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_points_json, user_note, created_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT (template_request_page_id, field_name)
-                DO UPDATE SET
-                    display_label = EXCLUDED.display_label,
-                    data_type = EXCLUDED.data_type,
-                    extraction_method = EXCLUDED.extraction_method,
-                    roi_x_ratio = EXCLUDED.roi_x_ratio,
-                    roi_y_ratio = EXCLUDED.roi_y_ratio,
-                    roi_width_ratio = EXCLUDED.roi_width_ratio,
-                    roi_height_ratio = EXCLUDED.roi_height_ratio,
-                    roi_points_json = EXCLUDED.roi_points_json,
-                    user_note = EXCLUDED.user_note
                 RETURNING id
                 """,
                 (
@@ -5480,31 +5458,15 @@ class AdminTemplateService:
     @staticmethod
     def _coalesce_pending_template_field_ops(ops: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         coalesced: List[Dict[str, Any]] = []
-        create_indexes: Dict[tuple[str, str, bool], int] = {}
         for op in ops:
             if not isinstance(op, dict):
                 continue
             if str(op.get("action") or "") != "create_field":
                 coalesced.append(op)
                 continue
-            payload = op.get("payload") if isinstance(op.get("payload"), dict) else {}
-            page_id = str(payload.get("template_page_id") or "").strip()
-            field_name = str(payload.get("field_name") or "").strip()
-            use_for_verification = bool(payload.get("use_for_verification"))
-            if not page_id or not field_name:
-                coalesced.append(op)
-                continue
-            key = (page_id, field_name, use_for_verification)
             next_op = dict(op)
             next_op.setdefault("field_id", _stub_id("tpl_field"))
-            if key in create_indexes:
-                existing_index = create_indexes[key]
-                previous_id = coalesced[existing_index].get("field_id")
-                next_op["field_id"] = previous_id or next_op["field_id"]
-                coalesced[existing_index] = next_op
-            else:
-                create_indexes[key] = len(coalesced)
-                coalesced.append(next_op)
+            coalesced.append(next_op)
         return coalesced
 
     def _apply_pending_template_page_ops(self, conn: Any, ops_by_template: Dict[str, List[Dict[str, Any]]]) -> None:
@@ -5573,11 +5535,6 @@ class AdminTemplateService:
                     if existing_by_id is not None:
                         self._update_extraction_field_from_pending_payload(conn, template_id, existing_by_id["id"], payload)
                         continue
-                    if not payload.use_for_verification:
-                        existing = self._pending_extraction_field_by_page_name(conn, template_id, payload)
-                        if existing is not None:
-                            self._update_extraction_field_from_pending_payload(conn, template_id, existing["id"], payload)
-                            continue
                 else:
                     continue
                 if payload.use_for_verification:
@@ -5612,16 +5569,6 @@ class AdminTemplateService:
                         ),
                     )
                 else:
-                    if action == "update_field":
-                        existing = self._pending_extraction_field_by_page_name(
-                            conn,
-                            template_id,
-                            payload,
-                            excluding_field_id=next_field_id,
-                        )
-                        if existing is not None:
-                            self._update_extraction_field_from_pending_payload(conn, template_id, existing["id"], payload)
-                            continue
                     conn.execute(
                         "INSERT INTO extraction_fields (id, template_page_id, field_name, display_label, data_type, extraction_method, roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_points_json, roi_mode, expected_content, required, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
                         (
@@ -6607,21 +6554,6 @@ class AdminTemplateService:
                     ),
                 )
             else:
-                duplicate_row = conn.execute(
-                    "SELECT id FROM extraction_fields WHERE template_page_id = ? AND field_name = ?",
-                    (payload.template_page_id, payload.field_name),
-                ).fetchone()
-                if duplicate_row is not None:
-                    raise HTTPException(
-                        status_code=409,
-                        detail={
-                            "code": "duplicate_template_field",
-                            "message": "Template field name already exists on this page.",
-                            "template_page_id": payload.template_page_id,
-                            "field_name": payload.field_name,
-                            "existing_field_id": duplicate_row["id"],
-                        },
-                    )
                 conn.execute("INSERT INTO extraction_fields (id, template_page_id, field_name, display_label, data_type, extraction_method, roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_points_json, roi_mode, expected_content, required, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (field_id, payload.template_page_id, payload.field_name, payload.display_label, _normalize_data_type(payload.data_type), _normalize_extraction_method(payload.extraction_method), payload.roi.x_ratio, payload.roi.y_ratio, payload.roi.width_ratio, payload.roi.height_ratio, _roi_points_json_from_payload(payload.roi), _normalize_roi_mode(payload.roi_mode), _normalize_expected_content(payload.expected_content), payload.sort_order))
             conn.commit()
         _refresh_published_template_cache(template_id)

@@ -13,7 +13,6 @@ import {
   deleteTemplateFieldApi,
   deleteTemplatePageApi,
   fetchTemplateBundle,
-  TemplateMutationError,
   updateIgnoreRegionApi,
   updateTemplateApi,
   updateTemplateFieldApi,
@@ -207,35 +206,6 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
     });
   };
 
-  const nextUniqueFieldName = (
-    templatePageId: string,
-    fieldsToCheck: TemplateField[],
-    reservedNames: Set<string> = new Set()
-  ) => {
-    const usedNames = new Set(
-      fieldsToCheck
-        .filter((field) => field.templatePageId === templatePageId && !field.useForVerification && !cancelledLocalFieldIdsRef.current.has(field.id))
-        .map((field) => field.fieldName)
-    );
-    reservedNames.forEach((name) => usedNames.add(name));
-    let index = 1;
-    while (usedNames.has(`field_${index}`)) index += 1;
-    const fieldName = `field_${index}`;
-    reservedNames.add(fieldName);
-    return fieldName;
-  };
-
-  const isDuplicateFieldNameError = (error: unknown) => {
-    if (!(error instanceof TemplateMutationError) || error.status !== 409) return false;
-    const detail = error.detail;
-    return Boolean(
-      detail &&
-        typeof detail === "object" &&
-        "code" in detail &&
-        (detail as { code?: unknown }).code === "duplicate_template_field"
-    );
-  };
-
   useEffect(() => {
     selectedTemplateFieldsRef.current = selectedTemplateFields;
   }, [selectedTemplateFields]);
@@ -282,26 +252,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
       const localPatch = pendingLocalFieldPatchesRef.current.get(localField.id) || {};
       let fieldToCreate = { ...localField, ...localPatch };
       let persistedIdsBeforeCreate = new Set(currentFields.filter((field) => !field.id.startsWith("local_field_")).map((field) => field.id));
-      try {
-        latestBundle = await createTemplateFieldApi(templateId, fieldToCreate);
-      } catch (error) {
-        if (!isDuplicateFieldNameError(error) || fieldToCreate.useForVerification) throw error;
-        const refreshedBundle = await fetchTemplateBundle(templateId);
-        const nextFieldName = nextUniqueFieldName(
-          fieldToCreate.templatePageId,
-          [...refreshedBundle.fields, ...currentFields.filter((field) => field.id !== localField.id)]
-        );
-        currentFields = currentFields.map((field) => (field.id === localField.id ? {
-          ...fieldToCreate,
-          fieldName: nextFieldName,
-          displayLabel: fieldToCreate.displayLabel === fieldToCreate.fieldName ? nextFieldName : fieldToCreate.displayLabel,
-        } : field));
-        selectedTemplateFieldsRef.current = currentFields;
-        fieldToCreate = currentFields.find((field) => field.id === localField.id) || fieldToCreate;
-        pendingLocalFieldPatchesRef.current.set(localField.id, fieldToCreate);
-        persistedIdsBeforeCreate = new Set(refreshedBundle.fields.filter((field) => !field.id.startsWith("local_field_")).map((field) => field.id));
-        latestBundle = await createTemplateFieldApi(templateId, fieldToCreate);
-      }
+      latestBundle = await createTemplateFieldApi(templateId, fieldToCreate);
       const savedField =
         latestBundle.fields.find(
           (field) =>
@@ -620,7 +571,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
     const optimisticId = defaults?.id || `local_field_${Date.now()}_${localFieldSequenceRef.current}`;
     const fieldName = defaults?.useForVerification
       ? defaults?.fieldName || `verification_${selectedTemplateFields.filter((field) => field.useForVerification).length + 1}`
-      : nextUniqueFieldName(currentTemplatePage.id, selectedTemplateFieldsRef.current);
+      : defaults?.fieldName || `field_${nextIndex}`;
     const optimisticField: TemplateField = {
       id: optimisticId,
       templateId,
@@ -778,11 +729,10 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
     const fieldsToDelete = previousFields.filter((field) => field.pageNumber === pageNumber && !field.useForVerification);
     const remainingFields = previousFields.filter((field) => !(field.pageNumber === pageNumber && !field.useForVerification));
 
-    const reservedNames = new Set<string>();
     const optimisticFields = detectedFields.map(({ roi, defaults }, index) => {
       localFieldSequenceRef.current += 1;
       const fieldNumber = index + 1;
-      const fieldName = nextUniqueFieldName(targetPage.id, selectedTemplateFieldsRef.current, reservedNames);
+      const fieldName = defaults.fieldName || `field_${fieldNumber}`;
       return {
         id: `local_field_${Date.now()}_${localFieldSequenceRef.current}`,
         templateId,
@@ -823,17 +773,14 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
     const previousFields = selectedTemplateFields;
     const fieldsToDelete = previousFields.filter((field) => pageNumbers.has(field.pageNumber) && !field.useForVerification);
     const remainingFields = previousFields.filter((field) => !(pageNumbers.has(field.pageNumber) && !field.useForVerification));
-    const reservedNamesByPage = new Map<string, Set<string>>();
     const optimisticFields = items.flatMap(({ pageNumber, fields: detectedFields }) => {
       const targetPage = templatePageByNumber.get(pageNumber);
       if (!targetPage) return [];
-      const reservedNames = reservedNamesByPage.get(targetPage.id) || new Set<string>();
-      reservedNamesByPage.set(targetPage.id, reservedNames);
 
       return detectedFields.map(({ roi, defaults }, index) => {
         localFieldSequenceRef.current += 1;
         const fieldNumber = index + 1;
-        const fieldName = nextUniqueFieldName(targetPage.id, selectedTemplateFieldsRef.current, reservedNames);
+        const fieldName = defaults.fieldName || `field_${pageNumber}_${fieldNumber}`;
         return {
           id: `local_field_${Date.now()}_${localFieldSequenceRef.current}`,
           templateId,
