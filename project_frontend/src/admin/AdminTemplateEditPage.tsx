@@ -13,6 +13,7 @@ import {
   deleteTemplateFieldApi,
   deleteTemplatePageApi,
   fetchTemplateBundle,
+  TemplateMutationError,
   updateIgnoreRegionApi,
   updateTemplateApi,
   updateTemplateFieldApi,
@@ -206,16 +207,6 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
     });
   };
 
-  const findMatchingPersistedField = (localField: TemplateField, fieldsToSearch: TemplateField[]) =>
-    fieldsToSearch.find(
-      (field) =>
-        !field.id.startsWith("local_field_") &&
-        field.templatePageId === localField.templatePageId &&
-        field.pageNumber === localField.pageNumber &&
-        field.fieldName === localField.fieldName &&
-        field.useForVerification === localField.useForVerification
-    );
-
   const nextUniqueFieldName = (
     templatePageId: string,
     fieldsToCheck: TemplateField[],
@@ -232,6 +223,17 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
     const fieldName = `field_${index}`;
     reservedNames.add(fieldName);
     return fieldName;
+  };
+
+  const isDuplicateFieldNameError = (error: unknown) => {
+    if (!(error instanceof TemplateMutationError) || error.status !== 409) return false;
+    const detail = error.detail;
+    return Boolean(
+      detail &&
+        typeof detail === "object" &&
+        "code" in detail &&
+        (detail as { code?: unknown }).code === "duplicate_template_field"
+    );
   };
 
   useEffect(() => {
@@ -278,17 +280,36 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
     );
     for (const localField of localFields) {
       const localPatch = pendingLocalFieldPatchesRef.current.get(localField.id) || {};
-      const fieldToCreate = { ...localField, ...localPatch };
-      const existingField = findMatchingPersistedField(
-        fieldToCreate,
-        currentFields.filter((field) => field.id !== localField.id)
-      );
-      latestBundle = existingField
-        ? await updateTemplateFieldApi(templateId, existingField.id, fieldToCreate)
-        : await createTemplateFieldApi(templateId, fieldToCreate);
+      let fieldToCreate = { ...localField, ...localPatch };
+      let persistedIdsBeforeCreate = new Set(currentFields.filter((field) => !field.id.startsWith("local_field_")).map((field) => field.id));
+      try {
+        latestBundle = await createTemplateFieldApi(templateId, fieldToCreate);
+      } catch (error) {
+        if (!isDuplicateFieldNameError(error) || fieldToCreate.useForVerification) throw error;
+        const refreshedBundle = await fetchTemplateBundle(templateId);
+        const nextFieldName = nextUniqueFieldName(
+          fieldToCreate.templatePageId,
+          [...refreshedBundle.fields, ...currentFields.filter((field) => field.id !== localField.id)]
+        );
+        currentFields = currentFields.map((field) => (field.id === localField.id ? {
+          ...fieldToCreate,
+          fieldName: nextFieldName,
+          displayLabel: fieldToCreate.displayLabel === fieldToCreate.fieldName ? nextFieldName : fieldToCreate.displayLabel,
+        } : field));
+        selectedTemplateFieldsRef.current = currentFields;
+        fieldToCreate = currentFields.find((field) => field.id === localField.id) || fieldToCreate;
+        pendingLocalFieldPatchesRef.current.set(localField.id, fieldToCreate);
+        persistedIdsBeforeCreate = new Set(refreshedBundle.fields.filter((field) => !field.id.startsWith("local_field_")).map((field) => field.id));
+        latestBundle = await createTemplateFieldApi(templateId, fieldToCreate);
+      }
       const savedField =
-        latestBundle.fields.find((field) => field.id === localField.id) ||
-        (existingField ? latestBundle.fields.find((field) => field.id === existingField.id) : undefined) ||
+        latestBundle.fields.find(
+          (field) =>
+            !persistedIdsBeforeCreate.has(field.id) &&
+            field.templatePageId === fieldToCreate.templatePageId &&
+            field.pageNumber === fieldToCreate.pageNumber &&
+            field.useForVerification === fieldToCreate.useForVerification
+        ) ||
         latestBundle.fields.find(
           (field) =>
             field.templatePageId === fieldToCreate.templatePageId &&

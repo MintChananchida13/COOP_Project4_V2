@@ -18,6 +18,24 @@ const fetchWithAuth = (input: RequestInfo | URL, init: RequestInit = {}) => {
 
 const sleep = (milliseconds: number) => new Promise((resolve) => globalThis.setTimeout(resolve, milliseconds));
 
+export class TemplateMutationError extends Error {
+  status: number;
+  detail: unknown;
+
+  constructor(status: number, detail: unknown) {
+    const message =
+      typeof detail === "string"
+        ? detail
+        : detail && typeof detail === "object" && "message" in detail
+          ? String((detail as { message?: unknown }).message || `Template mutation failed with ${status}`)
+          : `Template mutation failed with ${status}`;
+    super(message);
+    this.name = "TemplateMutationError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
 const verificationStrategyDisplayLabel = (value: unknown) => {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "strict") return "แบบเข้มงวด (strict)";
@@ -1737,7 +1755,14 @@ const isTemplateBundle = (data: Partial<ApiTemplate> | null | undefined): data i
 
 const mapTemplateBundleResponse = async (response: Response, templateId: string) => {
   if (!response.ok) {
-    throw new Error(`Template mutation failed with ${response.status}`);
+    let detail: unknown = null;
+    try {
+      const json = await response.json();
+      detail = json?.detail || json?.error?.message || json?.error || null;
+    } catch {
+      detail = null;
+    }
+    throw new TemplateMutationError(response.status, detail);
   }
 
   const json = await response.json();
