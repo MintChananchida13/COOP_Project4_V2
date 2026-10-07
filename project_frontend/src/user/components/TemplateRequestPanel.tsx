@@ -54,6 +54,8 @@ interface TemplateRequestPageResponse {
 interface TemplateRequestCreateResponse {
   id: string;
   pages?: TemplateRequestPageResponse[];
+  requested_fields?: unknown[];
+  requestedFields?: unknown[];
 }
 
 const API_BASE_URL =
@@ -190,14 +192,17 @@ export default function TemplateRequestPanel({
   const [statusMessage, setStatusMessage] = useState("");
   const [submittedRequestId, setSubmittedRequestId] = useState("");
 
-  const enabledRois = useMemo(() => rois.filter((roi) => roi.enabled !== false), [rois]);
+  const requestRois = useMemo(
+    () => rois.filter((roi) => !(roi.roiMode === "flexible" && !roi.isResolvedBlock)),
+    [rois]
+  );
   const fieldsByPage = useMemo(() => {
-    return enabledRois.reduce<Record<number, number>>((acc, roi) => {
+    return requestRois.reduce<Record<number, number>>((acc, roi) => {
       const pageNumber = (roi.pageIndex !== undefined ? Number(roi.pageIndex) : 0) + 1;
       acc[pageNumber] = (acc[pageNumber] || 0) + 1;
       return acc;
     }, {});
-  }, [enabledRois]);
+  }, [requestRois]);
 
   const imageGroups = useMemo(() => {
     const groups = new Map<string, { sourceFileId: string; sourceFileName: string; items: Array<RequestImageItem & { index: number }> }>();
@@ -272,13 +277,13 @@ export default function TemplateRequestPanel({
   const buildRequestedFields = async () => {
     const submitImages = requestImageItems.length > 0 ? requestImageItems.map((item) => item.src) : imagesList;
     const imageSizes = await Promise.all(submitImages.map((src) => loadImageSize(src)));
-    return enabledRois.map((roi, index) => {
+    return requestRois.map((roi, index) => {
       const pageIndex = roi.pageIndex !== undefined ? Number(roi.pageIndex) : 0;
       const imageSize = imageSizes[pageIndex] || imageSizes[0] || { width: WORKSPACE_RENDERED_WIDTH, height: WORKSPACE_RENDERED_WIDTH };
       const renderedHeight = imageSize.width > 0 ? (imageSize.height / imageSize.width) * WORKSPACE_RENDERED_WIDTH : WORKSPACE_RENDERED_WIDTH;
       const resultByRoiId = ocrResults.find((result) => result.roiId === roi.id);
       const resultByPageOrder = ocrResults.filter((result) => (result.pageIndex !== undefined ? Number(result.pageIndex) : 0) === pageIndex)[
-        enabledRois.filter((item) => (item.pageIndex !== undefined ? Number(item.pageIndex) : 0) === pageIndex).findIndex((item) => item.id === roi.id)
+        requestRois.filter((item) => (item.pageIndex !== undefined ? Number(item.pageIndex) : 0) === pageIndex).findIndex((item) => item.id === roi.id)
       ];
       return toRequestedField(roi, renderedHeight, index, resultByRoiId?.fieldName || resultByPageOrder?.fieldName);
     });
@@ -334,6 +339,10 @@ export default function TemplateRequestPanel({
     const requestId = createdRequest?.id;
     if (!requestId) {
       throw new Error("Backend ไม่ได้ส่งรหัสคำขอกลับมา");
+    }
+    const savedFields = createdRequest.requested_fields || createdRequest.requestedFields || [];
+    if (requestMode === "image_with_roi" && savedFields.length !== requestedFields.length) {
+      throw new Error(`ส่ง ROI ให้คำขอ Template ไม่ครบ (${savedFields.length}/${requestedFields.length})`);
     }
 
     const submitResponse = await fetch(`${API_BASE_URL}/template-requests/${requestId}/submit`, {
@@ -413,7 +422,7 @@ export default function TemplateRequestPanel({
           <div className="flex-1 overflow-y-auto p-5 space-y-4">
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-500">
               {requestImages.length} หน้า
-              {requestMode === "image_with_roi" && `, ROI ที่ส่ง ${enabledRois.length} รายการ`}
+              {requestMode === "image_with_roi" && `, ROI ที่ส่ง ${requestRois.length} รายการ`}
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-white p-3">
