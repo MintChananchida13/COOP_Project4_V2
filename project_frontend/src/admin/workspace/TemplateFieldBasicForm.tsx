@@ -83,6 +83,7 @@ export default function TemplateFieldBasicForm({ field, onUpdate, onDelete, comp
         />
       </label>
 
+      {selectedRoiMode !== "flexible" && (
       <div className="space-y-1">
         <span className="text-[9px] font-black uppercase text-slate-400">ประเภทข้อมูล</span>
         <div className="grid grid-cols-3 gap-1">
@@ -103,6 +104,7 @@ export default function TemplateFieldBasicForm({ field, onUpdate, onDelete, comp
           ))}
         </div>
       </div>
+      )}
 
       <div className="space-y-1.5">
         <span className="text-[9px] font-black uppercase text-slate-400">รูปแบบ ROI</span>

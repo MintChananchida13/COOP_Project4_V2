@@ -442,11 +442,24 @@ export default function WorkspaceTemplateEditorV2({
   const verificationAnchors = orderedFields.filter(isAnchor);
   const currentPageExtractionFields = extractionFields.filter((field) => field.pageNumber === currentPageNumber);
   const currentPageAnchors = verificationAnchors.filter((field) => field.pageNumber === currentPageNumber);
+  const fieldDisplayOrder = useMemo(
+    () => new Map(orderedFields.map((field, index) => [field.id, index])),
+    [orderedFields]
+  );
 
   const extractionRois = useMemo(() => extractionFields.map((field) => fieldToRoi(field, imageMetrics)), [extractionFields, imageMetrics]);
   const anchorRois = useMemo(() => verificationAnchors.map((field) => fieldToRoi(field, imageMetrics)), [verificationAnchors, imageMetrics]);
   const ignoreRois = useMemo(() => ignoreRegions.map((region) => ignoreToRoi(region, imageMetrics)), [ignoreRegions, imageMetrics]);
   const activeRois = step === "verification_anchors" ? anchorRois : mode === "ignore_regions" ? ignoreRois : extractionRois;
+  const sortRoisByFieldOrder = (items: (ROI & { pageIndex?: number })[]) =>
+    [...items].sort((left, right) => {
+      const leftRoi = left as AdminRoi;
+      const rightRoi = right as AdminRoi;
+      const leftOrder = leftRoi.sourceId ? fieldDisplayOrder.get(leftRoi.sourceId) : undefined;
+      const rightOrder = rightRoi.sourceId ? fieldDisplayOrder.get(rightRoi.sourceId) : undefined;
+      if (leftOrder !== undefined || rightOrder !== undefined) return (leftOrder ?? Number.MAX_SAFE_INTEGER) - (rightOrder ?? Number.MAX_SAFE_INTEGER);
+      return (left.pageIndex ?? 0) - (right.pageIndex ?? 0) || left.y - right.y || left.x - right.x;
+    });
 
   const selectedRoi = [...extractionRois, ...anchorRois, ...ignoreRois].find((roi) => roi.id === selectedId);
   const selectedField = selectedRoi?.workspaceKind === "extraction_fields" || selectedRoi?.workspaceKind === "verification_anchors"
@@ -1241,11 +1254,21 @@ export default function WorkspaceTemplateEditorV2({
     </div>
   );
 
+  const sortTestItemsByFieldOrder = (items: TemplateStepTestResult["fields"] | TemplateStepTestResult["anchors"]) =>
+    [...(items || [])].sort((left, right) => {
+      const leftId = left.fieldId || left.anchorId || "";
+      const rightId = right.fieldId || right.anchorId || "";
+      const leftOrder = fieldDisplayOrder.get(leftId);
+      const rightOrder = fieldDisplayOrder.get(rightId);
+      if (leftOrder !== undefined || rightOrder !== undefined) return (leftOrder ?? Number.MAX_SAFE_INTEGER) - (rightOrder ?? Number.MAX_SAFE_INTEGER);
+      return (left.pageNumber ?? 0) - (right.pageNumber ?? 0);
+    });
+
   const renderTestResults = (items: TemplateStepTestResult["fields"] | TemplateStepTestResult["anchors"]) => (
     <div className="mt-4 space-y-3">
       {items && items.length > 0 && (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {items.map((item, index) => (
+          {sortTestItemsByFieldOrder(items).map((item, index) => (
             <div
               key={`${item.fieldId || item.anchorId || index}-test-result`}
               className={`rounded-xl border border-slate-100 bg-slate-50 p-3 text-xs ${isTableTestItem(item) || item.roiMode === "flexible" ? "md:col-span-2 xl:col-span-3" : ""}`}
@@ -1427,7 +1450,9 @@ export default function WorkspaceTemplateEditorV2({
             ? `${name} · Flexible Search Area`
             : name;
         }}
-        rightPanelRenderer={({ currentPageRois: panelRois }) => (
+        rightPanelRenderer={({ currentPageRois: panelRois }) => {
+          const orderedPanelRois = sortRoisByFieldOrder(panelRois);
+          return (
           <div className="flex h-full min-h-0 flex-col">
             <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
             {step === "extraction_fields" ? (
@@ -1445,7 +1470,7 @@ export default function WorkspaceTemplateEditorV2({
                 <section className="flex min-h-0 flex-1 flex-col space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
                   <div className="flex items-center justify-between gap-2">
                     <h3 className="text-xs font-black uppercase tracking-wider text-slate-700">ROI ทุกหน้า</h3>
-                    <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black text-slate-500">{panelRois.length}</span>
+                    <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black text-slate-500">{orderedPanelRois.length}</span>
                   </div>
                   {mode === "extraction_fields" && (
                     <div className="space-y-2 rounded-lg border border-indigo-100 bg-white p-2.5">
@@ -1474,11 +1499,12 @@ export default function WorkspaceTemplateEditorV2({
                     </div>
                   )}
                   <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
-                    {panelRois.length === 0 ? (
+                    {orderedPanelRois.length === 0 ? (
                       <p className="text-xs font-semibold text-slate-400">No ROI on this page.</p>
-                    ) : panelRois.map((roi, index) => {
+                    ) : orderedPanelRois.map((roi, index) => {
                       const sourceField = currentPageExtractionFields.find((field) => field.id === (roi as AdminRoi).sourceId);
                       const isSelected = selectedId === roi.id;
+                      const isFlexibleField = sourceField?.roiMode === "flexible";
                       return (
                         <div
                           key={roi.id}
@@ -1508,7 +1534,7 @@ export default function WorkspaceTemplateEditorV2({
                               {sourceField?.displayLabel || sourceField?.fieldName || roi.fieldName}
                             </button>
                             <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] font-black uppercase text-slate-500">
-                              {sourceField?.dataType || roi.type || "text"}
+                              {isFlexibleField ? "flex" : sourceField?.dataType || roi.type || "text"}
                             </span>
                           </div>
                           {isSelected && sourceField && (
@@ -1613,7 +1639,8 @@ export default function WorkspaceTemplateEditorV2({
             )}
             </div>
           </div>
-        )}
+          );
+        }}
       />
 
       <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
