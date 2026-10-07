@@ -6607,6 +6607,21 @@ class AdminTemplateService:
                     ),
                 )
             else:
+                duplicate_row = conn.execute(
+                    "SELECT id FROM extraction_fields WHERE template_page_id = ? AND field_name = ?",
+                    (payload.template_page_id, payload.field_name),
+                ).fetchone()
+                if duplicate_row is not None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "duplicate_template_field",
+                            "message": "Template field name already exists on this page.",
+                            "template_page_id": payload.template_page_id,
+                            "field_name": payload.field_name,
+                            "existing_field_id": duplicate_row["id"],
+                        },
+                    )
                 conn.execute("INSERT INTO extraction_fields (id, template_page_id, field_name, display_label, data_type, extraction_method, roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_points_json, roi_mode, expected_content, required, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (field_id, payload.template_page_id, payload.field_name, payload.display_label, _normalize_data_type(payload.data_type), _normalize_extraction_method(payload.extraction_method), payload.roi.x_ratio, payload.roi.y_ratio, payload.roi.width_ratio, payload.roi.height_ratio, _roi_points_json_from_payload(payload.roi), _normalize_roi_mode(payload.roi_mode), _normalize_expected_content(payload.expected_content), payload.sort_order))
             conn.commit()
         _refresh_published_template_cache(template_id)

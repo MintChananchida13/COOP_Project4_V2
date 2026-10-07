@@ -105,6 +105,9 @@ export function StatusBadge({ status, tone, label }: { status: string; tone?: To
     active: "ใช้งานอยู่",
     converted: "เผยแพร่แล้ว",
     draft: "ฉบับร่าง",
+    submitted: "รอดำเนินการ",
+    rejected: "ถูกปฏิเสธ",
+    published: "เผยแพร่แล้ว",
   };
   const resolvedTone =
     tone ||
