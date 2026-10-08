@@ -29,6 +29,7 @@ from app.business.services import (
     DecisionService,
     GlobalSettingsService,
     VerificationService,
+    VERIFICATION_STRATEGY_STANDARD,
     VERIFICATION_STRATEGY_STRICT,
     normalize_verification_strategy,
 )

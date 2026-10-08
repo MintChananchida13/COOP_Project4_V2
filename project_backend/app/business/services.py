@@ -6133,7 +6133,7 @@ class AdminTemplateService:
                 cleanup_generated=False,
                 prepublish_timing=True,
                 prepublish_total_started=total_started,
-                verification_strategy_override=VERIFICATION_STRATEGY_STANDARD,
+                verification_strategy_override=VERIFICATION_STRATEGY_STRICT,
                 retrieval_limit_override=5,
                 verification_candidate_limit_override=5,
                 full_evaluation_limit_override=5,
