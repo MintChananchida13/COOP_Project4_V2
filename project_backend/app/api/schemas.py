@@ -22,11 +22,11 @@ class AuthLoginRequest(BaseModel):
 
 
 class RoiRatio(BaseModel):
-    page_number: int = Field(..., ge=1)
-    x_ratio: float = Field(..., ge=0, le=1)
-    y_ratio: float = Field(..., ge=0, le=1)
-    width_ratio: float = Field(..., gt=0, le=1)
-    height_ratio: float = Field(..., gt=0, le=1)
+    page_number: int = Field(..., ge=1, validation_alias=AliasChoices("page_number", "pageNumber"))
+    x_ratio: float = Field(..., ge=0, le=1, validation_alias=AliasChoices("x_ratio", "xRatio"))
+    y_ratio: float = Field(..., ge=0, le=1, validation_alias=AliasChoices("y_ratio", "yRatio"))
+    width_ratio: float = Field(..., gt=0, le=1, validation_alias=AliasChoices("width_ratio", "widthRatio"))
+    height_ratio: float = Field(..., gt=0, le=1, validation_alias=AliasChoices("height_ratio", "heightRatio"))
     points: Optional[List[Dict[str, float]]] = None
 
 

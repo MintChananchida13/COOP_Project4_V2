@@ -1588,6 +1588,35 @@ def _roi_api_from_row(item: Dict[str, Any]) -> Dict[str, Any]:
     return roi
 
 
+def _roi_payload_dict(value: Any) -> Dict[str, Any]:
+    if hasattr(value, "model_dump"):
+        raw = value.model_dump(mode="json")
+    elif isinstance(value, dict):
+        raw = value
+    else:
+        raw = {}
+    return {
+        "page_number": raw.get("page_number", raw.get("pageNumber", 1)),
+        "x_ratio": raw.get("x_ratio", raw.get("xRatio", 0.0)),
+        "y_ratio": raw.get("y_ratio", raw.get("yRatio", 0.0)),
+        "width_ratio": raw.get("width_ratio", raw.get("widthRatio", 0.0)),
+        "height_ratio": raw.get("height_ratio", raw.get("heightRatio", 0.0)),
+        "points": raw.get("points"),
+    }
+
+
+def _template_field_payload_dict(value: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(value or {})
+    payload["roi"] = _roi_payload_dict(payload.get("roi"))
+    return payload
+
+
+def _ignore_region_payload_dict(value: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(value or {})
+    payload["roi"] = _roi_payload_dict(payload.get("roi"))
+    return payload
+
+
 def _roi_points_json_from_payload(roi: Any) -> Optional[str]:
     points = _normalize_roi_points(getattr(roi, "points", None))
     return jsonb_dump(points) if points else None
@@ -5521,7 +5550,7 @@ class AdminTemplateService:
                 payload_raw = op.get("payload")
                 if not isinstance(payload_raw, dict):
                     continue
-                payload = TemplateFieldCreate(**payload_raw)
+                payload = TemplateFieldCreate(**_template_field_payload_dict(payload_raw))
                 if action == "update_field":
                     field_id = str(op.get("field_id") or "").strip()
                     if not field_id:
@@ -6706,7 +6735,7 @@ class AdminTemplateService:
             current = self._get_template_field_for_update(conn, template_id, field_id)
         if current is None:
             raise HTTPException(status_code=404, detail="Template field not found.")
-        roi = patch.get("roi") or current["roi"]
+        roi = _roi_payload_dict(patch.get("roi") or current["roi"])
         merged = {
             "template_page_id": patch.get("template_page_id", current["template_page_id"]),
             "page_number": patch.get("page_number", current["page_number"]),
@@ -6730,7 +6759,7 @@ class AdminTemplateService:
             "image_category": patch.get("image_category", current.get("image_category")),
             "sort_order": patch.get("sort_order", current["sort_order"]),
         }
-        merged_payload = TemplateFieldCreate(**merged)
+        merged_payload = TemplateFieldCreate(**_template_field_payload_dict(merged))
         if self._defer_active_template_changes(template_id):
             return self._template_with_pending_field_op(
                 template_id,
@@ -6853,10 +6882,10 @@ class AdminTemplateService:
             "template_page_id": patch.get("template_page_id", current["template_page_id"]),
             "page_number": patch.get("page_number", current["page_number"]),
             "field_name": patch.get("field_name", current["field_name"]),
-            "roi": patch.get("roi", current["roi"]),
+            "roi": _roi_payload_dict(patch.get("roi", current["roi"])),
         }
         self.delete_ignore_region(template_id, region_id)
-        return self.create_ignore_region(template_id, IgnoreRegionCreate(**merged))
+        return self.create_ignore_region(template_id, IgnoreRegionCreate(**_ignore_region_payload_dict(merged)))
 
     def delete_ignore_region(self, template_id: str, region_id: str) -> Dict[str, Any]:
         with _connect() as conn:
