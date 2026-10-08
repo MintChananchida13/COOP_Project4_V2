@@ -141,33 +141,46 @@ def _run_prepublish_detection_job(job_id: str, template_id: str, file_bytes: byt
     with prepublish_detection_jobs_lock:
         job = prepublish_detection_jobs.get(job_id)
         if job is not None:
-            job["status"] = "processing"
-            job["progress"] = {
+            queued_progress = {
                 "stage": "queued",
                 "current_rank": 0,
                 "total_rank": 5,
+                "sequence": 0,
             }
+            job["status"] = "processing"
+            job["progress"] = queued_progress
+            job["progress_events"] = [queued_progress]
     def update_progress(progress: Dict[str, Any]) -> None:
         with prepublish_detection_jobs_lock:
             job = prepublish_detection_jobs.get(job_id)
             if job is not None:
-                job["progress"] = {
+                events = job.get("progress_events") if isinstance(job.get("progress_events"), list) else []
+                next_progress = {
                     **(job.get("progress") if isinstance(job.get("progress"), dict) else {}),
                     **progress,
+                    "sequence": len(events),
                 }
+                job["progress"] = next_progress
+                events.append(next_progress)
+                job["progress_events"] = events[-20:]
     try:
         result = admin_templates.run_prepublish_detection_test(template_id, file_bytes, progress_callback=update_progress)
         with prepublish_detection_jobs_lock:
             job = prepublish_detection_jobs.get(job_id)
             if job is not None:
+                events = job.get("progress_events") if isinstance(job.get("progress_events"), list) else []
                 job["status"] = "completed"
                 job["result"] = result
-                job["progress"] = {
+                completed_progress = {
                     **(job.get("progress") if isinstance(job.get("progress"), dict) else {}),
                     "stage": "completed",
                     "current_rank": 5,
                     "total_rank": 5,
+                    "sequence": len(events),
                 }
+                job["progress"] = completed_progress
+                events.append(completed_progress)
+                job["progress_events"] = events[-20:]
     except Exception as error:
         with prepublish_detection_jobs_lock:
             job = prepublish_detection_jobs.get(job_id)
@@ -899,12 +912,15 @@ async def run_template_prepublish_detection_test(
     file_bytes = await _read_dev_detection_image(request)
     job_id = f"prepubdet_{uuid4().hex}"
     with prepublish_detection_jobs_lock:
+        queued_progress = {"stage": "queued", "current_rank": 0, "total_rank": 5, "sequence": 0}
         prepublish_detection_jobs[job_id] = {
             "job_id": job_id,
             "template_id": template_id,
             "status": "processing",
             "result": None,
             "error": None,
+            "progress": queued_progress,
+            "progress_events": [queued_progress],
         }
     background_tasks.add_task(_run_prepublish_detection_job, job_id, template_id, file_bytes)
     response.status_code = 202
@@ -922,6 +938,7 @@ def get_template_prepublish_detection_test_job(template_id: str, job_id: str) ->
             "template_id": template_id,
             "status": job.get("status") or "processing",
             "progress": job.get("progress") if isinstance(job.get("progress"), dict) else None,
+            "progress_events": job.get("progress_events") if isinstance(job.get("progress_events"), list) else [],
         }
         if job.get("status") == "completed":
             response["result"] = job.get("result")

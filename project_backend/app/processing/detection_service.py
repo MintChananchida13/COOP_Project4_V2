@@ -3068,8 +3068,10 @@ def _detect_page(
                 progress_callback(
                     {
                         "stage": "candidate_evaluation",
-                        "current_rank": full_evaluation_count,
-                        "total_rank": full_evaluation_limit,
+                        "current_rank": index,
+                        "total_rank": retrieval_limit,
+                        "evaluation_count": full_evaluation_count,
+                        "evaluation_total": full_evaluation_limit,
                         "retrieval_rank": index,
                         "template_id": result_template_id,
                         "template_name": metadata.get("template_name"),

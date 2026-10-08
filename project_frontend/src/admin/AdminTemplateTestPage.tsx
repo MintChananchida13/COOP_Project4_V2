@@ -1584,7 +1584,6 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
                   <DraftOverviewMetric label="Template ที่ตรวจพบ" value={prepublishTemplateDisplayName(detectionTest.selectedTemplate)} />
                   <DraftOverviewMetric label="ประเภทของ Template" value={detectionTest.selectedTemplateType || "N/A"} />
                   <DraftOverviewMetric label="คะแนนความมั่นใจในการจับคู่" value={formatPrepublishScore(detectionTest.finalConfidence)} tone="indigo" />
-                  <DraftOverviewMetric label="เหตุผลที่เลือก Template" value={detectionTest.decisionReason || "N/A"} />
                   <DraftOverviewMetric label="ลำดับของ Template ใน Draft" value={detectionTest.draftTemplateRank ?? "N/A"} />
                   <DraftOverviewMetric label="สถานะการทดสอบ" value={detectionTest.passed ? "ผ่าน" : detectionTest.warning ? "คำเตือน" : "ไม่ผ่าน"} tone={detectionTest.passed ? "emerald" : detectionTest.warning ? "orange" : "slate"} />
                 </div>

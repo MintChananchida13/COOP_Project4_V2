@@ -857,6 +857,9 @@ export interface PrepublishDetectionProgress {
   stage?: string | null;
   currentRank: number;
   totalRank: number;
+  sequence?: number | null;
+  evaluationCount?: number | null;
+  evaluationTotal?: number | null;
   retrievalRank?: number | null;
   templateId?: string | null;
   templateName?: string | null;
@@ -2448,6 +2451,9 @@ const mapPrepublishDetectionProgress = (progress: Record<string, unknown> | null
     stage: (progress.stage as string | null | undefined) ?? null,
     currentRank: Number(progress.current_rank || progress.currentRank || 0),
     totalRank: Number(progress.total_rank || progress.totalRank || 5),
+    sequence: typeof progress.sequence === "number" ? progress.sequence : null,
+    evaluationCount: typeof progress.evaluation_count === "number" ? progress.evaluation_count : typeof progress.evaluationCount === "number" ? progress.evaluationCount : null,
+    evaluationTotal: typeof progress.evaluation_total === "number" ? progress.evaluation_total : typeof progress.evaluationTotal === "number" ? progress.evaluationTotal : null,
     retrievalRank: typeof progress.retrieval_rank === "number" ? progress.retrieval_rank : typeof progress.retrievalRank === "number" ? progress.retrievalRank : null,
     templateId: (progress.template_id as string | null | undefined) ?? (progress.templateId as string | null | undefined) ?? null,
     templateName: (progress.template_name as string | null | undefined) ?? (progress.templateName as string | null | undefined) ?? null,
@@ -2490,7 +2496,10 @@ export const runPrepublishDetectionTest = async (
       throw new Error(typeof detail === "string" ? detail : `Pre-publish detection job failed with ${pollResponse.status}`);
     }
     const job = (pollJson?.data as Record<string, unknown> | undefined) || {};
-    const progress = mapPrepublishDetectionProgress(asRecord(job.progress));
+    const progressEvents = asRecordArray(job.progress_events || job.progressEvents)
+      .map(mapPrepublishDetectionProgress)
+      .filter((item): item is PrepublishDetectionProgress => Boolean(item));
+    const progress = progressEvents[progressEvents.length - 1] || mapPrepublishDetectionProgress(asRecord(job.progress));
     if (progress) options.onProgress?.(progress);
     if (job.status === "completed") {
       const result = asRecord(job.result);
