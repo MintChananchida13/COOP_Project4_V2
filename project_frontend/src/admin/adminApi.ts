@@ -853,6 +853,16 @@ export interface PrepublishDetectionTestResult {
   debug?: Record<string, unknown>;
 }
 
+export interface PrepublishDetectionProgress {
+  stage?: string | null;
+  currentRank: number;
+  totalRank: number;
+  retrievalRank?: number | null;
+  templateId?: string | null;
+  templateName?: string | null;
+  pageIndex?: number | null;
+}
+
 export interface TemplateStepTestItem {
   fieldId?: string;
   anchorId?: string;
@@ -2413,7 +2423,24 @@ function mapPrepublishDetectionTestResult(data: Record<string, unknown>, templat
   };
 }
 
-export const runPrepublishDetectionTest = async (templateId: string, file: File): Promise<PrepublishDetectionTestResult> => {
+const mapPrepublishDetectionProgress = (progress: Record<string, unknown> | null | undefined): PrepublishDetectionProgress | null => {
+  if (!progress) return null;
+  return {
+    stage: (progress.stage as string | null | undefined) ?? null,
+    currentRank: Number(progress.current_rank || progress.currentRank || 0),
+    totalRank: Number(progress.total_rank || progress.totalRank || 5),
+    retrievalRank: typeof progress.retrieval_rank === "number" ? progress.retrieval_rank : typeof progress.retrievalRank === "number" ? progress.retrievalRank : null,
+    templateId: (progress.template_id as string | null | undefined) ?? (progress.templateId as string | null | undefined) ?? null,
+    templateName: (progress.template_name as string | null | undefined) ?? (progress.templateName as string | null | undefined) ?? null,
+    pageIndex: typeof progress.page_index === "number" ? progress.page_index : typeof progress.pageIndex === "number" ? progress.pageIndex : null,
+  };
+};
+
+export const runPrepublishDetectionTest = async (
+  templateId: string,
+  file: File,
+  options: { onProgress?: (progress: PrepublishDetectionProgress) => void } = {}
+): Promise<PrepublishDetectionTestResult> => {
   const formData = new FormData();
   formData.append("file", file);
   const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/templates/${templateId}/prepublish-detection-test`, {
@@ -2444,6 +2471,8 @@ export const runPrepublishDetectionTest = async (templateId: string, file: File)
       throw new Error(typeof detail === "string" ? detail : `Pre-publish detection job failed with ${pollResponse.status}`);
     }
     const job = (pollJson?.data as Record<string, unknown> | undefined) || {};
+    const progress = mapPrepublishDetectionProgress(asRecord(job.progress));
+    if (progress) options.onProgress?.(progress);
     if (job.status === "completed") {
       const result = asRecord(job.result);
       return mapPrepublishDetectionTestResult(result, templateId);

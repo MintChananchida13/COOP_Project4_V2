@@ -12,6 +12,7 @@ import { IgnoreRegion, Template, TemplateField, TemplatePage } from "../types/oc
 import {
   ADMIN_API_BASE_URL,
   PrepublishCandidate,
+  PrepublishDetectionProgress,
   PrepublishDetectionTestResult,
   PrepublishLayoutSignaturePage,
   PrepublishSimulationResult,
@@ -584,7 +585,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
   const [detectionTest, setDetectionTest] = useState<PrepublishDetectionTestResult | null>(null);
   const [detectionTestAction, setDetectionTestAction] = useState(false);
   const [detectionTestError, setDetectionTestError] = useState("");
-  const [detectionProgressTop, setDetectionProgressTop] = useState(0);
+  const [detectionProgress, setDetectionProgress] = useState<PrepublishDetectionProgress | null>(null);
   const [expandedDetectionCandidates, setExpandedDetectionCandidates] = useState<Record<string, boolean>>({});
   const autoSimulationStartedRef = useRef(false);
 
@@ -636,14 +637,6 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
       if (testDocumentPreviewUrl) URL.revokeObjectURL(testDocumentPreviewUrl);
     };
   }, [testDocumentPreviewUrl]);
-
-  useEffect(() => {
-    if (!detectionTestAction) return;
-    const timer = window.setInterval(() => {
-      setDetectionProgressTop((current) => Math.min(5, Math.max(1, current) + 1));
-    }, 2500);
-    return () => window.clearInterval(timer);
-  }, [detectionTestAction]);
 
   const safePages = pages.length > 0 ? pages : [{ id: "empty", templateId, pageNumber: 1, sampleImageUrl: samplePage, similarityThreshold: 0.5, finalConfidenceThreshold: DEFAULT_FINAL_CONFIDENCE_THRESHOLD }];
   const safeCurrentPage = Math.min(currentPage, Math.max(safePages.length - 1, 0));
@@ -843,7 +836,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
     setTestDocumentFile(file);
     setDetectionTest(null);
     setDetectionTestError("");
-    setDetectionProgressTop(0);
+    setDetectionProgress(null);
     if (file && (file.type.startsWith("image/") || file.type === "application/pdf")) {
       setTestDocumentPreviewUrl(URL.createObjectURL(file));
     } else {
@@ -855,12 +848,14 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
     if (!testDocumentFile) return;
     setDetectionTestAction(true);
     setDetectionTestError("");
-    setDetectionProgressTop(1);
+    setDetectionProgress({ stage: "queued", currentRank: 0, totalRank: 5 });
     setStatusMessage("");
     try {
-      const result = await runPrepublishDetectionTest(templateId, testDocumentFile);
+      const result = await runPrepublishDetectionTest(templateId, testDocumentFile, {
+        onProgress: setDetectionProgress,
+      });
       setDetectionTest(result);
-      setDetectionProgressTop(5);
+      setDetectionProgress({ stage: "completed", currentRank: 5, totalRank: 5 });
       setStatusMessage("การทดสอบตรวจจับเอกสารเสร็จสิ้น ตรวจสอบผลการจัดอันดับก่อนเผยแพร่");
     } catch (error) {
       console.warn("การทดสอบ Draft Template ด้วยเอกสารใหม่ไม่สำเร็จ", error);
@@ -1465,7 +1460,9 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
             className="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-black text-white shadow-sm disabled:bg-slate-300 disabled:text-slate-500"
           >
             {detectionTestAction && <Loader2 size={14} className="animate-spin" />}
-            {detectionTestAction ? `กำลังทดสอบ Top ${Math.max(1, detectionProgressTop)}/5` : "Run Detection Test"}
+            {detectionTestAction
+              ? `กำลังทดสอบ Top ${Math.max(0, detectionProgress?.currentRank || 0)}/${Math.max(1, detectionProgress?.totalRank || 5)}`
+              : "Run Detection Test"}
           </button>
         </div>
 
@@ -1517,7 +1514,9 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
                   <div>
                     <p className="text-xs font-black text-indigo-900">กำลังทดสอบการจับคู่ Template กับเอกสารใหม่</p>
                     <p className="mt-1 text-[11px] font-semibold text-indigo-700">
-                      กำลังประเมินผลอันดับ Top {Math.max(1, detectionProgressTop)}/5 ระบบยังทำงานอยู่
+                      {detectionProgress?.currentRank
+                        ? `กำลังประเมินผลอันดับ Top ${detectionProgress.currentRank}/${Math.max(1, detectionProgress.totalRank || 5)}${detectionProgress.templateName ? `: ${detectionProgress.templateName}` : ""}`
+                        : "กำลังเตรียมเอกสารและค้นหา Candidate จาก Layout"}
                     </p>
                   </div>
                   <Loader2 size={18} className="shrink-0 animate-spin text-indigo-600" />
@@ -1525,8 +1524,8 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
                 <div className="mt-3 grid grid-cols-5 gap-1.5">
                   {[1, 2, 3, 4, 5].map((rank) => (
                     <div key={`detection-progress-${rank}`} className="space-y-1">
-                      <div className={`h-1.5 rounded-full ${rank <= Math.max(1, detectionProgressTop) ? "bg-indigo-600" : "bg-white"}`} />
-                      <div className={`text-center text-[9px] font-black ${rank <= Math.max(1, detectionProgressTop) ? "text-indigo-700" : "text-indigo-300"}`}>
+                      <div className={`h-1.5 rounded-full ${rank <= Math.max(0, detectionProgress?.currentRank || 0) ? "bg-indigo-600" : "bg-white"}`} />
+                      <div className={`text-center text-[9px] font-black ${rank <= Math.max(0, detectionProgress?.currentRank || 0) ? "text-indigo-700" : "text-indigo-300"}`}>
                         Top {rank}
                       </div>
                     </div>

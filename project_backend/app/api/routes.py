@@ -142,13 +142,32 @@ def _run_prepublish_detection_job(job_id: str, template_id: str, file_bytes: byt
         job = prepublish_detection_jobs.get(job_id)
         if job is not None:
             job["status"] = "processing"
+            job["progress"] = {
+                "stage": "queued",
+                "current_rank": 0,
+                "total_rank": 5,
+            }
+    def update_progress(progress: Dict[str, Any]) -> None:
+        with prepublish_detection_jobs_lock:
+            job = prepublish_detection_jobs.get(job_id)
+            if job is not None:
+                job["progress"] = {
+                    **(job.get("progress") if isinstance(job.get("progress"), dict) else {}),
+                    **progress,
+                }
     try:
-        result = admin_templates.run_prepublish_detection_test(template_id, file_bytes)
+        result = admin_templates.run_prepublish_detection_test(template_id, file_bytes, progress_callback=update_progress)
         with prepublish_detection_jobs_lock:
             job = prepublish_detection_jobs.get(job_id)
             if job is not None:
                 job["status"] = "completed"
                 job["result"] = result
+                job["progress"] = {
+                    **(job.get("progress") if isinstance(job.get("progress"), dict) else {}),
+                    "stage": "completed",
+                    "current_rank": 5,
+                    "total_rank": 5,
+                }
     except Exception as error:
         with prepublish_detection_jobs_lock:
             job = prepublish_detection_jobs.get(job_id)
@@ -902,6 +921,7 @@ def get_template_prepublish_detection_test_job(template_id: str, job_id: str) ->
             "job_id": job_id,
             "template_id": template_id,
             "status": job.get("status") or "processing",
+            "progress": job.get("progress") if isinstance(job.get("progress"), dict) else None,
         }
         if job.get("status") == "completed":
             response["result"] = job.get("result")

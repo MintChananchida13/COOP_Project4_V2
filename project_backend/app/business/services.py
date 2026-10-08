@@ -6115,7 +6115,12 @@ class AdminTemplateService:
         )
         return [*candidates, *fallback_candidates[: max(0, limit - len(candidates))]]
 
-    def run_prepublish_detection_test(self, template_id: str, file_bytes: bytes) -> Dict[str, Any]:
+    def run_prepublish_detection_test(
+        self,
+        template_id: str,
+        file_bytes: bytes,
+        progress_callback: Optional[Any] = None,
+    ) -> Dict[str, Any]:
         total_started = time.perf_counter()
         print("[PREPUBLISH] START")
         step_started = time.perf_counter()
@@ -6139,6 +6144,7 @@ class AdminTemplateService:
                 full_evaluation_limit_override=5,
                 prepublish_full_evaluation=True,
                 disable_pdf_subdocument_crop=True,
+                progress_callback=progress_callback,
             )
             candidates = [candidate for candidate in detection.get("candidates") or [] if isinstance(candidate, dict)]
             candidates = self._append_prepublish_ranking_fallback_candidates(candidates, detection, limit=5)

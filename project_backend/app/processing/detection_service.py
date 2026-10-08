@@ -9,7 +9,7 @@ import time
 import math
 import numpy as np
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -2977,6 +2977,7 @@ def _detect_page(
     query_page_count: Optional[int] = None,
     request_cache: Optional[DetectionRequestCache] = None,
     prepublish_full_evaluation: bool = False,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     page_index = int(page_info["page_index"])
     normalized_image_path = str(page_info["normalized_path"])
@@ -2996,7 +2997,7 @@ def _detect_page(
         limit=retrieval_limit,
         include_template_id=include_template_id,
         timing=timing,
-        include_prefilter_rejected=prepublish_full_evaluation,
+        disable_prefilter=prepublish_full_evaluation,
     )
     if timing is not None:
         timing["template_matching"] = timing.get("template_matching", 0.0) + (time.perf_counter() - step_started)
@@ -3063,6 +3064,18 @@ def _detect_page(
             should_fully_evaluate = True
         if should_fully_evaluate:
             full_evaluation_count += 1
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "stage": "candidate_evaluation",
+                        "current_rank": full_evaluation_count,
+                        "total_rank": full_evaluation_limit,
+                        "retrieval_rank": index,
+                        "template_id": result_template_id,
+                        "template_name": metadata.get("template_name"),
+                        "page_index": page_index,
+                    }
+                )
             candidate_processing_path = normalized_image_path
             candidate_processing_path_source = str(matching_normalization.get("matching_path_source") or "normalized")
             candidate_processing_switch_reason = "default_matching_image_used"
@@ -3659,6 +3672,7 @@ def detect_template_dev(
     full_evaluation_limit_override: Optional[int] = None,
     prepublish_full_evaluation: bool = False,
     disable_pdf_subdocument_crop: bool = False,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     query_id = f"detq_{uuid4().hex[:12]}"
     timing: Dict[str, float] = {}
@@ -3728,6 +3742,7 @@ def detect_template_dev(
                 query_page_count=query_page_count,
                 request_cache=request_cache,
                 prepublish_full_evaluation=prepublish_full_evaluation,
+                progress_callback=progress_callback,
             )
             timing["first_page_detection_total"] = time.perf_counter() - step_started
             pages.append(first_detected_page)
@@ -3763,6 +3778,7 @@ def detect_template_dev(
                         query_page_count=query_page_count,
                         request_cache=request_cache,
                         prepublish_full_evaluation=prepublish_full_evaluation,
+                        progress_callback=progress_callback,
                     )
                     pages.append(detected_page)
                 timing["remaining_pages_detection_total"] = time.perf_counter() - step_started

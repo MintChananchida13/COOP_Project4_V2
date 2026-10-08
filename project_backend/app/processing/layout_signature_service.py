@@ -484,6 +484,7 @@ def compare_layout_signatures(
     query: Dict[str, Any],
     template: Dict[str, Any],
     timing: Optional[Dict[str, float]] = None,
+    disable_prefilter: bool = False,
 ) -> Dict[str, Any]:
     total_started = time.perf_counter()
     query_before_normalize = _signature_debug_summary(query)
@@ -574,7 +575,7 @@ def compare_layout_signatures(
         prefilter_reasons.append("label_count_and_area_distribution_below_threshold")
     if structural_rejected:
         prefilter_reasons.append("grid_and_aspect_below_threshold")
-    prefilter_rejected = bool(prefilter_reasons)
+    prefilter_rejected = bool(prefilter_reasons) and not disable_prefilter
     if timing is not None:
         timing["prefilter_gate"] = timing.get("prefilter_gate", 0.0) + (time.perf_counter() - step_started)
     if prefilter_rejected:
@@ -592,6 +593,7 @@ def compare_layout_signatures(
             "query_region_count": int(query.get("region_count") or 0),
             "template_region_count": int(template.get("region_count") or 0),
             "prefilter_rejected": True,
+            "prefilter_bypassed": False,
             "prefilter_reason": prefilter_reasons[0],
             "prefilter_reasons": prefilter_reasons,
             "count_prefilter_threshold": COUNT_PREFILTER_THRESHOLD,
@@ -633,8 +635,10 @@ def compare_layout_signatures(
         "query_region_count": int(query.get("region_count") or 0),
         "template_region_count": int(template.get("region_count") or 0),
         "prefilter_rejected": False,
+        "prefilter_bypassed": bool(disable_prefilter and prefilter_reasons),
         "prefilter_reason": None,
         "prefilter_reasons": [],
+        "prefilter_would_reject_reasons": prefilter_reasons if disable_prefilter else [],
         "count_prefilter_threshold": COUNT_PREFILTER_THRESHOLD,
         "area_prefilter_threshold": AREA_PREFILTER_THRESHOLD,
         "grid_prefilter_threshold": GRID_PREFILTER_THRESHOLD,

@@ -23,6 +23,7 @@ def search_layout_candidates(
     active_only: bool = True,
     timing: Optional[Dict[str, Any]] = None,
     include_prefilter_rejected: bool = False,
+    disable_prefilter: bool = False,
 ) -> List[Dict[str, Any]]:
     total_started = time.perf_counter()
     breakdown: Dict[str, Any] = {
@@ -31,6 +32,7 @@ def search_layout_candidates(
         "include_template_id": include_template_id,
         "active_only": active_only,
         "include_prefilter_rejected": include_prefilter_rejected,
+        "disable_prefilter": disable_prefilter,
         "connect": 0.0,
         "pool_getconn": None,
         "ensure_schema": None,
@@ -338,6 +340,7 @@ def search_layout_candidates(
             query_signature,
             signature,
             timing=compare_timing,
+            disable_prefilter=disable_prefilter,
         )
         compare_iteration_elapsed = time.perf_counter() - compare_started
         compare_elapsed += compare_iteration_elapsed
@@ -440,11 +443,12 @@ def search_layout_candidates(
             "layout_signature_version": signature.get("version"),
             "layout_debug": similarity,
         }
+        candidate_score = float(similarity.get("score") or 0.0)
         candidate = {
             "vector_id": f"layout_{template_id}_{row['layout_reference_id'] or row['page_number']}",
-            "score": similarity["score"],
+            "score": candidate_score,
             "metadata": metadata,
-            "layout_score": similarity["score"],
+            "layout_score": candidate_score,
             "layout_debug": similarity,
             "_layout_signature": signature,
         }
