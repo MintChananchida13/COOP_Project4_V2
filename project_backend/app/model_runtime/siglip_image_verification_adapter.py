@@ -291,7 +291,7 @@ def verify_image_category(
         raise RuntimeError("GATEWAY_URL is not configured.")
 
     try:
-        remote_result = remote_verify_image_logits(image_path, [item.to_dict() for item in active_categories])
+        remote_result = remote_verify_image_logits(image_path, category_value, [item.to_dict() for item in active_categories])
     except ModelRuntimeUnavailableError as error:
         raise RuntimeError(f"SigLIP model runtime unavailable: {error}") from error
 

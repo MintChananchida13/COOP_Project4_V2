@@ -394,12 +394,17 @@ def remote_recognize_table_raw(image: np.ndarray) -> Optional[Dict[str, Any]]:
 
 def remote_verify_image_logits(
     image_path: str,
+    image_category: str,
     categories: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[Dict[str, Any]]:
     if not is_runtime_configured(ModelRuntimeKind.IMAGE_VERIFICATION):
         return None
     return _post_predict(
         ModelRuntimeKind.IMAGE_VERIFICATION,
-        {"image": _path_to_data_url(image_path), "categories": categories or []},
+        {
+            "image": _path_to_data_url(image_path),
+            "image_category": image_category,
+            "categories": categories or [],
+        },
         timeout=240.0,
     )
