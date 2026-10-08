@@ -222,6 +222,46 @@ const isImageVerificationRecord = (record: Record<string, unknown>) => {
   return typeText.includes("image");
 };
 
+const prepublishAnchorType = (record: Record<string, unknown>) =>
+  String(readPrepublishValue(record, ["anchor_type", "type", "verification_method", "match_type"]) || "").toLowerCase();
+
+const candidateHasAnchorType = (candidate: PrepublishCandidate, anchorType: "text" | "image") =>
+  (candidate.verificationDetails || []).some((detail) => prepublishAnchorType(detail) === anchorType);
+
+const formatPrepublishAnchorScore = (candidate: PrepublishCandidate, anchorType: "text" | "image") =>
+  candidateHasAnchorType(candidate, anchorType)
+    ? formatPrepublishScore(anchorType === "text" ? candidate.textAnchorScore : candidate.imageAnchorScore)
+    : "-";
+
+const formatPrepublishDecision = (candidate: PrepublishCandidate) => {
+  const rawDecision = String(candidate.decision || "").trim();
+  const normalized = rawDecision.toLowerCase();
+  if (!rawDecision) return candidate.finalPassed ? "ผ่านเกณฑ์" : "ไม่ผ่าน";
+  const decisionLabels: Record<string, string> = {
+    final_threshold_passed: "ผ่านเกณฑ์คะแนนรวม",
+    final_threshold_failed: "คะแนนรวมต่ำกว่าเกณฑ์ความมั่นใจ",
+    required_verification_failed: "Required Anchor ไม่ผ่าน",
+    layout_score_below_threshold: "Layout ต่ำกว่าเกณฑ์",
+    layout_similarity_threshold_failed: "Layout similarity ต่ำกว่าเกณฑ์",
+    page_count_rejected: "จำนวนหน้าไม่ตรงกับ Template",
+    all_pages_page_count_mismatch: "จำนวนหน้าไม่ตรงกับ Template",
+    main_page_detection_uses_auto_roi_for_non_main_pages: "Template แบบ main_page ใช้ Auto ROI กับหน้าที่เหลือ",
+    standard_layout_score_below_threshold: "Layout ต่ำกว่าเกณฑ์",
+    standard_text_anchor_failed: "Text Anchor ไม่ผ่าน",
+    standard_image_anchor_failed: "Image Anchor ไม่ผ่าน",
+    standard_anchor_failed: "Anchor ไม่ผ่าน",
+    standard_all_anchors_passed: "ผ่าน Layout และ Anchor ทุกเงื่อนไข",
+    ranking_fallback_not_evaluated: "ยังไม่ได้ประเมินครบ",
+  };
+  if (decisionLabels[normalized]) return decisionLabels[normalized];
+  if (normalized.includes("text") && normalized.includes("anchor") && normalized.includes("failed")) return "Text Anchor ไม่ผ่าน";
+  if (normalized.includes("image") && normalized.includes("anchor") && normalized.includes("failed")) return "Image Anchor ไม่ผ่าน";
+  if (normalized.includes("layout") && normalized.includes("threshold")) return "Layout ต่ำกว่าเกณฑ์";
+  if (normalized.includes("required")) return "Required Anchor ไม่ผ่าน";
+  if (normalized.includes("final") && normalized.includes("threshold")) return "คะแนนรวมต่ำกว่าเกณฑ์ความมั่นใจ";
+  return rawDecision.replaceAll("_", " ");
+};
+
 const readVerificationRecordScore = (record: Record<string, unknown>) => {
   const value = isImageVerificationRecord(record)
     ? readPrepublishValue(record, ["evidence_score", "image_category_score", "field_score", "score"])
@@ -455,12 +495,12 @@ function DraftCandidateCard({
             <span className="text-xs font-black text-slate-900">#{candidate.rank}</span>
             <span className="text-xs font-black text-slate-900">{prepublishTemplateDisplayName(candidate)}</span>
             {candidate.isCurrentDraft && <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[9px] font-black uppercase text-indigo-700">Draft ปัจจุบัน</span>}
-            <DraftStatusPill passed={candidate.finalPassed} label={candidate.decision || (candidate.finalPassed ? "PASS" : "REVIEW")} />
+            <DraftStatusPill passed={candidate.finalPassed} label={formatPrepublishDecision(candidate)} />
           </div>
           <div className="mt-2 grid gap-2 text-[10px] font-bold text-slate-500 sm:grid-cols-3 xl:grid-cols-6">
             <span>Layout {formatPrepublishScore(candidate.globalScore)}</span>
-            <span>Image {formatPrepublishScore(candidate.imageAnchorScore)}</span>
-            <span>Text {formatPrepublishScore(candidate.textAnchorScore)}</span>
+            <span>Image {formatPrepublishAnchorScore(candidate, "image")}</span>
+            <span>Text {formatPrepublishAnchorScore(candidate, "text")}</span>
             <span>Verification {formatPrepublishScore(candidate.verificationScore)}</span>
             <span>คะแนนรวม {formatPrepublishScore(candidate.finalScore)}</span>
           </div>
@@ -1596,10 +1636,10 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
                     <td className="px-3 py-2 font-black text-slate-900">{formatPrepublishScore(candidate.finalScore)}</td>
                     <td className="px-3 py-2">{formatPrepublishScore(candidate.globalScore)}</td>
                     <td className="px-3 py-2">{formatPrepublishScore(candidate.verificationScore)}</td>
-                    <td className="px-3 py-2">{formatPrepublishScore(candidate.textAnchorScore)}</td>
-                    <td className="px-3 py-2">{formatPrepublishScore(candidate.imageAnchorScore)}</td>
+                    <td className="px-3 py-2">{formatPrepublishAnchorScore(candidate, "text")}</td>
+                    <td className="px-3 py-2">{formatPrepublishAnchorScore(candidate, "image")}</td>
                     <td className="px-3 py-2">
-                      <DraftStatusPill passed={candidate.finalPassed} label={candidate.decision || (candidate.finalPassed ? "PASS" : "FAIL")} />
+                      <DraftStatusPill passed={candidate.finalPassed} label={formatPrepublishDecision(candidate)} />
                     </td>
                   </tr>
                 ))

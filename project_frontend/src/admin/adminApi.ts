@@ -2201,6 +2201,7 @@ export const detectTemplateDev = async (
 };
 
 function mapPrepublishCandidate(candidate: Record<string, unknown>): PrepublishCandidate {
+  const verification = asRecord(candidate.verification);
   const globalScore =
     typeof candidate.global_score === "number"
       ? candidate.global_score
@@ -2217,6 +2218,24 @@ function mapPrepublishCandidate(candidate: Record<string, unknown>): PrepublishC
       : typeof candidate.score === "number"
         ? candidate.score
         : globalScore;
+  const textAnchorScore =
+    typeof candidate.text_anchor_score === "number"
+      ? candidate.text_anchor_score
+      : typeof verification.text_anchor_score === "number"
+        ? verification.text_anchor_score
+        : 0;
+  const imageAnchorScore =
+    typeof candidate.image_anchor_score === "number"
+      ? candidate.image_anchor_score
+      : typeof verification.image_anchor_score === "number"
+        ? verification.image_anchor_score
+        : 0;
+  const verificationScore =
+    typeof candidate.verification_score === "number"
+      ? candidate.verification_score
+      : typeof verification.score === "number"
+        ? verification.score
+        : 0;
   return {
   rank: Number(candidate.rank || 0),
   templateId: String(candidate.template_id || ""),
@@ -2226,9 +2245,9 @@ function mapPrepublishCandidate(candidate: Record<string, unknown>): PrepublishC
   templateStatus: (candidate.template_status as string | null | undefined) ?? null,
   vectorId: (candidate.vector_id as string | null | undefined) ?? null,
   globalScore,
-  textAnchorScore: Number(candidate.text_anchor_score || 0),
-  imageAnchorScore: Number(candidate.image_anchor_score || 0),
-  verificationScore: Number(candidate.verification_score || 0),
+  textAnchorScore,
+  imageAnchorScore,
+  verificationScore,
   finalScore,
   matchingWeights: (candidate.matching_weights as Record<string, number> | undefined) || undefined,
   effectiveMatchingWeights: (candidate.effective_matching_weights as Record<string, number> | undefined) || undefined,
