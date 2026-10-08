@@ -37,7 +37,7 @@ MODEL_RUNTIME_GATEWAY_PATH: Dict[ModelRuntimeKind, str] = {
     ModelRuntimeKind.TEXT_DETECTION: "/api/v1/text-detections?version=v6",
     ModelRuntimeKind.TEXT_RECOGNITION: "/api/v1/text-recognitions",
     ModelRuntimeKind.TABLE: "/api/v1/table-model-results",
-    ModelRuntimeKind.IMAGE_VERIFICATION: "/api/v1/image-classifications",
+    ModelRuntimeKind.IMAGE_VERIFICATION: "/api/v1/image-verifications",
 }
 
 OCR_MODEL_SETTINGS_KEY = "ocr_model_settings"
