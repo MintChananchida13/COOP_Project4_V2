@@ -5487,6 +5487,38 @@ class AdminTemplateService:
             ),
         )
 
+    def _update_verification_anchor_from_payload(self, conn: Any, template_id: str, field_id: str, payload: TemplateFieldCreate) -> None:
+        image_category_id = _resolve_image_category_id(conn, payload.image_category)
+        conn.execute(
+            """
+            UPDATE verification_anchors
+            SET template_page_id = ?, anchor_name = ?, anchor_type = ?,
+                roi_x_ratio = ?, roi_y_ratio = ?, roi_width_ratio = ?, roi_height_ratio = ?, roi_points_json = ?,
+                required = ?, weight = ?, expected_text = ?, match_type = ?, regex_pattern = ?,
+                image_category_id = ?, sort_order = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)
+            """,
+            (
+                payload.template_page_id,
+                payload.field_name,
+                _normalize_data_type(payload.data_type),
+                payload.roi.x_ratio,
+                payload.roi.y_ratio,
+                payload.roi.width_ratio,
+                payload.roi.height_ratio,
+                _roi_points_json_from_payload(payload.roi),
+                bool(payload.required_for_verification),
+                payload.verification_weight or 1.0,
+                payload.expected_text,
+                payload.match_type,
+                payload.regex_pattern,
+                image_category_id,
+                payload.sort_order,
+                field_id,
+                template_id,
+            ),
+        )
+
     @staticmethod
     def _coalesce_pending_template_field_ops(ops: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         coalesced: List[Dict[str, Any]] = []
@@ -5560,13 +5592,22 @@ class AdminTemplateService:
                     next_field_id = field_id
                 elif action == "create_field":
                     next_field_id = str(op.get("field_id") or "").strip() or _stub_id("tpl_field")
-                    existing_by_id = conn.execute(
-                        "SELECT * FROM extraction_fields WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)",
-                        (next_field_id, template_id),
-                    ).fetchone() if not payload.use_for_verification else None
-                    if existing_by_id is not None:
-                        self._update_extraction_field_from_pending_payload(conn, template_id, existing_by_id["id"], payload)
-                        continue
+                    if payload.use_for_verification:
+                        existing_anchor = conn.execute(
+                            "SELECT * FROM verification_anchors WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)",
+                            (next_field_id, template_id),
+                        ).fetchone()
+                        if existing_anchor is not None:
+                            self._update_verification_anchor_from_payload(conn, template_id, existing_anchor["id"], payload)
+                            continue
+                    else:
+                        existing_field = conn.execute(
+                            "SELECT * FROM extraction_fields WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)",
+                            (next_field_id, template_id),
+                        ).fetchone()
+                        if existing_field is not None:
+                            self._update_extraction_field_from_pending_payload(conn, template_id, existing_field["id"], payload)
+                            continue
                 else:
                     continue
                 if payload.use_for_verification:

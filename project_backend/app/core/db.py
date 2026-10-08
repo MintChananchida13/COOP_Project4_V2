@@ -688,8 +688,7 @@ _POSTGRES_SCHEMA = [
             roi_y_ratio >= 0 AND roi_y_ratio <= 1 AND
             roi_width_ratio > 0 AND roi_width_ratio <= 1 AND
             roi_height_ratio > 0 AND roi_height_ratio <= 1
-        ),
-        CONSTRAINT verification_anchors_page_anchor_name_key UNIQUE (template_page_id, anchor_name)
+        )
     )
     """,
     """
@@ -790,6 +789,7 @@ _POSTGRES_SCHEMA = [
     "ALTER TABLE extraction_fields ADD COLUMN IF NOT EXISTS roi_points_json JSONB",
     "ALTER TABLE extraction_fields DROP CONSTRAINT IF EXISTS extraction_fields_page_field_name_key",
     "ALTER TABLE verification_anchors ADD COLUMN IF NOT EXISTS roi_points_json JSONB",
+    "ALTER TABLE verification_anchors DROP CONSTRAINT IF EXISTS verification_anchors_page_anchor_name_key",
     "ALTER TABLE requested_fields ADD COLUMN IF NOT EXISTS roi_points_json JSONB",
     "ALTER TABLE requested_fields DROP CONSTRAINT IF EXISTS requested_fields_page_field_name_key",
     """
