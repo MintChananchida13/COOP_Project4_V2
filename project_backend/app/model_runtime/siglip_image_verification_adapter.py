@@ -298,9 +298,10 @@ def verify_image_category(
     if not isinstance(remote_result, dict):
         raise RuntimeError("SigLIP model runtime returned an invalid response.")
 
-    logits = remote_result.get("logits")
+    raw_result = remote_result.get("raw") if isinstance(remote_result.get("raw"), dict) else {}
+    logits = remote_result.get("logits") or raw_result.get("logits")
     if not isinstance(logits, list):
-        raise RuntimeError("SigLIP model runtime must return raw logits.")
+        return _result_from_remote(remote_result, category_value, active_categories)
     device = str(remote_result.get("device") or "remote")
     return _result_from_logits([_as_float(item, 0.0) for item in logits], category_value, active_categories, device)
 
