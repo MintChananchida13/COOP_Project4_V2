@@ -584,6 +584,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
   const [detectionTest, setDetectionTest] = useState<PrepublishDetectionTestResult | null>(null);
   const [detectionTestAction, setDetectionTestAction] = useState(false);
   const [detectionTestError, setDetectionTestError] = useState("");
+  const [detectionProgressTop, setDetectionProgressTop] = useState(0);
   const [expandedDetectionCandidates, setExpandedDetectionCandidates] = useState<Record<string, boolean>>({});
   const autoSimulationStartedRef = useRef(false);
 
@@ -635,6 +636,14 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
       if (testDocumentPreviewUrl) URL.revokeObjectURL(testDocumentPreviewUrl);
     };
   }, [testDocumentPreviewUrl]);
+
+  useEffect(() => {
+    if (!detectionTestAction) return;
+    const timer = window.setInterval(() => {
+      setDetectionProgressTop((current) => Math.min(5, Math.max(1, current) + 1));
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [detectionTestAction]);
 
   const safePages = pages.length > 0 ? pages : [{ id: "empty", templateId, pageNumber: 1, sampleImageUrl: samplePage, similarityThreshold: 0.5, finalConfidenceThreshold: DEFAULT_FINAL_CONFIDENCE_THRESHOLD }];
   const safeCurrentPage = Math.min(currentPage, Math.max(safePages.length - 1, 0));
@@ -834,6 +843,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
     setTestDocumentFile(file);
     setDetectionTest(null);
     setDetectionTestError("");
+    setDetectionProgressTop(0);
     if (file && (file.type.startsWith("image/") || file.type === "application/pdf")) {
       setTestDocumentPreviewUrl(URL.createObjectURL(file));
     } else {
@@ -845,10 +855,12 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
     if (!testDocumentFile) return;
     setDetectionTestAction(true);
     setDetectionTestError("");
+    setDetectionProgressTop(1);
     setStatusMessage("");
     try {
       const result = await runPrepublishDetectionTest(templateId, testDocumentFile);
       setDetectionTest(result);
+      setDetectionProgressTop(5);
       setStatusMessage("การทดสอบตรวจจับเอกสารเสร็จสิ้น ตรวจสอบผลการจัดอันดับก่อนเผยแพร่");
     } catch (error) {
       console.warn("การทดสอบ Draft Template ด้วยเอกสารใหม่ไม่สำเร็จ", error);
@@ -1450,9 +1462,10 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
             type="button"
             onClick={handleRunDetectionTest}
             disabled={!canRunDetectionTest}
-            className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-black text-white shadow-sm disabled:bg-slate-300 disabled:text-slate-500"
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-black text-white shadow-sm disabled:bg-slate-300 disabled:text-slate-500"
           >
-            {detectionTestAction ? "Running..." : "Run Detection Test"}
+            {detectionTestAction && <Loader2 size={14} className="animate-spin" />}
+            {detectionTestAction ? `กำลังทดสอบ Top ${Math.max(1, detectionProgressTop)}/5` : "Run Detection Test"}
           </button>
         </div>
 
@@ -1498,6 +1511,29 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
 
           <div className="space-y-3">
             {detectionTestError && <p className="rounded-xl bg-red-50 p-3 text-xs font-black text-red-700">{detectionTestError}</p>}
+            {detectionTestAction && (
+              <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-black text-indigo-900">กำลังทดสอบการจับคู่ Template กับเอกสารใหม่</p>
+                    <p className="mt-1 text-[11px] font-semibold text-indigo-700">
+                      กำลังประเมินผลอันดับ Top {Math.max(1, detectionProgressTop)}/5 ระบบยังทำงานอยู่
+                    </p>
+                  </div>
+                  <Loader2 size={18} className="shrink-0 animate-spin text-indigo-600" />
+                </div>
+                <div className="mt-3 grid grid-cols-5 gap-1.5">
+                  {[1, 2, 3, 4, 5].map((rank) => (
+                    <div key={`detection-progress-${rank}`} className="space-y-1">
+                      <div className={`h-1.5 rounded-full ${rank <= Math.max(1, detectionProgressTop) ? "bg-indigo-600" : "bg-white"}`} />
+                      <div className={`text-center text-[9px] font-black ${rank <= Math.max(1, detectionProgressTop) ? "text-indigo-700" : "text-indigo-300"}`}>
+                        Top {rank}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {!detectionTest ? (
               <div className="rounded-xl border border-slate-100 bg-slate-50 p-4 text-xs font-semibold text-slate-500">
                 No new document detection test has been run yet.

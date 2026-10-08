@@ -2194,11 +2194,13 @@ function mapPrepublishCandidate(candidate: Record<string, unknown>): PrepublishC
   const globalScore =
     typeof candidate.global_score === "number"
       ? candidate.global_score
-      : typeof candidate.score === "number"
-        ? candidate.score
-        : typeof candidate.layout_score === "number"
-          ? candidate.layout_score
-          : 0;
+      : typeof candidate.layout_score === "number"
+        ? candidate.layout_score
+        : typeof candidate.retrieval_score === "number"
+          ? candidate.retrieval_score
+          : typeof candidate.score === "number"
+            ? candidate.score
+            : 0;
   const finalScore =
     typeof candidate.final_score === "number"
       ? candidate.final_score
