@@ -1351,6 +1351,7 @@ def _normalize_query_pages(
     skip_normalization: bool = False,
     source_type: str = "image",
     timing: Optional[Dict[str, float]] = None,
+    disable_pdf_subdocument_crop: bool = False,
 ) -> List[Dict[str, Any]]:
     normalize_started = time.perf_counter()
     normalized_dir = _storage_path() / query_id / "normalized"
@@ -1399,16 +1400,29 @@ def _normalize_query_pages(
         matching_layout_signature = None
         if source_type == "pdf":
             debug_dir = (_storage_path() / query_id / "pdf_normalization_debug")
-            layout_crop_path = normalized_dir / f"page_{index}_pdf_layout_crop.png"
-            layout_crop = _pdf_layout_assisted_crop_for_matching(page_path, layout_crop_path, debug_dir, timing=timing)
-            pdf_boundary_path = normalized_dir / f"page_{index}_pdf_subdocument.png"
-            pdf_boundary = normalization_service.detect_pdf_subdocument_boundary(str(page_path), str(pdf_boundary_path), str(debug_dir))
             normalization_debug = info.get("normalization_debug") if isinstance(info.get("normalization_debug"), dict) else {}
             transform_validation = normalization_debug.get("transform_validation") if isinstance(normalization_debug.get("transform_validation"), dict) else {}
             try:
                 pdf_crop_area_ratio = float(transform_validation.get("area_ratio"))
             except (TypeError, ValueError):
                 pdf_crop_area_ratio = None
+            if disable_pdf_subdocument_crop:
+                layout_crop = {
+                    "applied": False,
+                    "crop_accepted": False,
+                    "reason": "pdf_subdocument_crop_disabled_for_prepublish",
+                    "rejection_reason": "pdf_subdocument_crop_disabled_for_prepublish",
+                }
+                pdf_boundary = {
+                    "attempted": False,
+                    "passed": False,
+                    "reason": "pdf_subdocument_crop_disabled_for_prepublish",
+                }
+            else:
+                layout_crop_path = normalized_dir / f"page_{index}_pdf_layout_crop.png"
+                layout_crop = _pdf_layout_assisted_crop_for_matching(page_path, layout_crop_path, debug_dir, timing=timing)
+                pdf_boundary_path = normalized_dir / f"page_{index}_pdf_subdocument.png"
+                pdf_boundary = normalization_service.detect_pdf_subdocument_boundary(str(page_path), str(pdf_boundary_path), str(debug_dir))
             layout_sub_document = bool(layout_crop.get("applied")) and bool(layout_crop.get("output_path"))
             layout_crop_candidate = layout_sub_document
             layout_full_page_policy_reasons = {
@@ -1448,11 +1462,12 @@ def _normalize_query_pages(
             original_preview = _copy_debug_image(page_path, debug_dir / f"page_{index}_original_rendered.png")
             pdf_boundary_crop_box = pdf_boundary.get("crop_box") if isinstance(pdf_boundary, dict) else None
             layout_crop_box = layout_crop.get("crop_box") if isinstance(layout_crop, dict) else None
-            crop_preview = _save_debug_crop(page_path, layout_crop_box or pdf_boundary_crop_box or crop_box, debug_dir / f"page_{index}_detected_crop_before_validation.png")
+            crop_preview = None if disable_pdf_subdocument_crop else _save_debug_crop(page_path, layout_crop_box or pdf_boundary_crop_box or crop_box, debug_dir / f"page_{index}_detected_crop_before_validation.png")
             boundary_preview = _copy_debug_image(Path(str(pdf_boundary.get("output_path"))), debug_dir / f"page_{index}_physical_boundary_crop.png") if pdf_boundary.get("output_path") else None
             matching_preview = _copy_debug_image(Path(matching_path), debug_dir / f"page_{index}_final_matching.png")
             pdf_debug = {
                 "source_type": source_type,
+                "pdf_subdocument_crop_disabled": bool(disable_pdf_subdocument_crop),
                 "original_image_size": original_dimensions,
                 "original_aspect_ratio": _image_aspect(original_dimensions),
                 "document_detection_method": (
@@ -1490,7 +1505,7 @@ def _normalize_query_pages(
                 "layout_crop_accepted": layout_crop.get("crop_accepted"),
                 "layout_crop_rejection_reason": crop_rejection_reason,
                 "pdf_subdocument_detector": pdf_boundary,
-                "pdf_subdocument_detector_attempted": True,
+                "pdf_subdocument_detector_attempted": not disable_pdf_subdocument_crop,
                 "pdf_subdocument_detector_passed": bool(pdf_boundary.get("passed")),
                 "pdf_subdocument_detector_reason": pdf_boundary.get("reason"),
                 "pdf_subdocument_detector_allowed_by_layout": physical_allowed_by_layout,
@@ -1524,10 +1539,11 @@ def _normalize_query_pages(
             effective_normalization.update(
                 {
                     "normalized_image_path": effective_normalized_path,
-                    "pdf_matching_path_promoted_to_normalized": True,
+                    "pdf_matching_path_promoted_to_normalized": not disable_pdf_subdocument_crop,
                     "pdf_matching_path_source": matching_path_source,
                     "pdf_matching_reason": matching_reason,
                     "pdf_matching_crop_box": layout_crop_box or pdf_boundary_crop_box,
+                    "pdf_subdocument_crop_disabled": bool(disable_pdf_subdocument_crop),
                 }
             )
         normalized_pages.append(
@@ -2277,7 +2293,7 @@ def _candidate_from_result(
     # Verify normalized image first, matching the old detection flow.
     verify_template_for_strategy = (
         verification_service.verify_template_strict
-        if verification_strategy == VERIFICATION_STRATEGY_STRICT
+        if verification_strategy == VERIFICATION_STRATEGY_STANDARD
         else verification_service.verify_template
     )
     verification_fields = None
@@ -2297,7 +2313,7 @@ def _candidate_from_result(
             verification_fields,
             verification_runtime_cache,
         )
-        if template_id and verification_strategy == VERIFICATION_STRATEGY_STRICT
+        if template_id and verification_strategy == VERIFICATION_STRATEGY_STANDARD
         else verify_template_for_strategy(
             template_id,
             verification_page_image_paths,
@@ -2477,7 +2493,7 @@ def _candidate_from_result(
                     verification_fields,
                     verification_runtime_cache,
                 )
-                if verification_strategy == VERIFICATION_STRATEGY_STRICT
+                if verification_strategy == VERIFICATION_STRATEGY_STANDARD
                 else verify_template_for_strategy(
                     template_id,
                     aligned_verification_paths,
@@ -2556,7 +2572,7 @@ def _candidate_from_result(
 
     step_started = time.perf_counter()
     retrieval_score = float(result.get("score", 0.0) or 0.0)
-    if verification_strategy == VERIFICATION_STRATEGY_STRICT:
+    if verification_strategy == VERIFICATION_STRATEGY_STANDARD:
         decision = decision_service.decide_candidate_strict(
             retrieval_score,
             verification,
@@ -2959,6 +2975,7 @@ def _detect_page(
     full_evaluation_limit_override: Optional[int] = None,
     query_page_count: Optional[int] = None,
     request_cache: Optional[DetectionRequestCache] = None,
+    prepublish_full_evaluation: bool = False,
 ) -> Dict[str, Any]:
     page_index = int(page_info["page_index"])
     normalized_image_path = str(page_info["normalized_path"])
@@ -2978,6 +2995,7 @@ def _detect_page(
         limit=retrieval_limit,
         include_template_id=include_template_id,
         timing=timing,
+        include_prefilter_rejected=prepublish_full_evaluation,
     )
     if timing is not None:
         timing["template_matching"] = timing.get("template_matching", 0.0) + (time.perf_counter() - step_started)
@@ -2994,7 +3012,7 @@ def _detect_page(
     full_evaluation_count = 0
     early_reject_count = 0
     early_accept_rank = None
-    early_accept_enabled = verification_strategy == VERIFICATION_STRATEGY_STRICT
+    early_accept_enabled = verification_strategy == VERIFICATION_STRATEGY_STANDARD
     candidate_verification_limit = max(1, int(verification_candidate_limit or DETECTION_VERIFICATION_CANDIDATE_LIMIT))
     configured_full_evaluation_limit = (
         max(1, int(full_evaluation_limit_override))
@@ -3034,6 +3052,14 @@ def _detect_page(
                 )
             )
         )
+        if (
+            not should_fully_evaluate
+            and prepublish_full_evaluation
+            and index <= candidate_verification_limit
+            and full_evaluation_count < full_evaluation_limit
+            and not main_page_auto_roi_only
+        ):
+            should_fully_evaluate = True
         if should_fully_evaluate:
             full_evaluation_count += 1
             candidate_processing_path = normalized_image_path
@@ -3315,7 +3341,7 @@ def _detect_page(
             "early_accept_enabled": early_accept_enabled,
             "early_accept_rank": early_accept_rank,
             "early_accept_reason": "top_candidate_final_passed" if early_accept_rank else None,
-            "standard_evaluates_all_eligible_top_k": verification_strategy != VERIFICATION_STRATEGY_STRICT,
+            "strict_evaluates_all_eligible_top_k": verification_strategy == VERIFICATION_STRATEGY_STRICT,
             "verification_strategy": verification_strategy,
             "alignment_scope": "normalized_passed_full_evaluated_candidates",
             "legacy_alignment_limit": DETECTION_ALIGNMENT_LIMIT,
@@ -3365,7 +3391,7 @@ def _aggregate_candidates(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "checked_fields": [],
         }
         verification_strategy = normalize_verification_strategy(best_page_cand.get("verification_strategy"))
-        if verification_strategy == VERIFICATION_STRATEGY_STRICT:
+        if verification_strategy == VERIFICATION_STRATEGY_STANDARD:
             decision = decision_service.decide_candidate_strict(
                 max_retrieval_score,
                 verification,
@@ -3630,6 +3656,8 @@ def detect_template_dev(
     retrieval_limit_override: Optional[int] = None,
     verification_candidate_limit_override: Optional[int] = None,
     full_evaluation_limit_override: Optional[int] = None,
+    prepublish_full_evaluation: bool = False,
+    disable_pdf_subdocument_crop: bool = False,
 ) -> Dict[str, Any]:
     query_id = f"detq_{uuid4().hex[:12]}"
     timing: Dict[str, float] = {}
@@ -3642,7 +3670,14 @@ def detect_template_dev(
         step_started = time.perf_counter()
         page_paths = _prepare_query_pages(query_id, file_bytes, timing=timing)
         skip_normalization = False
-        normalized_pages = _normalize_query_pages(query_id, page_paths, skip_normalization=skip_normalization, source_type=source_type, timing=timing)
+        normalized_pages = _normalize_query_pages(
+            query_id,
+            page_paths,
+            skip_normalization=skip_normalization,
+            source_type=source_type,
+            timing=timing,
+            disable_pdf_subdocument_crop=disable_pdf_subdocument_crop,
+        )
         timing["prepare_pages"] = time.perf_counter() - step_started
         if prepublish_timing:
             print(f"[PREPUBLISH] prepare pages done: {timing['prepare_pages']:.2f}s")
@@ -3691,6 +3726,7 @@ def detect_template_dev(
                 full_evaluation_limit_override=full_evaluation_limit_override,
                 query_page_count=query_page_count,
                 request_cache=request_cache,
+                prepublish_full_evaluation=prepublish_full_evaluation,
             )
             timing["first_page_detection_total"] = time.perf_counter() - step_started
             pages.append(first_detected_page)
@@ -3725,6 +3761,7 @@ def detect_template_dev(
                         full_evaluation_limit_override=full_evaluation_limit_override,
                         query_page_count=query_page_count,
                         request_cache=request_cache,
+                        prepublish_full_evaluation=prepublish_full_evaluation,
                     )
                     pages.append(detected_page)
                 timing["remaining_pages_detection_total"] = time.perf_counter() - step_started
@@ -3820,6 +3857,8 @@ def detect_template_dev(
                 "retrieval_limit": retrieval_limit,
                 "verification_candidate_limit": verification_candidate_limit,
                 "full_evaluation_limit_override": full_evaluation_limit_override,
+                "prepublish_full_evaluation": prepublish_full_evaluation,
+                "disable_pdf_subdocument_crop": disable_pdf_subdocument_crop,
                 "timing": _detection_timing_debug(timing, pages, total_started, request_cache=request_cache),
             },
         }

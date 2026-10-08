@@ -4335,7 +4335,7 @@ class VerificationService:
                 "required_passed": True,
                 "checked_fields": [],
                 "verification_details": [],
-                "verification_strategy": VERIFICATION_STRATEGY_STRICT,
+                "verification_strategy": VERIFICATION_STRATEGY_STANDARD,
                 "timing": {
                     "total_verification": time.perf_counter() - verify_started,
                     "load_fields": load_fields_elapsed,
@@ -4368,14 +4368,15 @@ class VerificationService:
             checked_fields.append(checked)
             if not checked["passed"]:
                 step_started = time.perf_counter()
-                summary = self._verification_summary(template_id, checked_fields, status="strict_text_failed")
+                summary = self._verification_summary(template_id, checked_fields, status="standard_text_failed")
                 summary_elapsed = time.perf_counter() - step_started
                 return {
                     **summary,
                     "passed": False,
                     "required_passed": False,
-                    "verification_strategy": VERIFICATION_STRATEGY_STRICT,
+                    "verification_strategy": VERIFICATION_STRATEGY_STANDARD,
                     "strict_failed_stage": "text",
+                    "standard_failed_stage": "text",
                     "timing": {
                         "total_verification": time.perf_counter() - verify_started,
                         "load_fields": load_fields_elapsed,
@@ -4394,14 +4395,15 @@ class VerificationService:
             checked_fields.append(checked)
             if not checked["passed"]:
                 step_started = time.perf_counter()
-                summary = self._verification_summary(template_id, checked_fields, status="strict_image_failed")
+                summary = self._verification_summary(template_id, checked_fields, status="standard_image_failed")
                 summary_elapsed = time.perf_counter() - step_started
                 return {
                     **summary,
                     "passed": False,
                     "required_passed": False,
-                    "verification_strategy": VERIFICATION_STRATEGY_STRICT,
+                    "verification_strategy": VERIFICATION_STRATEGY_STANDARD,
                     "strict_failed_stage": "image",
+                    "standard_failed_stage": "image",
                     "timing": {
                         "total_verification": time.perf_counter() - verify_started,
                         "load_fields": load_fields_elapsed,
@@ -4414,14 +4416,15 @@ class VerificationService:
                 }
 
         step_started = time.perf_counter()
-        summary = self._verification_summary(template_id, checked_fields, status="strict_verified")
+        summary = self._verification_summary(template_id, checked_fields, status="standard_verified")
         summary_elapsed = time.perf_counter() - step_started
         return {
             **summary,
             "passed": True,
             "required_passed": True,
-            "verification_strategy": VERIFICATION_STRATEGY_STRICT,
+            "verification_strategy": VERIFICATION_STRATEGY_STANDARD,
             "strict_failed_stage": None,
+            "standard_failed_stage": None,
             "timing": {
                 "total_verification": time.perf_counter() - verify_started,
                 "load_fields": load_fields_elapsed,
@@ -4790,12 +4793,12 @@ class DecisionService:
         configured_weights = matching_weights or self.matching_weights(None, {})
         effective_weights = self._effective_matching_weights(configured_weights, verification)
         if not layout_passed:
-            decision_path = "strict_layout_score_below_threshold"
+            decision_path = "standard_layout_score_below_threshold"
         elif not verification_passed:
-            failed_stage = verification.get("strict_failed_stage")
-            decision_path = f"strict_{failed_stage}_anchor_failed" if failed_stage else "strict_anchor_failed"
+            failed_stage = verification.get("standard_failed_stage") or verification.get("strict_failed_stage")
+            decision_path = f"standard_{failed_stage}_anchor_failed" if failed_stage else "standard_anchor_failed"
         else:
-            decision_path = "strict_all_anchors_passed"
+            decision_path = "standard_all_anchors_passed"
         return {
             "retrieval_score": retrieval_score,
             "verification_score": verification_score,
@@ -4814,7 +4817,7 @@ class DecisionService:
             "layout_passed": layout_passed,
             "required_passed": required_passed,
             "required_failed_fields": required_failed_fields,
-            "verification_strategy": VERIFICATION_STRATEGY_STRICT,
+            "verification_strategy": VERIFICATION_STRATEGY_STANDARD,
         }
 
 
@@ -6134,6 +6137,8 @@ class AdminTemplateService:
                 retrieval_limit_override=5,
                 verification_candidate_limit_override=5,
                 full_evaluation_limit_override=5,
+                prepublish_full_evaluation=True,
+                disable_pdf_subdocument_crop=True,
             )
             candidates = [candidate for candidate in detection.get("candidates") or [] if isinstance(candidate, dict)]
             candidates = self._append_prepublish_ranking_fallback_candidates(candidates, detection, limit=5)

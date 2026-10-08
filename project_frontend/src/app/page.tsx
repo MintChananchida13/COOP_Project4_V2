@@ -160,13 +160,14 @@ interface TemplateDetectionNotice {
 }
 
 const isStrictVerificationStrategy = (value?: string | null) => value === "strict";
+const isStandardVerificationStrategy = (value?: string | null) => value !== "strict";
 
 const verificationStrategyLabel = (value?: string | null) =>
   isStrictVerificationStrategy(value) ? "แบบเข้มงวด (strict)" : "แบบมาตรฐาน (standard)";
 
 const detectionFailureDetail = (detection: DetectionDevResult) =>
-  isStrictVerificationStrategy(detection.bestCandidate?.verificationStrategy || (detection.debug?.verification_strategy as string | null | undefined))
-    ? "ไม่ผ่านแบบเข้มงวด (strict)"
+  isStandardVerificationStrategy(detection.bestCandidate?.verificationStrategy || (detection.debug?.verification_strategy as string | null | undefined))
+    ? "ไม่ผ่านแบบมาตรฐาน (standard)"
     : "ไม่โหลด ROI จาก Template ใด ๆ";
 
 const detectionVerificationStrategy = (detection: DetectionDevResult) =>
@@ -293,7 +294,7 @@ const NoTemplateDetectionCard = ({
     ? "ลองใหม่อีกครั้ง หรือใช้ Custom OCR ต่อได้"
     : notice.message || "ไม่พบ Template ที่ตรงกับเอกสารนี้";
   const strategy = notice.verificationStrategy || "standard";
-  const strategyDescription = isStrictVerificationStrategy(strategy)
+  const strategyDescription = isStandardVerificationStrategy(strategy)
     ? "ไม่ผ่านการตรวจสอบตามลำดับเงื่อนไขราย Anchor"
     : "ไม่ผ่านเกณฑ์คะแนนความมั่นใจ";
 

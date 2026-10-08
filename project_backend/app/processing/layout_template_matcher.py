@@ -22,6 +22,7 @@ def search_layout_candidates(
     include_template_id: Optional[str] = None,
     active_only: bool = True,
     timing: Optional[Dict[str, Any]] = None,
+    include_prefilter_rejected: bool = False,
 ) -> List[Dict[str, Any]]:
     total_started = time.perf_counter()
     breakdown: Dict[str, Any] = {
@@ -29,6 +30,7 @@ def search_layout_candidates(
         "limit": limit,
         "include_template_id": include_template_id,
         "active_only": active_only,
+        "include_prefilter_rejected": include_prefilter_rejected,
         "connect": 0.0,
         "pool_getconn": None,
         "ensure_schema": None,
@@ -407,7 +409,8 @@ def search_layout_candidates(
                 similarity.get("grid_prefilter_threshold"),
                 similarity.get("aspect_prefilter_threshold"),
             )
-            continue
+            if not include_prefilter_rejected:
+                continue
         spatial_evaluated_count += 1
 
         logger.debug("[LAYOUT] compared template_id=%s score=%s", template_id, similarity.get("score"))
