@@ -15,6 +15,15 @@ def _connect() -> Any:
     return connect_db()
 
 
+def _row_value(row: Any, key: str, default: Any = None) -> Any:
+    if isinstance(row, dict):
+        return row.get(key, default)
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
 def search_layout_candidates(
     query_signature: Dict[str, Any],
     page_number: int = 1,
@@ -282,8 +291,8 @@ def search_layout_candidates(
         pool_item = {
             "template_id": template_id,
             "template_name": row["template_name"],
-            "document_type": row["document_type"],
-            "category": row["category"],
+            "document_type": _row_value(row, "document_type"),
+            "category": _row_value(row, "category"),
             "version_name": row["version_name"],
             "version_number": row["version_number"],
             "template_status": row["template_status"],
@@ -363,8 +372,8 @@ def search_layout_candidates(
         sample = {
             "template_id": template_id,
             "template_name": row["template_name"],
-            "document_type": row["document_type"],
-            "category": row["category"],
+            "document_type": _row_value(row, "document_type"),
+            "category": _row_value(row, "category"),
             "version_name": row["version_name"],
             "version_number": row["version_number"],
             "template_page_number": row["page_number"],
@@ -429,8 +438,8 @@ def search_layout_candidates(
         metadata = {
             "template_id": template_id,
             "template_name": row["template_name"],
-            "document_type": row["document_type"],
-            "category": row["category"],
+            "document_type": _row_value(row, "document_type"),
+            "category": _row_value(row, "category"),
             "version_name": row["version_name"],
             "version_number": row["version_number"],
             "template_status": row["template_status"],
