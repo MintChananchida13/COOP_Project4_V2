@@ -2242,9 +2242,26 @@ def _cleanup_generated_paths(paths: Dict[int, str] | List[str]) -> None:
     values = paths.values() if isinstance(paths, dict) else paths
     for path_value in values:
         try:
-            Path(path_value).unlink(missing_ok=True)
+            path = Path(path_value)
+            path.unlink(missing_ok=True)
+            _prune_empty_storage_parents(path.parent)
         except (TypeError, OSError):
             continue
+
+
+def _prune_empty_storage_parents(path: Path) -> None:
+    try:
+        root = _storage_root().resolve()
+        current = path.resolve()
+        current.relative_to(root)
+    except (ValueError, OSError):
+        return
+    while current != root:
+        try:
+            current.rmdir()
+        except OSError:
+            break
+        current = current.parent
 
 
 def _layout_region_type(region: Dict[str, Any]) -> str:
@@ -4580,6 +4597,7 @@ class StorageMaintenanceService:
         Path(__file__).resolve().parents[2] / "storage" / "detection_queries",
         _storage_root() / "prepublish_detection_tests",
         _storage_root() / "template_extraction_test_crops",
+        _storage_root() / "template_verification_test_crops",
         _storage_root() / "verification_query_anchor_crops",
         _storage_root() / "prepublish_anchor_crops",
     ]
@@ -6290,8 +6308,7 @@ class AdminTemplateService:
                 "pages": detection.get("pages") or [],
             }
         finally:
-            if not SAVE_DEBUG_ARTIFACTS:
-                shutil.rmtree(_detection_query_storage_root() / str(detection.get("query_id") or ""), ignore_errors=True)
+            shutil.rmtree(_detection_query_storage_root() / str(detection.get("query_id") or ""), ignore_errors=True)
             print(f"[PREPUBLISH] TOTAL: {time.perf_counter() - total_started:.2f}s")
 
     def confirm_publish_template(self, template_id: str) -> Dict[str, Any]:
@@ -6431,8 +6448,10 @@ class AdminTemplateService:
                     try:
                         ocr_result = _flexible_text_ocr_from_boundary(boundary_path)
                     finally:
-                        if boundary_path and not SAVE_DEBUG_ARTIFACTS:
-                            Path(boundary_path).unlink(missing_ok=True)
+                        if boundary_path:
+                            boundary_file = Path(boundary_path)
+                            boundary_file.unlink(missing_ok=True)
+                            _prune_empty_storage_parents(boundary_file.parent)
                 elif data_type == "table":
                     if source_image is None:
                         result_item["failure_reason"] = "template_page_image_or_roi_unavailable"
@@ -6585,8 +6604,7 @@ class AdminTemplateService:
             )
             return result
         finally:
-            if not SAVE_DEBUG_ARTIFACTS:
-                _cleanup_generated_paths(page_paths)
+            _cleanup_generated_paths(page_paths)
 
     def update_template(self, template_id: str, payload: TemplateUpdate) -> Dict[str, Any]:
         patch = payload.model_dump(exclude_unset=True)

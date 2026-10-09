@@ -119,6 +119,8 @@ def search_layout_candidates(
                     SELECT
                         tv.id AS template_id,
                         tg.name AS template_name,
+                        tg.document_type AS document_type,
+                        tg.category AS category,
                         tv.version_name AS version_name,
                         tv.version_number AS version_number,
                         tv.status AS template_status,
@@ -186,6 +188,8 @@ def search_layout_candidates(
                     SELECT
                         tv.id AS template_id,
                         tg.name AS template_name,
+                        tg.document_type AS document_type,
+                        tg.category AS category,
                         tv.version_name AS version_name,
                         tv.version_number AS version_number,
                         tv.status AS template_status,
@@ -278,6 +282,8 @@ def search_layout_candidates(
         pool_item = {
             "template_id": template_id,
             "template_name": row["template_name"],
+            "document_type": row["document_type"],
+            "category": row["category"],
             "version_name": row["version_name"],
             "version_number": row["version_number"],
             "template_status": row["template_status"],
@@ -357,6 +363,8 @@ def search_layout_candidates(
         sample = {
             "template_id": template_id,
             "template_name": row["template_name"],
+            "document_type": row["document_type"],
+            "category": row["category"],
             "version_name": row["version_name"],
             "version_number": row["version_number"],
             "template_page_number": row["page_number"],
@@ -421,6 +429,8 @@ def search_layout_candidates(
         metadata = {
             "template_id": template_id,
             "template_name": row["template_name"],
+            "document_type": row["document_type"],
+            "category": row["category"],
             "version_name": row["version_name"],
             "version_number": row["version_number"],
             "template_status": row["template_status"],

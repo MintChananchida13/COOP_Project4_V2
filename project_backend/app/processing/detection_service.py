@@ -190,6 +190,46 @@ def _template_id_from_metadata(metadata: Dict[str, Any], vector_id: str) -> Opti
     return None
 
 
+def _is_identity_card_layout_candidate(result: Dict[str, Any]) -> bool:
+    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    values = [
+        metadata.get("template_name"),
+        metadata.get("template_group_name"),
+        metadata.get("document_type"),
+        metadata.get("category"),
+        metadata.get("template_code"),
+    ]
+    haystack = " ".join(str(value or "").strip().lower() for value in values if str(value or "").strip())
+    if not haystack:
+        return False
+    thai_identity_tokens = ("บัตรประชาชน", "สำเนาบัตรประชาชน")
+    english_identity_tokens = (
+        "identity card",
+        "id card",
+        "citizen card",
+        "citizen id",
+        "national id",
+        "thai id",
+        "thai national id",
+        "identification card",
+    )
+    compact = haystack.replace("-", "_").replace(" ", "_")
+    compact_identity_tokens = (
+        "identity_card",
+        "id_card",
+        "citizen_card",
+        "citizen_id",
+        "national_id",
+        "thai_id",
+        "thai_national_id",
+    )
+    return (
+        any(token in haystack for token in thai_identity_tokens)
+        or any(token in haystack for token in english_identity_tokens)
+        or any(token in compact for token in compact_identity_tokens)
+    )
+
+
 def _fetch_template(template_id: Optional[str]) -> Optional[Dict[str, Any]]:
     template, _ = _fetch_template_with_db_timing(template_id)
     return template
@@ -1269,6 +1309,19 @@ def _cleanup_transient_query_artifacts(query_id: str) -> None:
                 child.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def _cleanup_query_artifacts(query_id: str) -> None:
+    query_dir = _storage_path() / query_id
+    try:
+        root = _storage_path().resolve()
+        resolved = query_dir.resolve()
+        resolved.relative_to(root)
+    except (ValueError, OSError):
+        return
+    if resolved == root or not resolved.exists() or not resolved.is_dir():
+        return
+    shutil.rmtree(resolved, ignore_errors=True)
 
 
 def _persist_selected_processing_pages(
@@ -3081,6 +3134,7 @@ def _detect_page(
             candidate_processing_path = normalized_image_path
             candidate_processing_path_source = str(matching_normalization.get("matching_path_source") or "normalized")
             candidate_processing_switch_reason = "default_matching_image_used"
+            candidate_is_identity_card = _is_identity_card_layout_candidate(result)
             template_original_aspect_ratio = _template_original_aspect_ratio_from_result(result)
             template_is_a4_like = _is_a4_portrait_like_aspect_ratio(template_original_aspect_ratio)
             if (
@@ -3092,14 +3146,24 @@ def _detect_page(
                 candidate_processing_path = str(page_info.get("original_path"))
                 candidate_processing_path_source = "rendered_pdf_page_a4_template"
                 candidate_processing_switch_reason = "template_original_aspect_ratio_a4_like_uses_original_pdf_page"
+            if (
+                not candidate_is_identity_card
+                and page_info.get("original_path")
+                and candidate_processing_path != str(page_info.get("original_path"))
+            ):
+                candidate_processing_path = str(page_info.get("original_path"))
+                candidate_processing_path_source = "original_page_non_identity_card_layout_candidate"
+                candidate_processing_switch_reason = "non_identity_card_layout_candidate_uses_original_for_text_image_anchors"
             candidate_normalization_info = page_info.get("normalization")
-            if candidate_processing_path_source == "rendered_pdf_page_a4_template" and isinstance(candidate_normalization_info, dict):
+            if candidate_processing_path_source in {"rendered_pdf_page_a4_template", "original_page_non_identity_card_layout_candidate"} and isinstance(candidate_normalization_info, dict):
                 candidate_normalization_info = {
                     **candidate_normalization_info,
                     "normalized_image_path": candidate_processing_path,
                     "pdf_matching_path_promoted_to_normalized": False,
                     "pdf_processing_image_switched_to_original": True,
                     "pdf_processing_image_switch_reason": candidate_processing_switch_reason,
+                    "anchor_processing_image_switched_to_original": True,
+                    "anchor_processing_image_switch_reason": candidate_processing_switch_reason,
                 }
             step_started = time.perf_counter()
             candidate = _candidate_from_result(
@@ -3117,7 +3181,7 @@ def _detect_page(
             )
             if isinstance(candidate, dict):
                 if (
-                    candidate_processing_path_source == "rendered_pdf_page_a4_template"
+                    candidate_processing_path_source in {"rendered_pdf_page_a4_template", "original_page_non_identity_card_layout_candidate"}
                     and candidate.get("selected_processing_path") == candidate_processing_path
                     and candidate.get("selected_processing_source") == "normalized"
                 ):
@@ -3125,11 +3189,20 @@ def _detect_page(
                     candidate["verification_source_used"] = candidate_processing_path_source
                 candidate["template_original_aspect_ratio"] = round(float(template_original_aspect_ratio), 4) if template_original_aspect_ratio is not None else None
                 candidate["template_is_a4_like"] = template_is_a4_like
+                candidate["template_is_identity_card_like"] = candidate_is_identity_card
                 candidate["pdf_processing_image_before_candidate_selection"] = {
                     "path": normalized_image_path,
                     "source": str(matching_normalization.get("matching_path_source") or "normalized"),
                 }
                 candidate["pdf_processing_image_after_candidate_selection"] = {
+                    "path": candidate_processing_path,
+                    "source": candidate_processing_path_source,
+                }
+                candidate["anchor_processing_image_before_candidate_selection"] = {
+                    "path": normalized_image_path,
+                    "source": str(matching_normalization.get("matching_path_source") or "normalized"),
+                }
+                candidate["anchor_processing_image_after_candidate_selection"] = {
                     "path": candidate_processing_path,
                     "source": candidate_processing_path_source,
                 }
@@ -3882,5 +3955,5 @@ def detect_template_dev(
             },
         }
     finally:
-        if cleanup_generated and not SAVE_DEBUG_ARTIFACTS:
-            _cleanup_transient_query_artifacts(query_id)
+        if cleanup_generated:
+            _cleanup_query_artifacts(query_id)
