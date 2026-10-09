@@ -2234,6 +2234,7 @@ def _candidate_from_result(
     include_template_id: Optional[str] = None,
     verification_strategy: str = "standard",
     request_cache: Optional[DetectionRequestCache] = None,
+    query_image_source: str = "normalized",
 ) -> Optional[Dict[str, Any]]:
     metadata = result.get("metadata") or {}
     template_signature = result.get("_layout_signature")
@@ -2323,7 +2324,7 @@ def _candidate_from_result(
     post_match_alignment_query_image_path = query_image_path
     post_match_alignment_source = "query_image"
     post_match_original_crop_path = None
-    verification_source_used = "normalized"
+    verification_source_used = query_image_source or "normalized"
     alignment_skip_reason = None
     alignment = _alignment_result(
         "skipped",
@@ -2501,7 +2502,7 @@ def _candidate_from_result(
         alignment_debug["reason"] = alignment_skip_reason
         alignment_debug["normalized_verification_passed"] = False
         alignment_debug["alignment_status"] = "skipped"
-        alignment_debug["verification_source_used"] = "normalized"
+        alignment_debug["verification_source_used"] = verification_source_used
         alignment["alignment_debug"] = alignment_debug
 
     normalized_layout_already_good = normalized_passed and candidate_retrieval_score >= 0.93 and not use_original_for_post_match
@@ -2512,7 +2513,7 @@ def _candidate_from_result(
         alignment_debug["reason"] = alignment_skip_reason
         alignment_debug["normalized_layout_already_good"] = True
         alignment_debug["alignment_status"] = "skipped"
-        alignment_debug["verification_source_used"] = "normalized"
+        alignment_debug["verification_source_used"] = verification_source_used
         alignment["alignment_debug"] = alignment_debug
     alignment_required = bool(should_try_alignment)
     aligned_internal_timing_ms = {}
@@ -2579,10 +2580,9 @@ def _candidate_from_result(
                 alignment_debug = alignment.get("alignment_debug") or {}
                 alignment_debug["reason"] = "aligned_verification_worse_than_normalized"
                 alignment_debug["alignment_status"] = "fallback"
-                alignment_debug["verification_source_used"] = "normalized"
+                alignment_debug["verification_source_used"] = verification_source_used
                 alignment["alignment_debug"] = alignment_debug
                 verification = normalized_verification
-                verification_source_used = "normalized"
                 alignment_skip_reason = "aligned_verification_worse_than_normalized"
 
     alignment_debug = alignment.get("alignment_debug") or {}
@@ -3165,10 +3165,12 @@ def _detect_page(
                     "anchor_processing_image_switched_to_original": True,
                     "anchor_processing_image_switch_reason": candidate_processing_switch_reason,
                 }
+            candidate_page_image_paths = dict(page_image_paths)
+            candidate_page_image_paths[page_index] = candidate_processing_path
             step_started = time.perf_counter()
             candidate = _candidate_from_result(
                 result=result,
-                page_image_paths=page_image_paths,
+                page_image_paths=candidate_page_image_paths,
                 page_index=page_index,
                 query_image_path=candidate_processing_path,
                 original_image_path=str(page_info.get("original_path") or ""),
@@ -3178,6 +3180,7 @@ def _detect_page(
                 include_template_id=include_template_id,
                 verification_strategy=verification_strategy,
                 request_cache=request_cache,
+                query_image_source=candidate_processing_path_source,
             )
             if isinstance(candidate, dict):
                 if (
