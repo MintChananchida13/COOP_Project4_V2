@@ -211,6 +211,7 @@ type ProcessingLogSnapshot = {
   sourcePages: Record<string, unknown>[];
   templateDetection: Record<string, unknown>;
   matchedTemplate: Record<string, unknown> | null;
+  pageFiles?: Record<string, unknown>[];
   roiSnapshot: Record<string, unknown>[];
   ocrOriginal: Record<string, unknown>[];
   groundTruth: Record<string, unknown>[];
@@ -2093,6 +2094,17 @@ function HomeWorkspace() {
       imageUrl: src && !src.startsWith("data:") ? src : undefined,
       imageReferenceStatus: src && !src.startsWith("data:") ? "stable_url" : "data_url_omitted",
     }));
+    const pageFiles: Record<string, unknown>[] = imagesList.flatMap((src, index) =>
+      src && src.startsWith("data:")
+        ? [{
+            pageNumber: index + 1,
+            dataUrl: src,
+            sourceFileId: uploadedSourceFileId || undefined,
+            sourceFileName: uploadedSourceFileName || undefined,
+            sourceFileType: uploadedSourceFileType || undefined,
+          }]
+        : []
+    );
     const ocrOriginal = ocrResults.map((result) => {
       const roi = findRoiForOcrResult(rois, result);
       const pageIndex = Number(result.pageIndex ?? roi?.pageIndex ?? 0);
@@ -2128,6 +2140,7 @@ function HomeWorkspace() {
       currentStep,
       pageCount: imagesList.length,
       sourcePages,
+      pageFiles,
       templateDetection: templateDetectionSnapshot || {},
       matchedTemplate: matchedTemplate ? { ...matchedTemplate } : null,
       roiSnapshot: rois.map((roi) => compactRoiSnapshot(roi, ocrPageReferenceDimensionsRef.current[Number(roi.pageIndex ?? 0)] || null)),

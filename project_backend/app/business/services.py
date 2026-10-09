@@ -1436,10 +1436,18 @@ class ProcessingLogService:
             row = cursor.fetchone()
         stored_id = row["id"] if row else log_id
         stored_source_pages = self._persist_detection_query_pages(stored_id, source_pages, template_detection)
-        existing_page_numbers = {
+        persisted_page_numbers = {
             int(page.get("pageNumber") or page.get("page_number") or 0)
             for page in stored_source_pages
             if isinstance(page, dict)
+            and (
+                page.get("imageReferenceStatus") == "persisted"
+                or page.get("image_reference_status") == "persisted"
+                or page.get("sourceReference")
+                or page.get("source_reference")
+                or page.get("storageReference")
+                or page.get("storage_reference")
+            )
         }
         fallback_page_files: List[Dict[str, Any]] = []
         for page_file in data.get("page_files") or []:
@@ -1449,7 +1457,7 @@ class ProcessingLogService:
                 page_number = int(page_file.get("pageNumber") or page_file.get("page_number") or 0)
             except (TypeError, ValueError):
                 continue
-            if page_number not in existing_page_numbers:
+            if page_number not in persisted_page_numbers:
                 fallback_page_files.append(page_file)
         if fallback_page_files:
             stored_source_pages = self._persist_page_files(stored_id, stored_source_pages, fallback_page_files)
