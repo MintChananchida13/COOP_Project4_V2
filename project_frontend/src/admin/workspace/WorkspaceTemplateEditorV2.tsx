@@ -91,6 +91,18 @@ const fieldImageCategories = (value?: string | string[]) =>
     .map((item) => String(item || "").trim())
     .filter(Boolean);
 
+const extractionFieldTestSignature = (fields: TemplateField[]) =>
+  fields
+    .filter((field) => !isAnchor(field))
+    .map((field) => `${field.id}:${field.pageNumber}:${field.fieldName}:${field.dataType}:${field.extractionMethod}:${field.roi.xRatio}:${field.roi.yRatio}:${field.roi.widthRatio}:${field.roi.heightRatio}`)
+    .join("|");
+
+const verificationAnchorTestSignature = (fields: TemplateField[]) =>
+  fields
+    .filter(isAnchor)
+    .map((field) => `${field.id}:${field.pageNumber}:${field.fieldName}:${field.dataType}:${field.extractionMethod}:${field.expectedText || ""}:${field.imageCategory || ""}:${field.roi.xRatio}:${field.roi.yRatio}:${field.roi.widthRatio}:${field.roi.heightRatio}`)
+    .join("|");
+
 const normalizeTableRows = (rows?: unknown): string[][] | null => {
   if (!Array.isArray(rows) || rows.length === 0) return null;
   const normalized = rows
@@ -489,18 +501,12 @@ export default function WorkspaceTemplateEditorV2({
           ? `กรุณาเลือกประเภทภาพให้ Anchor รูปภาพให้ครบ (${imageAnchorsMissingCategory.length} รายการ)`
         : "";
   const extractionTestSignature = useMemo(
-    () =>
-      extractionFields
-        .map((field) => `${field.id}:${field.pageNumber}:${field.fieldName}:${field.dataType}:${field.extractionMethod}:${field.roi.xRatio}:${field.roi.yRatio}:${field.roi.widthRatio}:${field.roi.heightRatio}`)
-        .join("|"),
-    [extractionFields]
+    () => extractionFieldTestSignature(fields),
+    [fields]
   );
   const verificationTestSignature = useMemo(
-    () =>
-      verificationAnchors
-        .map((field) => `${field.id}:${field.pageNumber}:${field.fieldName}:${field.dataType}:${field.extractionMethod}:${field.expectedText || ""}:${field.imageCategory || ""}:${field.roi.xRatio}:${field.roi.yRatio}:${field.roi.widthRatio}:${field.roi.heightRatio}`)
-        .join("|"),
-    [verificationAnchors]
+    () => verificationAnchorTestSignature(fields),
+    [fields]
   );
   const extractionTestSignatureRef = useRef(extractionTestSignature);
   const verificationTestSignatureRef = useRef(verificationTestSignature);
@@ -924,7 +930,7 @@ export default function WorkspaceTemplateEditorV2({
       setTestError(verificationBlockedMessage || "Verification anchors are not ready.");
       return;
     }
-    const startedSignature = kind === "extraction" ? extractionTestSignature : verificationTestSignature;
+    let startedSignature = kind === "extraction" ? extractionTestSignature : verificationTestSignature;
     setTestAction(kind);
     setTestError("");
     setTestStatus(kind === "extraction" ? "Testing extraction fields..." : "Testing verification anchors...");
@@ -937,6 +943,8 @@ export default function WorkspaceTemplateEditorV2({
         if (Array.isArray(flushedFields)) {
           latestFieldsForTest = flushedFields;
         }
+        startedSignature = verificationAnchorTestSignature(latestFieldsForTest);
+        verificationTestSignatureRef.current = startedSignature;
         setTestStatus("Testing verification anchors...");
       }
       const latestExtractionFields = latestFieldsForTest.filter((field) => !isAnchor(field));
