@@ -247,8 +247,8 @@ class TemplateVersionFromRequestCreate(BaseModel):
     similarity_threshold: Optional[float] = Field(default=None, ge=0, le=1)
     final_confidence_threshold: Optional[float] = Field(default=None, ge=0, le=1, validation_alias=AliasChoices("final_confidence_threshold", "finalConfidenceThreshold"))
     reuse_roi: bool = Field(default=True, validation_alias=AliasChoices("reuse_roi", "reuseRoi"))
-    detection_mode: str = Field(default="all_pages", validation_alias=AliasChoices("detection_mode", "detectionMode"))
-    main_page_number: int = Field(default=1, ge=1, validation_alias=AliasChoices("main_page_number", "mainPageNumber"))
+    detection_mode: Optional[str] = Field(default=None, validation_alias=AliasChoices("detection_mode", "detectionMode"))
+    main_page_number: Optional[int] = Field(default=None, ge=1, validation_alias=AliasChoices("main_page_number", "mainPageNumber"))
 
 
 class TemplatePageCreate(BaseModel):
