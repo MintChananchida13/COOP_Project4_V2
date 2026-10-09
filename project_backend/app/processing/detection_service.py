@@ -3128,6 +3128,7 @@ def _detect_page(
                         "retrieval_rank": index,
                         "template_id": result_template_id,
                         "template_name": metadata.get("template_name"),
+                        "version_name": metadata.get("version_name"),
                         "page_index": page_index,
                     }
                 )

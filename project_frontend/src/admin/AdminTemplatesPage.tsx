@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Check, ChevronDown, ChevronRight, FileImage, Folder, Loader2, Pencil, Plus, Search, UploadCloud, X } from "lucide-react";
 import { Template, TemplateStatus } from "../types/ocr";
 import {
@@ -10,6 +10,7 @@ import {
   deleteTemplateApi,
   fetchAdminSystemMaintenance,
   fetchTemplates,
+  invalidateAdminListCache,
   updateTemplateApi,
   updateTemplateStatus,
 } from "./adminApi";
@@ -130,6 +131,8 @@ const collapseRepeatedName = (value: string) => {
 
 export default function AdminTemplatesPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const refreshToken = searchParams.get("refresh");
   const [templates, setTemplates] = useState<Template[]>([]);
   const [selectedStatus, setSelectedStatus] = useState<AdminStatusFilter>("all");
   const [templateSearch, setTemplateSearch] = useState("");
@@ -160,11 +163,14 @@ export default function AdminTemplatesPage() {
   const [createRequestError, setCreateRequestError] = useState("");
   const handledPendingRefreshEndRef = useRef<string | null>(null);
 
-  const loadTemplates = useCallback(async (options?: { silent?: boolean }) => {
+  const loadTemplates = useCallback(async (options?: { silent?: boolean; forceRefresh?: boolean }) => {
     if (!options?.silent) {
       setLoadStatus("loading");
     }
     try {
+      if (options?.forceRefresh) {
+        invalidateAdminListCache("templates");
+      }
       const persistedTemplates = await fetchTemplates();
       setTemplates(persistedTemplates);
       setLoadStatus("loaded");
@@ -182,7 +188,7 @@ export default function AdminTemplatesPage() {
 
     const loadInitialTemplates = async () => {
       if (cancelled) return;
-      await loadTemplates();
+      await loadTemplates({ forceRefresh: Boolean(refreshToken) });
     };
 
     void loadInitialTemplates();
@@ -190,7 +196,7 @@ export default function AdminTemplatesPage() {
     return () => {
       cancelled = true;
     };
-  }, [loadTemplates]);
+  }, [loadTemplates, refreshToken]);
 
   const hasPendingTemplateChanges = useMemo(
     () => templates.some((template) => Boolean(template.pendingStatus || template.pendingUpdate)),

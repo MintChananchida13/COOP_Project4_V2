@@ -863,6 +863,7 @@ export interface PrepublishDetectionProgress {
   retrievalRank?: number | null;
   templateId?: string | null;
   templateName?: string | null;
+  versionName?: string | null;
   pageIndex?: number | null;
 }
 
@@ -2457,6 +2458,7 @@ const mapPrepublishDetectionProgress = (progress: Record<string, unknown> | null
     retrievalRank: typeof progress.retrieval_rank === "number" ? progress.retrieval_rank : typeof progress.retrievalRank === "number" ? progress.retrievalRank : null,
     templateId: (progress.template_id as string | null | undefined) ?? (progress.templateId as string | null | undefined) ?? null,
     templateName: (progress.template_name as string | null | undefined) ?? (progress.templateName as string | null | undefined) ?? null,
+    versionName: (progress.version_name as string | null | undefined) ?? (progress.versionName as string | null | undefined) ?? null,
     pageIndex: typeof progress.page_index === "number" ? progress.page_index : typeof progress.pageIndex === "number" ? progress.pageIndex : null,
   };
 };
@@ -2517,7 +2519,9 @@ export const confirmTemplatePublish = async (templateId: string) => {
     method: "POST",
     headers: { "Content-Type": "application/json" },
   });
-  return mapEmbeddingJobMutationResponse(response);
+  const result = await mapEmbeddingJobMutationResponse(response);
+  invalidateAdminListCache("templates");
+  return result;
 };
 
 function mapTemplateStepTestItem(item: Record<string, unknown>): TemplateStepTestItem {

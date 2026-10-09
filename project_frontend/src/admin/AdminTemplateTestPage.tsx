@@ -758,6 +758,10 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
   const overallReady = publishPrerequisitesMet;
   const canRunDetectionTest = Boolean(stepTwoCompleted && simulationAction === null && testDocumentFile && !detectionTestAction);
   const canConfirmPublish = publishPrerequisitesMet && simulationAction === null && template?.status !== "active" && template?.pendingStatus !== "active";
+  const detectionProgressTemplateLabel = [
+    detectionProgress?.templateName,
+    detectionProgress?.versionName,
+  ].filter((value) => String(value || "").trim()).join(" - ");
   const validationSteps = [
     { step: 1, label: "ตรวจสอบ ROI และ OCR", enabled: true, done: ocrPreviewPassed },
     { step: 2, label: "สร้างข้อมูลอ้างอิง Template", enabled: stepOneConfirmed, done: stepTwoCompleted },
@@ -1555,7 +1559,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
                     <p className="text-xs font-black text-indigo-900">กำลังทดสอบการจับคู่ Template กับเอกสารใหม่</p>
                     <p className="mt-1 text-[11px] font-semibold text-indigo-700">
                       {detectionProgress?.currentRank
-                        ? `กำลังประเมินผลอันดับ Top ${detectionProgress.currentRank}/${Math.max(1, detectionProgress.totalRank || 5)}${detectionProgress.templateName ? `: ${detectionProgress.templateName}` : ""}`
+                        ? `กำลังประเมินผลอันดับ Top ${detectionProgress.currentRank}/${Math.max(1, detectionProgress.totalRank || 5)}${detectionProgressTemplateLabel ? ` : ${detectionProgressTemplateLabel}` : ""}`
                         : "กำลังเตรียมเอกสารและค้นหา Candidate จาก Layout"}
                     </p>
                   </div>
@@ -1789,7 +1793,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
               >
                 ปิด
               </button>}
-              <Link href="/admin/templates" className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-black text-white">
+              <Link href="/admin/templates?refresh=published" className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-black text-white">
                 ไปคลัง Template
               </Link>
             </div>
