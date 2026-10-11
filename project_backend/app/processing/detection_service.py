@@ -3960,4 +3960,4 @@ def detect_template_dev(
         }
     finally:
         if cleanup_generated and not SAVE_DEBUG_ARTIFACTS:
-            _cleanup_transient_query_artifacts(query_id)
+            _cleanup_query_artifacts(query_id)
