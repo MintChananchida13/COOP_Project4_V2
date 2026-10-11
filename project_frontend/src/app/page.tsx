@@ -1747,6 +1747,7 @@ function HomeWorkspace() {
   } | null>(null);
   const [templateDetectionSnapshot, setTemplateDetectionSnapshot] = useState<Record<string, unknown> | null>(null);
   const activeProcessingRunIdRef = useRef<string>("");
+  const autoSavedProcessingLogRunIdsRef = useRef<Set<string>>(new Set());
   const ocrProcessingTimeMsRef = useRef<number | null>(null);
   const tableExportDropdownRef = useRef<HTMLDivElement | null>(null);
   const notificationDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -2175,6 +2176,14 @@ function HomeWorkspace() {
       });
     }, 0);
   };
+
+  useEffect(() => {
+    const processingRunId = activeProcessingRunIdRef.current;
+    if (!processingRunId || currentStep !== "editor" || ocrResults.length === 0) return;
+    if (autoSavedProcessingLogRunIdsRef.current.has(processingRunId)) return;
+    autoSavedProcessingLogRunIdsRef.current.add(processingRunId);
+    queueProcessingLogSave("processing_completed");
+  }, [currentStep, ocrResults.length]);
 
   const handleLogout = () => {
     queueProcessingLogSave("logout");
