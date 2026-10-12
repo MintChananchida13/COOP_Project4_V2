@@ -2105,6 +2105,27 @@ function HomeWorkspace() {
     return entries.filter((entry): entry is Record<string, unknown> => Boolean(entry));
   };
 
+  const compactProcessingLogTableStructured = (structured: OCRResult["tableStructured"]) => {
+    if (!structured) return undefined;
+    return {
+      rows: Array.isArray(structured.rows) ? structured.rows : undefined,
+      headerRowCount: structured.headerRowCount,
+      colWidths: Array.isArray(structured.colWidths) ? structured.colWidths : undefined,
+      cells: Array.isArray(structured.cells)
+        ? structured.cells.map((cell) => ({
+            row: cell.row,
+            col: cell.col,
+            text: cell.text,
+            rowSpan: cell.rowSpan,
+            colSpan: cell.colSpan,
+            ocrText: cell.ocrText,
+            groundTruth: cell.groundTruth,
+            hidden: cell.hidden,
+          }))
+        : undefined,
+    };
+  };
+
   const buildProcessingLogSnapshot = (reason: string, pageFiles: Record<string, unknown>[] = []): ProcessingLogSnapshot | null => {
     const processingRunId = activeProcessingRunIdRef.current;
     if (!processingRunId || ocrResults.length === 0) return null;
@@ -2138,7 +2159,7 @@ function HomeWorkspace() {
         value: result.originalText ?? result.extractedText ?? "",
         confidence: result.confidence,
         tableRows: result.tableRows,
-        tableStructured: result.tableStructured,
+        tableStructured: compactProcessingLogTableStructured(result.tableStructured),
         tableHtml: result.tableHtml,
       };
     });
@@ -2189,14 +2210,19 @@ function HomeWorkspace() {
       const pageFiles = await buildProcessingLogPageFiles();
       const snapshot = buildProcessingLogSnapshot(reason, pageFiles);
       if (!snapshot) return;
-      void fetch(`${ADMIN_API_BASE_URL}/processing-logs`, {
+      const response = await fetch(`${ADMIN_API_BASE_URL}/processing-logs`, {
         method: "POST",
         headers,
+        credentials: "include",
         body: JSON.stringify(snapshot),
-      }).catch((error) => {
-        console.warn("Processing log background save failed.", error);
       });
-    })();
+      if (!response.ok) {
+        const detail = await response.text().catch(() => "");
+        console.warn("Processing log background save failed.", response.status, detail);
+      }
+    })().catch((error) => {
+      console.warn("Processing log background save failed.", error);
+    });
   };
 
   const handleLogout = () => {
