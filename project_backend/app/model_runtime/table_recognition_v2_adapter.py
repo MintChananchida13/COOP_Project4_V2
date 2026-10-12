@@ -2857,16 +2857,26 @@ def _build_result_with_central_table_rules(output: Any, image: np.ndarray, start
         recognized_items = _central_extract_recognized_items(table_result)
         if not recognized_items:
             continue
+        temp_image_path: Optional[Path] = None
         try:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_image:
+                temp_image_path = Path(temp_image.name)
+            image_path_for_rules = temp_image_path if cv2.imwrite(str(temp_image_path), image) else None
             central_cells, central_html = _central_reconstruct_table_from_ocr(
                 cell_boxes,
                 recognized_items,
                 (int(width), int(height)),
-                None,
+                image_path_for_rules,
             )
         except Exception as error:
             logger.info("Central table rules reconstruction failed: %s", error)
             continue
+        finally:
+            if temp_image_path is not None:
+                try:
+                    temp_image_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
         backend_cells = _central_cells_to_backend_cells(central_cells)
         rows = _rows_from_html(central_html)
@@ -2897,7 +2907,7 @@ def _build_result_with_central_table_rules(output: Any, image: np.ndarray, start
                 "cell_box_count": len(cell_boxes),
                 "recognized_item_count": len(recognized_items),
                 "reconstructed_cell_count": len(backend_cells),
-                "image_path_used": False,
+                "image_path_used": image_path_for_rules is not None,
             },
         }
         return {
@@ -5083,7 +5093,6 @@ def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
         raise TableRecognitionV2UnavailableError("GATEWAY_URL is not configured.")
 
     logger.info("Using remote Table Recognition inference with backend table processing")
-    semi_analysis: Optional[Dict[str, Any]] = None
 
     whole_started = time.perf_counter()
     model_inference_count += 1
@@ -5098,334 +5107,29 @@ def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
         slanext_trace = _ensure_table_trace(slanext_result)
         if isinstance(slanext_trace, dict):
             slanext_trace["input"] = input_trace
-    slanext_candidate = _build_table_candidate(slanext_result, "slanext")
-    recovered_candidate, structure_collapse_debug = _recover_slanext_structure_collapse(slanext_candidate, image)
-    if isinstance(structure_collapse_debug.get("ocr"), dict):
-        ocr_inference_count += 2
-    if bool(structure_collapse_debug.get("selected")):
-        slanext_candidate = _build_table_candidate(recovered_candidate, "slanext")
-    slanext_candidate.setdefault("table_debug", {})
-    if isinstance(slanext_candidate["table_debug"], dict):
-        slanext_candidate["table_debug"]["structure_collapse_recovery"] = structure_collapse_debug
-        slanext_candidate["table_debug"]["row_collapse_recovery"] = structure_collapse_debug
-    slanext_assignment_quality = _structured_assignment_quality(
-        slanext_candidate.get("table_structured") if isinstance(slanext_candidate.get("table_structured"), dict) else None
+    slanext_debug = slanext_result.get("table_debug") if isinstance(slanext_result.get("table_debug"), dict) else {}
+    used_central_rules = slanext_debug.get("post_processing") == "test_structure_rules"
+    selected_method = "test_structure_rules" if used_central_rules else "slanext_raw_parse"
+    selected_reason = "test_structure_rules_primary" if used_central_rules else "raw_runtime_output_without_central_reconstruction"
+    selected = _build_table_candidate(slanext_result, selected_method)
+    selected = _attach_candidate_competition(selected, [selected], selected_reason)
+    selected.setdefault(
+        "table_semi_analysis",
+        _whole_roi_semi_analysis(
+            None,
+            merge_status="not_needed_test_structure_rules" if used_central_rules else "not_needed_raw_runtime_parse",
+        ),
     )
-    if _table_debug_trace_enabled():
-        slanext_trace = _ensure_table_trace(slanext_candidate)
-        if isinstance(slanext_trace, dict):
-            slanext_trace["ocr_assignment"] = {
-                "before": _table_snapshot(slanext_candidate),
-                "after": _table_snapshot(slanext_candidate),
-                "changed": False,
-                "quality": _json_safe(slanext_assignment_quality),
-                "assigned_text_boxes": 0,
-                "unassigned_text_boxes": 0,
-                "ambiguous_text_boxes": 0,
-                "attempted": False,
-            }
-    slanext_candidate.setdefault("table_debug", {})
-    if isinstance(slanext_candidate["table_debug"], dict):
-        slanext_candidate["table_debug"]["ocr_cell_assignment"] = {
-            "attempted": False,
-            "selected": False,
-            "quality": slanext_assignment_quality,
-            "reason": "initial_quality_gate",
-        }
-    if not bool(slanext_assignment_quality.get("passed")):
-        assignment_before = _table_snapshot(slanext_candidate) if _table_debug_trace_enabled() else None
-        reassigned_candidate, reassignment_debug = _reassign_ocr_text_to_slanext_cells(slanext_candidate)
-        if _table_debug_trace_enabled():
-            assignment_trace_target = reassigned_candidate if bool(reassignment_debug.get("selected")) else slanext_candidate
-            trace = _ensure_table_trace(assignment_trace_target)
-            if isinstance(trace, dict):
-                trace["ocr_assignment"] = {
-                    "before": assignment_before,
-                    "after": _table_snapshot(reassigned_candidate),
-                    "changed": _json_safe(assignment_before) != _json_safe(_table_snapshot(reassigned_candidate)),
-                    "quality": _json_safe(reassignment_debug.get("quality")),
-                    "assigned_text_boxes": int(reassignment_debug.get("assigned_text_boxes") or 0),
-                    "unassigned_text_boxes": int(reassignment_debug.get("unassigned_text_boxes") or 0),
-                    "ambiguous_text_boxes": int(reassignment_debug.get("ambiguous_text_boxes") or 0),
-                    "attempted": bool(reassignment_debug.get("attempted")),
-                    "selected": bool(reassignment_debug.get("selected")),
-                    "reason": reassignment_debug.get("reason"),
-                }
-        if bool(reassignment_debug.get("selected")):
-            slanext_candidate = _build_table_candidate(reassigned_candidate, "slanext")
-            slanext_candidate.setdefault("table_debug", {})
-            if isinstance(slanext_candidate["table_debug"], dict):
-                slanext_candidate["table_debug"]["ocr_cell_assignment"] = reassignment_debug
-                slanext_candidate["table_debug"]["assignment_repaired_before_semi"] = True
-        elif isinstance(slanext_candidate.get("table_debug"), dict):
-            slanext_candidate["table_debug"]["ocr_cell_assignment"] = reassignment_debug
-    candidates = [slanext_candidate]
-    slanext_debug = slanext_candidate.get("table_debug") if isinstance(slanext_candidate.get("table_debug"), dict) else {}
-    slanext_quality = slanext_debug.get("quality") if isinstance(slanext_debug.get("quality"), dict) else {}
-    slanext_assignment = slanext_debug.get("ocr_cell_assignment") if isinstance(slanext_debug.get("ocr_cell_assignment"), dict) else {}
-    slanext_confidence = float(slanext_candidate.get("confidence") or 0.0)
-    slanext_usable = _has_usable_table_result(slanext_candidate)
-    slanext_has_structured_grid = bool(slanext_quality.get("has_structured_cells")) and int(slanext_quality.get("row_count") or 0) > 0 and int(slanext_quality.get("column_count") or 0) > 0
-    slanext_needs_fallback = _should_try_borderless_candidate(slanext_quality, slanext_confidence)
-    slanext_assignment_needs_fallback = bool(slanext_has_structured_grid) and not bool((slanext_assignment.get("quality") or {}).get("passed"))
-    recovery_body_reconstruction = (
-        structure_collapse_debug.get("body_reconstruction")
-        if isinstance(structure_collapse_debug.get("body_reconstruction"), dict)
-        else None
-    )
-    if recovery_body_reconstruction and bool(recovery_body_reconstruction.get("attempted")):
-        single_row_collapse_risk = {
-            "suspected": False,
-            "reason": "covered_by_structure_collapse_recovery",
-            "ocr_box_count": recovery_body_reconstruction.get("ocr_box_count"),
-            "ocr_row_cluster_count": recovery_body_reconstruction.get("detected_body_rows"),
-        }
-    else:
-        single_row_collapse_risk = _detect_single_row_collapse_risk(image, slanext_candidate)
-    slanext_single_row_collapse_suspected = bool(single_row_collapse_risk.get("suspected"))
-    if isinstance(slanext_candidate.get("table_debug"), dict):
-        slanext_candidate["table_debug"]["single_row_collapse_guard"] = single_row_collapse_risk
-    slanext_trace_for_final = (
-        slanext_debug.get("table_recognition_trace")
-        if _table_debug_trace_enabled() and isinstance(slanext_debug.get("table_recognition_trace"), dict)
-        else None
-    )
-
-    if slanext_usable and not slanext_needs_fallback and not slanext_assignment_needs_fallback and not slanext_single_row_collapse_suspected:
-        selected = _attach_candidate_competition(slanext_candidate, candidates, "slanext_passed_quality_gate")
-        selected.setdefault("table_semi_analysis", _whole_roi_semi_analysis(None, merge_status="not_needed_slanext_confident"))
-        selected_debug = selected.get("table_debug")
-        if isinstance(selected_debug, dict):
-            selected_debug["timing_total_seconds"] = round(time.perf_counter() - started, 3)
-            selected_debug["model_inference_count"] = model_inference_count
-            selected_debug["ocr_inference_count"] = ocr_inference_count
-            selected_debug["semi_skipped_reason"] = "slanext_passed_quality_gate"
-        logger.info(
-            "Table Recognition phase timing: phase=Total path=slanext selected=%s model_inferences=%s ocr_inferences=%s elapsed=%.3fs",
-            selected.get("table_selected_method"),
-            model_inference_count,
-            ocr_inference_count,
-            time.perf_counter() - started,
-        )
-        return _set_final_table_trace(selected)
-
-    try:
-        grid_started = time.perf_counter()
-        semi_analysis = analyze_table_regions(image)
-        logger.info(
-            "Table Recognition phase timing: phase=Grid Analyzer after SLANeXt detected=%s confidence=%s regions=%s elapsed=%.3fs",
-            bool(semi_analysis.get("detected")) if isinstance(semi_analysis, dict) else False,
-            semi_analysis.get("confidence") if isinstance(semi_analysis, dict) else None,
-            len(semi_analysis.get("regions") or []) if isinstance(semi_analysis, dict) else 0,
-            time.perf_counter() - grid_started,
-        )
-        semi_result = _try_semi_structured_table(image, started, semi_analysis)
-        if semi_result:
-            semi_candidate = _build_table_candidate(semi_result, "coordinate_based_semi")
-            reliability = _semi_result_reliability(semi_candidate, semi_analysis if isinstance(semi_analysis, dict) else {})
-            semi_candidate.setdefault("table_debug", {})
-            if isinstance(semi_candidate["table_debug"], dict):
-                semi_candidate["table_debug"]["semi_reliability"] = reliability
-            if not reliability["passed"]:
-                logger.info(
-                    "Table Recognition phase timing: phase=Semi Quality rejected reasons=%s elapsed=%.3fs",
-                    reliability["reasons"],
-                    time.perf_counter() - grid_started,
-                )
-                semi_analysis = _whole_roi_semi_analysis(semi_analysis, merge_status="coordinate_reconstruction_rejected")
-                semi_analysis["reliability"] = reliability
-            else:
-                candidates.append(semi_candidate)
-    except Exception as error:
-        logger.info("Semi-structured table analysis after SLANeXt fell back to whole ROI: %s", error)
-        semi_analysis = {"detected": False, "confidence": 0.0, "regions": [], "reason": str(error)}
-
-    raw_geometry_attempted = False
-    if slanext_single_row_collapse_suspected:
-        try:
-            coordinate_started = time.perf_counter()
-            forced_coordinate_analysis = _forced_whole_roi_semi_analysis(
-                image,
-                semi_analysis,
-            )
-            forced_coordinate_analysis["reason"] = "single_row_collapse_guard"
-            coordinate_result = _recognize_coordinate_based_semi_table(image, forced_coordinate_analysis)
-            logger.info(
-                "Table Recognition phase timing: phase=Single Row Collapse Guard coordinate elapsed=%.3fs used=%s",
-                time.perf_counter() - coordinate_started,
-                bool(coordinate_result),
-            )
-            if coordinate_result:
-                ocr_inference_count += 2
-                coordinate_candidate = _build_table_candidate(
-                    coordinate_result,
-                    "single_row_collapse_coordinate_semi",
-                )
-                candidates.append(coordinate_candidate)
-                coordinate_debug = coordinate_candidate.get("table_debug") if isinstance(coordinate_candidate.get("table_debug"), dict) else {}
-                coordinate_quality = coordinate_debug.get("quality") if isinstance(coordinate_debug.get("quality"), dict) else {}
-                if (
-                    int(coordinate_quality.get("row_count") or 0) > int(slanext_quality.get("row_count") or 0)
-                    and int(coordinate_quality.get("column_count") or 0) >= 2
-                ):
-                    selected = _attach_candidate_competition(
-                        coordinate_candidate,
-                        candidates,
-                        "single_row_collapse_guard_selected_coordinate_semi",
-                    )
-                    selected = _copy_slanext_trace(selected, slanext_trace_for_final)
-                    selected.setdefault("table_semi_analysis", coordinate_result.get("table_semi_analysis") or _whole_roi_semi_analysis(semi_analysis))
-                    selected_debug = selected.get("table_debug")
-                    if isinstance(selected_debug, dict):
-                        selected_debug["single_row_collapse_guard"] = single_row_collapse_risk
-                        selected_debug["timing_total_seconds"] = round(time.perf_counter() - started, 3)
-                        selected_debug["model_inference_count"] = model_inference_count
-                        selected_debug["ocr_inference_count"] = ocr_inference_count
-                    return _set_final_table_trace(selected)
-        except Exception as error:
-            logger.warning("Single-row collapse coordinate guard failed: %s", error)
-        try:
-            raw_geometry_attempted = True
-            raw_started = time.perf_counter()
-            raw_result = _recognize_raw_ocr_geometry_table(image)
-            logger.info(
-                "Table Recognition phase timing: phase=Single Row Collapse Guard raw_ocr elapsed=%.3fs used=%s",
-                time.perf_counter() - raw_started,
-                bool(raw_result),
-            )
-            if raw_result:
-                ocr_inference_count += 2
-                raw_candidate = _build_table_candidate(raw_result, "single_row_collapse_ocr_geometry")
-                candidates.append(raw_candidate)
-                raw_debug = raw_candidate.get("table_debug") if isinstance(raw_candidate.get("table_debug"), dict) else {}
-                raw_quality = raw_debug.get("quality") if isinstance(raw_debug.get("quality"), dict) else {}
-                if int(raw_quality.get("row_count") or 0) > int(slanext_quality.get("row_count") or 0):
-                    selected = _attach_candidate_competition(
-                        raw_candidate,
-                        candidates,
-                        "single_row_collapse_guard_selected_ocr_geometry",
-                    )
-                    selected = _copy_slanext_trace(selected, slanext_trace_for_final)
-                    selected.setdefault("table_semi_analysis", _whole_roi_semi_analysis(semi_analysis))
-                    selected_debug = selected.get("table_debug")
-                    if isinstance(selected_debug, dict):
-                        selected_debug["single_row_collapse_guard"] = single_row_collapse_risk
-                        selected_debug["timing_total_seconds"] = round(time.perf_counter() - started, 3)
-                        selected_debug["model_inference_count"] = model_inference_count
-                        selected_debug["ocr_inference_count"] = ocr_inference_count
-                    return _set_final_table_trace(selected)
-        except Exception as error:
-            logger.warning("Single-row collapse OCR geometry guard failed: %s", error)
-
-    if not slanext_usable:
-        try:
-            forced_started = time.perf_counter()
-            forced_semi_candidate = _try_forced_semi_after_empty_slanext(image, semi_analysis)
-            logger.info(
-                "Table Recognition phase timing: phase=Forced Semi after empty SLANeXt elapsed=%.3fs used=%s",
-                time.perf_counter() - forced_started,
-                bool(forced_semi_candidate),
-            )
-            if forced_semi_candidate:
-                candidates.append(forced_semi_candidate)
-                forced_debug = forced_semi_candidate.get("table_debug") if isinstance(forced_semi_candidate.get("table_debug"), dict) else {}
-                forced_reliability = forced_debug.get("semi_reliability") if isinstance(forced_debug.get("semi_reliability"), dict) else {}
-                if bool(forced_reliability.get("passed")) and _has_usable_table_result(forced_semi_candidate):
-                    selected = _attach_candidate_competition(
-                        forced_semi_candidate,
-                        candidates,
-                        "forced_semi_after_empty_slanext",
-                    )
-                    selected.setdefault("table_semi_analysis", forced_semi_candidate.get("table_semi_analysis") or _forced_whole_roi_semi_analysis(image, semi_analysis))
-                    selected_debug = selected.get("table_debug")
-                    if isinstance(selected_debug, dict):
-                        selected_debug["status"] = "coordinate_based_semi_forced"
-                        selected_debug["timing_total_seconds"] = round(time.perf_counter() - started, 3)
-                        selected_debug["model_inference_count"] = model_inference_count
-                        selected_debug["ocr_inference_count"] = ocr_inference_count
-                    logger.info(
-                        "Table Recognition phase timing: phase=Total path=forced_semi model_inferences=%s ocr_inferences=%s elapsed=%.3fs",
-                        model_inference_count,
-                        ocr_inference_count,
-                        time.perf_counter() - started,
-                    )
-                    selected = _copy_slanext_trace(selected, slanext_trace_for_final)
-                    return _set_final_table_trace(selected)
-        except Exception as error:
-            logger.info("Forced Semi Table after empty SLANeXt failed: %s", error)
-
-    if not slanext_has_structured_grid and _should_try_borderless_candidate(slanext_quality, slanext_confidence):
-        try:
-            geometry_started = time.perf_counter()
-            fallback_result = _recognize_ocr_table_fallback(image)
-            if fallback_result:
-                ocr_inference_count += 2
-                fallback_debug = fallback_result.get("table_debug")
-                if isinstance(fallback_debug, dict):
-                    slanext_rows = normalize_table_rows(slanext_result.get("table_rows") or [])
-                    fallback_debug["slan_rows_before_fallback"] = len(slanext_rows)
-                    fallback_debug["slan_columns_before_fallback"] = max((len(row) for row in slanext_rows), default=0)
-                    fallback_debug["slan_status_before_fallback"] = "structure_empty" if not slanext_rows else "low_quality_candidate"
-                fallback_candidate = _build_table_candidate(fallback_result, "ocr_table_fallback")
-                candidates.append(fallback_candidate)
-                if not slanext_usable:
-                    selected = _attach_candidate_competition(fallback_candidate, candidates, "ocr_table_fallback_after_unusable_slanext")
-                    selected.setdefault("table_semi_analysis", _whole_roi_semi_analysis(semi_analysis))
-                    selected_debug = selected.get("table_debug")
-                    if isinstance(selected_debug, dict):
-                        selected_debug["status"] = "ocr_table_fallback"
-                        selected_debug["timing_total_seconds"] = round(time.perf_counter() - started, 3)
-                        selected_debug["model_inference_count"] = model_inference_count
-                        selected_debug["ocr_inference_count"] = ocr_inference_count
-                    logger.info(
-                        "Table Recognition phase timing: phase=Total path=ocr_table_fallback model_inferences=%s ocr_inferences=%s elapsed=%.3fs",
-                        model_inference_count,
-                        ocr_inference_count,
-                        time.perf_counter() - started,
-                    )
-                    selected = _copy_slanext_trace(selected, slanext_trace_for_final)
-                    return _set_final_table_trace(selected)
-            logger.info(
-                "Table Recognition phase timing: phase=Geometry Reconstruction elapsed=%.3fs used=%s",
-                time.perf_counter() - geometry_started,
-                bool(fallback_result),
-            )
-        except Exception as error:
-            logger.warning("OCR table fallback failed: %s", error)
-
-    selected, selection_reason = _select_best_table_candidate(candidates)
-    selected = _attach_candidate_competition(selected, candidates, selection_reason)
-    selected = _copy_slanext_trace(selected, slanext_trace_for_final)
-    selected.setdefault("table_semi_analysis", _whole_roi_semi_analysis(semi_analysis))
-    if not _has_usable_table_result(selected) and not raw_geometry_attempted:
-        try:
-            raw_started = time.perf_counter()
-            raw_result = _recognize_raw_ocr_geometry_table(image)
-            logger.info(
-                "Table Recognition phase timing: phase=Raw OCR Geometry elapsed=%.3fs used=%s",
-                time.perf_counter() - raw_started,
-                bool(raw_result),
-            )
-            if raw_result:
-                ocr_inference_count += 2
-                raw_candidate = _build_table_candidate(raw_result, "raw_ocr_geometry_table")
-                selected = _attach_candidate_competition(
-                    raw_candidate,
-                    [*candidates, raw_candidate],
-                    "raw_ocr_geometry_after_unusable_structure",
-                )
-                selected = _copy_slanext_trace(selected, slanext_trace_for_final)
-                selected.setdefault("table_semi_analysis", _whole_roi_semi_analysis(semi_analysis))
-        except Exception as error:
-            logger.warning("Raw OCR geometry table fallback failed: %s", error)
     selected_debug = selected.get("table_debug")
     if isinstance(selected_debug, dict):
         selected_debug["timing_total_seconds"] = round(time.perf_counter() - started, 3)
         selected_debug["model_inference_count"] = model_inference_count
         selected_debug["ocr_inference_count"] = ocr_inference_count
+        selected_debug["semi_skipped_reason"] = selected_reason
+        selected_debug["legacy_adapter_fallbacks_enabled"] = False
     logger.info(
-        "Table Recognition phase timing: phase=Total path=whole_roi selected=%s model_inferences=%s ocr_inferences=%s elapsed=%.3fs",
-        selected.get("table_selected_method"),
+        "Table Recognition phase timing: phase=Total path=%s model_inferences=%s ocr_inferences=%s elapsed=%.3fs",
+        selected_method,
         model_inference_count,
         ocr_inference_count,
         time.perf_counter() - started,
