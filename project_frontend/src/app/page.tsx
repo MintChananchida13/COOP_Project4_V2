@@ -2075,7 +2075,35 @@ function HomeWorkspace() {
     };
   };
 
-  const buildProcessingLogSnapshot = (reason: string): ProcessingLogSnapshot | null => {
+  const buildProcessingLogPageFiles = async (): Promise<Record<string, unknown>[]> => {
+    const entries = await Promise.all(
+      imagesList.map(async (src, index): Promise<Record<string, unknown> | null> => {
+        if (!src) return null;
+        try {
+          let dataUrl = src;
+          if (!dataUrl.startsWith("data:")) {
+            const response = await fetch(src);
+            if (!response.ok) return null;
+            dataUrl = await blobToDataUrl(await response.blob());
+          }
+          if (!dataUrl.startsWith("data:")) return null;
+          return {
+            pageNumber: index + 1,
+            dataUrl,
+            sourceFileId: uploadedSourceFileId || undefined,
+            sourceFileName: uploadedSourceFileName || undefined,
+            sourceFileType: uploadedSourceFileType || undefined,
+          };
+        } catch (error) {
+          console.warn("Processing log page image snapshot failed.", error);
+          return null;
+        }
+      })
+    );
+    return entries.filter((entry): entry is Record<string, unknown> => Boolean(entry));
+  };
+
+  const buildProcessingLogSnapshot = (reason: string, pageFiles: Record<string, unknown>[] = []): ProcessingLogSnapshot | null => {
     const processingRunId = activeProcessingRunIdRef.current;
     if (!processingRunId || ocrResults.length === 0) return null;
     const sourcePages = imagesList.map((src, index) => ({
@@ -2094,17 +2122,6 @@ function HomeWorkspace() {
       imageUrl: src && !src.startsWith("data:") ? src : undefined,
       imageReferenceStatus: src && !src.startsWith("data:") ? "stable_url" : "data_url_omitted",
     }));
-    const pageFiles: Record<string, unknown>[] = imagesList.flatMap((src, index) =>
-      src && src.startsWith("data:")
-        ? [{
-            pageNumber: index + 1,
-            dataUrl: src,
-            sourceFileId: uploadedSourceFileId || undefined,
-            sourceFileName: uploadedSourceFileName || undefined,
-            sourceFileType: uploadedSourceFileType || undefined,
-          }]
-        : []
-    );
     const ocrOriginal = ocrResults.map((result) => {
       const roi = findRoiForOcrResult(rois, result);
       const pageIndex = Number(result.pageIndex ?? roi?.pageIndex ?? 0);
@@ -2162,10 +2179,11 @@ function HomeWorkspace() {
   };
 
   const queueProcessingLogSave = (reason: string) => {
-    const snapshot = buildProcessingLogSnapshot(reason);
-    if (!snapshot) return;
     const headers = authHeaders({ "Content-Type": "application/json" });
-    window.setTimeout(() => {
+    void (async () => {
+      const pageFiles = await buildProcessingLogPageFiles();
+      const snapshot = buildProcessingLogSnapshot(reason, pageFiles);
+      if (!snapshot) return;
       void fetch(`${ADMIN_API_BASE_URL}/processing-logs`, {
         method: "POST",
         headers,
@@ -2173,7 +2191,7 @@ function HomeWorkspace() {
       }).catch((error) => {
         console.warn("Processing log background save failed.", error);
       });
-    }, 0);
+    })();
   };
 
   const handleLogout = () => {

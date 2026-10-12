@@ -2232,11 +2232,11 @@ def _pil_image_to_data_url(image: Any) -> Optional[str]:
     return f"data:image/png;base64,{encoded}"
 
 
-def _save_pil_image_for_processing(image: Any, output_path: Path) -> Optional[str]:
+def _save_pil_image_for_processing(image: Any, output_path: Path, *, force_temporary: bool = False) -> Optional[str]:
     if image is None:
         return None
     try:
-        if not SAVE_DEBUG_ARTIFACTS:
+        if force_temporary or not SAVE_DEBUG_ARTIFACTS:
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
                 output_path = Path(temp_file.name)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4604,6 +4604,7 @@ class StorageMaintenanceService:
         Path(__file__).resolve().parents[1] / "cropped_rois",
         Path(__file__).resolve().parents[2] / "storage" / "detection_queries",
         _storage_root() / "prepublish_detection_tests",
+        _storage_root() / "prepublish_template_pages",
         _storage_root() / "template_extraction_test_crops",
         _storage_root() / "template_verification_test_crops",
         _storage_root() / "verification_query_anchor_crops",
@@ -4640,6 +4641,7 @@ class StorageMaintenanceService:
                     continue
                 try:
                     path.unlink()
+                    _prune_empty_storage_parents(path.parent)
                     deleted_count += 1
                     deleted_bytes += stat.st_size
                 except OSError as error:
@@ -5872,9 +5874,6 @@ class AdminTemplateService:
         return result
 
     def _template_page_image_paths(self, template_id: str, pages: List[Dict[str, Any]]) -> Dict[int, str]:
-        output_dir = _storage_root() / "prepublish_template_pages" / template_id
-        if SAVE_DEBUG_ARTIFACTS:
-            output_dir.mkdir(parents=True, exist_ok=True)
         paths: Dict[int, str] = {}
         for page in pages:
             source = page.get("normalized_image_url") or page.get("sample_image_url")
@@ -5882,11 +5881,8 @@ class AdminTemplateService:
             if image is None:
                 continue
             page_number = int(page.get("page_number") or 1)
-            if SAVE_DEBUG_ARTIFACTS:
-                output_path = output_dir / f"page_{page_number}.png"
-            else:
-                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
-                    output_path = Path(temp_file.name)
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
+                output_path = Path(temp_file.name)
             image.save(output_path, format="PNG")
             paths[page_number] = str(output_path)
         return paths
@@ -6452,6 +6448,7 @@ class AdminTemplateService:
                     boundary_path = _save_pil_image_for_processing(
                         crop_image,
                         _storage_root() / "template_extraction_test_crops" / template_id / f"{field.get('id')}_flexible_boundary.png",
+                        force_temporary=True,
                     )
                     try:
                         ocr_result = _flexible_text_ocr_from_boundary(boundary_path)
