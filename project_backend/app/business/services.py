@@ -2317,8 +2317,8 @@ def _extraction_method_for_resolved_type(data_type: str) -> str:
 
 
 def _expand_table_roi(roi: Dict[str, float], image_width: int, image_height: int) -> Dict[str, float]:
-    pad_x = 10.0 / max(float(image_width), 1.0)
-    pad_y = 10.0 / max(float(image_height), 1.0)
+    pad_x = 12.0 / max(float(image_width), 1.0)
+    pad_y = 12.0 / max(float(image_height), 1.0)
     x = max(0.0, float(roi.get("x_ratio") or 0.0) - pad_x)
     y = max(0.0, float(roi.get("y_ratio") or 0.0) - pad_y)
     right = min(1.0, float(roi.get("x_ratio") or 0.0) + float(roi.get("width_ratio") or 0.0) + pad_x)
