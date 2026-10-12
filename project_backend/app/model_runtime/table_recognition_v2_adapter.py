@@ -2767,6 +2767,67 @@ def _structured_from_cells(rows: List[List[str]], cells: List[Dict[str, Any]]) -
     }
 
 
+def _extract_table_html(output: Any) -> str:
+    for item in _collect_dicts(output):
+        for key in ("html", "pred_html", "table_html", "structure_html"):
+            value = item.get(key)
+            if isinstance(value, str) and "<table" in value.lower():
+                return value
+        structure = item.get("structure")
+        if isinstance(structure, list):
+            html_value = "".join(str(part) for part in structure)
+            if "<table" in html_value.lower():
+                return html_value
+    return ""
+
+
+def _extract_table_rows(output: Any, table_html: str = "") -> List[List[str]]:
+    for item in _collect_dicts(output):
+        for key in ("rows", "table_rows", "tableCells"):
+            value = item.get(key)
+            if isinstance(value, list) and value and all(isinstance(row, list) for row in value):
+                return normalize_table_rows([[normalize_ocr_text(cell) for cell in row] for row in value])
+    return _rows_from_html(table_html)
+
+
+def _fallback_result_from_remote_output(
+    output: Any,
+    image: np.ndarray,
+    started: float,
+    reason: str,
+) -> Dict[str, Any]:
+    height, width = image.shape[:2]
+    table_html = _extract_table_html(output)
+    rows = _extract_table_rows(output, table_html)
+    structured = _structured_from_cells(rows, [])
+    return {
+        "text": _markdown_table(rows),
+        "confidence": 0.0,
+        "segments": [],
+        "attempts": [{"step": "remote_table_default_parser", "fallback_reason": reason}],
+        "preprocessing": "remote_table_default_parser",
+        "engine": "table_recognition_v2",
+        "model": _TABLE_MODEL_NAME,
+        "table_html": table_html or None,
+        "table_rows": rows,
+        "table_structured": structured,
+        "table_selected_method": "remote_default_parser",
+        "table_debug": {
+            "status": "recognized" if rows or table_html else "structure_empty",
+            "post_processing": "remote_default_parser",
+            "embedded_rules_fallback_reason": reason,
+            "runtime_called": True,
+            "model_kind": "remote",
+            "input_size": [int(width), int(height)],
+            "row_count": len(rows),
+            "column_count": max((len(row) for row in rows), default=0),
+            "raw_result_count": len(_collect_dicts(output)),
+            "elapsed_seconds": round(time.perf_counter() - started, 3),
+        },
+        "raw_results": _json_safe(_collect_dicts(output)),
+    }
+
+
 def _table_result_candidates(output: Any) -> List[Dict[str, Any]]:
     candidates: List[Dict[str, Any]] = []
     for item in _collect_dicts(output):
@@ -2833,21 +2894,17 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
         if not recognized_items:
             continue
 
-        temp_path, image_path_available = _write_temp_image(image)
         try:
             cells, table_html = reconstruct_table_from_ocr(
                 cell_boxes,
                 recognized_items,
                 (int(width), int(height)),
-                temp_path if image_path_available else None,
+                None,
             )
         except Exception as error:
             last_error = str(error)
             logger.info("embedded table rules failed: %s", error)
             continue
-        finally:
-            if temp_path is not None:
-                temp_path.unlink(missing_ok=True)
 
         backend_cells = _backend_cells(cells)
         rows = _rows_from_html(table_html)
@@ -2872,7 +2929,7 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
                 "cell_box_count": len(cell_boxes),
                 "recognized_item_count": len(recognized_items),
                 "reconstructed_cell_count": len(backend_cells),
-                "image_path_used": image_path_available,
+                "image_path_used": False,
             },
             "adapter_rule_source": "embedded_table_rules",
         }
@@ -2892,10 +2949,12 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
             "raw_results": _json_safe(_collect_dicts(output)),
         }
 
-    raise TableRecognitionV2UnavailableError(
+    reason = (
         "Remote table output does not contain usable cell_box_list/table_ocr_pred for embedded table rules."
         + (f" Last reconstruction error: {last_error}" if last_error else "")
     )
+    logger.info("embedded table rules unavailable; falling back to remote output parser: %s", reason)
+    return _fallback_result_from_remote_output(output, image, started, reason)
 
 
 def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
