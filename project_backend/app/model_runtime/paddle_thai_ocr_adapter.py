@@ -21,6 +21,7 @@ class PaddleThaiOcrUnavailableError(RuntimeError):
 logger = logging.getLogger(__name__)
 
 TEXT_RECOGNITION_MODEL_NAME = "th_PP-OCRv5_mobile_rec"
+OCR_BATCH_CHUNK_SIZE = 60
 
 
 def _require_text_recognition_runtime() -> None:
@@ -142,23 +143,27 @@ def run_paddle_thai_ocr_batch(opencv_images: List[np.ndarray]) -> List[Dict[str,
 
     _require_text_recognition_runtime()
     logger.info("Using remote OCR runtime")
-    try:
-        remote_result = remote_recognize_images(opencv_images)
-    except ModelRuntimeUnavailableError as error:
-        raise PaddleThaiOcrUnavailableError(str(error)) from error
-    except Exception as error:
-        raise PaddleThaiOcrUnavailableError(str(error)) from error
-    if remote_result is None:
-        raise PaddleThaiOcrUnavailableError("Remote OCR runtime returned no result.")
-    if not isinstance(remote_result, dict):
-        raise PaddleThaiOcrUnavailableError("Remote OCR runtime returned an invalid response.")
-    results = remote_result.get("results")
-    if not isinstance(results, list):
-        raise PaddleThaiOcrUnavailableError("Remote OCR runtime returned an invalid batch response.")
-    ordered_results = [
-        results[index] if index < len(results) else None
-        for index in range(len(opencv_images))
-    ]
+    ordered_results: List[Any] = []
+    chunks = [opencv_images[index : index + OCR_BATCH_CHUNK_SIZE] for index in range(0, len(opencv_images), OCR_BATCH_CHUNK_SIZE)]
+    for chunk_index, chunk in enumerate(chunks, start=1):
+        logger.info("Using remote OCR runtime batch chunk %s/%s size=%s", chunk_index, len(chunks), len(chunk))
+        try:
+            remote_result = remote_recognize_images(chunk)
+        except ModelRuntimeUnavailableError as error:
+            raise PaddleThaiOcrUnavailableError(str(error)) from error
+        except Exception as error:
+            raise PaddleThaiOcrUnavailableError(str(error)) from error
+        if remote_result is None:
+            raise PaddleThaiOcrUnavailableError("Remote OCR runtime returned no result.")
+        if not isinstance(remote_result, dict):
+            raise PaddleThaiOcrUnavailableError("Remote OCR runtime returned an invalid response.")
+        results = remote_result.get("results")
+        if not isinstance(results, list):
+            raise PaddleThaiOcrUnavailableError("Remote OCR runtime returned an invalid batch response.")
+        ordered_results.extend(
+            results[index] if index < len(results) else None
+            for index in range(len(chunk))
+        )
     return [
         _result_from_output(item.get("result") if isinstance(item, dict) and isinstance(item.get("result"), dict) else item)
         if isinstance(item, dict)

@@ -16,6 +16,8 @@ from app.model_runtime.table_recognition_v2_adapter import TableRecognitionV2Una
 
 logger = logging.getLogger(__name__)
 
+OCR_BATCH_CHUNK_SIZE = 60
+
 
 class OcrUnavailableError(RuntimeError):
     pass
@@ -259,6 +261,10 @@ def _diagnostic_ids(text_items: List[Tuple[str, Any]]) -> List[str]:
     return [str(key) for key, _ in text_items]
 
 
+def _chunked_text_items(text_items: List[Tuple[str, Any]], size: int = OCR_BATCH_CHUNK_SIZE) -> List[List[Tuple[str, Any]]]:
+    return [text_items[index : index + size] for index in range(0, len(text_items), size)]
+
+
 def _detect_boxes_in_crops_batch(
     text_items: List[Tuple[str, Any]],
     source: str = "unknown",
@@ -267,19 +273,29 @@ def _detect_boxes_in_crops_batch(
     if not text_items:
         return {}
     try:
-        logger.info(
-            "OCR diagnostic: stage=text_detection_batch source=%s batch_size=%s ids=%s",
-            source,
-            len(text_items),
-            _diagnostic_ids(text_items),
-        )
         step_started = time.perf_counter()
-        detection_timing: Dict[str, Any] = {}
-        detections = detect_text_boxes_batch([bgr_crop for _, bgr_crop in text_items], timing=detection_timing)
+        detections: List[Dict[str, Any]] = []
+        detection_breakdowns: List[Dict[str, Any]] = []
+        chunks = _chunked_text_items(text_items)
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            logger.info(
+                "OCR diagnostic: stage=text_detection_batch source=%s chunk=%s/%s batch_size=%s ids=%s",
+                source,
+                chunk_index,
+                len(chunks),
+                len(chunk),
+                _diagnostic_ids(chunk),
+            )
+            detection_timing: Dict[str, Any] = {}
+            chunk_detections = detect_text_boxes_batch([bgr_crop for _, bgr_crop in chunk], timing=detection_timing)
+            detections.extend(chunk_detections)
+            detection_breakdowns.append({"chunk": chunk_index, "size": len(chunk), **detection_timing})
         if timing is not None:
             timing["text_detection_batch"] = float(timing.get("text_detection_batch") or 0.0) + (time.perf_counter() - step_started)
             timing["text_detection_batch_size"] = int(timing.get("text_detection_batch_size") or 0) + len(text_items)
-            timing["text_detection_batch_breakdown"] = detection_timing
+            timing["text_detection_batch_chunk_size"] = OCR_BATCH_CHUNK_SIZE
+            timing["text_detection_batch_chunks"] = int(timing.get("text_detection_batch_chunks") or 0) + len(chunks)
+            timing["text_detection_batch_breakdown"] = detection_breakdowns
     except (LayoutAnalysisUnavailableError, RuntimeError, OcrUnavailableError, ValueError) as error:
         logger.info(
             "OCR diagnostic: stage=text_detection_batch_failed source=%s batch_size=%s ids=%s error=%s",
