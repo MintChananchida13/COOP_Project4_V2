@@ -1,8 +1,6 @@
 import os
 import tempfile
-import importlib.util
 import logging
-import sys
 import time
 import hashlib
 from html.parser import HTMLParser
@@ -23,6 +21,18 @@ from app.processing.ocr_postprocess import normalize_ocr_text, normalize_table_r
 from app.model_runtime.layout_analysis_service import LayoutAnalysisUnavailableError, detect_text_boxes
 from app.processing.table_grid_analyzer import analyze_table_regions
 
+try:
+    from test_structure import (
+        extract_recognized_items as _central_extract_recognized_items,
+        reconstruct_table_from_ocr as _central_reconstruct_table_from_ocr,
+    )
+except Exception as error:  # pragma: no cover - optional in deployments that vendor only app/
+    _central_extract_recognized_items = None
+    _central_reconstruct_table_from_ocr = None
+    _CENTRAL_TABLE_RULES_IMPORT_ERROR: Optional[Exception] = error
+else:
+    _CENTRAL_TABLE_RULES_IMPORT_ERROR = None
+
 
 class TableRecognitionV2UnavailableError(RuntimeError):
     pass
@@ -42,7 +52,6 @@ _TABLE_LOW_OCR_CONFIDENCE_THRESHOLD = 0.65
 _SEMI_TABLE_MIN_CONFIDENCE = 0.72
 _SEMI_TABLE_MIN_TOPOLOGY_CHANGE_RATIO = 0.33
 _TEXT_RECOGNITION_SCORE_THRESHOLD = float(os.getenv("TEXT_RECOGNITION_SCORE_THRESHOLD", "0.0"))
-_TEST_STRUCTURE_MODULE: Any = None
 _TABLE_DEBUG_RAW_MODEL_FIELDS = (
     "table_type",
     "model_name",
@@ -206,148 +215,6 @@ def table_recognition_runtime_summary() -> Dict[str, Any]:
         "configured": _use_remote_runtime(),
         "url": runtime_url(ModelRuntimeKind.TABLE),
     }
-
-
-def _load_test_structure_module() -> Any:
-    global _TEST_STRUCTURE_MODULE
-    if _TEST_STRUCTURE_MODULE is not None:
-        return _TEST_STRUCTURE_MODULE
-    module_path = Path(__file__).resolve().parents[3] / "test_structure.py"
-    if not module_path.exists():
-        raise TableRecognitionV2UnavailableError(f"test_structure.py not found: {module_path}")
-    spec = importlib.util.spec_from_file_location("ocr_test_structure", module_path)
-    if spec is None or spec.loader is None:
-        raise TableRecognitionV2UnavailableError("Unable to load test_structure.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
-    except Exception:
-        sys.modules.pop(spec.name, None)
-        raise
-    _TEST_STRUCTURE_MODULE = module
-    return module
-
-
-def _test_structure_bbox(value: Any) -> Optional[Dict[str, float]]:
-    if not isinstance(value, (list, tuple)) or len(value) < 4:
-        return None
-    try:
-        if len(value) >= 8:
-            xs = [float(item) for item in value[0::2]]
-            ys = [float(item) for item in value[1::2]]
-            left, top, right, bottom = min(xs), min(ys), max(xs), max(ys)
-        else:
-            left, top, right, bottom = [float(item) for item in value[:4]]
-    except (TypeError, ValueError):
-        return None
-    if right <= left or bottom <= top:
-        return None
-    return {"x": left, "y": top, "width": right - left, "height": bottom - top}
-
-
-def _structured_from_test_structure_cells(cells: List[Dict[str, Any]], rows: List[List[str]]) -> Dict[str, Any]:
-    structured_cells: List[Dict[str, Any]] = []
-    for cell in cells:
-        if not isinstance(cell, dict):
-            continue
-        row = int(cell.get("row_index") or cell.get("row") or 0)
-        col = int(cell.get("column_index") or cell.get("col") or 0)
-        text = normalize_ocr_text(cell.get("text") or "")
-        next_cell: Dict[str, Any] = {
-            "row": row,
-            "col": col,
-            "text": text,
-            "ocrText": text,
-            "groundTruth": text,
-            "rowSpan": max(1, int(cell.get("rowspan") or cell.get("rowSpan") or 1)),
-            "colSpan": max(1, int(cell.get("colspan") or cell.get("colSpan") or 1)),
-            "bboxSource": "test_structure",
-        }
-        bbox = _test_structure_bbox(cell.get("bbox_grid") or cell.get("bbox"))
-        if bbox:
-            next_cell["bbox"] = bbox
-        if cell.get("mapping_warnings"):
-            next_cell["mappingWarnings"] = cell.get("mapping_warnings")
-        structured_cells.append(next_cell)
-    return {
-        "rows": rows,
-        "cells": structured_cells or _cells_from_rows(rows),
-        "headerRowCount": 1,
-        "postProcessing": "test_structure",
-    }
-
-
-def _iter_table_runtime_results(output: Any, module: Any) -> List[Dict[str, Any]]:
-    candidates = output if isinstance(output, list) else [output]
-    table_results: List[Dict[str, Any]] = []
-    for item in candidates:
-        if not isinstance(item, dict):
-            continue
-        try:
-            normalized = module.normalize_result_data(item)
-        except Exception:
-            normalized = item
-        for table_result in normalized.get("table_res_list") or []:
-            if isinstance(table_result, dict):
-                table_results.append(table_result)
-    return table_results
-
-
-def _table_cell_count(rows: List[List[str]]) -> int:
-    if not rows:
-        return 0
-    return len(rows) * max((len(row) for row in rows), default=0)
-
-
-def _test_structure_result_from_output(output: Any, image: np.ndarray, started: float) -> Optional[Dict[str, Any]]:
-    module = _load_test_structure_module()
-    table_results = _iter_table_runtime_results(output, module)
-    if not table_results:
-        return None
-
-    image_height, image_width = image.shape[:2]
-    best_result: Optional[Dict[str, Any]] = None
-    for table_index, table_result in enumerate(table_results, start=1):
-        cells, reconstructed_html = module.reconstruct_table_from_ocr(
-            table_result.get("cell_box_list") or [],
-            module.extract_recognized_items(table_result),
-            (int(image_width), int(image_height)),
-            None,
-            "cpu",
-        )
-        rows = normalize_table_rows(_rows_from_html(reconstructed_html))
-        structured = _structured_from_test_structure_cells(cells, rows)
-        result = {
-            "text": _markdown_table(rows),
-            "confidence": 1.0 if rows else 0.0,
-            "segments": [],
-            "attempts": [{"step": "test_structure_reconstruction", "table_index": table_index}],
-            "preprocessing": "test_structure_reconstruction",
-            "engine": "table_recognition_v2",
-            "model": _TABLE_MODEL_NAME,
-            "table_html": reconstructed_html,
-            "table_rows": rows,
-            "table_structured": structured,
-            "table_debug": {
-                "status": "recognized" if rows else "structure_empty",
-                "model_kind": "remote",
-                "runtime_called": True,
-                "postprocess_source": "test_structure",
-                "local_pipeline_used": False,
-                "table_count": len(table_results),
-                "selected_table_index": table_index,
-                "row_count": len(rows),
-                "column_count": max((len(row) for row in rows), default=0),
-                "input_size": [int(image_width), int(image_height)],
-                "elapsed_seconds": round(time.perf_counter() - started, 3),
-            },
-            "raw_results": output if isinstance(output, list) else [output],
-            "table_selected_method": "test_structure",
-        }
-        if best_result is None or _table_cell_count(rows) > _table_cell_count(best_result.get("table_rows") or []):
-            best_result = result
-    return best_result
 
 
 def _as_dict(value: Any) -> Optional[Dict[str, Any]]:
@@ -2924,19 +2791,139 @@ def _predict_table_model(image: np.ndarray) -> Any:
     return remote_result
 
 
-def _slanext_result_from_output(output: Any, image: np.ndarray, started: float, region_debug: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    input_height, input_width = image.shape[:2]
-    try:
-        test_structure_result = _test_structure_result_from_output(output, image, started)
-        if test_structure_result is not None:
-            if region_debug:
-                debug = test_structure_result.get("table_debug")
-                if isinstance(debug, dict):
-                    debug["region"] = region_debug
-            return test_structure_result
-    except Exception as error:
-        logger.info("test_structure table reconstruction unavailable; falling back to default parser: %s", error)
+def _central_table_result_candidates(output: Any) -> List[Dict[str, Any]]:
+    candidates: List[Dict[str, Any]] = []
+    for item in _collect_dicts(output):
+        table_res_list = item.get("table_res_list")
+        if isinstance(table_res_list, list):
+            candidates.extend(table for table in table_res_list if isinstance(table, dict))
+        if isinstance(item.get("cell_box_list"), list):
+            candidates.append(item)
+    return candidates
 
+
+def _bbox_list_to_backend_bbox(bbox: Any) -> Optional[Dict[str, float]]:
+    if not isinstance(bbox, list) or len(bbox) < 4:
+        return None
+    try:
+        x0, y0, x1, y1 = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+    except (TypeError, ValueError):
+        return None
+    return {"x": x0, "y": y0, "width": max(1.0, x1 - x0), "height": max(1.0, y1 - y0)}
+
+
+def _central_cells_to_backend_cells(cells: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    backend_cells: List[Dict[str, Any]] = []
+    for cell in cells:
+        if not isinstance(cell, dict):
+            continue
+        row = cell.get("row_index", cell.get("row", 0))
+        col = cell.get("column_index", cell.get("col", 0))
+        text = normalize_ocr_text(cell.get("text") or "")
+        next_cell: Dict[str, Any] = {
+            "row": int(row or 0),
+            "col": int(col or 0),
+            "text": text,
+            "ocrText": text,
+            "groundTruth": text,
+            "rowSpan": max(1, int(cell.get("rowspan") or cell.get("rowSpan") or 1)),
+            "colSpan": max(1, int(cell.get("colspan") or cell.get("colSpan") or 1)),
+            "assignmentSource": "test_structure_rules",
+            "cellIndex": cell.get("cell_index"),
+            "ocrCount": cell.get("ocr_count"),
+        }
+        bbox = _bbox_list_to_backend_bbox(cell.get("bbox_grid") or cell.get("bbox"))
+        if bbox is not None:
+            next_cell["bbox"] = bbox
+        if cell.get("texts") is not None:
+            next_cell["recognizedItems"] = _json_safe(cell.get("texts"))
+        if cell.get("mapping_warnings") is not None:
+            next_cell["mappingWarnings"] = _json_safe(cell.get("mapping_warnings"))
+        backend_cells.append(next_cell)
+    return backend_cells
+
+
+def _build_result_with_central_table_rules(output: Any, image: np.ndarray, started: float) -> Optional[Dict[str, Any]]:
+    if _central_extract_recognized_items is None or _central_reconstruct_table_from_ocr is None:
+        if _CENTRAL_TABLE_RULES_IMPORT_ERROR is not None:
+            logger.info("Central table rules are unavailable: %s", _CENTRAL_TABLE_RULES_IMPORT_ERROR)
+        return None
+
+    height, width = image.shape[:2]
+    for table_result in _central_table_result_candidates(output):
+        cell_boxes = table_result.get("cell_box_list") or []
+        if not isinstance(cell_boxes, list) or not cell_boxes:
+            continue
+        recognized_items = _central_extract_recognized_items(table_result)
+        if not recognized_items:
+            continue
+        try:
+            central_cells, central_html = _central_reconstruct_table_from_ocr(
+                cell_boxes,
+                recognized_items,
+                (int(width), int(height)),
+                None,
+            )
+        except Exception as error:
+            logger.info("Central table rules reconstruction failed: %s", error)
+            continue
+
+        backend_cells = _central_cells_to_backend_cells(central_cells)
+        rows = _rows_from_html(central_html)
+        if not rows:
+            rows = _rows_from_structured_cells_preserve_grid(backend_cells)
+        rows = normalize_table_rows(rows)
+        structured = _structured_from_rows(rows, backend_cells) if rows else None
+        if structured and backend_cells:
+            structured["cells"] = backend_cells
+            structured["postProcessing"] = "test_structure_rules"
+        confidence_values = [
+            float(item.get("score"))
+            for item in recognized_items
+            if isinstance(item, dict) and isinstance(item.get("score"), (int, float))
+        ]
+        debug = {
+            "status": "recognized" if rows else "structure_empty",
+            "row_count": len(rows),
+            "column_count": max((len(row) for row in rows), default=0),
+            "raw_result_count": len(_collect_dicts(output)),
+            "model_kind": "remote",
+            "runtime_called": True,
+            "input_size": [int(width), int(height)],
+            "elapsed_seconds": round(time.perf_counter() - started, 3),
+            "post_processing": "test_structure_rules",
+            "central_rules": {
+                "source": "test_structure.py",
+                "cell_box_count": len(cell_boxes),
+                "recognized_item_count": len(recognized_items),
+                "reconstructed_cell_count": len(backend_cells),
+                "image_path_used": False,
+            },
+        }
+        return {
+            "text": _markdown_table(rows),
+            "confidence": sum(confidence_values) / len(confidence_values) if confidence_values else 0.0,
+            "segments": [],
+            "attempts": [{"step": "test_structure_rules_reconstruction"}],
+            "preprocessing": "paddle_table_recognition_v2",
+            "engine": "table_recognition_v2",
+            "model": _TABLE_MODEL_NAME,
+            "table_html": central_html,
+            "table_rows": rows,
+            "table_structured": structured or _structured_from_rows(rows),
+            "table_debug": debug,
+            "raw_results": _collect_dicts(output),
+        }
+    return None
+
+
+def _slanext_result_from_output(output: Any, image: np.ndarray, started: float, region_debug: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if region_debug is None:
+        central_result = _build_result_with_central_table_rules(output, image, started)
+        if central_result is not None:
+            return central_result
+
+    input_height, input_width = image.shape[:2]
     dicts = _collect_dicts(output)
     html = ""
     rows: List[List[str]] = []
