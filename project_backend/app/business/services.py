@@ -1001,6 +1001,9 @@ class ProcessingLogService:
             "roi": roi,
             "value": str(item.get("value") if item.get("value") is not None else item.get("ocr_text") if item.get("ocr_text") is not None else ""),
             "confidence": self._float_or_none(item.get("confidence")),
+            "tableRows": item.get("tableRows") or item.get("table_rows"),
+            "tableStructured": item.get("tableStructured") or item.get("table_structured"),
+            "tableHtml": item.get("tableHtml") or item.get("table_html"),
         }
 
     def _map_ground_truth(self, item: Dict[str, Any]) -> Dict[str, Any]:

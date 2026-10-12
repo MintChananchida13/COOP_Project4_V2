@@ -2137,6 +2137,9 @@ function HomeWorkspace() {
         roi: roi ? compactRoiSnapshot(roi, referenceDimensions).roi : null,
         value: result.originalText ?? result.extractedText ?? "",
         confidence: result.confidence,
+        tableRows: result.tableRows,
+        tableStructured: result.tableStructured,
+        tableHtml: result.tableHtml,
       };
     });
     const groundTruth = ocrResults.map((result) => {

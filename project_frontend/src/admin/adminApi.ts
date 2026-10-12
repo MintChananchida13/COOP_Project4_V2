@@ -95,6 +95,9 @@ export interface ProcessingLogField {
   roi: ProcessingLogRoi;
   value: string;
   confidence?: number | null;
+  tableRows?: string[][] | null;
+  tableStructured?: TemplateStepTestItem["tableStructured"] | null;
+  tableHtml?: string | null;
 }
 
 export interface ProcessingGroundTruthField {
@@ -297,6 +300,18 @@ const mapProcessingLog = (value: unknown): ProcessingLog => {
       roi: mapProcessingLogRoi(field.roi),
       value: String(field.value ?? ""),
       confidence: typeof field.confidence === "number" ? field.confidence : null,
+      tableRows: Array.isArray(field.tableRows)
+        ? (field.tableRows as unknown[][]).map((row) => row.map((cell) => String(cell ?? "")))
+        : Array.isArray(field.table_rows)
+          ? (field.table_rows as unknown[][]).map((row) => row.map((cell) => String(cell ?? "")))
+          : null,
+      tableStructured:
+        field.tableStructured && typeof field.tableStructured === "object"
+          ? (field.tableStructured as TemplateStepTestItem["tableStructured"])
+          : field.table_structured && typeof field.table_structured === "object"
+            ? (field.table_structured as TemplateStepTestItem["tableStructured"])
+            : null,
+      tableHtml: (field.tableHtml as string | null | undefined) ?? (field.table_html as string | null | undefined) ?? null,
     })),
     groundTruth: asRecordArray(item.groundTruth ?? item.ground_truth).map((field) => ({
       fieldId: String(field.fieldId || field.field_id || ""),

@@ -186,6 +186,51 @@ function LogBadge({ label, tone }: { label: string; tone: "success" | "warning" 
   return <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-black ${logBadgeClass(tone)}`}>{label}</span>;
 }
 
+const normalizeTableRows = (rows: unknown): string[][] | null => {
+  if (!Array.isArray(rows)) return null;
+  const normalized = rows
+    .filter((row): row is unknown[] => Array.isArray(row))
+    .map((row) => row.map((cell) => String(cell ?? "").trim()));
+  return normalized.length ? normalized : null;
+};
+
+const tableRowsFromStructuredCells = (structured: ProcessingLogField["tableStructured"]): string[][] | null => {
+  const cells = structured?.cells;
+  if (!Array.isArray(cells) || cells.length === 0) return null;
+  const maxRow = Math.max(...cells.map((cell) => Number(cell.row || 0) + Math.max(1, Number(cell.rowSpan || 1)) - 1));
+  const maxCol = Math.max(...cells.map((cell) => Number(cell.col || 0) + Math.max(1, Number(cell.colSpan || 1)) - 1));
+  const rows = Array.from({ length: maxRow + 1 }, () => Array.from({ length: maxCol + 1 }, () => ""));
+  cells.forEach((cell) => {
+    if (cell.hidden) return;
+    const row = Number(cell.row || 0);
+    const col = Number(cell.col || 0);
+    if (rows[row]) rows[row][col] = String(cell.groundTruth ?? cell.ocrText ?? cell.text ?? "");
+  });
+  return rows;
+};
+
+const parseMarkdownTableRows = (value: string): string[][] | null => {
+  const rows = value
+    .split(/\r?\n/)
+    .map((row) => row.trim())
+    .filter((row) => row.includes("|"))
+    .map((row) =>
+      row
+        .replace(/^\|/, "")
+        .replace(/\|$/, "")
+        .split("|")
+        .map((cell) => cell.trim())
+    )
+    .filter((row) => !row.every((cell) => /^:?-{3,}:?$/.test(cell)) && row.some(Boolean));
+  return rows.length ? rows : null;
+};
+
+const tableRowsForProcessingField = (field: ProcessingLogField) =>
+  tableRowsFromStructuredCells(field.tableStructured) ||
+  normalizeTableRows(field.tableStructured?.rows) ||
+  normalizeTableRows(field.tableRows) ||
+  parseMarkdownTableRows(field.value);
+
 const buildProcessingLogExport = (log: ProcessingLog) => {
   const groundTruthByField = new Map(log.groundTruth.map((field) => [field.fieldId, field.value]));
   const fields = log.ocrOriginal.map((field) => {
@@ -792,9 +837,14 @@ function ReadOnlyFieldResult({
         <div className="mt-3">
           <ImageFieldResult field={field} page={page} />
         </div>
+      ) : kind === "table" ? (
+        <div className="mt-3 grid gap-2">
+          <ReadOnlyTableResult label="Original table result" field={field} mutedHighlight={isDifferent} />
+          <ReadOnlyValue label="Ground Truth" value={groundTruth} kind={kind} mutedHighlight={isDifferent} />
+        </div>
       ) : (
         <div className="mt-3 grid gap-2 lg:grid-cols-2">
-          <ReadOnlyValue label={kind === "table" ? "Original table result" : "OCR Text"} value={field.value} kind={kind} />
+          <ReadOnlyValue label="OCR Text" value={field.value} kind={kind} />
           <ReadOnlyValue label="Ground Truth" value={groundTruth} kind={kind} mutedHighlight={isDifferent} />
         </div>
       )}
@@ -864,6 +914,61 @@ function ImageFieldResult({ field, page }: { field: ProcessingLogField; page?: P
           <div className="px-3 py-4 text-center text-xs font-bold text-slate-500">
             {error || field.value || "กำลังตัดรูปภาพจาก ROI..."}
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ReadOnlyTableResult({ label, field, mutedHighlight }: { label: string; field: ProcessingLogField; mutedHighlight?: boolean }) {
+  const rows = tableRowsForProcessingField(field);
+  const structuredCells = Array.isArray(field.tableStructured?.cells) ? field.tableStructured?.cells || [] : [];
+  const sourceByPosition = new Map(
+    structuredCells.map((cell) => [`${Number(cell.row || 0)}:${Number(cell.col || 0)}`, cell])
+  );
+  const headerRowCount = Math.max(0, Number(field.tableStructured?.headerRowCount ?? 1));
+
+  return (
+    <div className="min-w-0">
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">{label}</p>
+        {rows?.length ? (
+          <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-black text-indigo-600">
+            {rows.length} x {Math.max(...rows.map((row) => row.length), 0)}
+          </span>
+        ) : null}
+      </div>
+      <div className={`overflow-x-auto rounded-xl border ${mutedHighlight ? "border-amber-100 bg-amber-50/40" : "border-indigo-100 bg-white"}`}>
+        {rows?.length ? (
+          <table className="min-w-full border-separate border-spacing-0 text-left text-xs">
+            <tbody>
+              {rows.map((row, rowIndex) => (
+                <tr key={rowIndex}>
+                  {row.map((cell, cellIndex) => {
+                    const sourceCell = sourceByPosition.get(`${rowIndex}:${cellIndex}`);
+                    if (sourceCell?.hidden) return null;
+                    const rowSpan = Math.max(1, Number(sourceCell?.rowSpan || 1));
+                    const colSpan = Math.max(1, Number(sourceCell?.colSpan || 1));
+                    const isHeader = rowIndex < headerRowCount;
+                    return (
+                      <td
+                        key={`${rowIndex}-${cellIndex}`}
+                        rowSpan={rowSpan}
+                        colSpan={colSpan}
+                        className={`border-b border-r border-slate-200 px-2.5 py-2 align-top ${
+                          isHeader ? "bg-indigo-50 font-black text-slate-900" : "bg-white font-semibold text-slate-700"
+                        }`}
+                      >
+                        <span className="whitespace-pre-wrap break-words">{cell || <span className="text-slate-300">-</span>}</span>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p className="px-3 py-2 text-xs font-semibold text-slate-500">{field.value || "-"}</p>
         )}
       </div>
     </div>
