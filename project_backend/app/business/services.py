@@ -4603,12 +4603,6 @@ class StorageMaintenanceService:
     GENERATED_DIRS = [
         Path(__file__).resolve().parents[1] / "cropped_rois",
         Path(__file__).resolve().parents[2] / "storage" / "detection_queries",
-        _storage_root() / "prepublish_detection_tests",
-        _storage_root() / "prepublish_template_pages",
-        _storage_root() / "template_extraction_test_crops",
-        _storage_root() / "template_verification_test_crops",
-        _storage_root() / "verification_query_anchor_crops",
-        _storage_root() / "prepublish_anchor_crops",
     ]
 
     def cleanup_generated_files(self, max_age_hours: int = 24, dry_run: bool = True) -> Dict[str, Any]:

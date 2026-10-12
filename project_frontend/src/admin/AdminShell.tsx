@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { MouseEvent, ReactNode, useEffect, useRef, useState } from "react";
-import { LogOut, Settings } from "lucide-react";
+import { MouseEvent as ReactMouseEvent, ReactNode, useEffect, useRef, useState } from "react";
+import { LogOut, Settings, UserRound } from "lucide-react";
 import { AppHeader, StatusBadge } from "../shared/ui";
 import { AuthSession, clearAuthSession, readAuthSession } from "../auth/session";
 import { preloadAdminLists } from "./adminApi";
@@ -21,7 +21,9 @@ export default function AdminShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [session, setSession] = useState<AuthSession | null>(null);
   const [isRoutePending, setIsRoutePending] = useState(false);
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const routeTransitionRef = useRef<{ from: string; startedAt: number } | null>(null);
+  const userMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setSession(readAuthSession());
@@ -48,6 +50,23 @@ export default function AdminShell({ children }: { children: ReactNode }) {
   }, [isRoutePending]);
 
   useEffect(() => {
+    if (!isUserMenuOpen) return;
+    const closeOnOutsideClick = (event: globalThis.MouseEvent) => {
+      if (userMenuRef.current?.contains(event.target as Node)) return;
+      setIsUserMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsUserMenuOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [isUserMenuOpen]);
+
+  useEffect(() => {
     const handleRouteStart = () => {
       routeTransitionRef.current = {
         from: window.location.pathname + window.location.search,
@@ -59,7 +78,7 @@ export default function AdminShell({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("admin-route-transition-start", handleRouteStart);
   }, []);
 
-  const handleShellClick = (event: MouseEvent<HTMLElement>) => {
+  const handleShellClick = (event: ReactMouseEvent<HTMLElement>) => {
     const target = event.target instanceof Element ? event.target.closest("a[href]") : null;
     if (!(target instanceof HTMLAnchorElement)) return;
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -92,14 +111,6 @@ export default function AdminShell({ children }: { children: ReactNode }) {
         eyebrow="ระบบผู้ดูแล"
         title="จัดการ Template เอกสาร"
         description="ตรวจคำขอ สร้าง Template ตรวจความพร้อม และทดสอบการค้นหาเอกสารก่อนนำไปใช้งานจริง"
-        meta={
-          session ? (
-            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-bold text-slate-500">
-              <span>{session.email}</span>
-              <StatusBadge status="admin" tone="primary" />
-            </div>
-          ) : null
-        }
         actions={
           <>
             <nav className="flex flex-wrap gap-2">
@@ -127,6 +138,29 @@ export default function AdminShell({ children }: { children: ReactNode }) {
                 </Link>
               ))}
             </nav>
+            {session && (
+              <div ref={userMenuRef} className="relative">
+                <button
+                  type="button"
+                  aria-label="ข้อมูลผู้ดูแล"
+                  title="ข้อมูลผู้ดูแล"
+                  aria-expanded={isUserMenuOpen}
+                  onClick={() => setIsUserMenuOpen((current) => !current)}
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50 hover:text-blue-700"
+                >
+                  <UserRound size={16} strokeWidth={2.2} />
+                </button>
+                {isUserMenuOpen && (
+                  <div className="fixed right-6 top-20 z-[120] w-[min(18rem,calc(100vw-1rem))] rounded-xl border border-slate-200 bg-white p-3 text-left shadow-xl">
+                    <p className="text-[11px] font-black uppercase tracking-wide text-slate-400">บัญชีผู้ดูแล</p>
+                    <p className="mt-1 break-words text-xs font-black text-slate-900">{session.email}</p>
+                    <div className="mt-2">
+                      <StatusBadge status={session.role || "admin"} tone="primary" />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             <button
               type="button"
               onClick={handleLogout}

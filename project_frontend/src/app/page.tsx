@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Bell, LogOut } from "lucide-react";
+import { AlertTriangle, Bell, LogOut, UserRound } from "lucide-react";
 import AdjustZone from "../user/components/AdjustZone";
 import WorkspaceZone from "../user/components/WorkspaceZone";
 import MatchedTemplateWorkspaceZone from "../user/components/MatchedTemplateWorkspaceZone";
@@ -1733,6 +1733,7 @@ function HomeWorkspace() {
   const [exportOptions, setExportOptions] = useState<ExportDisplayOptions>({ showFieldNames: true, showDocumentTitle: true });
   const [openTableExportDropdown, setOpenTableExportDropdown] = useState<string | null>(null);
   const [isNotificationOpen, setIsNotificationOpen] = useState(false);
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [readNotificationIds, setReadNotificationIds] = useState<string[]>([]);
   const [readMaintenanceKey, setReadMaintenanceKey] = useState("");
   const [excelExportMode, setExcelExportMode] = useState<"fields" | "tables" | "fields_tables">("fields_tables");
@@ -1750,6 +1751,7 @@ function HomeWorkspace() {
   const ocrProcessingTimeMsRef = useRef<number | null>(null);
   const tableExportDropdownRef = useRef<HTMLDivElement | null>(null);
   const notificationDropdownRef = useRef<HTMLDivElement | null>(null);
+  const userMenuRef = useRef<HTMLDivElement | null>(null);
   const ocrPageReferenceDimensionsRef = useRef<Record<number, RoiReferenceDimensions>>({});
   const previousMaintenanceActiveRef = useRef<boolean | null>(null);
   const maintenanceRequestRef = useRef<Promise<SystemMaintenanceState | null> | null>(null);
@@ -2233,6 +2235,23 @@ function HomeWorkspace() {
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [isNotificationOpen]);
+
+  useEffect(() => {
+    if (!isUserMenuOpen) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (userMenuRef.current?.contains(event.target as Node)) return;
+      setIsUserMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsUserMenuOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [isUserMenuOpen]);
 
   const handleUploadSuccess = (urls: string[], sourceFileName?: string, sourceFileType?: "pdf" | "image", sourceFile?: File) => {
     activeProcessingRunIdRef.current = "";
@@ -4118,17 +4137,17 @@ function HomeWorkspace() {
     const hasMaintenanceNotification = Boolean(maintenanceState?.active || isMaintenanceScheduleRelevant(maintenanceState));
     const hasNotifications = notifications.length > 0;
     return (
-      <div className="absolute right-0 top-full z-50 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white text-left shadow-xl">
+      <div className="fixed right-4 top-20 z-[120] w-[min(24rem,calc(100vw-1rem))] rounded-xl border border-slate-200 bg-white text-left shadow-xl lg:right-6">
         <div className="border-b border-slate-100 px-4 py-3">
           <p className="text-xs font-black text-slate-900">การแจ้งเตือน</p>
           <p className="mt-0.5 text-[11px] font-semibold text-slate-500">แสดง 5 รายการล่าสุดจากระบบ</p>
         </div>
-        <div className="max-h-[24rem] space-y-2 overflow-y-auto p-3">
+        <div className="max-h-[min(28rem,calc(100vh-9rem))] space-y-2 overflow-y-auto overscroll-contain p-3">
           {hasMaintenanceNotification ? (
             <div className={`rounded-xl border p-3 ${maintenanceState?.active ? "border-amber-200 bg-amber-50" : "border-blue-100 bg-blue-50"}`}>
               <div className="flex items-start gap-2">
                 <AlertTriangle size={16} className={maintenanceState?.active ? "mt-0.5 text-amber-600" : "mt-0.5 text-blue-600"} />
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <p className={`text-xs font-black ${maintenanceState?.active ? "text-amber-950" : "text-blue-950"}`}>
                     {maintenanceState?.active ? "ระบบอยู่ระหว่างปิดปรับปรุง" : "เตรียมปิดปรับปรุงระบบ"}
                   </p>
@@ -4154,16 +4173,16 @@ function HomeWorkspace() {
             notifications.map((notification) => (
               <div key={notification.id} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-xs font-black text-slate-900">{notification.title}</p>
-                    <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">{notification.message}</p>
+                  <div className="min-w-0 flex-1">
+                    <p className="break-words text-xs font-black text-slate-900">{notification.title}</p>
+                    <p className="mt-1 whitespace-pre-wrap break-words text-xs font-semibold leading-5 text-slate-600">{notification.message}</p>
                   </div>
-                  <span className="shrink-0 text-[10px] font-bold text-slate-400">
+                  <span className="shrink-0 whitespace-nowrap text-[10px] font-bold text-slate-400">
                     {formatNotificationDateTime(notification.createdAt)}
                   </span>
                 </div>
                 {notification.reason && (
-                  <p className="mt-2 rounded-lg bg-red-50 px-2.5 py-2 text-[11px] font-bold leading-5 text-red-700">
+                  <p className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-red-50 px-2.5 py-2 text-[11px] font-bold leading-5 text-red-700">
                     เหตุผล: {notification.reason}
                   </p>
                 )}
@@ -4263,8 +4282,26 @@ function HomeWorkspace() {
               {isNotificationOpen && renderNotificationMenu()}
             </div>
             {authSession && (
-              <div className="inline-flex h-10 items-center rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-600">
-                {authSession.email} / user
+              <div ref={userMenuRef} className="relative">
+                <button
+                  type="button"
+                  aria-label="ข้อมูลผู้ใช้"
+                  title="ข้อมูลผู้ใช้"
+                  aria-expanded={isUserMenuOpen}
+                  onClick={() => setIsUserMenuOpen((current) => !current)}
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50 hover:text-blue-700"
+                >
+                  <UserRound size={16} strokeWidth={2.2} />
+                </button>
+                {isUserMenuOpen && (
+                  <div className="fixed right-4 top-20 z-[120] w-[min(18rem,calc(100vw-1rem))] rounded-xl border border-slate-200 bg-white p-3 text-left shadow-xl lg:right-6">
+                    <p className="text-[11px] font-black uppercase tracking-wide text-slate-400">บัญชีผู้ใช้</p>
+                    <p className="mt-1 break-words text-xs font-black text-slate-900">{authSession.email}</p>
+                    <p className="mt-2 inline-flex rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-[11px] font-black text-blue-700">
+                      {authSession.role || "user"}
+                    </p>
+                  </div>
+                )}
               </div>
             )}
             {imagesList.length > 0 && (
