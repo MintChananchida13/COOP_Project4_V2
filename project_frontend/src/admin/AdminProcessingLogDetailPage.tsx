@@ -12,6 +12,7 @@ import {
   type ProcessingLog,
   type ProcessingLogField,
 } from "./adminApi";
+import type { TableMergedCell } from "../types/ocr";
 
 type FieldKind = "text" | "table" | "image";
 type ResultFilter = "all" | FieldKind | "changed";
@@ -29,6 +30,12 @@ type RenderedRoiBox = {
   width: number;
   height: number;
   points?: { x: number; y: number }[];
+};
+type ReadOnlyTableSnapshot = {
+  rows: string[][];
+  mergedCells: TableMergedCell[];
+  columnWidths: number[];
+  headerRowCount: number;
 };
 
 const formatSeconds = (ms?: number | null) => (typeof ms === "number" && Number.isFinite(ms) ? `${(ms / 1000).toFixed(2)} s` : "-");
@@ -186,6 +193,59 @@ function LogBadge({ label, tone }: { label: string; tone: "success" | "warning" 
   return <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-black ${logBadgeClass(tone)}`}>{label}</span>;
 }
 
+const TABLE_COLUMN_MIN_WIDTH = 88;
+const TABLE_COLUMN_MAX_WIDTH = 640;
+const normalizeColumnWidths = (widths: number[] | undefined, columnCount: number): number[] =>
+  Array.from({ length: columnCount }, (_, index) => {
+    const value = widths?.[index];
+    return Number.isFinite(value) ? Math.max(TABLE_COLUMN_MIN_WIDTH, Math.min(TABLE_COLUMN_MAX_WIDTH, Number(value))) : 144;
+  });
+const hasSourceColumnWidths = (widths: number[] | undefined, columnCount: number) =>
+  Array.isArray(widths) &&
+  widths.length >= columnCount &&
+  widths.slice(0, columnCount).every((value) => Number.isFinite(Number(value)));
+const measureTableTextWidth = (() => {
+  let canvas: HTMLCanvasElement | null = null;
+  return (value: string, isHeader = false) => {
+    if (typeof document === "undefined") return value.length * 8;
+    canvas = canvas || document.createElement("canvas");
+    const context = canvas.getContext("2d");
+    if (!context) return value.length * 8;
+    context.font = `${isHeader ? 700 : 500} 12px Sarabun, sans-serif`;
+    return Math.max(0, ...String(value || "").split(/\r?\n/).map((line) => context.measureText(line || " ").width));
+  };
+})();
+const getSpreadsheetColumnLabel = (index: number) => {
+  let value = index + 1;
+  let label = "";
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    label = String.fromCharCode(65 + remainder) + label;
+    value = Math.floor((value - 1) / 26);
+  }
+  return label;
+};
+const getAutoFitColumnWidth = (rows: string[][], cellIndex: number, headerRowCount = 1) => {
+  const labelWidth = measureTableTextWidth(getSpreadsheetColumnLabel(cellIndex), true);
+  const contentWidth = Math.max(
+    labelWidth,
+    ...rows.map((row, rowIndex) => measureTableTextWidth(row[cellIndex] || "", rowIndex < headerRowCount))
+  );
+  return Math.max(TABLE_COLUMN_MIN_WIDTH, Math.min(TABLE_COLUMN_MAX_WIDTH, Math.ceil(contentWidth + 56)));
+};
+const getAutoFitColumnWidths = (rows: string[][], headerRowCount = 1) => {
+  const columnCount = rows[0]?.length || 1;
+  return Array.from({ length: columnCount }, (_, index) => getAutoFitColumnWidth(rows, index, headerRowCount));
+};
+const getMergeAtAnchor = (mergedCells: TableMergedCell[], row: number, col: number) =>
+  mergedCells.find((cell) => cell.row === row && cell.col === col);
+const getMergeContainingCell = (mergedCells: TableMergedCell[], row: number, col: number) =>
+  mergedCells.find((cell) => row >= cell.row && row < cell.row + cell.rowSpan && col >= cell.col && col < cell.col + cell.colSpan);
+const isCoveredByMergedCell = (mergedCells: TableMergedCell[], row: number, col: number) => {
+  const merge = getMergeContainingCell(mergedCells, row, col);
+  return Boolean(merge && (merge.row !== row || merge.col !== col));
+};
+
 const normalizeTableRows = (rows: unknown): string[][] | null => {
   if (!Array.isArray(rows)) return null;
   const normalized = rows
@@ -262,6 +322,52 @@ const structuredTableFromValue = (value: string): ProcessingLogField["tableStruc
     return null;
   }
   return null;
+};
+
+const mergedCellsFromStructured = (
+  structured: ProcessingLogField["tableStructured"] | null | undefined,
+  rows: string[][]
+): TableMergedCell[] => {
+  if (!structured?.cells?.length) return [];
+  return structured.cells
+    .filter((cell) => !cell.hidden && (Number(cell.rowSpan ?? 1) > 1 || Number(cell.colSpan ?? 1) > 1))
+    .map((cell) => {
+      const row = Math.max(0, Number(cell.row || 0));
+      const col = Math.max(0, Number(cell.col || 0));
+      const rowSpan = Math.max(1, Number(cell.rowSpan ?? 1));
+      const colSpan = Math.max(1, Number(cell.colSpan ?? 1));
+      const originalCells = Array.from({ length: rowSpan }, (_, rowOffset) =>
+        Array.from({ length: colSpan }, (_, colOffset) => rows[row + rowOffset]?.[col + colOffset] ?? "")
+      );
+      return {
+        id: `structured-${row}-${col}-${rowSpan}-${colSpan}`,
+        row,
+        col,
+        rowSpan,
+        colSpan,
+        originalCells,
+      };
+    });
+};
+
+const buildReadOnlyTableSnapshot = (
+  rows: string[][] | null,
+  structured?: ProcessingLogField["tableStructured"] | null
+): ReadOnlyTableSnapshot | null => {
+  const normalizedRows = normalizeTableRows(rows);
+  if (!normalizedRows) return null;
+  const columnCount = Math.max(...normalizedRows.map((row) => row.length), 1);
+  const paddedRows = normalizedRows.map((row) => [...row, ...Array(Math.max(0, columnCount - row.length)).fill("")]);
+  const headerRowCount = Math.max(1, Math.min(paddedRows.length, Number(structured?.headerRowCount ?? 1)));
+  const columnWidths = hasSourceColumnWidths(structured?.colWidths, columnCount)
+    ? normalizeColumnWidths(structured?.colWidths, columnCount)
+    : getAutoFitColumnWidths(paddedRows, headerRowCount);
+  return {
+    rows: paddedRows,
+    mergedCells: mergedCellsFromStructured(structured, paddedRows),
+    columnWidths,
+    headerRowCount,
+  };
 };
 
 const tableRowsForProcessingField = (field: ProcessingLogField) =>
@@ -962,14 +1068,35 @@ function ImageFieldResult({ field, page }: { field: ProcessingLogField; page?: P
 function ReadOnlyTableResult({ label, field, mutedHighlight }: { label: string; field: ProcessingLogField; mutedHighlight?: boolean }) {
   const rows = tableRowsForProcessingField(field);
   const originalStructured = structuredTableFromValue(field.value) || field.tableStructured;
-  const structuredCells = Array.isArray(originalStructured?.cells) ? originalStructured?.cells || [] : [];
-  const sourceByPosition = new Map(
-    structuredCells.map((cell) => [`${Number(cell.row || 0)}:${Number(cell.col || 0)}`, cell])
-  );
-  const hasStructuredLayout = structuredCells.length > 0;
-  const headerRowCount = Math.max(0, Number(originalStructured?.headerRowCount ?? 1));
+  const snapshot = buildReadOnlyTableSnapshot(rows, originalStructured);
+  return <ReadOnlyTableGrid label={label} snapshot={snapshot} fallback={field.value} mutedHighlight={mutedHighlight} />;
+}
+
+function ReadOnlyTableValue({ label, value, mutedHighlight }: { label: string; value: string; mutedHighlight?: boolean }) {
+  const rows = tableRowsFromTableValue(value);
+  const structured = structuredTableFromValue(value);
+  const snapshot = buildReadOnlyTableSnapshot(rows, structured);
+  return <ReadOnlyTableGrid label={label} snapshot={snapshot} fallback={value} mutedHighlight={mutedHighlight} />;
+}
+
+function ReadOnlyTableGrid({
+  label,
+  snapshot,
+  fallback,
+  mutedHighlight,
+}: {
+  label: string;
+  snapshot: ReadOnlyTableSnapshot | null;
+  fallback: string;
+  mutedHighlight?: boolean;
+}) {
+  const rows = snapshot?.rows || null;
+  const mergedCells = snapshot?.mergedCells || [];
+  const columnWidths = snapshot?.columnWidths || [];
+  const headerRowCount = snapshot?.headerRowCount || 1;
   const rowCount = rows?.length || 0;
-  const colCount = Math.max(...(rows || []).map((row) => row.length), 0);
+  const colCount = columnWidths.length || Math.max(...(rows || []).map((row) => row.length), 0);
+  const rowHeaderClass = "sticky left-0 z-20 w-12 min-w-12 border border-slate-300 bg-slate-100 px-2 py-2 text-center text-[10px] font-black text-slate-500";
 
   return (
     <div className="min-w-0">
@@ -981,80 +1108,95 @@ function ReadOnlyTableResult({ label, field, mutedHighlight }: { label: string; 
           </span>
         ) : null}
       </div>
-      <div className={`overflow-x-auto rounded-xl border ${mutedHighlight ? "border-amber-100 bg-amber-50/40" : "border-indigo-100 bg-white"}`}>
+      <div className={`overflow-auto rounded-xl border ${mutedHighlight ? "border-amber-100 bg-amber-50/40" : "border-slate-300 bg-white"}`}>
         {rows?.length ? (
-          <table className="min-w-full border-separate border-spacing-0 text-left text-xs">
+          <table
+            className="border-collapse text-left text-xs"
+            style={{ minWidth: columnWidths.reduce((sum, width) => sum + width, 48) + 48, tableLayout: "fixed" }}
+          >
+            <thead className="sticky top-0 z-30">
+              <tr>
+                <th className={rowHeaderClass}>ทั้งหมด</th>
+                {Array.from({ length: colCount }).map((_, cellIndex) => (
+                  <th
+                    key={cellIndex}
+                    style={{ width: columnWidths[cellIndex], minWidth: columnWidths[cellIndex] }}
+                    className="border border-slate-300 bg-slate-100 px-2 py-2 text-left text-[10px] font-black text-slate-600"
+                  >
+                    {getSpreadsheetColumnLabel(cellIndex)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
             <tbody>
               {rows.map((row, rowIndex) => (
-                <tr key={rowIndex}>
-                  {row.map((cell, cellIndex) => {
-                    const sourceCell = hasStructuredLayout ? sourceByPosition.get(`${rowIndex}:${cellIndex}`) : null;
-                    if (sourceCell?.hidden) return null;
-                    const rowSpan = Math.max(1, Number(sourceCell?.rowSpan || 1));
-                    const colSpan = Math.max(1, Number(sourceCell?.colSpan || 1));
-                    const isHeader = rowIndex < headerRowCount;
-                    return (
-                      <td
-                        key={`${rowIndex}-${cellIndex}`}
-                        rowSpan={rowSpan}
-                        colSpan={colSpan}
-                        className={`border-b border-r border-slate-200 px-2.5 py-2 align-top ${
-                          isHeader ? "bg-indigo-50 font-black text-slate-900" : "bg-white font-semibold text-slate-700"
-                        }`}
-                      >
-                        <span className="whitespace-pre-wrap break-words">{cell || <span className="text-slate-300">-</span>}</span>
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <p className="px-3 py-2 text-xs font-semibold text-slate-500">{field.value || "-"}</p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ReadOnlyTableValue({ label, value, mutedHighlight }: { label: string; value: string; mutedHighlight?: boolean }) {
-  const rows = tableRowsFromTableValue(value);
-  return (
-    <div className="min-w-0">
-      <div className="mb-1 flex items-center justify-between gap-2">
-        <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">{label}</p>
-        {rows?.length ? (
-          <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-black text-indigo-600">
-            {rows.length} x {Math.max(...rows.map((row) => row.length), 0)}
-          </span>
-        ) : null}
-      </div>
-      <div className={`overflow-x-auto rounded-xl border ${mutedHighlight ? "border-amber-100 bg-amber-50/40" : "border-indigo-100 bg-white"}`}>
-        {rows?.length ? (
-          <table className="min-w-full border-separate border-spacing-0 text-left text-xs">
-            <tbody>
-              {rows.map((row, rowIndex) => (
-                <tr key={rowIndex}>
+                <tr key={rowIndex} className={rowIndex < headerRowCount ? "bg-slate-100" : "odd:bg-white even:bg-slate-50/60"}>
+                  <th className={`${rowHeaderClass} ${rowIndex < headerRowCount ? "bg-slate-100 text-slate-700" : ""}`}>
+                    {rowIndex + 1}
+                  </th>
                   {row.map((cell, cellIndex) => (
-                    <td
+                    <ReadOnlyTableCell
                       key={`${rowIndex}-${cellIndex}`}
-                      className={`border-b border-r border-slate-200 px-2.5 py-2 align-top ${
-                        rowIndex === 0 ? "bg-indigo-50 font-black text-slate-900" : "bg-white font-semibold text-slate-700"
-                      }`}
-                    >
-                      <span className="whitespace-pre-wrap break-words">{cell || <span className="text-slate-300">-</span>}</span>
-                    </td>
+                      rows={rows}
+                      mergedCells={mergedCells}
+                      rowIndex={rowIndex}
+                      cellIndex={cellIndex}
+                      headerRowCount={headerRowCount}
+                      columnWidths={columnWidths}
+                    />
                   ))}
                 </tr>
               ))}
             </tbody>
           </table>
         ) : (
-          <p className="px-3 py-2 text-xs font-semibold text-slate-500">{value || "-"}</p>
+          <p className="px-3 py-2 text-xs font-semibold text-slate-500">{fallback || "-"}</p>
         )}
       </div>
     </div>
+  );
+}
+
+function ReadOnlyTableCell({
+  rows,
+  mergedCells,
+  rowIndex,
+  cellIndex,
+  headerRowCount,
+  columnWidths,
+}: {
+  rows: string[][];
+  mergedCells: TableMergedCell[];
+  rowIndex: number;
+  cellIndex: number;
+  headerRowCount: number;
+  columnWidths: number[];
+}) {
+  if (isCoveredByMergedCell(mergedCells, rowIndex, cellIndex)) return null;
+  const merge = getMergeAtAnchor(mergedCells, rowIndex, cellIndex);
+  const isHeaderCell = rowIndex < headerRowCount;
+  const isMergedCell = Boolean(merge && ((merge.rowSpan ?? 1) > 1 || (merge.colSpan ?? 1) > 1));
+  const centerCellContent = isHeaderCell || isMergedCell;
+  const columnSpan = merge?.colSpan ?? 1;
+  const cellWidth = columnWidths.slice(cellIndex, cellIndex + columnSpan).reduce((sum, width) => sum + width, 0) || columnWidths[cellIndex] || 144;
+  const Tag = isHeaderCell ? "th" : "td";
+  return (
+    <Tag
+      rowSpan={merge?.rowSpan}
+      colSpan={merge?.colSpan}
+      style={{ width: cellWidth, minWidth: cellWidth }}
+      className={`h-auto border border-slate-300 p-1.5 ${centerCellContent ? "align-middle text-center" : "align-top text-left"} ${
+        isHeaderCell ? "bg-slate-100 font-black text-slate-800" : "bg-white font-medium text-slate-800"
+      }`}
+    >
+      <div
+        className={`min-h-9 whitespace-pre-wrap break-words rounded-md px-2 text-xs leading-5 ${
+          centerCellContent ? "py-2 text-center" : "py-1 text-left"
+        }`}
+      >
+        {rows[rowIndex]?.[cellIndex] || <span className="text-slate-300">-</span>}
+      </div>
+    </Tag>
   );
 }
 
