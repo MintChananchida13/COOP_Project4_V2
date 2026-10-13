@@ -2207,9 +2207,10 @@ function HomeWorkspace() {
   const queueProcessingLogSave = (reason: string) => {
     const headers = authHeaders({ "Content-Type": "application/json" });
     void (async () => {
-      const pageFiles = await buildProcessingLogPageFiles();
-      const snapshot = buildProcessingLogSnapshot(reason, pageFiles);
+      const snapshot = buildProcessingLogSnapshot(reason, []);
       if (!snapshot) return;
+      const pageFiles = await buildProcessingLogPageFiles();
+      snapshot.pageFiles = pageFiles;
       const response = await fetch(`${ADMIN_API_BASE_URL}/processing-logs`, {
         method: "POST",
         headers,
