@@ -17,6 +17,7 @@ const fetchWithAuth = (input: RequestInfo | URL, init: RequestInit = {}) => {
 };
 
 const sleep = (milliseconds: number) => new Promise((resolve) => globalThis.setTimeout(resolve, milliseconds));
+type AdminMemoryCache<T> = { value: T };
 
 export class TemplateMutationError extends Error {
   status: number;
@@ -47,6 +48,25 @@ let templateRequestListCache: AdminTemplateRequest[] | null = null;
 let templateListCache: Template[] | null = null;
 let templateRequestListPromise: Promise<AdminTemplateRequest[]> | null = null;
 let templateListPromise: Promise<Template[]> | null = null;
+let verificationStrategyCache: AdminMemoryCache<VerificationStrategySettings> | null = null;
+let verificationStrategyPromise: Promise<VerificationStrategySettings> | null = null;
+let adminMaintenanceCache: AdminMemoryCache<SystemMaintenanceState> | null = null;
+let adminMaintenancePromise: Promise<SystemMaintenanceState> | null = null;
+let ocrModelSettingsCache: AdminMemoryCache<OcrModelSettings> | null = null;
+let ocrModelSettingsPromise: Promise<OcrModelSettings> | null = null;
+type AdminDashboardSummaryApi = {
+  pendingRequests: number;
+  draftTemplates: number;
+  activeTemplates: number;
+  rejectedRequests: number;
+  templateCount: number;
+  latestRequests: AdminTemplateRequest[];
+  latestTemplates: Template[];
+};
+let adminDashboardCache: AdminMemoryCache<AdminDashboardSummaryApi> | null = null;
+let adminDashboardPromise: Promise<AdminDashboardSummaryApi> | null = null;
+const processingLogsCache = new Map<number, AdminMemoryCache<ProcessingLog[]>>();
+const processingLogsPromises = new Map<number, Promise<ProcessingLog[]>>();
 type TemplateBundleData = {
   template: Template;
   pages: TemplatePage[];
@@ -425,7 +445,47 @@ export const invalidateAdminListCache = (target: "templates" | "requests" | "all
     templateRequestListCache = null;
     templateRequestListPromise = null;
   }
+  adminDashboardCache = null;
+  adminDashboardPromise = null;
+  processingLogsCache.clear();
+  processingLogsPromises.clear();
 };
+
+const cloneVerificationStrategySettings = (settings: VerificationStrategySettings): VerificationStrategySettings => ({ ...settings });
+const cloneSystemMaintenanceState = (state: SystemMaintenanceState): SystemMaintenanceState => ({ ...state });
+const cloneOcrModelSettings = (settings: OcrModelSettings): OcrModelSettings => ({
+  active: { ...settings.active },
+  pendingActive: settings.pendingActive ? { ...settings.pendingActive } : settings.pendingActive,
+  deferred: settings.deferred,
+  models: {
+    text_detection: settings.models.text_detection.map((model) => ({ ...model })),
+    text_recognition: settings.models.text_recognition.map((model) => ({ ...model })),
+  },
+});
+const cloneAdminDashboardSummary = (summary: AdminDashboardSummaryApi): AdminDashboardSummaryApi => ({
+  ...summary,
+  latestRequests: cloneTemplateRequests(summary.latestRequests),
+  latestTemplates: cloneTemplates(summary.latestTemplates),
+});
+const cloneProcessingLogs = (logs: ProcessingLog[]): ProcessingLog[] =>
+  logs.map((log) => ({
+    ...log,
+    sourcePages: log.sourcePages.map((page) => ({ ...page })),
+    templateDetection: {
+      ...log.templateDetection,
+      candidates: log.templateDetection.candidates.map((candidate) => ({ ...candidate })),
+      verification: { ...log.templateDetection.verification },
+    },
+    matchedTemplate: log.matchedTemplate ? { ...log.matchedTemplate } : log.matchedTemplate,
+    roiSnapshot: log.roiSnapshot?.map((item) => ({ ...item })),
+    ocrOriginal: log.ocrOriginal.map((field) => ({ ...field, roi: { ...field.roi } })),
+    groundTruth: log.groundTruth.map((field) => ({ ...field })),
+    metadata: log.metadata ? { ...log.metadata } : log.metadata,
+    processingResultsSummary: log.processingResultsSummary ? { ...log.processingResultsSummary } : log.processingResultsSummary,
+  }));
+
+const cachedValue = <T,>(cache: AdminMemoryCache<T> | null, clone: (value: T) => T): T | null =>
+  cache ? clone(cache.value) : null;
 
 interface ApiTemplateRequestPage {
   id: string;
@@ -1415,25 +1475,35 @@ export const fetchTemplateRequests = async () => {
   }
 };
 
-export const fetchAdminDashboard = async () => {
-  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/dashboard`, { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error(`Admin dashboard load failed with ${response.status}`);
-  }
+export const fetchAdminDashboard = async (options: { forceRefresh?: boolean } = {}) => {
+  const cached = options.forceRefresh ? null : cachedValue(adminDashboardCache, cloneAdminDashboardSummary);
+  if (cached) return cached;
+  if (!options.forceRefresh && adminDashboardPromise) return adminDashboardPromise.then(cloneAdminDashboardSummary);
+  adminDashboardPromise = (async () => {
+    const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/dashboard`, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`Admin dashboard load failed with ${response.status}`);
+    }
 
-  const json = await response.json();
-  const data = json?.data || {};
-  const latestRequests = data.latest_requests as ApiTemplateRequest[] | undefined;
-  const latestTemplates = data.latest_templates as ApiTemplate[] | undefined;
-  return {
-    pendingRequests: typeof data.pending_request_count === "number" ? data.pending_request_count : 0,
-    draftTemplates: typeof data.draft_template_count === "number" ? data.draft_template_count : 0,
-    activeTemplates: typeof data.active_template_count === "number" ? data.active_template_count : 0,
-    rejectedRequests: typeof data.rejected_request_count === "number" ? data.rejected_request_count : 0,
-    templateCount: typeof data.template_count === "number" ? data.template_count : 0,
-    latestRequests: (latestRequests || []).map(mapApiRequest),
-    latestTemplates: (latestTemplates || []).map((template) => mapApiTemplate(template)),
-  };
+    const json = await response.json();
+    const data = json?.data || {};
+    const latestRequests = data.latest_requests as ApiTemplateRequest[] | undefined;
+    const latestTemplates = data.latest_templates as ApiTemplate[] | undefined;
+    const summary = {
+      pendingRequests: typeof data.pending_request_count === "number" ? data.pending_request_count : 0,
+      draftTemplates: typeof data.draft_template_count === "number" ? data.draft_template_count : 0,
+      activeTemplates: typeof data.active_template_count === "number" ? data.active_template_count : 0,
+      rejectedRequests: typeof data.rejected_request_count === "number" ? data.rejected_request_count : 0,
+      templateCount: typeof data.template_count === "number" ? data.template_count : 0,
+      latestRequests: (latestRequests || []).map(mapApiRequest),
+      latestTemplates: (latestTemplates || []).map((template) => mapApiTemplate(template)),
+    };
+    adminDashboardCache = { value: cloneAdminDashboardSummary(summary) };
+    return summary;
+  })().finally(() => {
+    adminDashboardPromise = null;
+  });
+  return adminDashboardPromise.then(cloneAdminDashboardSummary);
 };
 
 export const fetchUserNotifications = async (limit = 5): Promise<UserNotification[]> => {
@@ -1447,14 +1517,26 @@ export const fetchUserNotifications = async (limit = 5): Promise<UserNotificatio
   return asRecordArray(json?.data?.notifications).map(mapUserNotification);
 };
 
-export const fetchProcessingLogs = async (limit = 100): Promise<ProcessingLog[]> => {
+export const fetchProcessingLogs = async (limit = 100, options: { forceRefresh?: boolean } = {}): Promise<ProcessingLog[]> => {
   const safeLimit = Math.min(Math.max(Math.trunc(limit) || 100, 1), 500);
-  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/processing-logs?limit=${safeLimit}`, { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error(`Processing logs fetch failed with ${response.status}`);
-  }
-  const json = await response.json();
-  return asRecordArray(json?.data?.logs).map(mapProcessingLog);
+  const cached = options.forceRefresh ? null : cachedValue(processingLogsCache.get(safeLimit) || null, cloneProcessingLogs);
+  if (cached) return cached;
+  const pending = processingLogsPromises.get(safeLimit);
+  if (!options.forceRefresh && pending) return pending.then(cloneProcessingLogs);
+  const request = (async () => {
+    const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/processing-logs?limit=${safeLimit}`, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`Processing logs fetch failed with ${response.status}`);
+    }
+    const json = await response.json();
+    const logs = asRecordArray(json?.data?.logs).map(mapProcessingLog);
+    processingLogsCache.set(safeLimit, { value: cloneProcessingLogs(logs) });
+    return logs;
+  })().finally(() => {
+    processingLogsPromises.delete(safeLimit);
+  });
+  processingLogsPromises.set(safeLimit, request);
+  return request.then(cloneProcessingLogs);
 };
 
 export const fetchProcessingLog = async (logId: string): Promise<ProcessingLog> => {
@@ -1474,6 +1556,10 @@ export const deleteProcessingLog = async (logId: string) => {
     throw new Error(`Processing log delete failed with ${response.status}`);
   }
   const json = await response.json();
+  processingLogsCache.clear();
+  processingLogsPromises.clear();
+  adminDashboardCache = null;
+  adminDashboardPromise = null;
   return json.data as { id: string; deleted: boolean; storage_deleted: boolean };
 };
 
@@ -1887,13 +1973,23 @@ const mapVerificationStrategySettings = (data: Record<string, unknown>): Verific
   deferred: Boolean(data.deferred),
 });
 
-export const fetchVerificationStrategy = async (): Promise<VerificationStrategySettings> => {
-  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/settings/verification-strategy`);
-  const json = await response.json();
-  if (!response.ok || json?.success === false) {
-    throw new Error(json?.detail || json?.error?.message || "Fetch verification strategy failed");
-  }
-  return mapVerificationStrategySettings((json?.data as Record<string, unknown>) || {});
+export const fetchVerificationStrategy = async (options: { forceRefresh?: boolean } = {}): Promise<VerificationStrategySettings> => {
+  const cached = options.forceRefresh ? null : cachedValue(verificationStrategyCache, cloneVerificationStrategySettings);
+  if (cached) return cached;
+  if (!options.forceRefresh && verificationStrategyPromise) return verificationStrategyPromise.then(cloneVerificationStrategySettings);
+  verificationStrategyPromise = (async () => {
+    const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/settings/verification-strategy`);
+    const json = await response.json();
+    if (!response.ok || json?.success === false) {
+      throw new Error(json?.detail || json?.error?.message || "Fetch verification strategy failed");
+    }
+    const settings = mapVerificationStrategySettings((json?.data as Record<string, unknown>) || {});
+    verificationStrategyCache = { value: cloneVerificationStrategySettings(settings) };
+    return settings;
+  })().finally(() => {
+    verificationStrategyPromise = null;
+  });
+  return verificationStrategyPromise.then(cloneVerificationStrategySettings);
 };
 
 export const updateVerificationStrategy = async (strategy: VerificationStrategy): Promise<VerificationStrategySettings> => {
@@ -1906,7 +2002,10 @@ export const updateVerificationStrategy = async (strategy: VerificationStrategy)
   if (!response.ok || json?.success === false) {
     throw new Error(json?.detail || json?.error?.message || "Update verification strategy failed");
   }
-  return mapVerificationStrategySettings((json?.data as Record<string, unknown>) || {});
+  const settings = mapVerificationStrategySettings((json?.data as Record<string, unknown>) || {});
+  verificationStrategyCache = { value: cloneVerificationStrategySettings(settings) };
+  verificationStrategyPromise = null;
+  return cloneVerificationStrategySettings(settings);
 };
 
 const mapSystemMaintenance = (data: Record<string, unknown>): SystemMaintenanceState => ({
@@ -1929,13 +2028,23 @@ export const fetchSystemMaintenance = async (): Promise<SystemMaintenanceState> 
   return mapSystemMaintenance((json?.data as Record<string, unknown>) || {});
 };
 
-export const fetchAdminSystemMaintenance = async (): Promise<SystemMaintenanceState> => {
-  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/system/maintenance`, { cache: "no-store" });
-  const json = await response.json();
-  if (!response.ok || json?.success === false) {
-    throw new Error(json?.detail || json?.error?.message || "Fetch system maintenance failed");
-  }
-  return mapSystemMaintenance((json?.data as Record<string, unknown>) || {});
+export const fetchAdminSystemMaintenance = async (options: { forceRefresh?: boolean } = {}): Promise<SystemMaintenanceState> => {
+  const cached = options.forceRefresh ? null : cachedValue(adminMaintenanceCache, cloneSystemMaintenanceState);
+  if (cached) return cached;
+  if (!options.forceRefresh && adminMaintenancePromise) return adminMaintenancePromise.then(cloneSystemMaintenanceState);
+  adminMaintenancePromise = (async () => {
+    const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/system/maintenance`, { cache: "no-store" });
+    const json = await response.json();
+    if (!response.ok || json?.success === false) {
+      throw new Error(json?.detail || json?.error?.message || "Fetch system maintenance failed");
+    }
+    const state = mapSystemMaintenance((json?.data as Record<string, unknown>) || {});
+    adminMaintenanceCache = { value: cloneSystemMaintenanceState(state) };
+    return state;
+  })().finally(() => {
+    adminMaintenancePromise = null;
+  });
+  return adminMaintenancePromise.then(cloneSystemMaintenanceState);
 };
 
 export const updateAdminSystemMaintenance = async (
@@ -1956,7 +2065,10 @@ export const updateAdminSystemMaintenance = async (
     throw new Error(message);
   }
   invalidateAdminListCache("all");
-  return mapSystemMaintenance((json?.data as Record<string, unknown>) || {});
+  const state = mapSystemMaintenance((json?.data as Record<string, unknown>) || {});
+  adminMaintenanceCache = { value: cloneSystemMaintenanceState(state) };
+  adminMaintenancePromise = null;
+  return cloneSystemMaintenanceState(state);
 };
 
 export type OcrModelKind = "text_detection" | "text_recognition";
@@ -2008,13 +2120,23 @@ const mapOcrModelSettings = (data: Record<string, unknown>): OcrModelSettings =>
   };
 };
 
-export const fetchOcrModelSettings = async (): Promise<OcrModelSettings> => {
-  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/settings/ocr-models`);
-  const json = await response.json();
-  if (!response.ok || json?.success === false) {
-    throw new Error(json?.detail || json?.error?.message || "Fetch OCR model settings failed");
-  }
-  return mapOcrModelSettings((json?.data as Record<string, unknown>) || {});
+export const fetchOcrModelSettings = async (options: { forceRefresh?: boolean } = {}): Promise<OcrModelSettings> => {
+  const cached = options.forceRefresh ? null : cachedValue(ocrModelSettingsCache, cloneOcrModelSettings);
+  if (cached) return cached;
+  if (!options.forceRefresh && ocrModelSettingsPromise) return ocrModelSettingsPromise.then(cloneOcrModelSettings);
+  ocrModelSettingsPromise = (async () => {
+    const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/settings/ocr-models`);
+    const json = await response.json();
+    if (!response.ok || json?.success === false) {
+      throw new Error(json?.detail || json?.error?.message || "Fetch OCR model settings failed");
+    }
+    const settings = mapOcrModelSettings((json?.data as Record<string, unknown>) || {});
+    ocrModelSettingsCache = { value: cloneOcrModelSettings(settings) };
+    return settings;
+  })().finally(() => {
+    ocrModelSettingsPromise = null;
+  });
+  return ocrModelSettingsPromise.then(cloneOcrModelSettings);
 };
 
 export const updateActiveOcrModels = async (payload: {
@@ -2033,7 +2155,10 @@ export const updateActiveOcrModels = async (payload: {
   if (!response.ok || json?.success === false) {
     throw new Error(json?.detail || json?.error?.message || "Update OCR active models failed");
   }
-  return mapOcrModelSettings((json?.data as Record<string, unknown>) || {});
+  const settings = mapOcrModelSettings((json?.data as Record<string, unknown>) || {});
+  ocrModelSettingsCache = { value: cloneOcrModelSettings(settings) };
+  ocrModelSettingsPromise = null;
+  return cloneOcrModelSettings(settings);
 };
 
 export const saveOcrModel = async (
@@ -2058,7 +2183,10 @@ export const saveOcrModel = async (
   if (!response.ok || json?.success === false) {
     throw new Error(json?.detail || json?.error?.message || "Save OCR model failed");
   }
-  return mapOcrModelSettings((json?.data as Record<string, unknown>) || {});
+  const settings = mapOcrModelSettings((json?.data as Record<string, unknown>) || {});
+  ocrModelSettingsCache = { value: cloneOcrModelSettings(settings) };
+  ocrModelSettingsPromise = null;
+  return cloneOcrModelSettings(settings);
 };
 
 export const deleteOcrModel = async (kind: OcrModelKind, modelId: string): Promise<OcrModelSettings> => {
@@ -2070,7 +2198,10 @@ export const deleteOcrModel = async (kind: OcrModelKind, modelId: string): Promi
   if (!response.ok || json?.success === false) {
     throw new Error(json?.detail || json?.error?.message || "Delete OCR model failed");
   }
-  return mapOcrModelSettings((json?.data as Record<string, unknown>) || {});
+  const settings = mapOcrModelSettings((json?.data as Record<string, unknown>) || {});
+  ocrModelSettingsCache = { value: cloneOcrModelSettings(settings) };
+  ocrModelSettingsPromise = null;
+  return cloneOcrModelSettings(settings);
 };
 
 const embeddingJobResponseError = async (response: Response, fallback: string) => {

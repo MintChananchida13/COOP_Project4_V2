@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
-import { Eye, Search, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Eye, RefreshCw, Search, Trash2 } from "lucide-react";
 import { ActionButton, EmptyState, InlineState, PageHeader, cardClassName } from "../shared/ui";
 import { deleteProcessingLog, fetchProcessingLogs, formatProcessingLogDateTime, type ProcessingLog } from "./adminApi";
 
@@ -49,11 +49,11 @@ export default function AdminProcessingLogsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
 
-  useEffect(() => {
+  const loadLogs = useCallback((forceRefresh = false) => {
     let cancelled = false;
     setIsLoading(true);
     setLoadError("");
-    fetchProcessingLogs()
+    fetchProcessingLogs(100, { forceRefresh })
       .then((items) => {
         if (!cancelled) setLogs(items);
       })
@@ -67,6 +67,13 @@ export default function AdminProcessingLogsPage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    const cancelLoad = loadLogs(false);
+    return () => {
+      cancelLoad();
+    };
+  }, [loadLogs]);
 
   const templateOptions = useMemo(
     () =>
@@ -123,6 +130,15 @@ export default function AdminProcessingLogsPage() {
         description="ประวัติการประมวลผลเอกสารทั้งหมด"
         actions={
           <>
+            <button
+              type="button"
+              onClick={() => loadLogs(true)}
+              disabled={isLoading}
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-black text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+            >
+              <RefreshCw size={15} className={isLoading ? "animate-spin" : ""} />
+              {isLoading ? "กำลังรีเฟรช" : "รีเฟรช"}
+            </button>
             <button
               type="button"
               onClick={() => setIsCleanupOpen(true)}

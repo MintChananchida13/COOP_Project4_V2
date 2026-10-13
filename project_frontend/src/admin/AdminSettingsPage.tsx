@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { CalendarDays, Check, ChevronLeft, ChevronRight, Clock, Loader2, Pencil, Plus, Save, Settings, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { CalendarDays, Check, ChevronLeft, ChevronRight, Clock, Loader2, Pencil, Plus, RefreshCw, Save, Settings, Trash2, X } from "lucide-react";
 import {
   deleteOcrModel,
   fetchOcrModelSettings,
@@ -415,6 +415,7 @@ export default function AdminSettingsPage() {
   const [maintenanceSaveStatus, setMaintenanceSaveStatus] = useState<"idle" | "saving" | "error">("idle");
   const [isExpectedEndManual, setIsExpectedEndManual] = useState(false);
   const [maintenanceNow, setMaintenanceNow] = useState(() => new Date());
+  const [isSettingsRefreshing, setIsSettingsRefreshing] = useState(false);
 
   const applyMaintenanceState = (state: SystemMaintenanceState) => {
     setMaintenanceState(state);
@@ -509,6 +510,30 @@ export default function AdminSettingsPage() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  const handleRefreshSettings = useCallback(async () => {
+    setIsSettingsRefreshing(true);
+    setStrategyFeedback("");
+    setModelFeedback("");
+    setMaintenanceError("");
+    await Promise.allSettled([
+      fetchVerificationStrategy({ forceRefresh: true }).then(applyVerificationStrategySettings).catch((error) => {
+        console.warn("Verification strategy settings refresh failed.", error);
+        setStrategySaveStatus("error");
+        setStrategyFeedback(error instanceof Error ? error.message : "โหลดการตั้งค่า Verification ไม่สำเร็จ");
+      }),
+      fetchOcrModelSettings({ forceRefresh: true }).then(applyOcrModelSettings).catch((error) => {
+        console.warn("OCR model settings refresh failed.", error);
+        setModelSaveStatus("error");
+        setModelFeedback(error instanceof Error ? error.message : "โหลดการตั้งค่าโมเดล OCR ไม่สำเร็จ");
+      }),
+      fetchAdminSystemMaintenance({ forceRefresh: true }).then(applyMaintenanceState).catch((error) => {
+        console.warn("Maintenance settings refresh failed.", error);
+        setMaintenanceError(error instanceof Error ? error.message : "โหลดการตั้งค่าปิดปรับปรุงไม่สำเร็จ");
+      }),
+    ]);
+    setIsSettingsRefreshing(false);
   }, []);
 
   useEffect(() => {
@@ -1106,10 +1131,21 @@ export default function AdminSettingsPage() {
 
   return (
     <section className="space-y-5">
-      <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
         <p className="ui-caption font-semibold text-blue-600">ตั้งค่าระบบ</p>
         <h2 className="ui-page-title mt-1 text-slate-950">ตั้งค่าระบบ</h2>
         <p className="ui-body mt-1 text-slate-500">กำหนดค่าที่มีผลกับการทำงานส่วนกลางของระบบผู้ดูแล</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void handleRefreshSettings()}
+          disabled={isSettingsRefreshing}
+          className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+        >
+          <RefreshCw size={14} className={isSettingsRefreshing ? "animate-spin" : ""} />
+          {isSettingsRefreshing ? "กำลังรีเฟรช" : "รีเฟรช"}
+        </button>
       </div>
       {hasUnsavedChanges && (
         <InlineState

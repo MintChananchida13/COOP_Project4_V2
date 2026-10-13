@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
-import { ArrowUpRight, BadgeCheck, CircleX, FileClock, FilePenLine } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { ArrowUpRight, BadgeCheck, CircleX, FileClock, FilePenLine, RefreshCw } from "lucide-react";
 import { EmptyState, StatusBadge } from "../shared/ui";
 import { fetchAdminDashboard, fetchProcessingLogs, formatProcessingLogDateTime, type ProcessingLog } from "./adminApi";
 import { AdminDashboardSummary } from "./adminTypes";
@@ -44,24 +44,26 @@ export default function AdminDashboard() {
     latestTemplates: [],
   });
   const [recentProcessingLogs, setRecentProcessingLogs] = useState<ProcessingLog[]>([]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    const loadDashboard = async () => {
+  const loadDashboard = useCallback(async (forceRefresh = false) => {
+    if (forceRefresh) {
+      setIsRefreshing(true);
+    } else {
       setLoadStatus("loading");
-      try {
-        const [nextDashboard, nextProcessingLogs] = await Promise.all([
-          fetchAdminDashboard(),
-          fetchProcessingLogs(5),
-        ]);
-        if (cancelled) return;
+    }
+    try {
+      const [nextDashboard, nextProcessingLogs] = await Promise.all([
+        fetchAdminDashboard({ forceRefresh }),
+        fetchProcessingLogs(5, { forceRefresh }),
+      ]);
 
-        setDashboard(nextDashboard);
-        setRecentProcessingLogs(nextProcessingLogs);
-        setLoadStatus("loaded");
-      } catch (error) {
-        console.warn("Admin dashboard load failed.", error);
-        if (cancelled) return;
+      setDashboard(nextDashboard);
+      setRecentProcessingLogs(nextProcessingLogs);
+      setLoadStatus("loaded");
+    } catch (error) {
+      console.warn("Admin dashboard load failed.", error);
+      if (!forceRefresh) {
         setDashboard({
           pendingRequests: 0,
           draftTemplates: 0,
@@ -72,14 +74,16 @@ export default function AdminDashboard() {
           latestTemplates: [],
         });
         setRecentProcessingLogs([]);
-        setLoadStatus("error");
       }
-    };
-    loadDashboard();
-    return () => {
-      cancelled = true;
-    };
+      setLoadStatus("error");
+    } finally {
+      if (forceRefresh) setIsRefreshing(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadDashboard(false);
+  }, [loadDashboard]);
 
   const stats = [
     ["คำขอที่รอดำเนินการ", dashboard.pendingRequests, FileClock, "bg-amber-50 text-amber-700"],
@@ -110,9 +114,20 @@ export default function AdminDashboard() {
   return (
     <section className="space-y-4">
       <div className="border-b border-slate-200 pb-4">
-        <div>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
           <h1 className="text-xl font-black tracking-tight text-slate-950">Admin Dashboard</h1>
           <p className="mt-1 text-sm font-semibold text-slate-700">ภาพรวมคำขอ Template และประวัติการประมวลผลล่าสุดของระบบ OCR</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadDashboard(true)}
+            disabled={isRefreshing}
+            className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+          >
+            <RefreshCw size={14} className={isRefreshing ? "animate-spin" : ""} />
+            {isRefreshing ? "กำลังรีเฟรช" : "รีเฟรช"}
+          </button>
         </div>
       </div>
 
