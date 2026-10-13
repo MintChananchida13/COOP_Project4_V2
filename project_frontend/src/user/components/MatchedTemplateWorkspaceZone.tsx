@@ -76,13 +76,20 @@ export default function MatchedTemplateWorkspaceZone({
   const visibleRois = props.rois.filter((roi) => !hasResolvedChildren(roi));
   const selectedVisibleId = visibleRois.some((roi) => roi.id === props.selectedId) ? props.selectedId : null;
   const isStrictVerification = matchedTemplate.verificationStrategy === "strict";
-  const isStandardVerification = !isStrictVerification;
-  const verificationModeLabel = isStrictVerification ? "แบบเข้มงวด (strict)" : "แบบมาตรฐาน (standard)";
+  const isTextOnlyVerification = matchedTemplate.verificationStrategy === "text_only";
+  const isStandardVerification = !isStrictVerification && !isTextOnlyVerification;
+  const verificationModeLabel = isStrictVerification
+    ? "แบบเข้มงวด (strict)"
+    : isTextOnlyVerification
+      ? "เฉพาะข้อความ (Text Only)"
+      : "แบบมาตรฐาน (standard)";
   const verificationModeMessage = isStandardVerification
     ? matchedTemplate.decisionReason?.includes("failed")
       ? "ไม่ผ่านแบบมาตรฐาน (standard)"
       : "ผ่านทุกเงื่อนไขตามลำดับ"
-    : "ผ่านแบบเข้มงวด (strict)";
+    : isTextOnlyVerification
+      ? "ผ่าน Text Anchor"
+      : "ผ่านแบบเข้มงวด (strict)";
 
   return (
     <WorkspaceCustomEditor

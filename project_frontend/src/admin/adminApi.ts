@@ -40,6 +40,7 @@ export class TemplateMutationError extends Error {
 const verificationStrategyDisplayLabel = (value: unknown) => {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "strict") return "แบบเข้มงวด (strict)";
+  if (normalized === "text_only") return "เฉพาะข้อความ (Text Only)";
   if (normalized === "standard") return "แบบมาตรฐาน (standard)";
   return String(value || "-");
 };
@@ -1932,7 +1933,7 @@ export const updateTemplateApi = async (templateId: string, patch: Partial<Templ
 export const updateTemplateStatus = async (templateId: string, status: TemplateStatus) =>
   updateTemplateApi(templateId, { status });
 
-export type VerificationStrategy = "standard" | "strict";
+export type VerificationStrategy = "standard" | "strict" | "text_only";
 
 export interface VerificationStrategySettings {
   active: VerificationStrategy;
@@ -1961,8 +1962,11 @@ export interface SystemMaintenanceUpdate {
   clearSchedule?: boolean;
 }
 
-const mapVerificationStrategy = (value: unknown): VerificationStrategy =>
-  value === "strict" ? "strict" : "standard";
+const mapVerificationStrategy = (value: unknown): VerificationStrategy => {
+  if (value === "strict") return "strict";
+  if (value === "text_only") return "text_only";
+  return "standard";
+};
 
 const mapVerificationStrategySettings = (data: Record<string, unknown>): VerificationStrategySettings => ({
   active: mapVerificationStrategy(data.verification_strategy || data.verificationStrategy),

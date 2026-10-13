@@ -85,7 +85,8 @@ VERIFICATION_STRATEGY_SETTING_KEY = "verification_strategy"
 PENDING_VERIFICATION_STRATEGY_SETTING_KEY = "pending_verification_strategy"
 VERIFICATION_STRATEGY_STANDARD = "standard"
 VERIFICATION_STRATEGY_STRICT = "strict"
-VERIFICATION_STRATEGIES = {VERIFICATION_STRATEGY_STANDARD, VERIFICATION_STRATEGY_STRICT}
+VERIFICATION_STRATEGY_TEXT_ONLY = "text_only"
+VERIFICATION_STRATEGIES = {VERIFICATION_STRATEGY_STANDARD, VERIFICATION_STRATEGY_STRICT, VERIFICATION_STRATEGY_TEXT_ONLY}
 OCR_MODEL_SETTINGS_KEY = "ocr_model_settings"
 PENDING_OCR_MODEL_SETTINGS_KEY = "pending_ocr_model_settings"
 PENDING_TEMPLATE_CHANGES_SETTING_KEY = "pending_template_changes"
@@ -844,7 +845,7 @@ class GlobalSettingsService:
     def update_verification_strategy(self, value: str) -> Dict[str, Any]:
         strategy = normalize_verification_strategy(value)
         if strategy != str(value or "").strip().lower():
-            raise HTTPException(status_code=400, detail="verification_strategy must be standard or strict")
+            raise HTTPException(status_code=400, detail="verification_strategy must be standard, strict, or text_only")
         if self._should_defer_admin_setting_updates():
             self._save_setting(PENDING_VERIFICATION_STRATEGY_SETTING_KEY, strategy)
             current = {"verification_strategy": self._active_verification_strategy_no_apply()}

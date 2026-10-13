@@ -20,7 +20,7 @@ import {
 } from "./adminApi";
 import { InlineState, LoadingState } from "../shared/ui";
 
-const verificationStrategyOptions: { value: VerificationStrategy; label: string; description: string }[] = [
+const verificationStrategyOptions: { value: VerificationStrategy; label: string; description: string; badge?: string }[] = [
   {
     value: "standard",
     label: "แบบมาตรฐาน (standard)",
@@ -31,10 +31,20 @@ const verificationStrategyOptions: { value: VerificationStrategy; label: string;
     label: "แบบเข้มงวด (strict)",
     description: "ใช้คะแนนรวมจาก Layout, Text Anchor และ Image Anchor ตามค่าน้ำหนักของ Template แล้วเทียบกับเกณฑ์ความมั่นใจ โดย Anchor ที่บังคับต้องผ่านเสมอ",
   },
+  {
+    value: "text_only",
+    label: "เฉพาะข้อความ (Text Only)",
+    description: "ข้าม Layout Retrieval, Layout Pre-filter และ Image Verification ใช้เฉพาะ Text Anchor จาก Template ที่เผยแพร่แล้ว",
+    badge: "ทดลอง",
+  },
 ];
 
 const verificationStrategyLabel = (strategy: VerificationStrategy) =>
-  strategy === "strict" ? "แบบเข้มงวด (strict)" : "แบบมาตรฐาน (standard)";
+  strategy === "strict"
+    ? "แบบเข้มงวด (strict)"
+    : strategy === "text_only"
+      ? "เฉพาะข้อความ (Text Only)"
+      : "แบบมาตรฐาน (standard)";
 
 const emptyModelSettings: OcrModelSettings = {
   active: { text_detection: "", text_recognition: "" },
@@ -1179,7 +1189,14 @@ export default function AdminSettingsPage() {
                   <label key={option.value} className={`flex cursor-pointer gap-3 rounded-xl border p-4 transition-colors ${checked ? "border-indigo-300 bg-indigo-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}>
                     <input type="radio" name="verificationStrategy" value={option.value} checked={checked} onChange={() => { setDraftStrategy(option.value); setStrategySaveStatus("idle"); setStrategyFeedback(""); }} className="mt-1" />
                     <span className="min-w-0">
-                      <span className="block text-sm font-black text-slate-900">{option.label}</span>
+                      <span className="flex flex-wrap items-center gap-2 text-sm font-black text-slate-900">
+                        {option.label}
+                        {option.badge && (
+                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black text-amber-700">
+                            {option.badge}
+                          </span>
+                        )}
+                      </span>
                       <span className="mt-1 block text-xs font-semibold leading-5 text-slate-500">{option.description}</span>
                     </span>
                   </label>

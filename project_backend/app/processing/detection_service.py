@@ -31,6 +31,7 @@ from app.business.services import (
     VerificationService,
     VERIFICATION_STRATEGY_STANDARD,
     VERIFICATION_STRATEGY_STRICT,
+    VERIFICATION_STRATEGY_TEXT_ONLY,
     normalize_verification_strategy,
 )
 
@@ -3580,6 +3581,443 @@ def _detection_engine(pages: List[Dict[str, Any]]) -> str:
     return "layout_signature"
 
 
+def _load_text_only_template_anchors() -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    total_started = time.perf_counter()
+    conn = _connect()
+    with conn:
+        cursor, execute_timing = conn.execute_timed(
+            """
+            SELECT
+                tv.id AS template_id,
+                tg.name AS template_name,
+                tg.document_type,
+                tg.category,
+                tv.status AS template_status,
+                tv.version_name,
+                tv.version_number,
+                tv.detection_mode,
+                tv.main_page_number,
+                tv.final_confidence_threshold,
+                tv.layout_weight,
+                tv.text_anchor_weight,
+                tv.image_anchor_weight,
+                (
+                    SELECT COUNT(*)
+                    FROM template_pages tp_count
+                    WHERE tp_count.template_version_id = tv.id
+                ) AS page_count,
+                (
+                    SELECT COUNT(*)
+                    FROM extraction_fields ef
+                    JOIN template_pages tp_fields ON tp_fields.id = ef.template_page_id
+                    WHERE tp_fields.template_version_id = tv.id
+                ) AS field_count,
+                va.id AS anchor_id,
+                va.template_page_id,
+                tp.page_number,
+                va.anchor_name AS field_name,
+                va.anchor_name AS display_label,
+                va.expected_text,
+                va.match_type,
+                va.required AS required_for_verification,
+                va.weight AS verification_weight,
+                va.roi_x_ratio,
+                va.roi_y_ratio,
+                va.roi_width_ratio,
+                va.roi_height_ratio,
+                va.roi_points_json,
+                va.sort_order,
+                va.created_at
+            FROM template_versions tv
+            JOIN template_groups tg ON tg.id = tv.template_group_id
+            LEFT JOIN template_pages tp ON tp.template_version_id = tv.id
+            LEFT JOIN verification_anchors va ON va.template_page_id = tp.id AND va.anchor_type = 'text'
+            WHERE tv.status IN ('active', 'published')
+            ORDER BY tv.updated_at DESC, tv.id ASC, tp.page_number ASC, va.sort_order ASC, va.created_at ASC
+            """
+        )
+        fetch_started = time.perf_counter()
+        rows = cursor.fetchall()
+        fetch_elapsed = time.perf_counter() - fetch_started
+
+    templates_by_id: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        template_id = row["template_id"]
+        if template_id not in templates_by_id:
+            templates_by_id[template_id] = {
+                "template_id": template_id,
+                "template_name": row["template_name"],
+                "document_type": row["document_type"],
+                "category": row["category"],
+                "template_status": row["template_status"],
+                "version_name": row["version_name"],
+                "version_number": row["version_number"],
+                "detection_mode": row["detection_mode"],
+                "main_page_number": row["main_page_number"],
+                "final_confidence_threshold": row["final_confidence_threshold"],
+                "layout_weight": row["layout_weight"],
+                "text_anchor_weight": row["text_anchor_weight"],
+                "image_anchor_weight": row["image_anchor_weight"],
+                "page_count": row["page_count"],
+                "field_count": row["field_count"],
+                "text_anchors": [],
+            }
+        if row["anchor_id"] is None:
+            continue
+        roi = {
+            "page_number": row["page_number"],
+            "x_ratio": row["roi_x_ratio"],
+            "y_ratio": row["roi_y_ratio"],
+            "width_ratio": row["roi_width_ratio"],
+            "height_ratio": row["roi_height_ratio"],
+        }
+        raw_points = row["roi_points_json"]
+        if raw_points:
+            try:
+                points = json.loads(raw_points) if isinstance(raw_points, str) else raw_points
+                if isinstance(points, list) and len(points) > 2:
+                    roi["points"] = points
+            except Exception:
+                pass
+        templates_by_id[template_id]["text_anchors"].append(
+            {
+                "id": row["anchor_id"],
+                "template_id": template_id,
+                "template_page_id": row["template_page_id"],
+                "page_number": row["page_number"],
+                "field_name": row["field_name"],
+                "display_label": row["display_label"],
+                "roi": roi,
+                "data_type": "text",
+                "expected_text": row["expected_text"],
+                "match_type": row["match_type"],
+                "required_for_verification": bool(row["required_for_verification"]),
+                "verification_weight": row["verification_weight"],
+            }
+        )
+
+    return list(templates_by_id.values()), {
+        "execute_ms": _ms(float(execute_timing.get("execute") or 0.0)),
+        "cursor_create_ms": _ms(float(execute_timing.get("cursor_create") or 0.0)),
+        "fetch_ms": _ms(fetch_elapsed),
+        "total_ms": _ms(time.perf_counter() - total_started),
+        "template_count": len(templates_by_id),
+    }
+
+
+def _text_only_checked_field(field: Dict[str, Any], ocr_result: Optional[Dict[str, Any]], error: Optional[str] = None) -> Dict[str, Any]:
+    expected_text = field.get("expected_text")
+    actual_text = str((ocr_result or {}).get("text") or "")
+    ocr_confidence = float((ocr_result or {}).get("confidence") or 0.0)
+    verification_threshold = verification_service.DEFAULT_VERIFICATION_THRESHOLD
+    match = verification_service._score_match(
+        expected_text,
+        actual_text,
+        field.get("match_type"),
+        ocr_confidence,
+        verification_threshold,
+    ) if not error else {
+        "match_type": (field.get("match_type") or "contains").strip().lower(),
+        "normalized_expected": verification_service._normalize_text(expected_text),
+        "normalized_actual": verification_service._normalize_text(actual_text),
+        "text_similarity_score": 0.0,
+        "text_match_score": 0.0,
+        "ocr_confidence": round(float(ocr_confidence or 0.0), 4),
+        "field_score": 0.0,
+        "verification_threshold": verification_threshold,
+        "score": 0.0,
+        "passed": False,
+        "failure_reason": "ocr_error",
+    }
+    return {
+        "field_id": field["id"],
+        "anchor_id": field["id"],
+        "field_name": field["field_name"],
+        "display_label": field["display_label"],
+        "anchor_type": "text",
+        "verification_method": "ocr_text",
+        "page_number": int(field["page_number"]),
+        "expected_text": expected_text,
+        "actual_text": actual_text,
+        "normalized_expected": match["normalized_expected"],
+        "normalized_actual": match["normalized_actual"],
+        "text_similarity_score": match["text_similarity_score"],
+        "text_match_score": match.get("text_match_score", match["field_score"]),
+        "ocr_confidence": match["ocr_confidence"],
+        "field_score": match["field_score"],
+        "verification_threshold": match["verification_threshold"],
+        "match_type": match["match_type"],
+        "required": bool(field["required_for_verification"]),
+        "passed": match["passed"],
+        "score": match["field_score"],
+        "failure_reason": match["failure_reason"],
+        "roi": field["roi"],
+        "roi_padding": 0,
+        "weight": float(field.get("verification_weight") or 1.0),
+        "reference_crop_preview_data_url": None,
+        "current_crop_preview_data_url": None,
+        "error": error or (ocr_result or {}).get("error"),
+    }
+
+
+def _detect_template_text_only(
+    query_id: str,
+    normalized_pages: List[Dict[str, Any]],
+    timing: Dict[str, float],
+    request_cache: DetectionRequestCache,
+    total_started: float,
+    source_type: str,
+) -> Dict[str, Any]:
+    text_only_started = time.perf_counter()
+    page_image_paths = {int(page["page_index"]): page["normalized_path"] for page in normalized_pages}
+
+    load_started = time.perf_counter()
+    templates, load_debug = _load_text_only_template_anchors()
+    timing["text_only_template_anchor_load"] = time.perf_counter() - load_started
+
+    crop_started = time.perf_counter()
+    roi_items_by_page: Dict[int, List[Dict[str, Any]]] = {}
+    field_by_key: Dict[str, Dict[str, Any]] = {}
+    fields_by_template: Dict[str, List[Dict[str, Any]]] = {}
+    for template in templates:
+        template_id = str(template.get("template_id"))
+        fields = [field for field in template.get("text_anchors", []) if field.get("expected_text")]
+        fields_by_template[template_id] = fields
+        for field in fields:
+            page_number = int(field.get("page_number") or 1)
+            key = f"{template_id}:{field['id']}"
+            field_by_key[key] = field
+            if page_number in page_image_paths:
+                roi_items_by_page.setdefault(page_number, []).append({"id": key, "roi": field["roi"]})
+    timing["text_only_crop_prepare"] = time.perf_counter() - crop_started
+
+    batch_started = time.perf_counter()
+    ocr_results: Dict[str, Dict[str, Any]] = {}
+    ocr_errors: Dict[str, str] = {}
+    ocr_timing: Dict[str, Any] = {}
+    for page_number, roi_items in roi_items_by_page.items():
+        image_path = page_image_paths.get(page_number)
+        if not image_path:
+            continue
+        page_started = time.perf_counter()
+        try:
+            page_results = ocr_rois(image_path, roi_items, timing=ocr_timing)
+            ocr_results.update(page_results)
+            logger.info(
+                "[TEXT ONLY VERIFY] OCR batch done: page=%s anchors=%s elapsed=%.2fs",
+                page_number,
+                len(roi_items),
+                time.perf_counter() - page_started,
+            )
+        except OcrUnavailableError as error:
+            for item in roi_items:
+                ocr_errors[str(item.get("id"))] = str(error)
+        except Exception as error:
+            for item in roi_items:
+                ocr_errors[str(item.get("id"))] = f"ROI OCR failed: {error}"
+    timing["text_only_batch_ocr"] = time.perf_counter() - batch_started
+
+    match_started = time.perf_counter()
+    candidates: List[Dict[str, Any]] = []
+    pages_by_index: Dict[int, Dict[str, Any]] = {
+        int(page["page_index"]): {
+            "page_index": int(page["page_index"]),
+            "image_path": page["normalized_path"],
+            "normalized_image_path": page["normalized_path"],
+            "matching_image_path": page.get("matching_path") or page["normalized_path"],
+            "candidates": [],
+            "best_candidate": None,
+            "debug": {"verification_strategy": VERIFICATION_STRATEGY_TEXT_ONLY},
+        }
+        for page in normalized_pages
+    }
+
+    for template in templates:
+        template_id = str(template.get("template_id"))
+        fields = fields_by_template.get(template_id) or []
+        checked_fields = []
+        if fields:
+            for field in fields:
+                page_number = int(field.get("page_number") or 1)
+                key = f"{template_id}:{field['id']}"
+                error = ocr_errors.get(key)
+                if page_number not in page_image_paths:
+                    error = f"No query page image available for page {page_number}"
+                checked_fields.append(_text_only_checked_field(field, ocr_results.get(key), error))
+            verification = verification_service._verification_summary(template_id, checked_fields, status=None)
+        else:
+            verification = {
+                "template_id": template_id,
+                "status": "no_text_anchors",
+                "passed": False,
+                "score": 0.0,
+                "text_anchor_score": 0.0,
+                "image_anchor_score": 1.0,
+                "required_passed": False,
+                "checked_fields": [],
+                "verification_details": [],
+            }
+        final_threshold = float(template.get("final_confidence_threshold") or DecisionService.DEFAULT_FINAL_CONFIDENCE_THRESHOLD)
+        verification_score = float(verification.get("text_anchor_score", verification.get("score", 0.0)) or 0.0)
+        final_passed = bool(verification.get("passed")) and bool(fields) and verification_score >= final_threshold
+        candidate = {
+            "template_id": template_id,
+            "vector_id": f"text_only:{template_id}",
+            "score": round(verification_score, 4),
+            "retrieval_score": 0.0,
+            "layout_score": 0.0,
+            "layout_debug": {"skipped": True, "reason": "text_only_strategy"},
+            "average_score": 0.0,
+            "matched_pages": len({field.get("page_number") for field in checked_fields if field.get("passed")}),
+            "template_name": template.get("template_name"),
+            "version_name": template.get("version_name"),
+            "version_number": template.get("version_number"),
+            "template_status": template.get("template_status"),
+            "page_count": template.get("page_count"),
+            "field_count": template.get("field_count"),
+            "model_name": "text_only_batch_ocr",
+            "vector_store_engine": "text_only",
+            "retrieval_engine": "text_only",
+            "query_page_index": 1,
+            "template_page_number": 1,
+            "alignment_status": "skipped",
+            "alignment": {"alignment_status": "skipped", "alignment_reason": "text_only_strategy"},
+            "alignment_debug": {"alignment_status": "skipped", "reason": "text_only_strategy"},
+            "alignment_score": 0.0,
+            "alignment_passed": False,
+            "alignment_fallback_used": True,
+            "alignment_reason": "text_only_strategy",
+            "normalized_verification_score": round(verification_score, 4),
+            "aligned_verification_score": None,
+            "verification_source_used": "text_only_original_roi",
+            "before_alignment_verification": round(verification_score, 4),
+            "after_alignment_verification": None,
+            "verification_improvement": None,
+            "normalized_image_path": page_image_paths.get(1),
+            "normalized_image_preview_url": _detection_preview_url(page_image_paths.get(1)) if page_image_paths.get(1) else None,
+            "extraction_image_path": page_image_paths.get(1),
+            "extraction_image_preview_url": _detection_preview_url(page_image_paths.get(1)) if page_image_paths.get(1) else None,
+            "selected_processing_source": "text_only_original_roi",
+            "selected_processing_path": page_image_paths.get(1),
+            "roi_coordinate_space": "normalized",
+            "verification": verification,
+            "verification_details": verification.get("checked_fields", []),
+            "verification_score": round(verification_score, 4),
+            "text_anchor_score": round(verification_score, 4),
+            "image_anchor_score": None,
+            "anchor_score": round(verification_score, 4),
+            "matching_weights": {"layout": 0.0, "text_anchor": 1.0, "image_anchor": 0.0},
+            "effective_matching_weights": {"layout": 0.0, "text_anchor": 1.0, "image_anchor": 0.0},
+            "verification_passed": bool(verification.get("passed")),
+            "final_score": round(verification_score, 4),
+            "final_passed": final_passed,
+            "decision_reason": "ผ่าน Text Only" if final_passed else "Text Anchor ไม่ผ่านเกณฑ์",
+            "decision_path": "text_only_text_anchors_passed" if final_passed else "text_only_text_anchors_failed",
+            "required_passed": verification.get("required_passed"),
+            "required_failed_fields": [field for field in checked_fields if field.get("required") and not field.get("passed")],
+            "final_confidence_threshold": final_threshold,
+            "layout_similarity_threshold": None,
+            "template_rois": [],
+            "projection": {"status": "skipped", "reason": "text_only_strategy"},
+            "projected_fields": [],
+            "extraction_test": None,
+            "coordinate_debug": None,
+            "metadata": {
+                "template_id": template_id,
+                "template_name": template.get("template_name"),
+                "document_type": template.get("document_type"),
+                "category": template.get("category"),
+                "page_count": template.get("page_count"),
+                "detection_mode": template.get("detection_mode"),
+            },
+            "verification_strategy": VERIFICATION_STRATEGY_TEXT_ONLY,
+            "evaluation_status": "full",
+            "alignment_evaluated": False,
+            "candidate_rejection_reason": None if final_passed else "text_only_text_anchors_failed",
+            "timing": {
+                "text_only_matching_ms": None,
+                "text_verification_ms": None,
+                "image_verification_ms": 0.0,
+                "text_ocr_inference_ms": _ms(timing.get("text_only_batch_ocr")),
+                "image_model_inference_ms": 0.0,
+            },
+        }
+        candidates.append(candidate)
+        target_page = pages_by_index.get(int(candidate["query_page_index"])) or next(iter(pages_by_index.values()), None)
+        if target_page is not None:
+            target_page["candidates"].append(candidate)
+
+    candidates.sort(key=lambda item: (bool(item.get("final_passed")), float(item.get("final_score") or 0.0)), reverse=True)
+    for page in pages_by_index.values():
+        page["candidates"].sort(key=lambda item: (bool(item.get("final_passed")), float(item.get("final_score") or 0.0)), reverse=True)
+        page["best_candidate"] = page["candidates"][0] if page["candidates"] else None
+    timing["text_only_matching"] = time.perf_counter() - match_started
+    for candidate in candidates:
+        candidate["timing"]["text_only_matching_ms"] = _ms(timing.get("text_only_matching"))
+        candidate["timing"]["text_verification_ms"] = _ms(timing.get("text_only_matching"))
+
+    pages = list(pages_by_index.values())
+    best_candidate = next((candidate for candidate in candidates if candidate.get("final_passed")), None)
+    matched = best_candidate is not None
+    processing_pages = _persist_selected_processing_pages(query_id, pages, best_candidate, normalized_pages)
+    if best_candidate is not None:
+        best_candidate["processing_pages"] = processing_pages
+    timing["text_only_total"] = time.perf_counter() - text_only_started
+
+    logger.info(
+        "[TEXT ONLY VERIFY] done: templates=%s anchors=%s candidates=%s matched=%s crop=%.2fs batch_ocr=%.2fs matching=%.2fs total=%.2fs",
+        len(templates),
+        sum(len(fields) for fields in fields_by_template.values()),
+        len(candidates),
+        matched,
+        timing.get("text_only_crop_prepare", 0.0),
+        timing.get("text_only_batch_ocr", 0.0),
+        timing.get("text_only_matching", 0.0),
+        timing.get("text_only_total", 0.0),
+    )
+
+    return {
+        "query_id": query_id,
+        "engine": "text_only",
+        "version": DETECTION_VERSION,
+        "threshold": verification_service.DEFAULT_VERIFICATION_THRESHOLD,
+        "matched": matched,
+        "best_candidate": best_candidate,
+        "candidates": candidates,
+        "pages": pages,
+        "main_page_auto_roi_pages": [],
+        "main_page_auto_roi_total_pages": 0,
+        "main_page_auto_roi_total_regions": 0,
+        "message": None if matched else "ไม่พบ Template ที่ผ่าน Text Anchor",
+        "debug": {
+            "pipeline_core": PIPELINE_CONFIG.to_debug_dict(),
+            "retrieval_engine": "text_only",
+            "layout_retrieval_skipped": True,
+            "layout_prefilter_skipped": True,
+            "image_verification_skipped": True,
+            "source_type": source_type,
+            "verification_strategy": VERIFICATION_STRATEGY_TEXT_ONLY,
+            "text_only": {
+                "template_anchor_load": load_debug,
+                "ocr_timing": _timing_ms_map(ocr_timing),
+                "crop_ms": _ms(timing.get("text_only_crop_prepare")),
+                "batch_ocr_ms": _ms(timing.get("text_only_batch_ocr")),
+                "matching_ms": _ms(timing.get("text_only_matching")),
+                "total_ms": _ms(timing.get("text_only_total")),
+                "templates_checked": len(templates),
+                "anchors_checked": sum(len(fields) for fields in fields_by_template.values()),
+            },
+            "timing": {
+                **_detection_timing_debug(timing, pages, total_started, request_cache=request_cache),
+                "text_only_ms": _ms(timing.get("text_only_total")),
+                "text_only_crop_ms": _ms(timing.get("text_only_crop_prepare")),
+                "text_only_batch_ocr_ms": _ms(timing.get("text_only_batch_ocr")),
+                "text_only_matching_ms": _ms(timing.get("text_only_matching")),
+            },
+        },
+    }
+
+
 def _is_confirmed_main_page_candidate(candidate: Optional[Dict[str, Any]]) -> bool:
     if not isinstance(candidate, dict) or not candidate.get("final_passed"):
         return False
@@ -3798,6 +4236,15 @@ def detect_template_dev(
             timing["verification_strategy_load_breakdown"] = verification_strategy_timing
         verification_strategy = normalize_verification_strategy(verification_strategy_setting.get("verification_strategy"))
         timing["verification_strategy_load"] = time.perf_counter() - step_started
+        if verification_strategy == VERIFICATION_STRATEGY_TEXT_ONLY:
+            return _detect_template_text_only(
+                query_id,
+                normalized_pages,
+                timing,
+                request_cache,
+                total_started,
+                source_type,
+            )
         pages: List[Dict[str, Any]] = []
         confirmed_main_page_candidate: Optional[Dict[str, Any]] = None
         step_started = time.perf_counter()

@@ -160,13 +160,20 @@ interface TemplateDetectionNotice {
 }
 
 const isStrictVerificationStrategy = (value?: string | null) => value === "strict";
-const isStandardVerificationStrategy = (value?: string | null) => value !== "strict";
+const isTextOnlyVerificationStrategy = (value?: string | null) => value === "text_only";
+const isStandardVerificationStrategy = (value?: string | null) => value !== "strict" && value !== "text_only";
 
 const verificationStrategyLabel = (value?: string | null) =>
-  isStrictVerificationStrategy(value) ? "แบบเข้มงวด (strict)" : "แบบมาตรฐาน (standard)";
+  isStrictVerificationStrategy(value)
+    ? "แบบเข้มงวด (strict)"
+    : isTextOnlyVerificationStrategy(value)
+      ? "เฉพาะข้อความ (Text Only)"
+      : "แบบมาตรฐาน (standard)";
 
 const detectionFailureDetail = (detection: DetectionDevResult) =>
-  isStandardVerificationStrategy(detection.bestCandidate?.verificationStrategy || (detection.debug?.verification_strategy as string | null | undefined))
+  isTextOnlyVerificationStrategy(detection.bestCandidate?.verificationStrategy || (detection.debug?.verification_strategy as string | null | undefined))
+    ? "ไม่ผ่าน Text Anchor"
+    : isStandardVerificationStrategy(detection.bestCandidate?.verificationStrategy || (detection.debug?.verification_strategy as string | null | undefined))
     ? "ไม่ผ่านแบบมาตรฐาน (standard)"
     : "ไม่โหลด ROI จาก Template ใด ๆ";
 
