@@ -24,11 +24,10 @@ class ImageNormalizationService:
     LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.12
     PDF_SUBDOCUMENT_MIN_AREA_RATIO = 0.03
     PDF_SUBDOCUMENT_MAX_AREA_RATIO = 0.65
-    PDF_SUBDOCUMENT_MIN_CONFIDENCE = 0.82
-    PDF_SUBDOCUMENT_MIN_EDGE_SUPPORT = 0.72
-    PDF_SUBDOCUMENT_MIN_RECTANGULARITY = 0.78
+    PDF_SUBDOCUMENT_MIN_CONFIDENCE = 0.80
+    PDF_SUBDOCUMENT_MIN_EDGE_SUPPORT = 0.66
+    PDF_SUBDOCUMENT_MIN_RECTANGULARITY = 0.76
     PDF_SUBDOCUMENT_MIN_STRONG_EDGE_SIDES = 3
-    PDF_SUBDOCUMENT_MIN_WEAK_EDGE_SUPPORT = 0.20
 
     def normalize_document(
         self,
@@ -260,8 +259,6 @@ class ImageNormalizationService:
             return {"passed": False, "reason": "edge_support_below_threshold", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
         if int(best.get("strong_edge_side_count") or 0) < self.PDF_SUBDOCUMENT_MIN_STRONG_EDGE_SIDES:
             return {"passed": False, "reason": "insufficient_strong_edge_sides", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
-        if float(best.get("weakest_edge_support") or 0.0) < self.PDF_SUBDOCUMENT_MIN_WEAK_EDGE_SUPPORT:
-            return {"passed": False, "reason": "weak_edge_side_below_threshold", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
         if float(best["confidence"]) < self.PDF_SUBDOCUMENT_MIN_CONFIDENCE:
             return {"passed": False, "reason": "confidence_below_threshold", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
         crop_left, crop_top, crop_right, crop_bottom = [int(value) for value in best["crop_box"]]
