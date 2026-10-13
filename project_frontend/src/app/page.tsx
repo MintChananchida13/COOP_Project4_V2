@@ -1287,8 +1287,8 @@ const classifyTableRowsForKeyValue = (
       populatedIndexes.length >= 2 &&
       populatedIndexes[populatedIndexes.length - 1] - populatedIndexes[0] >= Math.max(1, Math.floor(maxColumns * 0.45));
     const differsFromData = typicalDataCount > 0 && Math.abs(populated - typicalDataCount) >= Math.max(2, Math.ceil(typicalDataCount * 0.4));
-    const evidence = [isNearEnd, isSparse || differsFromData, hasSpan, looksLabelValue].filter(Boolean).length;
-    return evidence >= 2 ? "summary" : "data";
+    const hasSummaryShape = (isSparse || differsFromData) && (hasSpan || looksLabelValue);
+    return isNearEnd && hasSummaryShape ? "summary" : "data";
   });
 };
 
@@ -1439,7 +1439,7 @@ const tableRowsToKeyValueRecords = (
         ])
       ),
     };
-  }).filter((record) => record.rowType === "data" && (!selectedRowSet || selectedRowSet.has(record.rowIndex)));
+  }).filter((record) => record.rowType !== "empty" && (!selectedRowSet || selectedRowSet.has(record.rowIndex)));
 };
 
 const getTableKeyValueDataRows = (rows: string[][], structured?: StructuredTableResult | null) =>
