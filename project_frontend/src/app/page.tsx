@@ -1756,6 +1756,7 @@ function HomeWorkspace() {
   const [templateDetectionSnapshot, setTemplateDetectionSnapshot] = useState<Record<string, unknown> | null>(null);
   const activeProcessingRunIdRef = useRef<string>("");
   const ocrProcessingTimeMsRef = useRef<number | null>(null);
+  const latestOcrResultsRef = useRef<(OCRResult & { pageIndex?: number })[]>([]);
   const originalProcessingLogOcrResultsRef = useRef<(OCRResult & { pageIndex?: number })[]>([]);
   const tableExportDropdownRef = useRef<HTMLDivElement | null>(null);
   const notificationDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -1763,7 +1764,6 @@ function HomeWorkspace() {
   const ocrPageReferenceDimensionsRef = useRef<Record<number, RoiReferenceDimensions>>({});
   const previousMaintenanceActiveRef = useRef<boolean | null>(null);
   const maintenanceRequestRef = useRef<Promise<SystemMaintenanceState | null> | null>(null);
-  const groundTruthAutosaveTimerRef = useRef<number | null>(null);
   const maintenanceStateRef = useRef<SystemMaintenanceState | null>(null);
 
   useEffect(() => {
@@ -1774,6 +1774,10 @@ function HomeWorkspace() {
     }
     setAuthSession(session);
   }, [router]);
+
+  useEffect(() => {
+    latestOcrResultsRef.current = ocrResults;
+  }, [ocrResults]);
 
   useEffect(() => {
     try {
@@ -1930,6 +1934,31 @@ function HomeWorkspace() {
     if (markers.some((value) => value === "image" || value === "extract_image")) return "image";
     if (markers.some((value) => value === "table" || value === "table_recognition_v2" || value === "ocr_table")) return "table";
     return "text";
+  };
+
+  const processingLogGroundTruthValue = (result: OCRResult & { pageIndex?: number }, fieldType: string) => {
+    if (fieldType !== "table") return result.extractedText ?? "";
+    const structured = result.tableStructured;
+    if (structured?.cells?.length) {
+      const groundTruthRows = rowsFromStructuredCells(structured);
+      const groundTruthStructured: StructuredTableResult = {
+        ...structured,
+        rows: groundTruthRows || structured.rows || [],
+        cells: structured.cells.map((cell) => {
+          const value = String(cell.groundTruth ?? cell.text ?? cell.ocrText ?? "");
+          return {
+            ...cell,
+            text: value,
+            groundTruth: value,
+          };
+        }),
+      };
+      return JSON.stringify(groundTruthStructured, null, 2);
+    }
+    if (Array.isArray(result.tableRows) && result.tableRows.length > 0) {
+      return JSON.stringify({ rows: result.tableRows }, null, 2);
+    }
+    return result.extractedText ?? "";
   };
 
   const compactRoiSnapshot = (roi: ROI & { pageIndex?: number }, referenceDimensions?: RoiReferenceDimensions | null) => ({
@@ -2151,7 +2180,7 @@ function HomeWorkspace() {
     overrides: ProcessingLogSnapshotOverrides = {}
   ): ProcessingLogSnapshot | null => {
     const processingRunId = activeProcessingRunIdRef.current;
-    const snapshotOcrResults = overrides.ocrResults || ocrResults;
+    const snapshotOcrResults = overrides.ocrResults || latestOcrResultsRef.current || ocrResults;
     const snapshotRois = overrides.rois || rois;
     const snapshotStep = overrides.currentStep || currentStep;
     const originalSnapshotOcrResults =
@@ -2204,11 +2233,12 @@ function HomeWorkspace() {
     });
     const groundTruth = snapshotOcrResults.map((result) => {
       const roi = findRoiForOcrResult(snapshotRois, result);
+      const fieldType = processingLogFieldType(result, roi);
       return {
         fieldId: String(result.roiId ?? roi?.id ?? result.id),
         fieldName: result.fieldName || roi?.fieldName || "",
         pageNumber: Number(result.pageIndex ?? roi?.pageIndex ?? 0) + 1,
-        value: result.extractedText ?? "",
+        value: processingLogGroundTruthValue(result, fieldType),
       };
     });
 
@@ -2319,23 +2349,6 @@ function HomeWorkspace() {
   }, [isNotificationOpen]);
 
   useEffect(() => {
-    if (currentStep !== "editor" || !activeProcessingRunIdRef.current || ocrResults.length === 0) return;
-    if (groundTruthAutosaveTimerRef.current) window.clearTimeout(groundTruthAutosaveTimerRef.current);
-    groundTruthAutosaveTimerRef.current = window.setTimeout(() => {
-      queueProcessingLogSave("ground_truth_updated", {
-        includePageFiles: false,
-        currentStep: "editor",
-      });
-    }, 900);
-    return () => {
-      if (groundTruthAutosaveTimerRef.current) {
-        window.clearTimeout(groundTruthAutosaveTimerRef.current);
-        groundTruthAutosaveTimerRef.current = null;
-      }
-    };
-  }, [currentStep, ocrResults]);
-
-  useEffect(() => {
     if (!isUserMenuOpen) return;
     const closeOnOutsideClick = (event: MouseEvent) => {
       if (userMenuRef.current?.contains(event.target as Node)) return;
@@ -2367,7 +2380,7 @@ function HomeWorkspace() {
     setImage(urls[0] || null);
     setRois([]);
     setSelectedId(null);
-    setOcrResults([]);
+    updateOcrResults([]);
     setClassificationStatus("");
     setTemplateDetectionNotice(null);
     setOperationNotice(null);
@@ -2415,7 +2428,7 @@ function HomeWorkspace() {
     setImage(null);
     setRois([]);
     setSelectedId(null);
-    setOcrResults([]);
+    updateOcrResults([]);
     setClassificationStatus("");
     setTemplateDetectionNotice(null);
     setOperationNotice(null);
@@ -2451,6 +2464,19 @@ function HomeWorkspace() {
     previousMaintenanceActiveRef.current = isActive;
   }, [maintenanceStatus, maintenanceState?.active]);
 
+  const updateOcrResults: typeof setOcrResults = (next) => {
+    if (typeof next === "function") {
+      setOcrResults((previous) => {
+        const resolved = (next as (previous: (OCRResult & { pageIndex?: number })[]) => (OCRResult & { pageIndex?: number })[])(previous);
+        latestOcrResultsRef.current = resolved;
+        return resolved;
+      });
+      return;
+    }
+    latestOcrResultsRef.current = next;
+    setOcrResults(next);
+  };
+
   const handleBatchConfirm = async (finalProcessedImages: string[]) => {
     activeProcessingRunIdRef.current = "";
     ocrProcessingTimeMsRef.current = null;
@@ -2460,7 +2486,7 @@ function HomeWorkspace() {
     setImage(finalProcessedImages[currentIndex] || finalProcessedImages[0] || null);
     setRois([]);
     setSelectedId(null);
-    setOcrResults([]);
+    updateOcrResults([]);
     setMatchedTemplate(null);
     setTemplateDetectionSnapshot(null);
     setOperationNotice(null);
@@ -2716,7 +2742,7 @@ function HomeWorkspace() {
     ocrPageReferenceDimensionsRef.current = {};
     const ocrStartedAt = performance.now();
     setIsLoading(true);
-    setOcrResults([]);
+    updateOcrResults([]);
     setOperationNotice(null);
     setOcrProgress({ currentPage: 0, totalPages: imagesList.length, completedPages: 0 });
 
@@ -2915,7 +2941,7 @@ function HomeWorkspace() {
         if (ocrRunIdRef.current !== runId) return;
         ocrProcessingTimeMsRef.current = performance.now() - ocrStartedAt;
         originalProcessingLogOcrResultsRef.current = cloneProcessingLogOcrResults(combinedResults);
-        setOcrResults(combinedResults);
+        updateOcrResults(combinedResults);
         setCurrentIndex(0);
         setCurrentStep("editor");
         queueProcessingLogSave("ocr_completed", {
@@ -2954,7 +2980,7 @@ function HomeWorkspace() {
     originalProcessingLogOcrResultsRef.current = [];
     const ocrStartedAt = performance.now();
     setIsLoading(true);
-    setOcrResults([]);
+    updateOcrResults([]);
     setOperationNotice(null);
     setOcrProgress({ currentPage: 0, totalPages: imagesList.length, completedPages: 0 });
 
@@ -3065,7 +3091,7 @@ function HomeWorkspace() {
           return [...nonGeneratedRois, ...allRoisFromOcr];
         });
 
-        setOcrResults(allOcrResults);
+        updateOcrResults(allOcrResults);
         setCurrentIndex(0);
         setCurrentStep("editor");
         queueProcessingLogSave("ocr_completed", {
@@ -3842,7 +3868,7 @@ function HomeWorkspace() {
   };
 
   const updateTableExportConfig = (resultId: number, nextConfig: TableExportConfig) => {
-    setOcrResults((previous) =>
+    updateOcrResults((previous) =>
       previous.map((result) =>
         result.id === resultId ? { ...result, tableExport: nextConfig } : result
       )
@@ -3861,7 +3887,7 @@ function HomeWorkspace() {
   const showTableExportConfigPanel = exportContent.tables && tableExportMode === "key_value" && tableResultsForExport.length > 0;
 
   const setAllTableExportMode = (mode: TableExportConfig["mode"]) => {
-    setOcrResults((previous) =>
+    updateOcrResults((previous) =>
       previous.map((result) => {
         if (getResultFieldType(result) !== "table") return result;
         const structured = getStructuredTableForExport(result);
@@ -4578,7 +4604,7 @@ function HomeWorkspace() {
               previewUrl={imagesList[currentIndex] || previewUrl}
               rois={rois}
               ocrResults={ocrResults}
-              setOcrResults={setOcrResults}
+              setOcrResults={updateOcrResults}
               onBackToStudio={() => {
                 queueProcessingLogSave("back_to_roi");
                 setCurrentStep("studio");
