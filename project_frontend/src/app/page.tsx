@@ -199,6 +199,7 @@ type RoiReferenceDimensions = {
   naturalWidth: number;
   naturalHeight: number;
 };
+type UserFlowStepKey = "upload" | "adjust" | "studio" | "editor";
 type ProcessingLogSnapshot = {
   processingRunId: string;
   documentName: string;
@@ -216,6 +217,11 @@ type ProcessingLogSnapshot = {
   ocrOriginal: Record<string, unknown>[];
   groundTruth: Record<string, unknown>[];
   metadata: Record<string, unknown>;
+};
+type ProcessingLogSnapshotOverrides = {
+  ocrResults?: (OCRResult & { pageIndex?: number })[];
+  rois?: (ROI & { pageIndex?: number })[];
+  currentStep?: UserFlowStepKey;
 };
 
 const USER_FLOW_STEPS = [
@@ -1694,7 +1700,7 @@ async function runAiProcessJob(
 function HomeWorkspace() {
   const router = useRouter();
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
-  const [currentStep, setCurrentStep] = useState<"upload" | "adjust" | "studio" | "editor">("upload");
+  const [currentStep, setCurrentStep] = useState<UserFlowStepKey>("upload");
   const [imagesList, setImagesList] = useState<string[]>([]);
   const [originalImagesList, setOriginalImagesList] = useState<string[]>([]);
   const [uploadedSourceFileId, setUploadedSourceFileId] = useState<string>("");
@@ -2126,9 +2132,23 @@ function HomeWorkspace() {
     };
   };
 
-  const buildProcessingLogSnapshot = (reason: string, pageFiles: Record<string, unknown>[] = []): ProcessingLogSnapshot | null => {
+  const buildProcessingLogSnapshot = (
+    reason: string,
+    pageFiles: Record<string, unknown>[] = [],
+    overrides: ProcessingLogSnapshotOverrides = {}
+  ): ProcessingLogSnapshot | null => {
     const processingRunId = activeProcessingRunIdRef.current;
-    if (!processingRunId || ocrResults.length === 0) return null;
+    const snapshotOcrResults = overrides.ocrResults || ocrResults;
+    const snapshotRois = overrides.rois || rois;
+    const snapshotStep = overrides.currentStep || currentStep;
+    if (!processingRunId || snapshotOcrResults.length === 0) {
+      console.warn("Processing log snapshot skipped.", {
+        reason,
+        hasProcessingRunId: Boolean(processingRunId),
+        ocrResultCount: snapshotOcrResults.length,
+      });
+      return null;
+    }
     const sourcePages = imagesList.map((src, index) => ({
       ...(ocrPageReferenceDimensionsRef.current[index]
         ? {
@@ -2145,8 +2165,8 @@ function HomeWorkspace() {
       imageUrl: src && !src.startsWith("data:") ? src : undefined,
       imageReferenceStatus: src && !src.startsWith("data:") ? "stable_url" : "data_url_omitted",
     }));
-    const ocrOriginal = ocrResults.map((result) => {
-      const roi = findRoiForOcrResult(rois, result);
+    const ocrOriginal = snapshotOcrResults.map((result) => {
+      const roi = findRoiForOcrResult(snapshotRois, result);
       const pageIndex = Number(result.pageIndex ?? roi?.pageIndex ?? 0);
       const referenceDimensions = ocrPageReferenceDimensionsRef.current[pageIndex] || null;
       return {
@@ -2163,8 +2183,8 @@ function HomeWorkspace() {
         tableHtml: result.tableHtml,
       };
     });
-    const groundTruth = ocrResults.map((result) => {
-      const roi = findRoiForOcrResult(rois, result);
+    const groundTruth = snapshotOcrResults.map((result) => {
+      const roi = findRoiForOcrResult(snapshotRois, result);
       return {
         fieldId: String(result.roiId ?? roi?.id ?? result.id),
         fieldName: result.fieldName || roi?.fieldName || "",
@@ -2180,13 +2200,13 @@ function HomeWorkspace() {
       sourceFileId: uploadedSourceFileId || undefined,
       sourceFileName: uploadedSourceFileName || undefined,
       status: "completed",
-      currentStep,
+      currentStep: snapshotStep,
       pageCount: imagesList.length,
       sourcePages,
       pageFiles,
       templateDetection: templateDetectionSnapshot || {},
       matchedTemplate: matchedTemplate ? { ...matchedTemplate } : null,
-      roiSnapshot: rois.map((roi) => compactRoiSnapshot(roi, ocrPageReferenceDimensionsRef.current[Number(roi.pageIndex ?? 0)] || null)),
+      roiSnapshot: snapshotRois.map((roi) => compactRoiSnapshot(roi, ocrPageReferenceDimensionsRef.current[Number(roi.pageIndex ?? 0)] || null)),
       ocrOriginal,
       groundTruth,
       metadata: {
@@ -2204,11 +2224,11 @@ function HomeWorkspace() {
     };
   };
 
-  const queueProcessingLogSave = (reason: string) => {
+  const saveProcessingLog = async (reason: string, overrides: ProcessingLogSnapshotOverrides = {}): Promise<boolean> => {
     const headers = authHeaders({ "Content-Type": "application/json" });
-    void (async () => {
-      const snapshot = buildProcessingLogSnapshot(reason, []);
-      if (!snapshot) return;
+    try {
+      const snapshot = buildProcessingLogSnapshot(reason, [], overrides);
+      if (!snapshot) return false;
       const pageFiles = await buildProcessingLogPageFiles();
       snapshot.pageFiles = pageFiles;
       const response = await fetch(`${ADMIN_API_BASE_URL}/processing-logs`, {
@@ -2219,11 +2239,24 @@ function HomeWorkspace() {
       });
       if (!response.ok) {
         const detail = await response.text().catch(() => "");
-        console.warn("Processing log background save failed.", response.status, detail);
+        console.warn("Processing log save failed.", response.status, detail);
+        return false;
       }
-    })().catch((error) => {
-      console.warn("Processing log background save failed.", error);
-    });
+      console.info("Processing log saved.", {
+        reason,
+        processingRunId: snapshot.processingRunId,
+        pageCount: snapshot.pageCount,
+        ocrFieldCount: snapshot.ocrOriginal.length,
+      });
+      return true;
+    } catch (error) {
+      console.warn("Processing log save failed.", error);
+      return false;
+    }
+  };
+
+  const queueProcessingLogSave = (reason: string, overrides: ProcessingLogSnapshotOverrides = {}) => {
+    void saveProcessingLog(reason, overrides);
   };
 
   const handleLogout = () => {
@@ -2844,6 +2877,11 @@ function HomeWorkspace() {
         setOcrResults(combinedResults);
         setCurrentIndex(0);
         setCurrentStep("editor");
+        queueProcessingLogSave("ocr_completed", {
+          ocrResults: combinedResults,
+          rois,
+          currentStep: "editor",
+        });
       } else {
         setOperationNotice({
           tone: "warning",
@@ -2987,6 +3025,11 @@ function HomeWorkspace() {
         setOcrResults(allOcrResults);
         setCurrentIndex(0);
         setCurrentStep("editor");
+        queueProcessingLogSave("ocr_completed", {
+          ocrResults: allOcrResults,
+          rois: allRoisFromOcr,
+          currentStep: "editor",
+        });
       } else {
         setOperationNotice({
           tone: "warning",
