@@ -3,6 +3,7 @@ import os
 import base64
 import json
 import cv2
+import logging
 import re
 import shutil
 import time
@@ -37,6 +38,7 @@ from app.business.services import (
 
 
 DETECTION_THRESHOLD = 0.50
+logger = logging.getLogger(__name__)
 PIPELINE_CONFIG = get_pipeline_core_config()
 DETECTION_VERSION = PIPELINE_CONFIG.version
 PDF_RENDER_SCALE = 2.0
