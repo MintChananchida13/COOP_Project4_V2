@@ -396,7 +396,7 @@ export default function AdminSettingsPage() {
   const [modelSettings, setModelSettings] = useState<OcrModelSettings>(emptyModelSettings);
   const [draftDetectionModelId, setDraftDetectionModelId] = useState("");
   const [draftRecognitionModelId, setDraftRecognitionModelId] = useState("");
-  const [loadStatus, setLoadStatus] = useState<"loading" | "loaded" | "error">("loading");
+  const [loadStatus, setLoadStatus] = useState<"loading" | "loaded" | "error">("loaded");
   const [strategySaveStatus, setStrategySaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [modelSaveStatus, setModelSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [strategyFeedback, setStrategyFeedback] = useState("");
@@ -469,26 +469,41 @@ export default function AdminSettingsPage() {
   useEffect(() => {
     let cancelled = false;
     const loadSettings = async () => {
-      setLoadStatus("loading");
+      setLoadStatus("loaded");
       setStrategyFeedback("");
       setModelFeedback("");
-      try {
-        const [strategy, ocrSettings, maintenance] = await Promise.all([
-          fetchVerificationStrategy(),
-          fetchOcrModelSettings(),
-          fetchAdminSystemMaintenance(),
-        ]);
-        if (cancelled) return;
-        applyVerificationStrategySettings(strategy);
-        applyOcrModelSettings(ocrSettings);
-        applyMaintenanceState(maintenance);
-        setLoadStatus("loaded");
-      } catch (error) {
-        console.warn("Settings load failed.", error);
-        if (cancelled) return;
-        setLoadStatus("error");
-        setStrategyFeedback(error instanceof Error ? error.message : "โหลดการตั้งค่าระบบไม่สำเร็จ");
-      }
+      fetchVerificationStrategy()
+        .then((strategy) => {
+          if (cancelled) return;
+          applyVerificationStrategySettings(strategy);
+        })
+        .catch((error) => {
+          console.warn("Verification strategy settings load failed.", error);
+          if (cancelled) return;
+          setStrategySaveStatus("error");
+          setStrategyFeedback(error instanceof Error ? error.message : "โหลดการตั้งค่า Verification ไม่สำเร็จ");
+        });
+      fetchOcrModelSettings()
+        .then((ocrSettings) => {
+          if (cancelled) return;
+          applyOcrModelSettings(ocrSettings);
+        })
+        .catch((error) => {
+          console.warn("OCR model settings load failed.", error);
+          if (cancelled) return;
+          setModelSaveStatus("error");
+          setModelFeedback(error instanceof Error ? error.message : "โหลดการตั้งค่าโมเดล OCR ไม่สำเร็จ");
+        });
+      fetchAdminSystemMaintenance()
+        .then((maintenance) => {
+          if (cancelled) return;
+          applyMaintenanceState(maintenance);
+        })
+        .catch((error) => {
+          console.warn("Maintenance settings load failed.", error);
+          if (cancelled) return;
+          setMaintenanceError(error instanceof Error ? error.message : "โหลดการตั้งค่าปิดปรับปรุงไม่สำเร็จ");
+        });
     };
     loadSettings();
     return () => {
