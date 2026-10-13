@@ -2112,23 +2112,27 @@ function HomeWorkspace() {
     return entries.filter((entry): entry is Record<string, unknown> => Boolean(entry));
   };
 
-  const compactProcessingLogTableStructured = (structured: OCRResult["tableStructured"]) => {
+  const compactProcessingLogTableStructured = (structured: OCRResult["tableStructured"], mode: "original" | "groundTruth" = "groundTruth") => {
     if (!structured) return undefined;
     return {
       rows: Array.isArray(structured.rows) ? structured.rows : undefined,
       headerRowCount: structured.headerRowCount,
       colWidths: Array.isArray(structured.colWidths) ? structured.colWidths : undefined,
       cells: Array.isArray(structured.cells)
-        ? structured.cells.map((cell) => ({
-            row: cell.row,
-            col: cell.col,
-            text: cell.text,
-            rowSpan: cell.rowSpan,
-            colSpan: cell.colSpan,
-            ocrText: cell.ocrText,
-            groundTruth: cell.groundTruth,
-            hidden: cell.hidden,
-          }))
+        ? structured.cells.map((cell) => {
+            const originalText = String(cell.ocrText ?? cell.text ?? "");
+            const groundTruthText = String(cell.groundTruth ?? cell.text ?? cell.ocrText ?? "");
+            return {
+              row: cell.row,
+              col: cell.col,
+              text: mode === "original" ? originalText : cell.text,
+              rowSpan: cell.rowSpan,
+              colSpan: cell.colSpan,
+              ocrText: originalText,
+              groundTruth: mode === "original" ? undefined : groundTruthText,
+              hidden: cell.hidden,
+            };
+          })
         : undefined,
     };
   };
@@ -2192,7 +2196,7 @@ function HomeWorkspace() {
         value: originalResult.originalText ?? originalResult.extractedText ?? "",
         confidence: originalResult.confidence,
         tableRows: originalResult.tableRows,
-        tableStructured: compactProcessingLogTableStructured(originalResult.tableStructured),
+        tableStructured: compactProcessingLogTableStructured(originalResult.tableStructured, "original"),
         tableHtml: originalResult.tableHtml,
       };
     });
