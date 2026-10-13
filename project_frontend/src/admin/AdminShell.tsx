@@ -3,9 +3,9 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { MouseEvent as ReactMouseEvent, ReactNode, useEffect, useRef, useState } from "react";
-import { LogOut, Settings, UserRound } from "lucide-react";
+import { LogOut, Settings } from "lucide-react";
 import { AppHeader, StatusBadge } from "../shared/ui";
-import { AuthSession, clearAuthSession, readAuthSession } from "../auth/session";
+import { clearAuthSession } from "../auth/session";
 import { preloadAdminLists } from "./adminApi";
 
 const navItems = [
@@ -19,14 +19,10 @@ const navItems = [
 export default function AdminShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [session, setSession] = useState<AuthSession | null>(null);
   const [isRoutePending, setIsRoutePending] = useState(false);
-  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const routeTransitionRef = useRef<{ from: string; startedAt: number } | null>(null);
-  const userMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    setSession(readAuthSession());
     preloadAdminLists();
   }, []);
 
@@ -48,23 +44,6 @@ export default function AdminShell({ children }: { children: ReactNode }) {
     const timeoutId = window.setTimeout(() => setIsRoutePending(false), 4500);
     return () => window.clearTimeout(timeoutId);
   }, [isRoutePending]);
-
-  useEffect(() => {
-    if (!isUserMenuOpen) return;
-    const closeOnOutsideClick = (event: globalThis.MouseEvent) => {
-      if (userMenuRef.current?.contains(event.target as Node)) return;
-      setIsUserMenuOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setIsUserMenuOpen(false);
-    };
-    document.addEventListener("mousedown", closeOnOutsideClick);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("mousedown", closeOnOutsideClick);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [isUserMenuOpen]);
 
   useEffect(() => {
     const handleRouteStart = () => {
@@ -138,29 +117,6 @@ export default function AdminShell({ children }: { children: ReactNode }) {
                 </Link>
               ))}
             </nav>
-            {session && (
-              <div ref={userMenuRef} className="relative">
-                <button
-                  type="button"
-                  aria-label="ข้อมูลผู้ดูแล"
-                  title="ข้อมูลผู้ดูแล"
-                  aria-expanded={isUserMenuOpen}
-                  onClick={() => setIsUserMenuOpen((current) => !current)}
-                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50 hover:text-blue-700"
-                >
-                  <UserRound size={16} strokeWidth={2.2} />
-                </button>
-                {isUserMenuOpen && (
-                  <div className="fixed right-6 top-20 z-[120] w-[min(18rem,calc(100vw-1rem))] rounded-xl border border-slate-200 bg-white p-3 text-left shadow-xl">
-                    <p className="text-[11px] font-black uppercase tracking-wide text-slate-400">บัญชีผู้ดูแล</p>
-                    <p className="mt-1 break-words text-xs font-black text-slate-900">{session.email}</p>
-                    <div className="mt-2">
-                      <StatusBadge status={session.role || "admin"} tone="primary" />
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
             <button
               type="button"
               onClick={handleLogout}
