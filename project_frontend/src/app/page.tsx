@@ -1755,6 +1755,7 @@ function HomeWorkspace() {
   const [templateDetectionSnapshot, setTemplateDetectionSnapshot] = useState<Record<string, unknown> | null>(null);
   const activeProcessingRunIdRef = useRef<string>("");
   const ocrProcessingTimeMsRef = useRef<number | null>(null);
+  const originalProcessingLogOcrResultsRef = useRef<(OCRResult & { pageIndex?: number })[]>([]);
   const tableExportDropdownRef = useRef<HTMLDivElement | null>(null);
   const notificationDropdownRef = useRef<HTMLDivElement | null>(null);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
@@ -2132,6 +2133,12 @@ function HomeWorkspace() {
     };
   };
 
+  const cloneProcessingLogOcrResults = (results: (OCRResult & { pageIndex?: number })[]) =>
+    JSON.parse(JSON.stringify(results)) as (OCRResult & { pageIndex?: number })[];
+
+  const processingLogResultKey = (result: OCRResult & { pageIndex?: number }) =>
+    String(result.roiId ?? result.id ?? `${result.fieldName || ""}:${Number(result.pageIndex ?? 0)}`);
+
   const buildProcessingLogSnapshot = (
     reason: string,
     pageFiles: Record<string, unknown>[] = [],
@@ -2141,6 +2148,11 @@ function HomeWorkspace() {
     const snapshotOcrResults = overrides.ocrResults || ocrResults;
     const snapshotRois = overrides.rois || rois;
     const snapshotStep = overrides.currentStep || currentStep;
+    const originalSnapshotOcrResults =
+      originalProcessingLogOcrResultsRef.current.length > 0
+        ? originalProcessingLogOcrResultsRef.current
+        : snapshotOcrResults;
+    const originalResultByKey = new Map(originalSnapshotOcrResults.map((result) => [processingLogResultKey(result), result]));
     if (!processingRunId || snapshotOcrResults.length === 0) {
       console.warn("Processing log snapshot skipped.", {
         reason,
@@ -2166,6 +2178,7 @@ function HomeWorkspace() {
       imageReferenceStatus: src && !src.startsWith("data:") ? "stable_url" : "data_url_omitted",
     }));
     const ocrOriginal = snapshotOcrResults.map((result) => {
+      const originalResult = originalResultByKey.get(processingLogResultKey(result)) || result;
       const roi = findRoiForOcrResult(snapshotRois, result);
       const pageIndex = Number(result.pageIndex ?? roi?.pageIndex ?? 0);
       const referenceDimensions = ocrPageReferenceDimensionsRef.current[pageIndex] || null;
@@ -2176,11 +2189,11 @@ function HomeWorkspace() {
         pageNumber: pageIndex + 1,
         roiMode: roi?.roiMode === "flexible" ? "flexible" : "fixed",
         roi: roi ? compactRoiSnapshot(roi, referenceDimensions).roi : null,
-        value: result.originalText ?? result.extractedText ?? "",
-        confidence: result.confidence,
-        tableRows: result.tableRows,
-        tableStructured: compactProcessingLogTableStructured(result.tableStructured),
-        tableHtml: result.tableHtml,
+        value: originalResult.originalText ?? originalResult.extractedText ?? "",
+        confidence: originalResult.confidence,
+        tableRows: originalResult.tableRows,
+        tableStructured: compactProcessingLogTableStructured(originalResult.tableStructured),
+        tableHtml: originalResult.tableHtml,
       };
     });
     const groundTruth = snapshotOcrResults.map((result) => {
@@ -2319,6 +2332,7 @@ function HomeWorkspace() {
   const handleUploadSuccess = (urls: string[], sourceFileName?: string, sourceFileType?: "pdf" | "image", sourceFile?: File) => {
     activeProcessingRunIdRef.current = "";
     ocrProcessingTimeMsRef.current = null;
+    originalProcessingLogOcrResultsRef.current = [];
     setUploadedSourceFileId(`user_file_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
     setUploadedSourceFileName(sourceFileName || "ไฟล์ต้นทาง");
     setUploadedSourceFileType(sourceFileType || (sourceFileName?.toLowerCase().endsWith(".pdf") ? "pdf" : "image"));
@@ -2363,6 +2377,7 @@ function HomeWorkspace() {
     ocrRunIdRef.current += 1;
     activeProcessingRunIdRef.current = "";
     ocrProcessingTimeMsRef.current = null;
+    originalProcessingLogOcrResultsRef.current = [];
     setIsLoading(false);
     setOcrProgress(null);
     setImagesList([]);
@@ -2416,6 +2431,7 @@ function HomeWorkspace() {
   const handleBatchConfirm = async (finalProcessedImages: string[]) => {
     activeProcessingRunIdRef.current = "";
     ocrProcessingTimeMsRef.current = null;
+    originalProcessingLogOcrResultsRef.current = [];
     setImagesList(finalProcessedImages);
     setPreviewUrl(finalProcessedImages[currentIndex] || finalProcessedImages[0] || "");
     setImage(finalProcessedImages[currentIndex] || finalProcessedImages[0] || null);
@@ -2673,6 +2689,7 @@ function HomeWorkspace() {
 
     activeProcessingRunIdRef.current = `proc_${Date.now()}_${runId}`;
     ocrProcessingTimeMsRef.current = null;
+    originalProcessingLogOcrResultsRef.current = [];
     ocrPageReferenceDimensionsRef.current = {};
     const ocrStartedAt = performance.now();
     setIsLoading(true);
@@ -2874,6 +2891,7 @@ function HomeWorkspace() {
       if (combinedResults.length > 0) {
         if (ocrRunIdRef.current !== runId) return;
         ocrProcessingTimeMsRef.current = performance.now() - ocrStartedAt;
+        originalProcessingLogOcrResultsRef.current = cloneProcessingLogOcrResults(combinedResults);
         setOcrResults(combinedResults);
         setCurrentIndex(0);
         setCurrentStep("editor");
@@ -2910,6 +2928,7 @@ function HomeWorkspace() {
     ocrRunIdRef.current = runId;
     activeProcessingRunIdRef.current = `proc_${Date.now()}_${runId}`;
     ocrProcessingTimeMsRef.current = null;
+    originalProcessingLogOcrResultsRef.current = [];
     const ocrStartedAt = performance.now();
     setIsLoading(true);
     setOcrResults([]);
@@ -3017,6 +3036,7 @@ function HomeWorkspace() {
       if (allOcrResults.length > 0) {
         if (ocrRunIdRef.current !== runId) return;
         ocrProcessingTimeMsRef.current = performance.now() - ocrStartedAt;
+        originalProcessingLogOcrResultsRef.current = cloneProcessingLogOcrResults(allOcrResults);
         setRois((prev) => {
           const nonGeneratedRois = prev.filter((r) => !r.fieldName.startsWith("line_"));
           return [...nonGeneratedRois, ...allRoisFromOcr];
