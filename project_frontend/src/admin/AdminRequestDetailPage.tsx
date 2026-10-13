@@ -511,6 +511,9 @@ export default function AdminRequestDetailPage({
         detectionMode,
         mainPageNumber: String(safeMainPageNumber),
       });
+      void fetchTemplateBundle(templateId).catch((error) => {
+        console.warn("Template editor bundle prefetch failed.", error);
+      });
       window.dispatchEvent(new Event("admin-route-transition-start"));
       router.push(`/admin/templates/${templateId}/edit?${params.toString()}`);
       return;
@@ -602,6 +605,9 @@ export default function AdminRequestDetailPage({
         mainPageNumber: String(safeMainPageNumber),
       });
       setActionStatus(creationType === "new_version" ? "สร้าง Template ฉบับร่างใหม่เรียบร้อยแล้ว" : "สร้าง Template ฉบับร่างเรียบร้อยแล้ว");
+      void fetchTemplateBundle(result.templateId).catch((error) => {
+        console.warn("Template editor bundle prefetch failed.", error);
+      });
       window.dispatchEvent(new Event("admin-route-transition-start"));
       router.push(`/admin/templates/${result.templateId}/edit?${params.toString()}`);
     } catch (error) {

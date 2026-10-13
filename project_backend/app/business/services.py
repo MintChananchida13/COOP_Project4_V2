@@ -6625,7 +6625,25 @@ class AdminTemplateService:
     ) -> Dict[str, Any]:
         started = time.perf_counter()
         template = self.get_template(template_id)
-        page_paths = self._template_page_image_paths(template_id, pages if pages is not None else template.get("pages") or [])
+        source_pages = pages if pages is not None else template.get("pages") or []
+        if verification_fields is not None:
+            target_page_numbers = {
+                int(field.get("page_number") or (field.get("roi") or {}).get("page_number") or 1)
+                for field in verification_fields
+            }
+            source_pages = [
+                page
+                for page in source_pages
+                if int(page.get("page_number") or 1) in target_page_numbers
+            ]
+        logger.info(
+            "[TEMPLATE VERIFY] test-verification prepare: template_id=%s anchors=%s pages=%s source=%s",
+            template_id,
+            len(verification_fields or []),
+            len(source_pages),
+            "request_payload" if verification_fields is not None else "stored_template",
+        )
+        page_paths = self._template_page_image_paths(template_id, source_pages)
         try:
             active_fields = verification_fields if verification_fields is not None else None
             verification = VerificationService().verify_template(template_id, page_paths, active_fields)
