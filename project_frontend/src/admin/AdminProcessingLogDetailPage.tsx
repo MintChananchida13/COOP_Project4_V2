@@ -225,11 +225,28 @@ const parseMarkdownTableRows = (value: string): string[][] | null => {
   return rows.length ? rows : null;
 };
 
+const tableRowsFromTableValue = (value: string): string[][] | null => {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    const structuredRows = normalizeTableRows(parsed?.rows);
+    if (structuredRows) return structuredRows;
+    const structuredCells = tableRowsFromStructuredCells(parsed);
+    if (structuredCells) return structuredCells;
+    const arrayRows = normalizeTableRows(parsed);
+    if (arrayRows) return arrayRows;
+  } catch {
+    // Plain-text and markdown table values are handled below.
+  }
+  return parseMarkdownTableRows(text);
+};
+
 const tableRowsForProcessingField = (field: ProcessingLogField) =>
   tableRowsFromStructuredCells(field.tableStructured) ||
   normalizeTableRows(field.tableStructured?.rows) ||
   normalizeTableRows(field.tableRows) ||
-  parseMarkdownTableRows(field.value);
+  tableRowsFromTableValue(field.value);
 
 const buildProcessingLogExport = (log: ProcessingLog) => {
   const groundTruthByField = new Map(log.groundTruth.map((field) => [field.fieldId, field.value]));
@@ -840,7 +857,7 @@ function ReadOnlyFieldResult({
       ) : kind === "table" ? (
         <div className="mt-3 grid gap-2">
           <ReadOnlyTableResult label="Original table result" field={field} mutedHighlight={isDifferent} />
-          <ReadOnlyValue label="Ground Truth" value={groundTruth} kind={kind} mutedHighlight={isDifferent} />
+          <ReadOnlyTableValue label="Ground Truth" value={groundTruth} mutedHighlight={isDifferent} />
         </div>
       ) : (
         <div className="mt-3 grid gap-2 lg:grid-cols-2">
@@ -969,6 +986,46 @@ function ReadOnlyTableResult({ label, field, mutedHighlight }: { label: string; 
           </table>
         ) : (
           <p className="px-3 py-2 text-xs font-semibold text-slate-500">{field.value || "-"}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ReadOnlyTableValue({ label, value, mutedHighlight }: { label: string; value: string; mutedHighlight?: boolean }) {
+  const rows = tableRowsFromTableValue(value);
+  return (
+    <div className="min-w-0">
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">{label}</p>
+        {rows?.length ? (
+          <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-black text-indigo-600">
+            {rows.length} x {Math.max(...rows.map((row) => row.length), 0)}
+          </span>
+        ) : null}
+      </div>
+      <div className={`overflow-x-auto rounded-xl border ${mutedHighlight ? "border-amber-100 bg-amber-50/40" : "border-indigo-100 bg-white"}`}>
+        {rows?.length ? (
+          <table className="min-w-full border-separate border-spacing-0 text-left text-xs">
+            <tbody>
+              {rows.map((row, rowIndex) => (
+                <tr key={rowIndex}>
+                  {row.map((cell, cellIndex) => (
+                    <td
+                      key={`${rowIndex}-${cellIndex}`}
+                      className={`border-b border-r border-slate-200 px-2.5 py-2 align-top ${
+                        rowIndex === 0 ? "bg-indigo-50 font-black text-slate-900" : "bg-white font-semibold text-slate-700"
+                      }`}
+                    >
+                      <span className="whitespace-pre-wrap break-words">{cell || <span className="text-slate-300">-</span>}</span>
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p className="px-3 py-2 text-xs font-semibold text-slate-500">{value || "-"}</p>
         )}
       </div>
     </div>
