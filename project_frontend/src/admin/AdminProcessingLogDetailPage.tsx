@@ -250,9 +250,23 @@ const tableRowsFromTableValue = (value: string): string[][] | null => {
   return parseMarkdownTableRows(text);
 };
 
+const structuredTableFromValue = (value: string): ProcessingLogField["tableStructured"] | null => {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && Array.isArray(parsed.cells)) {
+      return parsed as ProcessingLogField["tableStructured"];
+    }
+  } catch {
+    return null;
+  }
+  return null;
+};
+
 const tableRowsForProcessingField = (field: ProcessingLogField) =>
-  tableRowsFromStructuredCells(field.tableStructured, "ocr") ||
-  normalizeTableRows(field.tableStructured?.rows) ||
+  tableRowsFromStructuredCells(structuredTableFromValue(field.value) || field.tableStructured, "ocr") ||
+  normalizeTableRows((structuredTableFromValue(field.value) || field.tableStructured)?.rows) ||
   normalizeTableRows(field.tableRows) ||
   tableRowsFromTableValue(field.value);
 
@@ -947,7 +961,8 @@ function ImageFieldResult({ field, page }: { field: ProcessingLogField; page?: P
 
 function ReadOnlyTableResult({ label, field, mutedHighlight }: { label: string; field: ProcessingLogField; mutedHighlight?: boolean }) {
   const rows = tableRowsForProcessingField(field);
-  const structuredCells = Array.isArray(field.tableStructured?.cells) ? field.tableStructured?.cells || [] : [];
+  const originalStructured = structuredTableFromValue(field.value) || field.tableStructured;
+  const structuredCells = Array.isArray(originalStructured?.cells) ? originalStructured?.cells || [] : [];
   const visibleStructuredCells = structuredCells
     .filter((cell) => !cell.hidden)
     .sort((a, b) => Number(a.row || 0) - Number(b.row || 0) || Number(a.col || 0) - Number(b.col || 0));
@@ -957,7 +972,7 @@ function ReadOnlyTableResult({ label, field, mutedHighlight }: { label: string; 
     structuredRows.set(row, [...(structuredRows.get(row) || []), cell]);
   });
   const hasStructuredLayout = visibleStructuredCells.length > 0;
-  const headerRowCount = Math.max(0, Number(field.tableStructured?.headerRowCount ?? 1));
+  const headerRowCount = Math.max(0, Number(originalStructured?.headerRowCount ?? 1));
   const rowCount = hasStructuredLayout
     ? Math.max(...visibleStructuredCells.map((cell) => Number(cell.row || 0) + Math.max(1, Number(cell.rowSpan || 1))))
     : rows?.length || 0;

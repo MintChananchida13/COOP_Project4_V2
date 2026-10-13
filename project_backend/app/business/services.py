@@ -1375,7 +1375,19 @@ class ProcessingLogService:
         log_id = _stub_id("proc_log")
         source_pages = data.get("source_pages") or []
         template_detection = data.get("template_detection") or {}
+        metadata = data.get("metadata") or {}
+        snapshot_reason = str(metadata.get("snapshotReason") or metadata.get("snapshot_reason") or "").strip()
+        incoming_ocr_original = data.get("ocr_original") or []
+        ocr_original_json = jsonb_dump(incoming_ocr_original)
         with _connect() as conn:
+            existing = conn.execute(
+                "SELECT id, ocr_original_json FROM processing_logs WHERE processing_run_id = ?",
+                (processing_run_id,),
+            ).fetchone()
+            if existing:
+                existing_ocr_original = jsonb_load(existing["ocr_original_json"], [])
+                if snapshot_reason != "ocr_completed" and isinstance(existing_ocr_original, list) and existing_ocr_original:
+                    ocr_original_json = existing["ocr_original_json"]
             cursor = conn.execute(
                 """
                 INSERT INTO processing_logs (
@@ -1431,9 +1443,9 @@ class ProcessingLogService:
                     jsonb_dump(data.get("template_detection") or {}),
                     jsonb_dump(data.get("matched_template")) if data.get("matched_template") is not None else None,
                     jsonb_dump(data.get("roi_snapshot") or []),
-                    jsonb_dump(data.get("ocr_original") or []),
+                    ocr_original_json,
                     jsonb_dump(data.get("ground_truth") or []),
-                    jsonb_dump(data.get("metadata") or {}),
+                    jsonb_dump(metadata),
                 ),
             )
             row = cursor.fetchone()
