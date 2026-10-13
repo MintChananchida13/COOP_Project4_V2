@@ -194,7 +194,10 @@ const normalizeTableRows = (rows: unknown): string[][] | null => {
   return normalized.length ? normalized : null;
 };
 
-const tableRowsFromStructuredCells = (structured: ProcessingLogField["tableStructured"]): string[][] | null => {
+const tableRowsFromStructuredCells = (
+  structured: ProcessingLogField["tableStructured"],
+  source: "ocr" | "groundTruth" = "ocr"
+): string[][] | null => {
   const cells = structured?.cells;
   if (!Array.isArray(cells) || cells.length === 0) return null;
   const maxRow = Math.max(...cells.map((cell) => Number(cell.row || 0) + Math.max(1, Number(cell.rowSpan || 1)) - 1));
@@ -204,7 +207,12 @@ const tableRowsFromStructuredCells = (structured: ProcessingLogField["tableStruc
     if (cell.hidden) return;
     const row = Number(cell.row || 0);
     const col = Number(cell.col || 0);
-    if (rows[row]) rows[row][col] = String(cell.groundTruth ?? cell.ocrText ?? cell.text ?? "");
+    if (rows[row]) {
+      rows[row][col] =
+        source === "groundTruth"
+          ? String(cell.groundTruth ?? cell.ocrText ?? cell.text ?? "")
+          : String(cell.ocrText ?? cell.text ?? "");
+    }
   });
   return rows;
 };
@@ -232,7 +240,7 @@ const tableRowsFromTableValue = (value: string): string[][] | null => {
     const parsed = JSON.parse(text);
     const structuredRows = normalizeTableRows(parsed?.rows);
     if (structuredRows) return structuredRows;
-    const structuredCells = tableRowsFromStructuredCells(parsed);
+    const structuredCells = tableRowsFromStructuredCells(parsed, "groundTruth");
     if (structuredCells) return structuredCells;
     const arrayRows = normalizeTableRows(parsed);
     if (arrayRows) return arrayRows;
@@ -243,7 +251,7 @@ const tableRowsFromTableValue = (value: string): string[][] | null => {
 };
 
 const tableRowsForProcessingField = (field: ProcessingLogField) =>
-  tableRowsFromStructuredCells(field.tableStructured) ||
+  tableRowsFromStructuredCells(field.tableStructured, "ocr") ||
   normalizeTableRows(field.tableStructured?.rows) ||
   normalizeTableRows(field.tableRows) ||
   tableRowsFromTableValue(field.value);
