@@ -222,6 +222,7 @@ type ProcessingLogSnapshotOverrides = {
   ocrResults?: (OCRResult & { pageIndex?: number })[];
   rois?: (ROI & { pageIndex?: number })[];
   currentStep?: UserFlowStepKey;
+  includePageFiles?: boolean;
 };
 
 const USER_FLOW_STEPS = [
@@ -1762,6 +1763,7 @@ function HomeWorkspace() {
   const ocrPageReferenceDimensionsRef = useRef<Record<number, RoiReferenceDimensions>>({});
   const previousMaintenanceActiveRef = useRef<boolean | null>(null);
   const maintenanceRequestRef = useRef<Promise<SystemMaintenanceState | null> | null>(null);
+  const groundTruthAutosaveTimerRef = useRef<number | null>(null);
   const maintenanceStateRef = useRef<SystemMaintenanceState | null>(null);
 
   useEffect(() => {
@@ -2246,7 +2248,7 @@ function HomeWorkspace() {
     try {
       const snapshot = buildProcessingLogSnapshot(reason, [], overrides);
       if (!snapshot) return false;
-      const pageFiles = await buildProcessingLogPageFiles();
+      const pageFiles = overrides.includePageFiles === false ? [] : await buildProcessingLogPageFiles();
       snapshot.pageFiles = pageFiles;
       const response = await fetch(`${ADMIN_API_BASE_URL}/processing-logs`, {
         method: "POST",
@@ -2315,6 +2317,23 @@ function HomeWorkspace() {
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [isNotificationOpen]);
+
+  useEffect(() => {
+    if (currentStep !== "editor" || !activeProcessingRunIdRef.current || ocrResults.length === 0) return;
+    if (groundTruthAutosaveTimerRef.current) window.clearTimeout(groundTruthAutosaveTimerRef.current);
+    groundTruthAutosaveTimerRef.current = window.setTimeout(() => {
+      queueProcessingLogSave("ground_truth_updated", {
+        includePageFiles: false,
+        currentStep: "editor",
+      });
+    }, 900);
+    return () => {
+      if (groundTruthAutosaveTimerRef.current) {
+        window.clearTimeout(groundTruthAutosaveTimerRef.current);
+        groundTruthAutosaveTimerRef.current = null;
+      }
+    };
+  }, [currentStep, ocrResults]);
 
   useEffect(() => {
     if (!isUserMenuOpen) return;

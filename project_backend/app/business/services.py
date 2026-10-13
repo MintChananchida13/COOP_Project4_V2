@@ -1381,13 +1381,35 @@ class ProcessingLogService:
         ocr_original_json = jsonb_dump(incoming_ocr_original)
         with _connect() as conn:
             existing = conn.execute(
-                "SELECT id, ocr_original_json FROM processing_logs WHERE processing_run_id = ?",
+                "SELECT id, source_pages_json, ocr_original_json FROM processing_logs WHERE processing_run_id = ?",
                 (processing_run_id,),
             ).fetchone()
             if existing:
                 existing_ocr_original = jsonb_load(existing["ocr_original_json"], [])
                 if snapshot_reason != "ocr_completed" and isinstance(existing_ocr_original, list) and existing_ocr_original:
                     ocr_original_json = existing["ocr_original_json"]
+                existing_source_pages = jsonb_load(existing["source_pages_json"], [])
+                incoming_has_page_files = bool(data.get("page_files") or [])
+                incoming_has_persisted_pages = any(
+                    isinstance(page, dict)
+                    and (
+                        page.get("imageReferenceStatus") == "persisted"
+                        or page.get("image_reference_status") == "persisted"
+                        or page.get("sourceReference")
+                        or page.get("source_reference")
+                        or page.get("storageReference")
+                        or page.get("storage_reference")
+                    )
+                    for page in source_pages
+                )
+                if (
+                    snapshot_reason != "ocr_completed"
+                    and not incoming_has_page_files
+                    and not incoming_has_persisted_pages
+                    and isinstance(existing_source_pages, list)
+                    and existing_source_pages
+                ):
+                    source_pages = existing_source_pages
             cursor = conn.execute(
                 """
                 INSERT INTO processing_logs (
