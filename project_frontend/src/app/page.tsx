@@ -1937,26 +1937,36 @@ function HomeWorkspace() {
   };
 
   const processingLogGroundTruthValue = (result: OCRResult & { pageIndex?: number }, fieldType: string) => {
+    if (fieldType === "text") return result.extractedText ?? "";
+    if (fieldType === "image") return result.extractedText ?? "";
     if (fieldType !== "table") return result.extractedText ?? "";
-    const structured = result.tableStructured;
+    const structured = getStructuredTableForExport(result);
     if (structured?.cells?.length) {
-      const groundTruthRows = rowsFromStructuredCells(structured);
-      const groundTruthStructured: StructuredTableResult = {
-        ...structured,
-        rows: groundTruthRows || structured.rows || [],
-        cells: structured.cells.map((cell) => {
-          const value = String(cell.groundTruth ?? cell.text ?? cell.ocrText ?? "");
-          return {
-            ...cell,
-            text: value,
-            groundTruth: value,
-          };
-        }),
-      };
-      return JSON.stringify(groundTruthStructured, null, 2);
+      return JSON.stringify(
+        {
+          mode: "structure",
+          headerRowCount: structured.headerRowCount ?? 1,
+          colWidths: structured.colWidths ?? [],
+          cells: structured.cells
+            .filter((cell) => !cell.hidden)
+            .map((cell) => ({
+              row: cell.row,
+              col: cell.col,
+              text: cell.text,
+              rowSpan: cell.rowSpan ?? 1,
+              colSpan: cell.colSpan ?? 1,
+              bbox: cell.bbox,
+              ocrText: cell.ocrText ?? cell.text,
+              groundTruth: cell.groundTruth ?? cell.text,
+            })),
+        },
+        null,
+        2
+      );
     }
-    if (Array.isArray(result.tableRows) && result.tableRows.length > 0) {
-      return JSON.stringify({ rows: result.tableRows }, null, 2);
+    const rows = structured?.rows || parseExportTable(result.extractedText || "") || result.tableRows;
+    if (Array.isArray(rows) && rows.length > 0) {
+      return JSON.stringify({ mode: "structure", rows }, null, 2);
     }
     return result.extractedText ?? "";
   };
@@ -4606,7 +4616,10 @@ function HomeWorkspace() {
               ocrResults={ocrResults}
               setOcrResults={updateOcrResults}
               onBackToStudio={() => {
-                queueProcessingLogSave("back_to_roi");
+                queueProcessingLogSave("back_to_roi", {
+                  ocrResults: latestOcrResultsRef.current,
+                  currentStep: "editor",
+                });
                 setCurrentStep("studio");
               }}
               imageList={imagesList}
