@@ -1389,7 +1389,7 @@ class ProcessingLogService:
             if existing:
                 existing_ocr_original = jsonb_load(existing["ocr_original_json"], [])
                 if snapshot_reason != "ocr_completed" and isinstance(existing_ocr_original, list) and existing_ocr_original:
-                    ocr_original_json = existing["ocr_original_json"]
+                    ocr_original_json = jsonb_dump(existing_ocr_original)
                 existing_source_pages = jsonb_load(existing["source_pages_json"], [])
                 incoming_has_page_files = bool(data.get("page_files") or [])
                 incoming_has_persisted_pages = any(
