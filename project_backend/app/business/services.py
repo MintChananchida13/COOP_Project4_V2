@@ -1132,9 +1132,7 @@ class ProcessingLogService:
             rows = conn.execute(
                 """
                 SELECT id, processing_run_id, document_name, user_email, source_file_name, status,
-                       current_step, page_count, source_pages_json, template_detection_json,
-                       matched_template_json, roi_snapshot_json, ocr_original_json, ground_truth_json,
-                       metadata_json, created_at, updated_at
+                       current_step, page_count, template_detection_json, created_at, updated_at
                 FROM processing_logs
                 ORDER BY updated_at DESC, created_at DESC
                 LIMIT ?

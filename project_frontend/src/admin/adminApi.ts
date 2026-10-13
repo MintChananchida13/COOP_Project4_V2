@@ -1447,8 +1447,9 @@ export const fetchUserNotifications = async (limit = 5): Promise<UserNotificatio
   return asRecordArray(json?.data?.notifications).map(mapUserNotification);
 };
 
-export const fetchProcessingLogs = async (): Promise<ProcessingLog[]> => {
-  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/processing-logs`, { cache: "no-store" });
+export const fetchProcessingLogs = async (limit = 100): Promise<ProcessingLog[]> => {
+  const safeLimit = Math.min(Math.max(Math.trunc(limit) || 100, 1), 500);
+  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/processing-logs?limit=${safeLimit}`, { cache: "no-store" });
   if (!response.ok) {
     throw new Error(`Processing logs fetch failed with ${response.status}`);
   }

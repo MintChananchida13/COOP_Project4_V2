@@ -52,12 +52,12 @@ export default function AdminDashboard() {
       try {
         const [nextDashboard, nextProcessingLogs] = await Promise.all([
           fetchAdminDashboard(),
-          fetchProcessingLogs(),
+          fetchProcessingLogs(5),
         ]);
         if (cancelled) return;
 
         setDashboard(nextDashboard);
-        setRecentProcessingLogs(nextProcessingLogs.slice(0, 5));
+        setRecentProcessingLogs(nextProcessingLogs);
         setLoadStatus("loaded");
       } catch (error) {
         console.warn("Admin dashboard load failed.", error);

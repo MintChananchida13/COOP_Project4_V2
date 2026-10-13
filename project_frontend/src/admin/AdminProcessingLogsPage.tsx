@@ -76,22 +76,25 @@ export default function AdminProcessingLogsPage() {
     [logs]
   );
 
-  const filteredLogs = logs.filter((log) => {
-    const matchesSearch = log.documentName.toLowerCase().includes(search.trim().toLowerCase());
-    const matchesTemplate = templateFilter === "all" || log.templateDetection.selectedTemplate === templateFilter;
-    const matchesDetection =
-      detectionFilter === "all" ||
-      (detectionFilter === "matched" && log.templateDetection.matched) ||
-      (detectionFilter === "no_match" && !log.templateDetection.matched);
-    const logDate = log.createdAt.slice(0, 10);
+  const filteredLogs = useMemo(() => {
+    const normalizedSearch = search.trim().toLowerCase();
     const today = new Date().toISOString().slice(0, 10);
-    const matchesDate =
-      dateFilter === "all" ||
-      (dateFilter === "today" && logDate === today) ||
-      (dateFilter === "older" && logDate < today);
-    return matchesSearch && matchesTemplate && matchesDetection && matchesDate;
-  });
-  const cleanupTargets = logs.filter((log) => isLogOlderThan(log, cleanupAge));
+    return logs.filter((log) => {
+      const matchesSearch = log.documentName.toLowerCase().includes(normalizedSearch);
+      const matchesTemplate = templateFilter === "all" || log.templateDetection.selectedTemplate === templateFilter;
+      const matchesDetection =
+        detectionFilter === "all" ||
+        (detectionFilter === "matched" && log.templateDetection.matched) ||
+        (detectionFilter === "no_match" && !log.templateDetection.matched);
+      const logDate = log.createdAt.slice(0, 10);
+      const matchesDate =
+        dateFilter === "all" ||
+        (dateFilter === "today" && logDate === today) ||
+        (dateFilter === "older" && logDate < today);
+      return matchesSearch && matchesTemplate && matchesDetection && matchesDate;
+    });
+  }, [dateFilter, detectionFilter, logs, search, templateFilter]);
+  const cleanupTargets = useMemo(() => logs.filter((log) => isLogOlderThan(log, cleanupAge)), [cleanupAge, logs]);
   const cleanupCutoff = cleanupCutoffDate(cleanupAge);
 
   const handleCleanupLogs = async () => {
