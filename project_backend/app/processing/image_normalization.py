@@ -24,9 +24,11 @@ class ImageNormalizationService:
     LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.12
     PDF_SUBDOCUMENT_MIN_AREA_RATIO = 0.03
     PDF_SUBDOCUMENT_MAX_AREA_RATIO = 0.65
-    PDF_SUBDOCUMENT_MIN_CONFIDENCE = 0.75
-    PDF_SUBDOCUMENT_MIN_EDGE_SUPPORT = 0.55
-    PDF_SUBDOCUMENT_MIN_RECTANGULARITY = 0.70
+    PDF_SUBDOCUMENT_MIN_CONFIDENCE = 0.82
+    PDF_SUBDOCUMENT_MIN_EDGE_SUPPORT = 0.72
+    PDF_SUBDOCUMENT_MIN_RECTANGULARITY = 0.78
+    PDF_SUBDOCUMENT_MIN_STRONG_EDGE_SIDES = 3
+    PDF_SUBDOCUMENT_MIN_WEAK_EDGE_SUPPORT = 0.20
 
     def normalize_document(
         self,
@@ -256,6 +258,10 @@ class ImageNormalizationService:
             return {"passed": False, "reason": "rectangularity_below_threshold", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
         if float(best["edge_support"]) < self.PDF_SUBDOCUMENT_MIN_EDGE_SUPPORT:
             return {"passed": False, "reason": "edge_support_below_threshold", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
+        if int(best.get("strong_edge_side_count") or 0) < self.PDF_SUBDOCUMENT_MIN_STRONG_EDGE_SIDES:
+            return {"passed": False, "reason": "insufficient_strong_edge_sides", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
+        if float(best.get("weakest_edge_support") or 0.0) < self.PDF_SUBDOCUMENT_MIN_WEAK_EDGE_SUPPORT:
+            return {"passed": False, "reason": "weak_edge_side_below_threshold", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
         if float(best["confidence"]) < self.PDF_SUBDOCUMENT_MIN_CONFIDENCE:
             return {"passed": False, "reason": "confidence_below_threshold", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
         crop_left, crop_top, crop_right, crop_bottom = [int(value) for value in best["crop_box"]]
@@ -271,6 +277,9 @@ class ImageNormalizationService:
             "confidence": best["confidence"],
             "area_ratio": best["area_ratio"],
             "edge_support": best["edge_support"],
+            "edge_side_support": best.get("edge_side_support"),
+            "strong_edge_side_count": best.get("strong_edge_side_count"),
+            "weakest_edge_support": best.get("weakest_edge_support"),
             "rectangularity": best["rectangularity"],
             "candidate_source": best["candidate_source"],
             "output_path": str(output_path) if output_path else None,
@@ -332,7 +341,9 @@ class ImageNormalizationService:
         if reject_reason is not None:
             return result
 
-        edge_support = self._pdf_rectangle_edge_support(edge_image, [crop_left, crop_top, crop_right, crop_bottom])
+        edge_support, edge_side_support = self._pdf_rectangle_edge_support(edge_image, [crop_left, crop_top, crop_right, crop_bottom])
+        strong_edge_side_count = sum(1 for value in edge_side_support.values() if float(value) >= self.PDF_SUBDOCUMENT_MIN_EDGE_SUPPORT)
+        weakest_edge_support = min(edge_side_support.values()) if edge_side_support else 0.0
         aspect_ratio = max(rect_width, rect_height) / max(1.0, min(rect_width, rect_height))
         aspect_score = max(0.0, 1.0 - abs(aspect_ratio - 1.6) / 2.4)
         area_score = 1.0 - min(1.0, abs(area_ratio - 0.20) / 0.45)
@@ -354,6 +365,9 @@ class ImageNormalizationService:
             "area_ratio": round(float(area_ratio), 4),
             "rectangularity": round(float(rectangularity), 4),
             "edge_support": round(float(edge_support), 4),
+            "edge_side_support": {key: round(float(value), 4) for key, value in edge_side_support.items()},
+            "strong_edge_side_count": int(strong_edge_side_count),
+            "weakest_edge_support": round(float(weakest_edge_support), 4),
             "aspect_ratio": round(float(aspect_ratio), 4),
             "aspect_score": round(float(aspect_score), 4),
             "area_score": round(float(area_score), 4),
@@ -362,7 +376,7 @@ class ImageNormalizationService:
         }
         return result
 
-    def _pdf_rectangle_edge_support(self, edge_image: np.ndarray, crop_box: List[int]) -> float:
+    def _pdf_rectangle_edge_support(self, edge_image: np.ndarray, crop_box: List[int]) -> tuple[float, Dict[str, float]]:
         height, width = edge_image.shape[:2]
         left, top, right, bottom = crop_box
         band = max(2, int(round(min(max(1, right - left), max(1, bottom - top)) * 0.012)))
@@ -374,8 +388,13 @@ class ImageNormalizationService:
         bottom_band = edge_image[max(0, bottom - band - 1):min(height, bottom + band), max(0, left):min(width, right)]
         left_band = edge_image[max(0, top):min(height, bottom), max(0, left - band):min(width, left + band + 1)]
         right_band = edge_image[max(0, top):min(height, bottom), max(0, right - band - 1):min(width, right + band)]
-        raw = [density(top_band), density(bottom_band), density(left_band), density(right_band)]
-        return max(0.0, min(1.0, sum(min(1.0, value / 0.10) for value in raw) / 4.0))
+        side_support = {
+            "top": min(1.0, density(top_band) / 0.10),
+            "bottom": min(1.0, density(bottom_band) / 0.10),
+            "left": min(1.0, density(left_band) / 0.10),
+            "right": min(1.0, density(right_band) / 0.10),
+        }
+        return max(0.0, min(1.0, sum(side_support.values()) / 4.0)), side_support
 
     def _perspective_correct(
         self,

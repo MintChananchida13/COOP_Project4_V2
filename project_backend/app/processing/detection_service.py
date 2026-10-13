@@ -1480,8 +1480,7 @@ def _normalize_query_pages(
                 layout_crop = _pdf_layout_assisted_crop_for_matching(page_path, layout_crop_path, debug_dir, timing=timing)
                 pdf_boundary_path = normalized_dir / f"page_{index}_pdf_subdocument.png"
                 pdf_boundary = normalization_service.detect_pdf_subdocument_boundary(str(page_path), str(pdf_boundary_path), str(debug_dir))
-            layout_sub_document = bool(layout_crop.get("applied")) and bool(layout_crop.get("output_path"))
-            layout_crop_candidate = layout_sub_document
+            layout_crop_candidate = bool(layout_crop.get("applied")) and bool(layout_crop.get("output_path"))
             layout_full_page_policy_reasons = {
                 "layout_bounds_cover_most_of_pdf_page",
                 "layout_bounds_cover_full_page_document",
@@ -1495,14 +1494,21 @@ def _normalize_query_pages(
                 and bool(pdf_boundary.get("passed"))
                 and bool(pdf_boundary.get("output_path"))
             )
-            crop_rejection_reason = None if layout_crop_candidate else (layout_crop.get("rejection_reason") or layout_crop.get("reason"))
+            layout_sub_document = layout_crop_candidate and physical_sub_document
+            crop_rejection_reason = (
+                None
+                if layout_sub_document or physical_sub_document
+                else "layout_crop_candidate_without_physical_subdocument_confirmation"
+                if layout_crop_candidate
+                else (layout_crop.get("rejection_reason") or layout_crop.get("reason"))
+            )
             matching_layout_signature = None
             document_boundary_source = "layout" if layout_sub_document else ("physical_boundary" if physical_sub_document else "full_page")
             if layout_sub_document:
                 pdf_document_mode = "sub_document"
                 matching_path = str(layout_crop["output_path"])
                 matching_path_source = "pdf_layout_assisted_subdocument"
-                matching_reason = "pdf_layout_assisted_crop_used_for_template_matching"
+                matching_reason = "pdf_layout_assisted_crop_used_after_physical_subdocument_confirmation"
             elif physical_sub_document:
                 pdf_document_mode = "sub_document"
                 matching_path = str(pdf_boundary["output_path"])
