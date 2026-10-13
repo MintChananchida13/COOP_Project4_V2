@@ -102,6 +102,8 @@ export interface ProcessingLogField {
 
 export interface ProcessingGroundTruthField {
   fieldId: string;
+  fieldName?: string;
+  pageNumber?: number;
   value: string;
 }
 
@@ -315,6 +317,8 @@ const mapProcessingLog = (value: unknown): ProcessingLog => {
     })),
     groundTruth: asRecordArray(item.groundTruth ?? item.ground_truth).map((field) => ({
       fieldId: String(field.fieldId || field.field_id || ""),
+      fieldName: String(field.fieldName || field.field_name || ""),
+      pageNumber: Number(field.pageNumber ?? field.page_number ?? 1),
       value: String(field.value ?? ""),
     })),
     metadata: asRecord(item.metadata),

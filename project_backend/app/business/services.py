@@ -1009,6 +1009,8 @@ class ProcessingLogService:
     def _map_ground_truth(self, item: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "fieldId": str(item.get("fieldId") or item.get("field_id") or item.get("roiId") or item.get("roi_id") or "").strip(),
+            "fieldName": self._text_or_none(item.get("fieldName"), item.get("field_name")),
+            "pageNumber": int(item.get("pageNumber") or item.get("page_number") or 1),
             "value": str(item.get("value") if item.get("value") is not None else ""),
         }
 

@@ -74,6 +74,8 @@ const supportsOcrGroundTruthComparison = (fieldType: string) => {
   const kind = normalizeFieldKind(fieldType);
   return kind === "text" || kind === "table";
 };
+const processingFieldKey = (field: { fieldId: string; pageNumber?: number }) =>
+  `${field.fieldId}::${Number(field.pageNumber ?? 1)}`;
 const LEGACY_PROCESSING_LOG_ROI_REFERENCE_WIDTH = 750;
 const roiPointValue = (value: unknown) => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -377,10 +379,10 @@ const tableRowsForProcessingField = (field: ProcessingLogField) =>
   tableRowsFromTableValue(field.value);
 
 const buildProcessingLogExport = (log: ProcessingLog) => {
-  const groundTruthByField = new Map(log.groundTruth.map((field) => [field.fieldId, field.value]));
+  const groundTruthByField = new Map(log.groundTruth.map((field) => [processingFieldKey(field), field.value]));
   const fields = log.ocrOriginal.map((field) => {
     const kind = normalizeFieldKind(field.fieldType);
-    const groundTruth = groundTruthByField.get(field.fieldId) ?? "";
+    const groundTruth = groundTruthByField.get(processingFieldKey(field)) ?? "";
     const supportsComparison = supportsOcrGroundTruthComparison(field.fieldType);
     return {
       fieldId: field.fieldId,
@@ -489,7 +491,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
 
   const pageCount = Math.max(log.pageCount, 1);
   const pageFields = log.ocrOriginal.filter((field) => field.pageNumber === currentPage);
-  const groundTruthByField = new Map(log.groundTruth.map((field) => [field.fieldId, field.value]));
+  const groundTruthByField = new Map(log.groundTruth.map((field) => [processingFieldKey(field), field.value]));
   const currentPageKinds = pageFields.reduce(
     (acc, field) => {
       acc[normalizeFieldKind(field.fieldType)] += 1;
@@ -498,12 +500,12 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
     { text: 0, table: 0, image: 0 } as Record<FieldKind, number>
   );
   const changedOnPage = pageFields.filter(
-    (field) => supportsOcrGroundTruthComparison(field.fieldType) && (groundTruthByField.get(field.fieldId) || "") !== field.value
+    (field) => supportsOcrGroundTruthComparison(field.fieldType) && (groundTruthByField.get(processingFieldKey(field)) || "") !== field.value
   ).length;
   const filteredPageFields = pageFields.filter((field) => {
     if (resultFilter === "all") return true;
     if (resultFilter === "changed") {
-      return supportsOcrGroundTruthComparison(field.fieldType) && (groundTruthByField.get(field.fieldId) || "") !== field.value;
+      return supportsOcrGroundTruthComparison(field.fieldType) && (groundTruthByField.get(processingFieldKey(field)) || "") !== field.value;
     }
     return normalizeFieldKind(field.fieldType) === resultFilter;
   });
@@ -739,7 +741,7 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
                       key={field.fieldId}
                       field={field}
                       page={log.sourcePages.find((item) => item.pageNumber === field.pageNumber)}
-                      groundTruth={groundTruthByField.get(field.fieldId) || "-"}
+                      groundTruth={groundTruthByField.get(processingFieldKey(field)) || "-"}
                       selected={selectedFieldId === field.fieldId}
                       onSelect={() => selectField(field)}
                     />
