@@ -4289,7 +4289,7 @@ function HomeWorkspace() {
     const hasMaintenanceNotification = Boolean(maintenanceState?.active || isMaintenanceScheduleRelevant(maintenanceState));
     const hasNotifications = notifications.length > 0;
     return (
-      <div className="fixed right-4 top-20 z-[120] w-[min(24rem,calc(100vw-1rem))] rounded-xl border border-slate-200 bg-white text-left shadow-xl lg:right-6">
+      <div className="absolute right-0 top-full z-[120] mt-2 w-[min(24rem,calc(100vw-1rem))] rounded-xl border border-slate-200 bg-white text-left shadow-xl">
         <div className="border-b border-slate-100 px-4 py-3">
           <p className="text-xs font-black text-slate-900">การแจ้งเตือน</p>
           <p className="mt-0.5 text-[11px] font-semibold text-slate-500">แสดง 5 รายการล่าสุดจากระบบ</p>
@@ -4446,7 +4446,7 @@ function HomeWorkspace() {
                   <UserRound size={16} strokeWidth={2.2} />
                 </button>
                 {isUserMenuOpen && (
-                  <div className="fixed right-4 top-20 z-[120] w-[min(18rem,calc(100vw-1rem))] rounded-xl border border-slate-200 bg-white p-3 text-left shadow-xl lg:right-6">
+                  <div className="absolute right-0 top-full z-[120] mt-2 w-[min(18rem,calc(100vw-1rem))] rounded-xl border border-slate-200 bg-white p-3 text-left shadow-xl">
                     <p className="text-[11px] font-black uppercase tracking-wide text-slate-400">บัญชีผู้ใช้</p>
                     <p className="mt-1 break-words text-xs font-black text-slate-900">{authSession.email}</p>
                     <p className="mt-2 inline-flex rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-[11px] font-black text-blue-700">
