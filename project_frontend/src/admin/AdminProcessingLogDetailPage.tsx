@@ -963,22 +963,13 @@ function ReadOnlyTableResult({ label, field, mutedHighlight }: { label: string; 
   const rows = tableRowsForProcessingField(field);
   const originalStructured = structuredTableFromValue(field.value) || field.tableStructured;
   const structuredCells = Array.isArray(originalStructured?.cells) ? originalStructured?.cells || [] : [];
-  const visibleStructuredCells = structuredCells
-    .filter((cell) => !cell.hidden)
-    .sort((a, b) => Number(a.row || 0) - Number(b.row || 0) || Number(a.col || 0) - Number(b.col || 0));
-  const structuredRows = new Map<number, typeof visibleStructuredCells>();
-  visibleStructuredCells.forEach((cell) => {
-    const row = Number(cell.row || 0);
-    structuredRows.set(row, [...(structuredRows.get(row) || []), cell]);
-  });
-  const hasStructuredLayout = visibleStructuredCells.length > 0;
+  const sourceByPosition = new Map(
+    structuredCells.map((cell) => [`${Number(cell.row || 0)}:${Number(cell.col || 0)}`, cell])
+  );
+  const hasStructuredLayout = structuredCells.length > 0;
   const headerRowCount = Math.max(0, Number(originalStructured?.headerRowCount ?? 1));
-  const rowCount = hasStructuredLayout
-    ? Math.max(...visibleStructuredCells.map((cell) => Number(cell.row || 0) + Math.max(1, Number(cell.rowSpan || 1))))
-    : rows?.length || 0;
-  const colCount = hasStructuredLayout
-    ? Math.max(...visibleStructuredCells.map((cell) => Number(cell.col || 0) + Math.max(1, Number(cell.colSpan || 1))))
-    : Math.max(...(rows || []).map((row) => row.length), 0);
+  const rowCount = rows?.length || 0;
+  const colCount = Math.max(...(rows || []).map((row) => row.length), 0);
 
   return (
     <div className="min-w-0">
@@ -991,43 +982,22 @@ function ReadOnlyTableResult({ label, field, mutedHighlight }: { label: string; 
         ) : null}
       </div>
       <div className={`overflow-x-auto rounded-xl border ${mutedHighlight ? "border-amber-100 bg-amber-50/40" : "border-indigo-100 bg-white"}`}>
-        {hasStructuredLayout ? (
-          <table className="min-w-full border-separate border-spacing-0 text-left text-xs">
-            <tbody>
-              {Array.from({ length: rowCount }, (_, rowIndex) => (
-                <tr key={rowIndex}>
-                  {(structuredRows.get(rowIndex) || []).map((cell) => {
-                    const rowSpan = Math.max(1, Number(cell.rowSpan || 1));
-                    const colSpan = Math.max(1, Number(cell.colSpan || 1));
-                    const isHeader = rowIndex < headerRowCount;
-                    const text = String(cell.ocrText ?? cell.text ?? "");
-                    return (
-                      <td
-                        key={`${Number(cell.row || 0)}-${Number(cell.col || 0)}`}
-                        rowSpan={rowSpan}
-                        colSpan={colSpan}
-                        className={`border-b border-r border-slate-200 px-2.5 py-2 align-top ${
-                          isHeader ? "bg-indigo-50 font-black text-slate-900" : "bg-white font-semibold text-slate-700"
-                        }`}
-                      >
-                        <span className="whitespace-pre-wrap break-words">{text || <span className="text-slate-300">-</span>}</span>
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : rows?.length ? (
+        {rows?.length ? (
           <table className="min-w-full border-separate border-spacing-0 text-left text-xs">
             <tbody>
               {rows.map((row, rowIndex) => (
                 <tr key={rowIndex}>
                   {row.map((cell, cellIndex) => {
+                    const sourceCell = hasStructuredLayout ? sourceByPosition.get(`${rowIndex}:${cellIndex}`) : null;
+                    if (sourceCell?.hidden) return null;
+                    const rowSpan = Math.max(1, Number(sourceCell?.rowSpan || 1));
+                    const colSpan = Math.max(1, Number(sourceCell?.colSpan || 1));
                     const isHeader = rowIndex < headerRowCount;
                     return (
                       <td
                         key={`${rowIndex}-${cellIndex}`}
+                        rowSpan={rowSpan}
+                        colSpan={colSpan}
                         className={`border-b border-r border-slate-200 px-2.5 py-2 align-top ${
                           isHeader ? "bg-indigo-50 font-black text-slate-900" : "bg-white font-semibold text-slate-700"
                         }`}
