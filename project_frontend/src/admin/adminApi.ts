@@ -1058,6 +1058,7 @@ export interface TemplateStepTestResult {
   failedCount: number;
   imagePreviewUrl?: string | null;
   roiCoordinateSpace?: string | null;
+  timing?: Record<string, unknown> | null;
   fields?: TemplateStepTestItem[];
   anchors?: TemplateStepTestItem[];
 }
@@ -2876,6 +2877,7 @@ function mapTemplateStepTestResult(data: Record<string, unknown>): TemplateStepT
     failedCount: Number(data.failed_count || 0),
     imagePreviewUrl: (data.image_preview_url as string | null | undefined) ?? null,
     roiCoordinateSpace: (data.roi_coordinate_space as string | null | undefined) ?? null,
+    timing: data.timing && typeof data.timing === "object" ? (data.timing as Record<string, unknown>) : null,
     fields: Array.isArray(data.fields) ? (data.fields as Record<string, unknown>[]).map(mapTemplateStepTestItem) : undefined,
     anchors: Array.isArray(data.anchors) ? (data.anchors as Record<string, unknown>[]).map(mapTemplateStepTestItem) : undefined,
   };

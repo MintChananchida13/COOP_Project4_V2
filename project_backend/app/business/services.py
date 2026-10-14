@@ -4547,6 +4547,7 @@ class VerificationService:
         page_image_paths: Optional[Dict[int, str]],
         runtime_cache: Optional[Dict[str, Dict[str, Any]]] = None,
         timing: Optional[Dict[str, Any]] = None,
+        precomputed_image_match: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         page_number = int(field["page_number"])
         image_path = (page_image_paths or {}).get(page_number)
@@ -4602,7 +4603,11 @@ class VerificationService:
                 f"image_model:{field.get('image_category') or ''}",
             )
             image_cache = runtime_cache.setdefault("image_model", {}) if runtime_cache is not None else None
-            if image_cache is not None and image_cache_key in image_cache:
+            if precomputed_image_match is not None:
+                image_match = dict(precomputed_image_match)
+                if timing is not None:
+                    timing["image_model_batch_hits"] = int(timing.get("image_model_batch_hits") or 0) + 1
+            elif image_cache is not None and image_cache_key in image_cache:
                 image_match = dict(image_cache[image_cache_key])
                 if timing is not None:
                     timing["image_model_cache_hits"] = int(timing.get("image_model_cache_hits") or 0) + 1
@@ -4715,6 +4720,7 @@ class VerificationService:
         page_image_paths: Optional[Dict[int, str]] = None,
         verification_fields: Optional[List[Dict[str, Any]]] = None,
         runtime_cache: Optional[Dict[str, Dict[str, Any]]] = None,
+        use_image_batch: bool = False,
     ) -> Dict[str, Any]:
         verify_started = time.perf_counter()
         step_started = time.perf_counter()
@@ -4752,6 +4758,7 @@ class VerificationService:
             "text_ocr_cache_misses": 0,
             "image_model_cache_hits": 0,
             "image_model_cache_misses": 0,
+            "image_model_batch_hits": 0,
         }
         step_started = time.perf_counter()
         text_fields = [field for field in fields if field.get("data_type") != "image"]
@@ -4784,9 +4791,23 @@ class VerificationService:
                     },
                 }
 
+        image_match_cache: Dict[str, Dict[str, Any]] = {}
+        image_batch_debug: Optional[Dict[str, Any]] = None
+        if use_image_batch and image_fields:
+            batch_started = time.perf_counter()
+            image_match_cache, image_batch_debug = self.score_image_anchors_batch(image_fields, page_image_paths or {})
+            runtime_timing["image_model_inference"] = float(runtime_timing.get("image_model_inference") or 0.0) + (time.perf_counter() - batch_started)
+            runtime_timing["image_batch"] = image_batch_debug
+
         for field in image_fields:
             step_started = time.perf_counter()
-            checked = self._image_anchor_check(field, page_image_paths, runtime_cache, runtime_timing)
+            checked = self._image_anchor_check(
+                field,
+                page_image_paths,
+                runtime_cache,
+                runtime_timing,
+                precomputed_image_match=image_match_cache.get(str(field.get("id"))) if image_match_cache else None,
+            )
             image_verification_elapsed += time.perf_counter() - step_started
             checked_fields.append(checked)
             if not checked["passed"]:
@@ -6421,7 +6442,11 @@ class AdminTemplateService:
                     template_page_number = int(candidate.get("template_page_number") or candidate_metadata.get("matched_layout_reference_page_number") or candidate_metadata.get("page_number") or 1)
                     query_page_path = candidate_processing_path or page_paths.get(query_page_number)
                     candidate_page_paths = {template_page_number: query_page_path} if query_page_path else {}
-                verification = verifier.verify_template(str(template_id), candidate_page_paths)
+                verification = verifier.verify_template(
+                    str(template_id),
+                    candidate_page_paths,
+                    use_image_batch=True,
+                )
             except Exception as error:
                 enriched.append(
                     {
@@ -6573,6 +6598,7 @@ class AdminTemplateService:
                 prepublish_full_evaluation=True,
                 disable_pdf_subdocument_crop=True,
                 progress_callback=progress_callback,
+                use_image_batch_for_verification=True,
             )
             candidates = [candidate for candidate in detection.get("candidates") or [] if isinstance(candidate, dict)]
             candidates = self._append_prepublish_ranking_fallback_candidates(candidates, detection, limit=5)
@@ -6951,9 +6977,15 @@ class AdminTemplateService:
         page_paths = self._template_page_image_paths(template_id, source_pages)
         try:
             active_fields = verification_fields if verification_fields is not None else None
-            verification = VerificationService().verify_template(template_id, page_paths, active_fields)
+            verification = VerificationService().verify_template(
+                template_id,
+                page_paths,
+                active_fields,
+                detection_batch_mode=DETECTION_BATCH_MODE_GLOBAL,
+                use_image_batch=True,
+            )
             checked = verification.get("checked_fields", [])
-            result = {"template_id": template_id, "status": verification.get("status"), "passed": verification.get("passed"), "score": verification.get("score"), "tested_count": len(checked), "passed_count": sum(1 for item in checked if item.get("passed")), "failed_count": sum(1 for item in checked if not item.get("passed")), "anchors": checked, "source": "request_payload" if verification_fields is not None else "stored_template"}
+            result = {"template_id": template_id, "status": verification.get("status"), "passed": verification.get("passed"), "score": verification.get("score"), "tested_count": len(checked), "passed_count": sum(1 for item in checked if item.get("passed")), "failed_count": sum(1 for item in checked if not item.get("passed")), "anchors": checked, "source": "request_payload" if verification_fields is not None else "stored_template", "timing": verification.get("timing")}
             logger.info(
                 "[TEMPLATE VERIFY] test-verification done: template_id=%s anchors=%s elapsed=%.2fs status=%s",
                 template_id,

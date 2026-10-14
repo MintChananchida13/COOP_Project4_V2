@@ -2292,6 +2292,7 @@ def _candidate_from_result(
     verification_strategy: str = "standard",
     request_cache: Optional[DetectionRequestCache] = None,
     query_image_source: str = "normalized",
+    use_image_batch_for_verification: bool = False,
 ) -> Optional[Dict[str, Any]]:
     metadata = result.get("metadata") or {}
     template_signature = result.get("_layout_signature")
@@ -2464,12 +2465,14 @@ def _candidate_from_result(
                 verification_page_image_paths,
                 verification_fields,
                 verification_runtime_cache,
+                use_image_batch_for_verification,
             )
             if template_id and verification_strategy == VERIFICATION_STRATEGY_STANDARD
             else verify_template_for_strategy(
                 template_id,
                 verification_page_image_paths,
                 verification_fields,
+                use_image_batch=use_image_batch_for_verification,
             ) if template_id else {
             "status": "failed",
             "passed": False,
@@ -2651,12 +2654,14 @@ def _candidate_from_result(
                     aligned_verification_paths,
                     verification_fields,
                     verification_runtime_cache,
+                    use_image_batch_for_verification,
                 )
                 if verification_strategy == VERIFICATION_STRATEGY_STANDARD
                 else verify_template_for_strategy(
                     template_id,
                     aligned_verification_paths,
                     verification_fields,
+                    use_image_batch=use_image_batch_for_verification,
                 )
             )
             candidate_timing["aligned_verification"] = time.perf_counter() - step_started
@@ -3165,6 +3170,7 @@ def _detect_page(
     request_cache: Optional[DetectionRequestCache] = None,
     prepublish_full_evaluation: bool = False,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    use_image_batch_for_verification: bool = False,
 ) -> Dict[str, Any]:
     page_index = int(page_info["page_index"])
     normalized_image_path = str(page_info["normalized_path"])
@@ -3316,6 +3322,7 @@ def _detect_page(
                 verification_strategy=verification_strategy,
                 request_cache=request_cache,
                 query_image_source=candidate_processing_path_source,
+                use_image_batch_for_verification=use_image_batch_for_verification,
             )
             if isinstance(candidate, dict):
                 if (
@@ -5002,6 +5009,7 @@ def detect_template_dev(
     prepublish_full_evaluation: bool = False,
     disable_pdf_subdocument_crop: bool = False,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    use_image_batch_for_verification: bool = False,
 ) -> Dict[str, Any]:
     query_id = f"detq_{uuid4().hex[:12]}"
     timing: Dict[str, float] = {}
@@ -5102,6 +5110,7 @@ def detect_template_dev(
                 request_cache=request_cache,
                 prepublish_full_evaluation=prepublish_full_evaluation,
                 progress_callback=progress_callback,
+                use_image_batch_for_verification=use_image_batch_for_verification,
             )
             timing["first_page_detection_total"] = time.perf_counter() - step_started
             pages.append(first_detected_page)
@@ -5138,6 +5147,7 @@ def detect_template_dev(
                         request_cache=request_cache,
                         prepublish_full_evaluation=prepublish_full_evaluation,
                         progress_callback=progress_callback,
+                        use_image_batch_for_verification=use_image_batch_for_verification,
                     )
                     pages.append(detected_page)
                 timing["remaining_pages_detection_total"] = time.perf_counter() - step_started
