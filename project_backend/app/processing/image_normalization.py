@@ -31,6 +31,13 @@ class ImageNormalizationService:
     PDF_SUBDOCUMENT_MIN_ASPECT_RATIO = 1.35
     PDF_SUBDOCUMENT_MAX_ASPECT_RATIO = 1.85
     PDF_SUBDOCUMENT_PADDING_RATIO = 0.03
+    PDF_CARD_CROP_MAX_DETECTION_DIM = 1600
+    PDF_CARD_CROP_KERNEL_SIZES = (5, 9, 15)
+    PDF_CARD_CROP_CLOSE_ITERATIONS = 2
+    PDF_CARD_CROP_CANNY_LOW = 35
+    PDF_CARD_CROP_CANNY_HIGH = 110
+    PDF_CARD_CROP_STRONG_SIDE_THRESHOLD = 0.55
+    PDF_CARD_CROP_DEBUG_CANDIDATES = 30
 
     def normalize_document(
         self,
@@ -148,6 +155,32 @@ class ImageNormalizationService:
         image = cv2.imread(str(image_path))
         if image is None:
             return {"passed": False, "reason": "image_read_failed", "crop_box": None, "confidence": 0.0}
+        card_crop = self._detect_pdf_physical_card_crop(image)
+        if card_crop.get("passed"):
+            crop_left, crop_top, crop_right, crop_bottom = [int(value) for value in card_crop["crop_box"]]
+            crop = image[crop_top:crop_bottom, crop_left:crop_right].copy()
+            if output_path:
+                target = Path(output_path)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(target), self._resize_longest_side(crop, self.LONGEST_SIDE))
+            return {
+                "passed": True,
+                "reason": "physical_card_crop_detected",
+                "crop_box": card_crop.get("candidate_crop_box"),
+                "padded_crop_box": card_crop.get("crop_box"),
+                "padding_ratio": self.PDF_SUBDOCUMENT_PADDING_RATIO,
+                "confidence": card_crop.get("confidence"),
+                "area_ratio": card_crop.get("area_ratio"),
+                "aspect_ratio": card_crop.get("aspect_ratio"),
+                "edge_support": card_crop.get("edge_support"),
+                "edge_side_support": card_crop.get("edge_side_support"),
+                "strong_edge_side_count": card_crop.get("strong_edge_side_count"),
+                "weakest_edge_support": card_crop.get("weakest_edge_support"),
+                "rectangularity": card_crop.get("rectangularity"),
+                "candidate_source": "physical_card_crop",
+                "output_path": str(output_path) if output_path else None,
+                "debug": card_crop.get("debug"),
+            }
         height, width = image.shape[:2]
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -400,6 +433,133 @@ class ImageNormalizationService:
             min(image_width, right + pad_x),
             min(image_height, bottom + pad_y),
         ]
+
+    def _detect_pdf_physical_card_crop(self, image: np.ndarray) -> Dict[str, Any]:
+        image_height, image_width = image.shape[:2]
+        scale = min(1.0, self.PDF_CARD_CROP_MAX_DETECTION_DIM / max(1, max(image_height, image_width)))
+        detection_width = max(1, round(image_width * scale))
+        detection_height = max(1, round(image_height * scale))
+        small = cv2.resize(image, (detection_width, detection_height), interpolation=cv2.INTER_AREA) if scale < 1 else image
+        scale_x = image_width / max(1, detection_width)
+        scale_y = image_height / max(1, detection_height)
+        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(gray, self.PDF_CARD_CROP_CANNY_LOW, self.PDF_CARD_CROP_CANNY_HIGH)
+        candidates: List[Dict[str, Any]] = []
+        seen = set()
+        for kernel_size in self.PDF_CARD_CROP_KERNEL_SIZES:
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
+            connected = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=self.PDF_CARD_CROP_CLOSE_ITERATIONS)
+            contours, _ = cv2.findContours(connected, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in contours:
+                x, y, box_width, box_height = cv2.boundingRect(contour)
+                if box_width < 25 or box_height < 15:
+                    continue
+                aspect_ratio = box_width / max(1.0, float(box_height))
+                area_ratio = (box_width * box_height) / max(1.0, float(detection_width * detection_height))
+                if area_ratio < self.PDF_SUBDOCUMENT_MIN_AREA_RATIO * 0.5 or area_ratio > min(0.95, self.PDF_SUBDOCUMENT_MAX_AREA_RATIO * 1.4):
+                    continue
+                if aspect_ratio < self.PDF_SUBDOCUMENT_MIN_ASPECT_RATIO * 0.75 or aspect_ratio > self.PDF_SUBDOCUMENT_MAX_ASPECT_RATIO * 1.25:
+                    continue
+                key = (round(x / 5), round(y / 5), round(box_width / 5), round(box_height / 5))
+                if key in seen:
+                    continue
+                seen.add(key)
+                area = float(cv2.contourArea(contour))
+                if area <= 0:
+                    continue
+                perimeter = cv2.arcLength(contour, True)
+                polygon = cv2.approxPolyDP(contour, 0.025 * perimeter, True) if perimeter > 0 else np.array([])
+                rectangularity = min(1.0, area / max(1.0, float(box_width * box_height)))
+                sides = self._pdf_card_side_support(edges, x, y, box_width, box_height, max(2, round(min(detection_width, detection_height) * 0.004)))
+                edge_support = sum(sides) / 4.0
+                strong_sides = sum(side >= self.PDF_CARD_CROP_STRONG_SIDE_THRESHOLD for side in sides)
+                reasons: List[str] = []
+                if not self.PDF_SUBDOCUMENT_MIN_ASPECT_RATIO <= aspect_ratio <= self.PDF_SUBDOCUMENT_MAX_ASPECT_RATIO:
+                    reasons.append("aspect_ratio")
+                if not self.PDF_SUBDOCUMENT_MIN_AREA_RATIO <= area_ratio <= self.PDF_SUBDOCUMENT_MAX_AREA_RATIO:
+                    reasons.append("area_ratio")
+                if rectangularity < self.PDF_SUBDOCUMENT_MIN_RECTANGULARITY:
+                    reasons.append("rectangularity")
+                if edge_support < self.PDF_SUBDOCUMENT_MIN_EDGE_SUPPORT:
+                    reasons.append("edge_support")
+                if strong_sides < self.PDF_SUBDOCUMENT_MIN_STRONG_EDGE_SIDES:
+                    reasons.append("strong_edge_sides")
+                if len(polygon) != 4:
+                    reasons.append("not_quadrilateral")
+                score = 0.5 * edge_support + 0.3 * rectangularity + 0.2 * strong_sides / 4.0
+                original_x = round(x * scale_x)
+                original_y = round(y * scale_y)
+                original_right = min(image_width, round((x + box_width) * scale_x))
+                original_bottom = min(image_height, round((y + box_height) * scale_y))
+                candidate_crop_box = [original_x, original_y, original_right, original_bottom]
+                padded_crop_box = self._pad_crop_box(candidate_crop_box, image_width, image_height, self.PDF_SUBDOCUMENT_PADDING_RATIO)
+                candidates.append(
+                    {
+                        "crop_box": padded_crop_box,
+                        "candidate_crop_box": candidate_crop_box,
+                        "bbox": [original_x, original_y, max(1, original_right - original_x), max(1, original_bottom - original_y)],
+                        "aspect_ratio": round(float(aspect_ratio), 4),
+                        "area_ratio": round(float(area_ratio), 4),
+                        "rectangularity": round(float(rectangularity), 4),
+                        "edge_support": round(float(edge_support), 4),
+                        "edge_side_support": [round(float(value), 4) for value in sides],
+                        "strong_edge_side_count": int(strong_sides),
+                        "weakest_edge_support": round(float(min(sides) if sides else 0.0), 4),
+                        "polygon_vertices": int(len(polygon)),
+                        "kernel_size": int(kernel_size),
+                        "score": round(float(score), 4),
+                        "confidence": round(float(score), 4),
+                        "accepted": not reasons,
+                        "rejection_reasons": reasons,
+                    }
+                )
+        candidates.sort(key=lambda item: (bool(item["accepted"]), float(item["score"]), float(item["area_ratio"])), reverse=True)
+        selected = next((candidate for candidate in candidates if candidate["accepted"]), None)
+        debug = {
+            "method": "test_card_crop",
+            "original_size": [image_width, image_height],
+            "detection_size": [detection_width, detection_height],
+            "scale_x": round(float(scale_x), 6),
+            "scale_y": round(float(scale_y), 6),
+            "candidate_count": len(candidates),
+            "selected_candidate": selected,
+            "top_candidates": candidates[: self.PDF_CARD_CROP_DEBUG_CANDIDATES],
+            "thresholds": {
+                "max_detection_dim": self.PDF_CARD_CROP_MAX_DETECTION_DIM,
+                "kernel_sizes": list(self.PDF_CARD_CROP_KERNEL_SIZES),
+                "close_iterations": self.PDF_CARD_CROP_CLOSE_ITERATIONS,
+                "canny_low": self.PDF_CARD_CROP_CANNY_LOW,
+                "canny_high": self.PDF_CARD_CROP_CANNY_HIGH,
+                "min_aspect": self.PDF_SUBDOCUMENT_MIN_ASPECT_RATIO,
+                "max_aspect": self.PDF_SUBDOCUMENT_MAX_ASPECT_RATIO,
+                "min_area": self.PDF_SUBDOCUMENT_MIN_AREA_RATIO,
+                "max_area": self.PDF_SUBDOCUMENT_MAX_AREA_RATIO,
+                "min_rectangularity": self.PDF_SUBDOCUMENT_MIN_RECTANGULARITY,
+                "min_edge_support": self.PDF_SUBDOCUMENT_MIN_EDGE_SUPPORT,
+                "min_strong_sides": self.PDF_SUBDOCUMENT_MIN_STRONG_EDGE_SIDES,
+                "strong_side_threshold": self.PDF_CARD_CROP_STRONG_SIDE_THRESHOLD,
+                "padding": self.PDF_SUBDOCUMENT_PADDING_RATIO,
+            },
+        }
+        if not selected:
+            return {"passed": False, "reason": "no_card_crop_candidate_passed_guards", "crop_box": None, "confidence": 0.0, "debug": debug}
+        return {"passed": True, "reason": "physical_card_crop_detected", **selected, "debug": debug}
+
+    def _pdf_card_side_support(self, edges: np.ndarray, x: int, y: int, width: int, height: int, band: int) -> List[float]:
+        image_height, image_width = edges.shape
+        x0, x1 = max(0, x), min(image_width, x + width)
+        y0, y1 = max(0, y), min(image_height, y + height)
+
+        def horizontal(yy: int) -> float:
+            region = edges[max(0, yy - band):min(image_height, yy + band + 1), x0:x1]
+            return float(np.mean(np.any(region > 0, axis=0))) if region.size else 0.0
+
+        def vertical(xx: int) -> float:
+            region = edges[y0:y1, max(0, xx - band):min(image_width, xx + band + 1)]
+            return float(np.mean(np.any(region > 0, axis=1))) if region.size else 0.0
+
+        return [horizontal(y0), horizontal(y1 - 1), vertical(x0), vertical(x1 - 1)]
 
     def _pdf_rectangle_edge_support(self, edge_image: np.ndarray, crop_box: List[int]) -> tuple[float, Dict[str, float]]:
         height, width = edge_image.shape[:2]
