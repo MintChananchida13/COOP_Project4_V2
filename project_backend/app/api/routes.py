@@ -444,9 +444,8 @@ def get_detect_template_dev_job(job_id: str, request: Request) -> dict:
         if job.get("status") == "failed":
             response["error"] = job.get("error") or "Detection job failed."
         logger.info(
-            "[Polling] GET %s %s OK status=%s",
+            "[Polling] GET %s 200 OK status=%s",
             request.url.path,
-            response["status"],
             response["status"],
         )
         return {"status": "success", "data": response}
