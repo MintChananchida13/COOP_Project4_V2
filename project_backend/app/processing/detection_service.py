@@ -1440,11 +1440,32 @@ def _normalize_query_pages(
             continue
         normalized_path = normalized_dir / f"page_{index}_normalized.png"
         step_started = time.perf_counter()
-        info = normalization_service.normalize_document(
-            str(page_path),
-            str(normalized_path),
-            allow_subdocument_aspect_change=(source_type == "pdf"),
-        )
+        if source_type == "pdf":
+            info = {
+                "normalized_image_path": str(page_path),
+                "document_detected": False,
+                "crop_applied": False,
+                "perspective_applied": False,
+                "normalization_status": "skipped",
+                "validation_passed": True,
+                "fallback_used": False,
+                "fallback_reason": "pdf_rendered_page_used_for_card_crop_detection",
+                "original_size": _image_dimensions(str(page_path)),
+                "normalized_size": _image_dimensions(str(page_path)),
+                "output_size": _image_dimensions(str(page_path)),
+                "resize_policy": "none",
+                "normalization_debug": {
+                    "normalization_status": "skipped",
+                    "reason": "pdf_rendered_page_used_for_card_crop_detection",
+                    "transform_validation": {},
+                },
+            }
+        else:
+            info = normalization_service.normalize_document(
+                str(page_path),
+                str(normalized_path),
+                allow_subdocument_aspect_change=False,
+            )
         if timing is not None:
             timing["prepare_normalization"] = timing.get("prepare_normalization", 0.0) + (time.perf_counter() - step_started)
         matching_path = info["normalized_image_path"]
@@ -1464,7 +1485,7 @@ def _normalize_query_pages(
             except (TypeError, ValueError):
                 pdf_crop_area_ratio = None
             if disable_pdf_subdocument_crop:
-                layout_crop = {
+                pdf_layout_assisted_crop = {
                     "applied": False,
                     "crop_accepted": False,
                     "reason": "pdf_subdocument_crop_disabled_for_prepublish",
@@ -1476,28 +1497,16 @@ def _normalize_query_pages(
                     "reason": "pdf_subdocument_crop_disabled_for_prepublish",
                 }
             else:
-                layout_crop_path = normalized_dir / f"page_{index}_pdf_layout_crop.png"
-                layout_crop = _pdf_layout_assisted_crop_for_matching(page_path, layout_crop_path, debug_dir, timing=timing)
+                pdf_layout_assisted_crop = {
+                    "applied": False,
+                    "crop_accepted": False,
+                    "reason": "layout_assisted_crop_disabled_pdf_uses_physical_card_crop",
+                    "rejection_reason": "layout_assisted_crop_disabled_pdf_uses_physical_card_crop",
+                }
                 pdf_boundary_path = normalized_dir / f"page_{index}_pdf_subdocument.png"
                 pdf_boundary = normalization_service.detect_pdf_subdocument_boundary(str(page_path), str(pdf_boundary_path), str(debug_dir))
-            layout_crop_candidate = bool(layout_crop.get("applied")) and bool(layout_crop.get("output_path"))
-            layout_full_page_policy_reasons = {
-                "layout_bounds_cover_most_of_pdf_page",
-                "layout_bounds_cover_full_page_document",
-                "layout_bounds_not_compact_subdocument",
-                "expanded_layout_crop_covers_most_of_pdf_page",
-                "layout_crop_area_ratio_full_page_document",
-            }
-            physical_allowed_by_layout = str(layout_crop.get("reason") or "") not in layout_full_page_policy_reasons
             physical_sub_document = bool(pdf_boundary.get("passed")) and bool(pdf_boundary.get("output_path"))
-            layout_sub_document = False
-            crop_rejection_reason = (
-                None
-                if physical_sub_document
-                else "layout_crop_candidate_without_physical_subdocument_confirmation"
-                if layout_crop_candidate
-                else (layout_crop.get("rejection_reason") or layout_crop.get("reason"))
-            )
+            crop_rejection_reason = None if physical_sub_document else (pdf_boundary.get("reason") or "physical_card_crop_not_detected")
             matching_layout_signature = None
             document_boundary_source = "physical_boundary" if physical_sub_document else "full_page"
             if physical_sub_document:
@@ -1512,11 +1521,9 @@ def _normalize_query_pages(
                 matching_reason = "pdf_full_page_render_used_for_template_matching"
             matching_dimensions = _image_dimensions(matching_path)
             original_dimensions = _image_dimensions(str(page_path))
-            crop_box = normalization_debug.get("crop_box") or ((normalization_debug.get("layout_crop") or {}).get("expanded_box") if isinstance(normalization_debug.get("layout_crop"), dict) else None)
             original_preview = _copy_debug_image(page_path, debug_dir / f"page_{index}_original_rendered.png")
             pdf_boundary_crop_box = pdf_boundary.get("crop_box") if isinstance(pdf_boundary, dict) else None
-            layout_crop_box = layout_crop.get("crop_box") if isinstance(layout_crop, dict) else None
-            crop_preview = None if disable_pdf_subdocument_crop else _save_debug_crop(page_path, layout_crop_box or pdf_boundary_crop_box or crop_box, debug_dir / f"page_{index}_detected_crop_before_validation.png")
+            crop_preview = None if disable_pdf_subdocument_crop else _save_debug_crop(page_path, pdf_boundary_crop_box, debug_dir / f"page_{index}_detected_crop_before_validation.png")
             boundary_preview = _copy_debug_image(Path(str(pdf_boundary.get("output_path"))), debug_dir / f"page_{index}_physical_boundary_crop.png") if pdf_boundary.get("output_path") else None
             matching_preview = _copy_debug_image(Path(matching_path), debug_dir / f"page_{index}_final_matching.png")
             pdf_debug = {
@@ -1524,16 +1531,12 @@ def _normalize_query_pages(
                 "pdf_subdocument_crop_disabled": bool(disable_pdf_subdocument_crop),
                 "original_image_size": original_dimensions,
                 "original_aspect_ratio": _image_aspect(original_dimensions),
-                "document_detection_method": (
-                    "layout"
-                    if info.get("normalization_status") == "layout_cropped" or normalization_debug.get("contour_source") == "paddle_layout"
-                    else ("contour" if normalization_debug.get("detected_points") or normalization_debug.get("crop_box") else "fallback")
-                ),
-                "detected_crop_box": crop_box,
-                "crop_area_ratio": layout_crop.get("crop_area_ratio") or layout_crop.get("expanded_layout_crop_area_ratio"),
-                "crop_accepted": layout_crop.get("crop_accepted"),
+                "document_detection_method": "physical_card_crop",
+                "detected_crop_box": pdf_boundary_crop_box,
+                "crop_area_ratio": pdf_boundary.get("area_ratio"),
+                "crop_accepted": bool(physical_sub_document),
                 "rejection_reason": crop_rejection_reason,
-                "layout_crop_candidate": layout_crop_candidate,
+                "layout_assisted_crop_enabled": False,
                 "physical_subdocument_confirmed": bool(physical_sub_document),
                 "physical_detector_confidence": pdf_boundary.get("confidence"),
                 "physical_detector_aspect_ratio": pdf_boundary.get("aspect_ratio"),
@@ -1549,28 +1552,24 @@ def _normalize_query_pages(
                 "validation_reason": transform_validation.get("reason"),
                 "crop_applied": info.get("crop_applied"),
                 "document_boundary_source": document_boundary_source,
-                "layout_assisted_crop": {
-                    key: value
-                    for key, value in layout_crop.items()
-                    if key not in {"layout_analysis", "rebased_layout_analysis", "layout_signature"}
-                },
-                "layout_boundary_box": layout_crop.get("layout_boundary_box"),
-                "layout_boundary_area_ratio": layout_crop.get("layout_boundary_area_ratio"),
-                "layout_boundary_width_ratio": layout_crop.get("layout_boundary_width_ratio"),
-                "layout_boundary_height_ratio": layout_crop.get("layout_boundary_height_ratio"),
-                "layout_boundary_region_count": layout_crop.get("layout_boundary_region_count"),
-                "layout_crop_applied": bool(layout_crop.get("applied")),
-                "layout_crop_area_ratio": layout_crop.get("crop_area_ratio") or layout_crop.get("expanded_layout_crop_area_ratio"),
-                "layout_crop_accepted": layout_crop.get("crop_accepted"),
-                "layout_crop_rejection_reason": crop_rejection_reason,
+                "layout_assisted_crop": pdf_layout_assisted_crop,
+                "layout_boundary_box": None,
+                "layout_boundary_area_ratio": None,
+                "layout_boundary_width_ratio": None,
+                "layout_boundary_height_ratio": None,
+                "layout_boundary_region_count": None,
+                "layout_crop_applied": False,
+                "layout_crop_area_ratio": None,
+                "layout_crop_accepted": False,
+                "layout_crop_rejection_reason": pdf_layout_assisted_crop.get("rejection_reason"),
                 "pdf_subdocument_detector": pdf_boundary,
                 "pdf_subdocument_detector_attempted": not disable_pdf_subdocument_crop,
                 "pdf_subdocument_detector_passed": bool(pdf_boundary.get("passed")),
                 "pdf_subdocument_detector_reason": pdf_boundary.get("reason"),
-                "pdf_subdocument_detector_allowed_by_layout": physical_allowed_by_layout,
+                "pdf_subdocument_detector_allowed_by_layout": True,
                 "pdf_subdocument_detector_blocked_by_layout_reason": None,
-                "layout_policy_would_block_physical_detector": not physical_allowed_by_layout,
-                "layout_policy_block_reason": None if physical_allowed_by_layout else layout_crop.get("reason"),
+                "layout_policy_would_block_physical_detector": False,
+                "layout_policy_block_reason": None,
                 "pdf_subdocument_crop_box": pdf_boundary.get("crop_box"),
                 "pdf_subdocument_confidence": pdf_boundary.get("confidence"),
                 "pdf_subdocument_edge_support": pdf_boundary.get("edge_support"),
@@ -1587,8 +1586,8 @@ def _normalize_query_pages(
                 "matching_signature_source": "matching_image_path_layout_analysis",
                 "matching_layout_signature_created": bool(matching_layout_signature),
                 "preview_original_rendered_path": original_preview,
-                "preview_layout_boundary_path": layout_crop.get("layout_boundary_preview_path"),
-                "preview_layout_crop_before_template_matching_path": layout_crop.get("crop_preview_path"),
+                "preview_layout_boundary_path": None,
+                "preview_layout_crop_before_template_matching_path": None,
                 "preview_detected_crop_before_validation_path": crop_preview,
                 "preview_physical_boundary_crop_path": boundary_preview,
                 "preview_final_matching_path": matching_preview,
@@ -1603,7 +1602,7 @@ def _normalize_query_pages(
                     "pdf_matching_path_promoted_to_normalized": not disable_pdf_subdocument_crop,
                     "pdf_matching_path_source": matching_path_source,
                     "pdf_matching_reason": matching_reason,
-                    "pdf_matching_crop_box": layout_crop_box or pdf_boundary_crop_box,
+                    "pdf_matching_crop_box": pdf_boundary_crop_box,
                     "pdf_subdocument_crop_disabled": bool(disable_pdf_subdocument_crop),
                 }
             )
