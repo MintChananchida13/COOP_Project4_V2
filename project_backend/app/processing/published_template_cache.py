@@ -177,7 +177,7 @@ def _load_entries(template_id: Optional[str] = None) -> Dict[str, PublishedTempl
                 tv.updated_at
             FROM template_versions tv
             JOIN template_groups tg ON tg.id = tv.template_group_id
-            WHERE tv.status = 'active'
+            WHERE tv.status IN ('active', 'published')
             {template_filter}
             ORDER BY tv.updated_at DESC
             """,
@@ -376,6 +376,41 @@ def get_verification_fields(template_id: str) -> Optional[List[Dict[str, Any]]]:
     with _LOCK:
         entry = _ENTRIES.get(template_id)
         return copy.deepcopy(entry.verification_fields) if entry else None
+
+
+def get_text_only_template_anchors() -> Optional[List[Dict[str, Any]]]:
+    with _LOCK:
+        if not _READY or _DEGRADED:
+            return None
+        templates: List[Dict[str, Any]] = []
+        for entry in _ENTRIES.values():
+            metadata = dict(entry.metadata)
+            text_anchors = [
+                copy.deepcopy(field)
+                for field in entry.verification_fields
+                if str(field.get("data_type") or "").lower() == "text" and field.get("expected_text")
+            ]
+            templates.append(
+                {
+                    "template_id": entry.template_id,
+                    "template_name": metadata.get("name") or metadata.get("template_name"),
+                    "document_type": metadata.get("document_type"),
+                    "category": metadata.get("category"),
+                    "template_status": metadata.get("status"),
+                    "version_name": metadata.get("version_name"),
+                    "version_number": metadata.get("version_number"),
+                    "detection_mode": metadata.get("detection_mode"),
+                    "main_page_number": metadata.get("main_page_number"),
+                    "final_confidence_threshold": metadata.get("final_confidence_threshold"),
+                    "layout_weight": metadata.get("layout_weight"),
+                    "text_anchor_weight": metadata.get("text_anchor_weight"),
+                    "image_anchor_weight": metadata.get("image_anchor_weight"),
+                    "page_count": metadata.get("page_count"),
+                    "field_count": entry.field_count,
+                    "text_anchors": text_anchors,
+                }
+            )
+        return templates
 
 
 def get_layout_candidate_rows(

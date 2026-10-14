@@ -156,17 +156,32 @@ class ImageNormalizationService:
         output_path: Optional[str] = None,
         debug_dir: Optional[str] = None,
     ) -> Dict[str, Any]:
+        total_started = time.perf_counter()
         image = cv2.imread(str(image_path))
         if image is None:
-            return {"passed": False, "reason": "image_read_failed", "crop_box": None, "confidence": 0.0}
+            return {
+                "passed": False,
+                "reason": "image_read_failed",
+                "crop_box": None,
+                "confidence": 0.0,
+                "timing": {
+                    "detection_ms": None,
+                    "validation_ms": None,
+                    "apply_ms": None,
+                    "total_ms": round((time.perf_counter() - total_started) * 1000.0, 2),
+                },
+            }
         card_crop = self._detect_pdf_physical_card_crop(image)
         if card_crop.get("passed"):
+            apply_started = time.perf_counter()
             crop_left, crop_top, crop_right, crop_bottom = [int(value) for value in card_crop["crop_box"]]
             crop = image[crop_top:crop_bottom, crop_left:crop_right].copy()
             if output_path:
                 target = Path(output_path)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(target), self._resize_longest_side(crop, self.LONGEST_SIDE))
+            apply_ms = round((time.perf_counter() - apply_started) * 1000.0, 2)
+            total_ms = round((time.perf_counter() - total_started) * 1000.0, 2)
             return {
                 "passed": True,
                 "reason": "physical_card_crop_detected",
@@ -184,7 +199,14 @@ class ImageNormalizationService:
                 "candidate_source": "physical_card_crop",
                 "output_path": str(output_path) if output_path else None,
                 "debug": card_crop.get("debug"),
+                "timing": {
+                    "detection_ms": (card_crop.get("debug") or {}).get("card_detection_ms"),
+                    "validation_ms": 0.0,
+                    "apply_ms": apply_ms,
+                    "total_ms": total_ms,
+                },
             }
+        legacy_detection_started = time.perf_counter()
         height, width = image.shape[:2]
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -278,6 +300,7 @@ class ImageNormalizationService:
             if cv2.imwrite(str(top_path), top_preview):
                 debug_paths["top_contours"] = str(top_path)
         best = max(candidates, key=lambda item: float(item["confidence"]), default=None)
+        detection_ms = round((time.perf_counter() - legacy_detection_started) * 1000.0, 2)
         debug = {
             "attempted": True,
             "raw_contour_count": len(edge_contours),
@@ -291,18 +314,40 @@ class ImageNormalizationService:
             "image_size": [width, height],
             "debug_preview_paths": debug_paths,
         }
+        validation_started = time.perf_counter()
+        timing_base = {
+            "detection_ms": detection_ms,
+            "validation_ms": None,
+            "apply_ms": None,
+            "total_ms": None,
+        }
+
+        def rejected(reason: str, crop_box: Optional[List[int]], confidence: float) -> Dict[str, Any]:
+            timing_base["validation_ms"] = round((time.perf_counter() - validation_started) * 1000.0, 2)
+            timing_base["total_ms"] = round((time.perf_counter() - total_started) * 1000.0, 2)
+            return {
+                "passed": False,
+                "reason": reason,
+                "crop_box": crop_box,
+                "confidence": confidence,
+                "debug": debug,
+                "timing": dict(timing_base),
+            }
+
         if not best:
-            return {"passed": False, "reason": "no_rectangular_subdocument_candidate", "crop_box": None, "confidence": 0.0, "debug": debug}
+            return rejected("no_rectangular_subdocument_candidate", None, 0.0)
         if float(best["rectangularity"]) < self.PDF_SUBDOCUMENT_MIN_RECTANGULARITY:
-            return {"passed": False, "reason": "rectangularity_below_threshold", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
+            return rejected("rectangularity_below_threshold", best["crop_box"], best["confidence"])
         if float(best.get("aspect_ratio") or 0.0) < self.PDF_SUBDOCUMENT_MIN_ASPECT_RATIO or float(best.get("aspect_ratio") or 0.0) > self.PDF_SUBDOCUMENT_MAX_ASPECT_RATIO:
-            return {"passed": False, "reason": "aspect_ratio_outside_subdocument_range", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
+            return rejected("aspect_ratio_outside_subdocument_range", best["crop_box"], best["confidence"])
         if float(best["edge_support"]) < self.PDF_SUBDOCUMENT_MIN_EDGE_SUPPORT:
-            return {"passed": False, "reason": "edge_support_below_threshold", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
+            return rejected("edge_support_below_threshold", best["crop_box"], best["confidence"])
         if int(best.get("strong_edge_side_count") or 0) < self.PDF_SUBDOCUMENT_MIN_STRONG_EDGE_SIDES:
-            return {"passed": False, "reason": "insufficient_strong_edge_sides", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
+            return rejected("insufficient_strong_edge_sides", best["crop_box"], best["confidence"])
         if float(best["confidence"]) < self.PDF_SUBDOCUMENT_MIN_CONFIDENCE:
-            return {"passed": False, "reason": "confidence_below_threshold", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
+            return rejected("confidence_below_threshold", best["crop_box"], best["confidence"])
+        timing_base["validation_ms"] = round((time.perf_counter() - validation_started) * 1000.0, 2)
+        apply_started = time.perf_counter()
         crop_left, crop_top, crop_right, crop_bottom = [int(value) for value in best["crop_box"]]
         padded_crop_box = self._pad_crop_box(
             [crop_left, crop_top, crop_right, crop_bottom],
@@ -316,6 +361,8 @@ class ImageNormalizationService:
             target = Path(output_path)
             target.parent.mkdir(parents=True, exist_ok=True)
             cv2.imwrite(str(target), self._resize_longest_side(crop, self.LONGEST_SIDE))
+        timing_base["apply_ms"] = round((time.perf_counter() - apply_started) * 1000.0, 2)
+        timing_base["total_ms"] = round((time.perf_counter() - total_started) * 1000.0, 2)
         return {
             "passed": True,
             "reason": "physical_rectangular_subdocument_detected",
@@ -333,6 +380,7 @@ class ImageNormalizationService:
             "candidate_source": best["candidate_source"],
             "output_path": str(output_path) if output_path else None,
             "debug": debug,
+            "timing": dict(timing_base),
         }
 
     def _evaluate_pdf_subdocument_contour(

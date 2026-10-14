@@ -1496,6 +1496,22 @@ def _normalize_query_pages(
                     "passed": False,
                     "reason": "pdf_subdocument_crop_disabled_for_prepublish",
                 }
+                if timing is not None:
+                    timing.setdefault("physical_crop_attempts", []).append(
+                        {
+                            "page_index": index,
+                            "attempt": 1,
+                            "elapsed_ms": None,
+                            "detector_timing": {},
+                            "crop_applied": False,
+                            "crop_rejected": True,
+                            "reason": "pdf_subdocument_crop_disabled_for_prepublish",
+                            "confidence": None,
+                            "area_ratio": None,
+                            "aspect_ratio": None,
+                            "candidate_source": None,
+                        }
+                    )
             else:
                 pdf_layout_assisted_crop = {
                     "applied": False,
@@ -1504,7 +1520,36 @@ def _normalize_query_pages(
                     "rejection_reason": "layout_assisted_crop_disabled_pdf_uses_physical_card_crop",
                 }
                 pdf_boundary_path = normalized_dir / f"page_{index}_pdf_subdocument.png"
+                physical_crop_started = time.perf_counter()
                 pdf_boundary = normalization_service.detect_pdf_subdocument_boundary(str(page_path), str(pdf_boundary_path), str(debug_dir))
+                physical_crop_elapsed = time.perf_counter() - physical_crop_started
+                if timing is not None:
+                    timing["physical_crop_total"] = timing.get("physical_crop_total", 0.0) + physical_crop_elapsed
+                    boundary_timing = pdf_boundary.get("timing") if isinstance(pdf_boundary, dict) else {}
+                    if isinstance(boundary_timing, dict):
+                        for source_key, target_key in (
+                            ("detection_ms", "physical_crop_detection"),
+                            ("validation_ms", "physical_crop_validation"),
+                            ("apply_ms", "physical_crop_apply"),
+                        ):
+                            value = boundary_timing.get(source_key)
+                            if isinstance(value, (int, float)):
+                                timing[target_key] = timing.get(target_key, 0.0) + (float(value) / 1000.0)
+                    timing.setdefault("physical_crop_attempts", []).append(
+                        {
+                            "page_index": index,
+                            "attempt": 1,
+                            "elapsed_ms": _ms(physical_crop_elapsed),
+                            "detector_timing": boundary_timing if isinstance(boundary_timing, dict) else {},
+                            "crop_applied": bool(pdf_boundary.get("passed")) and bool(pdf_boundary.get("output_path")),
+                            "crop_rejected": not (bool(pdf_boundary.get("passed")) and bool(pdf_boundary.get("output_path"))),
+                            "reason": pdf_boundary.get("reason"),
+                            "confidence": pdf_boundary.get("confidence"),
+                            "area_ratio": pdf_boundary.get("area_ratio"),
+                            "aspect_ratio": pdf_boundary.get("aspect_ratio"),
+                            "candidate_source": pdf_boundary.get("candidate_source"),
+                        }
+                    )
             physical_sub_document = bool(pdf_boundary.get("passed")) and bool(pdf_boundary.get("output_path"))
             crop_rejection_reason = None if physical_sub_document else (pdf_boundary.get("reason") or "physical_card_crop_not_detected")
             matching_layout_signature = None
@@ -1544,6 +1589,7 @@ def _normalize_query_pages(
                 "physical_detector_edge_support": pdf_boundary.get("edge_support"),
                 "physical_detector_strong_edge_side_count": pdf_boundary.get("strong_edge_side_count"),
                 "physical_detector_rectangularity": pdf_boundary.get("rectangularity"),
+                "physical_crop_timing": pdf_boundary.get("timing"),
                 "crop_rejection_reason": crop_rejection_reason,
                 "final_matching_path_source": matching_path_source,
                 "normalization_crop_area_ratio": round(pdf_crop_area_ratio, 4) if pdf_crop_area_ratio is not None else None,
@@ -3586,10 +3632,42 @@ def _detection_engine(pages: List[Dict[str, Any]]) -> str:
     return "layout_signature"
 
 
-def _load_text_only_template_anchors() -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def _load_text_only_template_anchors(request_cache: Optional[DetectionRequestCache] = None) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
     total_started = time.perf_counter()
+    cache_lookup_started = time.perf_counter()
+    cached_templates = published_template_cache.get_text_only_template_anchors()
+    cache_lookup_elapsed = time.perf_counter() - cache_lookup_started
+    if cached_templates is not None:
+        anchor_processing_started = time.perf_counter()
+        templates = list(cached_templates)
+        template_count = len(templates)
+        anchor_count = sum(len(template.get("text_anchors") or []) for template in templates)
+        anchor_processing_elapsed = time.perf_counter() - anchor_processing_started
+        if request_cache is not None:
+            request_cache.stats["published_template_cache_hits"] += template_count
+            request_cache.stats["published_verification_fields_cache_hits"] += template_count
+        return templates, {
+            "source": "published_template_cache",
+            "cache_hit": True,
+            "status_filter": ["active", "published"],
+            "cache_lookup_ms": _ms(cache_lookup_elapsed),
+            "db_connect_ms": None,
+            "db_query_ms": None,
+            "cursor_create_ms": None,
+            "execute_ms": None,
+            "fetch_ms": None,
+            "anchor_processing_ms": _ms(anchor_processing_elapsed),
+            "total_ms": _ms(time.perf_counter() - total_started),
+            "template_count": template_count,
+            "anchor_count": anchor_count,
+            "duplicate_template_load_count": 0,
+            "db_fallback": False,
+        }
+    connect_started = time.perf_counter()
     conn = _connect()
+    connect_elapsed = time.perf_counter() - connect_started
     with conn:
+        query_started = time.perf_counter()
         cursor, execute_timing = conn.execute_timed(
             """
             SELECT
@@ -3644,7 +3722,9 @@ def _load_text_only_template_anchors() -> tuple[List[Dict[str, Any]], Dict[str, 
         fetch_started = time.perf_counter()
         rows = cursor.fetchall()
         fetch_elapsed = time.perf_counter() - fetch_started
+        db_query_elapsed = time.perf_counter() - query_started
 
+    anchor_processing_started = time.perf_counter()
     templates_by_id: Dict[str, Dict[str, Any]] = {}
     for row in rows:
         template_id = row["template_id"]
@@ -3700,13 +3780,27 @@ def _load_text_only_template_anchors() -> tuple[List[Dict[str, Any]], Dict[str, 
                 "verification_weight": row["verification_weight"],
             }
         )
+    anchor_processing_elapsed = time.perf_counter() - anchor_processing_started
+    anchor_count = sum(len(template.get("text_anchors") or []) for template in templates_by_id.values())
+    if request_cache is not None:
+        request_cache.stats["verification_fields_db_fetches"] += len(templates_by_id)
 
     return list(templates_by_id.values()), {
+        "source": "database",
+        "cache_hit": False,
+        "status_filter": ["active", "published"],
+        "cache_lookup_ms": _ms(cache_lookup_elapsed),
+        "db_connect_ms": _ms(connect_elapsed),
+        "db_query_ms": _ms(db_query_elapsed),
         "execute_ms": _ms(float(execute_timing.get("execute") or 0.0)),
         "cursor_create_ms": _ms(float(execute_timing.get("cursor_create") or 0.0)),
         "fetch_ms": _ms(fetch_elapsed),
+        "anchor_processing_ms": _ms(anchor_processing_elapsed),
         "total_ms": _ms(time.perf_counter() - total_started),
         "template_count": len(templates_by_id),
+        "anchor_count": anchor_count,
+        "duplicate_template_load_count": max(0, len(rows) - len(templates_by_id)),
+        "db_fallback": True,
     }
 
 
@@ -3777,7 +3871,7 @@ def _detect_template_text_only(
     page_image_paths = {int(page["page_index"]): page["normalized_path"] for page in normalized_pages}
 
     load_started = time.perf_counter()
-    templates, load_debug = _load_text_only_template_anchors()
+    templates, load_debug = _load_text_only_template_anchors(request_cache)
     timing["text_only_template_anchor_load"] = time.perf_counter() - load_started
 
     crop_started = time.perf_counter()
@@ -3795,6 +3889,7 @@ def _detect_template_text_only(
             if page_number in page_image_paths:
                 roi_items_by_page.setdefault(page_number, []).append({"id": key, "roi": field["roi"]})
     timing["text_only_crop_prepare"] = time.perf_counter() - crop_started
+    timing["text_only_roi_pages"] = [len(items) for items in roi_items_by_page.values()]
 
     batch_started = time.perf_counter()
     ocr_results: Dict[str, Dict[str, Any]] = {}
@@ -4073,6 +4168,215 @@ def _no_match_message(candidates: List[Dict[str, Any]]) -> str:
     return "ไม่มี Template ที่ผ่านเกณฑ์การตรวจสอบและคะแนนความมั่นใจ"
 
 
+def _benchmark_step(elapsed_ms: Optional[float], enabled: bool, reason: Optional[str] = None) -> Dict[str, Any]:
+    if not enabled:
+        return {"status": "skipped", "elapsed_ms": None, "reason": reason or "step_disabled"}
+    if elapsed_ms is None:
+        return {"status": "unknown", "elapsed_ms": None, "reason": reason or "timing_not_available"}
+    return {"status": "processed", "elapsed_ms": elapsed_ms, "reason": reason}
+
+
+def _sum_candidate_ms(candidate_timings: List[Dict[str, Any]], *keys: str) -> Optional[float]:
+    total = 0.0
+    found = False
+    for timing_item in candidate_timings:
+        for key in keys:
+            value = timing_item.get(key)
+            if value is None:
+                for nested in timing_item.values():
+                    if isinstance(nested, dict) and isinstance(nested.get(key), (int, float)):
+                        value = nested.get(key)
+                        break
+            if isinstance(value, (int, float)):
+                total += float(value)
+                found = True
+    return round(total, 2) if found else None
+
+
+def _candidate_anchor_counts(candidates: List[Dict[str, Any]]) -> Dict[str, int]:
+    text_anchors = 0
+    image_anchors = 0
+    rois = 0
+    for candidate in candidates:
+        details = candidate.get("verification_details")
+        if not isinstance(details, list):
+            verification = candidate.get("verification") if isinstance(candidate.get("verification"), dict) else {}
+            details = verification.get("checked_fields", []) if isinstance(verification, dict) else []
+        for field in details or []:
+            if not isinstance(field, dict):
+                continue
+            rois += 1
+            anchor_type = str(field.get("anchor_type") or field.get("verification_method") or "").lower()
+            if "image" in anchor_type:
+                image_anchors += 1
+            elif "text" in anchor_type or "ocr" in anchor_type:
+                text_anchors += 1
+    return {"text_anchors": text_anchors, "image_anchors": image_anchors, "rois": rois}
+
+
+def _sum_candidate_db_total_ms(candidate_timings: List[Dict[str, Any]]) -> Optional[float]:
+    total = 0.0
+    found = False
+    for timing_item in candidate_timings:
+        db_debug = timing_item.get("db")
+        if not isinstance(db_debug, dict):
+            continue
+        for section in db_debug.values():
+            if not isinstance(section, dict):
+                continue
+            value = section.get("db_total_ms")
+            if isinstance(value, (int, float)):
+                total += float(value)
+                found = True
+    return round(total, 2) if found else None
+
+
+def _benchmark_timing_debug(
+    timing: Dict[str, Any],
+    pages: List[Dict[str, Any]],
+    candidate_timings: List[Dict[str, Any]],
+    total_elapsed_ms: Optional[float],
+    request_cache: Optional[DetectionRequestCache] = None,
+) -> Dict[str, Any]:
+    candidates = [candidate for page in pages for candidate in page.get("candidates", []) if isinstance(candidate, dict)]
+    strategy = next((str(candidate.get("verification_strategy")) for candidate in candidates if candidate.get("verification_strategy")), None)
+    strategy = strategy or (VERIFICATION_STRATEGY_TEXT_ONLY if timing.get("text_only_total") is not None else None)
+    text_only = strategy == VERIFICATION_STRATEGY_TEXT_ONLY
+    anchor_counts = _candidate_anchor_counts(candidates)
+    physical_attempts = timing.get("physical_crop_attempts") if isinstance(timing.get("physical_crop_attempts"), list) else []
+    physical_crop_enabled = bool(physical_attempts) and any(item.get("elapsed_ms") is not None for item in physical_attempts if isinstance(item, dict))
+    physical_crop_applied = any(bool(item.get("crop_applied")) for item in physical_attempts if isinstance(item, dict))
+
+    text_ocr_ms = _ms(timing.get("text_only_batch_ocr")) if text_only else _sum_candidate_ms(candidate_timings, "text_ocr_inference_ms")
+    image_verification_ms = None if text_only else _sum_candidate_ms(candidate_timings, "image_verification_ms")
+    alignment_ms = None if text_only else _sum_candidate_ms(candidate_timings, "alignment_ms")
+    database_ms = _sum_candidate_db_total_ms(candidate_timings)
+    if database_ms is None:
+        database_ms = _sum_candidate_ms(candidate_timings, "template_fetch_ms", "field_count_query_ms", "verification_fields_load_ms")
+    if database_ms is None and text_only:
+        database_ms = _ms(timing.get("text_only_template_anchor_load"))
+    if text_only:
+        matching_ms = _ms(timing.get("text_only_matching"))
+    else:
+        decision_ms = _sum_candidate_ms(candidate_timings, "decision_ms")
+        final_selection_ms = _ms(timing.get("final_selection"))
+        if decision_ms is not None or final_selection_ms is not None:
+            matching_ms = round(float(decision_ms or 0.0) + float(final_selection_ms or 0.0), 2)
+        else:
+            matching_ms = None
+    layout_enabled = not text_only
+    text_enabled = text_only or anchor_counts["text_anchors"] > 0 or bool(timing.get("verification"))
+    image_enabled = (not text_only) and (anchor_counts["image_anchors"] > 0 or (image_verification_ms is not None and image_verification_ms > 0))
+
+    ocr_batches = 0
+    if text_only:
+        roi_pages = timing.get("text_only_roi_pages")
+        if isinstance(roi_pages, list):
+            ocr_batches = len([items for items in roi_pages if items])
+        if not ocr_batches:
+            ocr_batches = len({
+                field.get("page_number")
+                for candidate in candidates
+                for field in (candidate.get("verification_details") or [])
+                if isinstance(field, dict)
+            })
+    elif request_cache is not None:
+        ocr_batches = int(request_cache.stats.get("verification_text_ocr_cache_misses") or 0) + int(
+            request_cache.stats.get("verification_text_ocr_cache_hits") or 0
+        )
+
+    return {
+        "schema_version": 1,
+        "total_detection_ms": total_elapsed_ms,
+        "verification_strategy": strategy,
+        "benchmark_case": (
+            "Text Only"
+            if text_only
+            else "Layout + Text + Image" if text_enabled and image_enabled
+            else "Layout + Text" if text_enabled
+            else "Layout + Image" if image_enabled
+            else "Layout Only"
+        ),
+        "physical_crop_mode": "ON" if physical_crop_enabled else "OFF",
+        "model_combination": {
+            "layout": layout_enabled,
+            "text": text_enabled,
+            "image": image_enabled,
+            "physical_crop": physical_crop_enabled,
+            "physical_crop_applied": physical_crop_applied,
+        },
+        "steps": {
+            "prepare_pages": _benchmark_step(_ms(timing.get("prepare_pages")), True),
+            "normalization": _benchmark_step(
+                _ms(timing.get("prepare_normalization")),
+                bool(timing.get("prepare_normalization")),
+                "pdf_rendered_page_uses_physical_crop_detector" if timing.get("prepare_normalization_skipped") else None,
+            ),
+            "physical_crop": {
+                "status": "processed" if physical_crop_enabled else "skipped",
+                "elapsed_ms": _ms(timing.get("physical_crop_total")),
+                "detection_ms": _ms(timing.get("physical_crop_detection")),
+                "validation_ms": _ms(timing.get("physical_crop_validation")),
+                "apply_ms": _ms(timing.get("physical_crop_apply")),
+                "crop_applied": physical_crop_applied,
+                "attempts": physical_attempts,
+            },
+            "layout_analysis": _benchmark_step(_ms(timing.get("layout_analysis")), layout_enabled, "text_only_strategy" if text_only else None),
+            "layout_retrieval": _benchmark_step(_ms(timing.get("template_matching")), layout_enabled, "text_only_strategy" if text_only else None),
+            "text_det_rec": _benchmark_step(text_ocr_ms, text_enabled, "no_text_anchors" if not text_enabled else None),
+            "image_verification": _benchmark_step(image_verification_ms, image_enabled, "text_only_or_no_image_anchors" if not image_enabled else None),
+            "alignment": _benchmark_step(alignment_ms, bool(alignment_ms and alignment_ms > 0), "not_required_or_skipped"),
+            "database": _benchmark_step(database_ms, bool(database_ms is not None), "no_database_timing_available" if database_ms is None else None),
+            "matching": _benchmark_step(matching_ms, True),
+        },
+        "counts": {
+            "pages": len(pages),
+            "templates": len({candidate.get("template_id") for candidate in candidates if candidate.get("template_id")}),
+            "candidates": len(candidates),
+            "text_anchors": anchor_counts["text_anchors"],
+            "image_anchors": anchor_counts["image_anchors"],
+            "rois": anchor_counts["rois"],
+            "ocr_batches": ocr_batches,
+            "request_cache": dict(request_cache.stats) if request_cache is not None else {},
+        },
+        "attempts": {
+            "original_or_crop": [
+                {
+                    "page_index": page.get("page_index"),
+                    "matching_path_source": page.get("matching_path_source") or (page.get("debug") or {}).get("matching_path_source"),
+                    "matching_image_path": page.get("matching_image_path") or page.get("image_path") or page.get("normalized_image_path"),
+                }
+                for page in pages
+            ],
+            "candidate_verification": [
+                {
+                    "page_index": item.get("page_index"),
+                    "retrieval_rank": item.get("retrieval_rank"),
+                    "template_id": item.get("template_id"),
+                    "normalized_verification_ms": item.get("normalized_verification_ms"),
+                    "aligned_verification_ms": item.get("aligned_verification_ms"),
+                    "alignment_ms": item.get("alignment_ms"),
+                    "verification_source_used": item.get("verification_source_used"),
+                    "alignment_status": item.get("alignment_status"),
+                }
+                for item in candidate_timings
+            ],
+            "physical_crop": physical_attempts,
+        },
+        "skipped_steps": [
+            key
+            for key, value in {
+                "layout_analysis": layout_enabled,
+                "layout_retrieval": layout_enabled,
+                "image_verification": image_enabled,
+                "physical_crop": physical_crop_enabled,
+                "alignment": bool(alignment_ms and alignment_ms > 0),
+            }.items()
+            if not value
+        ],
+    }
+
+
 def _detection_timing_debug(
     timing: Dict[str, float],
     pages: List[Dict[str, Any]],
@@ -4109,9 +4413,11 @@ def _detection_timing_debug(
         "signature_build",
         "template_matching",
         "verification",
+        "text_only_total",
         "candidate_aggregation",
         "request_auto_roi",
         "auto_roi",
+        "processing_page_persist",
     ]
     top_level_measured = sum(float(timing.get(key) or 0.0) for key in top_level_keys)
     detect_pages_inner_keys = [
@@ -4130,12 +4436,14 @@ def _detection_timing_debug(
         "prepublish_logging",
         "final_selection",
         "best_candidate_patch",
+        "processing_page_persist",
     ]
     boundary_measured = sum(float(timing.get(key) or 0.0) for key in boundary_keys)
     detect_pages_overhead = max(0.0, float(timing.get("detect_pages_total") or 0.0) - detect_pages_inner_measured)
 
+    total_elapsed_ms = _ms(total_elapsed)
     return {
-        "total_detection_ms": _ms(total_elapsed),
+        "total_detection_ms": total_elapsed_ms,
         "prepare_pages_ms": _ms(timing.get("prepare_pages")),
         "prepare_pages_breakdown": {
             "pdf_convert_ms": _ms(timing.get("prepare_pdf_convert")),
@@ -4179,6 +4487,13 @@ def _detection_timing_debug(
         "debug_timing_build_ms": _ms(time.perf_counter() - debug_started),
         "request_cache": dict(request_cache.stats) if request_cache is not None else {},
         "candidates": candidate_timings,
+        "benchmark": _benchmark_timing_debug(
+            timing,
+            pages,
+            candidate_timings,
+            total_elapsed_ms,
+            request_cache=request_cache,
+        ),
     }
 
 
