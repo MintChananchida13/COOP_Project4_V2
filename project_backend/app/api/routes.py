@@ -1,7 +1,9 @@
 import asyncio
 import io
 import json
+import logging
 import threading
+import time
 from uuid import uuid4
 
 from typing import Any, Dict
@@ -61,6 +63,7 @@ from app.business.services import (
 from app.business.maintenance_events import maintenance_event_hub
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 template_requests = TemplateRequestService()
 admin_templates = AdminTemplateService()
@@ -193,10 +196,12 @@ def _run_prepublish_detection_job(job_id: str, template_id: str, file_bytes: byt
 
 
 def _run_detect_dev_job(job_id: str, image_bytes: bytes, standard_top5: bool = False, admin_context: bool = False) -> None:
+    started_at = time.perf_counter()
     with detect_dev_jobs_lock:
         job = detect_dev_jobs.get(job_id)
         if job is not None:
             job["status"] = "processing"
+    logger.info("[DETECT] started job=%s", job_id)
     try:
         detect_kwargs: Dict[str, Any] = {}
         if standard_top5:
@@ -216,12 +221,26 @@ def _run_detect_dev_job(job_id: str, image_bytes: bytes, standard_top5: bool = F
             if job is not None:
                 job["status"] = "completed"
                 job["result"] = result
+        matched = bool(result.get("matched")) if isinstance(result, dict) else False
+        logger.info(
+            "[DETECT] completed job=%s matched=%s duration=%.2fs",
+            job_id,
+            str(matched).lower(),
+            time.perf_counter() - started_at,
+        )
     except Exception as error:
         with detect_dev_jobs_lock:
             job = detect_dev_jobs.get(job_id)
             if job is not None:
                 job["status"] = "failed"
                 job["error"] = str(error)
+        reason = " ".join(str(error).split())[:240]
+        logger.error(
+            "[DETECT] failed job=%s duration=%.2fs reason=%s",
+            job_id,
+            time.perf_counter() - started_at,
+            reason,
+        )
     finally:
         clear_layout_analysis_cache()
 
@@ -408,7 +427,7 @@ async def detect_template_dev_route(
 
 
 @router.get("/api/templates/detect-dev/jobs/{job_id}")
-def get_detect_template_dev_job(job_id: str) -> dict:
+def get_detect_template_dev_job(job_id: str, request: Request) -> dict:
     with detect_dev_jobs_lock:
         job = detect_dev_jobs.get(job_id)
         if job is None:
@@ -421,6 +440,12 @@ def get_detect_template_dev_job(job_id: str) -> dict:
             response["result"] = job.get("result")
         if job.get("status") == "failed":
             response["error"] = job.get("error") or "Detection job failed."
+        logger.info(
+            "[Polling] GET %s %s OK status=%s",
+            request.url.path,
+            response["status"],
+            response["status"],
+        )
         return {"status": "success", "data": response}
 
 

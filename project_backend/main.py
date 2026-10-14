@@ -54,6 +54,22 @@ OCR_JOB_PROCESSING_TIMEOUT_SECONDS = max(60, int(os.getenv("OCR_JOB_PROCESSING_T
 logger = logging.getLogger(__name__)
 
 
+class _DetectDevPollingAccessLogFilter(logging.Filter):
+    """Keep Uvicorn's access log from duplicating the structured polling log."""
+
+    _polling_path = "/api/templates/detect-dev/jobs/"
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        return self._polling_path not in message
+
+
+logging.getLogger("uvicorn.access").addFilter(_DetectDevPollingAccessLogFilter())
+
+
 def _ensure_processing_available_for_context(context: Optional[str]) -> None:
     if str(context or "").strip().lower() == "admin":
         return
