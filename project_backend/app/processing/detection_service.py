@@ -1489,11 +1489,7 @@ def _normalize_query_pages(
                 "layout_crop_area_ratio_full_page_document",
             }
             physical_allowed_by_layout = str(layout_crop.get("reason") or "") not in layout_full_page_policy_reasons
-            physical_sub_document = (
-                physical_allowed_by_layout
-                and bool(pdf_boundary.get("passed"))
-                and bool(pdf_boundary.get("output_path"))
-            )
+            physical_sub_document = bool(pdf_boundary.get("passed")) and bool(pdf_boundary.get("output_path"))
             layout_sub_document = False
             crop_rejection_reason = (
                 None
@@ -1572,7 +1568,9 @@ def _normalize_query_pages(
                 "pdf_subdocument_detector_passed": bool(pdf_boundary.get("passed")),
                 "pdf_subdocument_detector_reason": pdf_boundary.get("reason"),
                 "pdf_subdocument_detector_allowed_by_layout": physical_allowed_by_layout,
-                "pdf_subdocument_detector_blocked_by_layout_reason": None if physical_allowed_by_layout else layout_crop.get("reason"),
+                "pdf_subdocument_detector_blocked_by_layout_reason": None,
+                "layout_policy_would_block_physical_detector": not physical_allowed_by_layout,
+                "layout_policy_block_reason": None if physical_allowed_by_layout else layout_crop.get("reason"),
                 "pdf_subdocument_crop_box": pdf_boundary.get("crop_box"),
                 "pdf_subdocument_confidence": pdf_boundary.get("confidence"),
                 "pdf_subdocument_edge_support": pdf_boundary.get("edge_support"),

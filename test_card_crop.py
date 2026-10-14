@@ -1,5 +1,6 @@
 import argparse
 import json
+import time
 from pathlib import Path
 
 import cv2
@@ -15,27 +16,11 @@ def save_image(path, image):
 
 def load_pages(path, dpi):
     import fitz
-
-    if path.suffix.lower() != ".pdf":
-        raise ValueError("Only PDF files are supported")
-
     with fitz.open(path) as doc:
-        for i, page in enumerate(doc):
-            pix = page.get_pixmap(
-                matrix=fitz.Matrix(dpi / 72, dpi / 72),
-                colorspace=fitz.csRGB,
-                alpha=False
-            )
-
-            arr = np.frombuffer(
-                pix.samples,
-                dtype=np.uint8
-            ).reshape(pix.height, pix.width, 3)
-
-            yield i + 1, cv2.cvtColor(
-                arr,
-                cv2.COLOR_RGB2BGR
-            )
+        for i, page in enumerate(doc, 1):
+            pix = page.get_pixmap(matrix=fitz.Matrix(dpi / 72, dpi / 72), alpha=False, colorspace=fitz.csRGB)
+            arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
+            yield i, cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
 
 
 def side_support(edges, x, y, w, h, band):
@@ -52,6 +37,7 @@ def side_support(edges, x, y, w, h, band):
 
 
 def detect(img, cfg):
+    started = time.perf_counter()
     H, W = img.shape[:2]
     scale = min(1.0, cfg['max_detection_dim'] / max(H, W))
     dw, dh = max(1, round(W * scale)), max(1, round(H * scale))
@@ -62,10 +48,14 @@ def detect(img, cfg):
     edges = cv2.Canny(gray, cfg['canny_low'], cfg['canny_high'])
     candidates = []
     seen = set()
+    kernels_tried = []
+    early_stopped = False
     for kernel_size in cfg['kernel_sizes']:
+        kernels_tried.append(kernel_size)
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
         connected = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=cfg['close_iterations'])
         contours, _ = cv2.findContours(connected, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        kernel_accepted = []
         for cnt in contours:
             x, y, w, h = cv2.boundingRect(cnt)
             if w < 25 or h < 15:
@@ -106,7 +96,7 @@ def detect(img, cfg):
             score = 0.5 * edge_support + 0.3 * rectangularity + 0.2 * strong_sides / 4
             ox, oy = round(x*sx), round(y*sy)
             ow, oh = min(W-round(x*sx), round((x+w)*sx)-ox), min(H-round(y*sy), round((y+h)*sy)-oy)
-            candidates.append({
+            candidate = {
                 'bbox': [ox, oy, ow, oh],
                 'aspect_ratio': round(aspect, 4), 'area_ratio': round(area_ratio, 4),
                 'rectangularity': round(rectangularity, 4), 'edge_support': round(edge_support, 4),
@@ -114,19 +104,35 @@ def detect(img, cfg):
                 'strong_edge_side_count': strong_sides, 'polygon_vertices': len(polygon),
                 'kernel_size': kernel_size, 'score': round(score, 4),
                 'accepted': not reasons, 'rejection_reasons': reasons
-            })
+            }
+            candidates.append(candidate)
+            if candidate['accepted']:
+                kernel_accepted.append(candidate)
+        # Optional early exit: only stop for a high-confidence candidate.
+        # Disabled by default to preserve best-of-all-kernels behavior.
+        if cfg['early_exit'] and any(
+            c['edge_support'] >= cfg['early_exit_edge']
+            and c['rectangularity'] >= cfg['early_exit_rectangularity']
+            and c['strong_edge_side_count'] == 4
+            for c in kernel_accepted
+        ):
+            early_stopped = True
+            break
     candidates.sort(key=lambda c: (c['accepted'], c['score'], c['area_ratio']), reverse=True)
     selected = next((c for c in candidates if c['accepted']), None)
     return selected, candidates[:cfg['debug_candidates']], {
         'original_size': [W, H], 'detection_size': [dw, dh],
         'scale_x': round(sx, 6), 'scale_y': round(sy, 6),
         'candidate_count': len(candidates),
+        'kernels_tried': kernels_tried, 'early_stopped': early_stopped,
+        'card_detection_ms': round((time.perf_counter() - started) * 1000, 2),
     }
 
 
 def process(path, output, dpi, cfg):
     output.mkdir(parents=True, exist_ok=True)
     for page_num, img in load_pages(path, dpi):
+        page_started = time.perf_counter()
         selected, candidates, meta = detect(img, cfg)
         H, W = img.shape[:2]
         overlay = img.copy()
@@ -157,11 +163,11 @@ def process(path, output, dpi, cfg):
             'detection': meta, 'top_candidates': candidates, 'thresholds': cfg,
         }
         (output / f'{stem}_debug.json').write_text(json.dumps(debug, indent=2, ensure_ascii=False), encoding='utf-8')
-        print(f'Page {page_num}: {source}; crop={crop_box}; candidate_count={meta["candidate_count"]}')
+        print(f'Page {page_num}: {source}; crop={crop_box}; candidates={meta["candidate_count"]}; kernels={meta["kernels_tried"]}; detection_ms={meta["card_detection_ms"]}; total_ms={round((time.perf_counter()-page_started)*1000,2)}')
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Standalone PDF/image physical card crop tester')
+    parser = argparse.ArgumentParser(description='Standalone PDF physical card crop tester')
     parser.add_argument('input', type=Path)
     parser.add_argument('--output', type=Path, default=Path('crop_output'))
     parser.add_argument('--dpi', type=int, default=200)
@@ -179,8 +185,13 @@ def main():
     parser.add_argument('--min-strong-sides', type=int, default=3)
     parser.add_argument('--strong-side-threshold', type=float, default=0.55)
     parser.add_argument('--padding', type=float, default=0)
+    parser.add_argument('--early-exit', action='store_true', help='Stop after a kernel yields a high-confidence accepted card')
+    parser.add_argument('--early-exit-edge', type=float, default=0.90)
+    parser.add_argument('--early-exit-rectangularity', type=float, default=0.85)
     parser.add_argument('--debug-candidates', type=int, default=30)
     args = parser.parse_args()
+    if args.input.suffix.lower() != '.pdf':
+        parser.error('Only PDF files are supported')
     if not args.input.is_file():
         parser.error(f'Input file not found: {args.input}')
     if args.max_detection_dim < 100 or any(k < 1 or k % 2 == 0 for k in args.kernel_sizes):
@@ -188,7 +199,8 @@ def main():
     cfg = {k: getattr(args, k) for k in (
         'max_detection_dim', 'kernel_sizes', 'close_iterations', 'canny_low', 'canny_high',
         'min_aspect', 'max_aspect', 'min_area', 'max_area', 'min_rectangularity',
-        'min_edge_support', 'min_strong_sides', 'strong_side_threshold', 'padding', 'debug_candidates'
+        'min_edge_support', 'min_strong_sides', 'strong_side_threshold', 'padding', 'debug_candidates',
+        'early_exit', 'early_exit_edge', 'early_exit_rectangularity'
     )}
     process(args.input, args.output, args.dpi, cfg)
 

@@ -1,4 +1,5 @@
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -37,6 +38,9 @@ class ImageNormalizationService:
     PDF_CARD_CROP_CANNY_LOW = 35
     PDF_CARD_CROP_CANNY_HIGH = 110
     PDF_CARD_CROP_STRONG_SIDE_THRESHOLD = 0.55
+    PDF_CARD_CROP_EARLY_EXIT = False
+    PDF_CARD_CROP_EARLY_EXIT_EDGE = 0.90
+    PDF_CARD_CROP_EARLY_EXIT_RECTANGULARITY = 0.85
     PDF_CARD_CROP_DEBUG_CANDIDATES = 30
 
     def normalize_document(
@@ -435,6 +439,7 @@ class ImageNormalizationService:
         ]
 
     def _detect_pdf_physical_card_crop(self, image: np.ndarray) -> Dict[str, Any]:
+        started = time.perf_counter()
         image_height, image_width = image.shape[:2]
         scale = min(1.0, self.PDF_CARD_CROP_MAX_DETECTION_DIM / max(1, max(image_height, image_width)))
         detection_width = max(1, round(image_width * scale))
@@ -447,10 +452,14 @@ class ImageNormalizationService:
         edges = cv2.Canny(gray, self.PDF_CARD_CROP_CANNY_LOW, self.PDF_CARD_CROP_CANNY_HIGH)
         candidates: List[Dict[str, Any]] = []
         seen = set()
+        kernels_tried: List[int] = []
+        early_stopped = False
         for kernel_size in self.PDF_CARD_CROP_KERNEL_SIZES:
+            kernels_tried.append(int(kernel_size))
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
             connected = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=self.PDF_CARD_CROP_CLOSE_ITERATIONS)
             contours, _ = cv2.findContours(connected, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+            kernel_accepted: List[Dict[str, Any]] = []
             for contour in contours:
                 x, y, box_width, box_height = cv2.boundingRect(contour)
                 if box_width < 25 or box_height < 15:
@@ -494,26 +503,35 @@ class ImageNormalizationService:
                 original_bottom = min(image_height, round((y + box_height) * scale_y))
                 candidate_crop_box = [original_x, original_y, original_right, original_bottom]
                 padded_crop_box = self._pad_crop_box(candidate_crop_box, image_width, image_height, self.PDF_SUBDOCUMENT_PADDING_RATIO)
-                candidates.append(
-                    {
-                        "crop_box": padded_crop_box,
-                        "candidate_crop_box": candidate_crop_box,
-                        "bbox": [original_x, original_y, max(1, original_right - original_x), max(1, original_bottom - original_y)],
-                        "aspect_ratio": round(float(aspect_ratio), 4),
-                        "area_ratio": round(float(area_ratio), 4),
-                        "rectangularity": round(float(rectangularity), 4),
-                        "edge_support": round(float(edge_support), 4),
-                        "edge_side_support": [round(float(value), 4) for value in sides],
-                        "strong_edge_side_count": int(strong_sides),
-                        "weakest_edge_support": round(float(min(sides) if sides else 0.0), 4),
-                        "polygon_vertices": int(len(polygon)),
-                        "kernel_size": int(kernel_size),
-                        "score": round(float(score), 4),
-                        "confidence": round(float(score), 4),
-                        "accepted": not reasons,
-                        "rejection_reasons": reasons,
-                    }
-                )
+                candidate = {
+                    "crop_box": padded_crop_box,
+                    "candidate_crop_box": candidate_crop_box,
+                    "bbox": [original_x, original_y, max(1, original_right - original_x), max(1, original_bottom - original_y)],
+                    "aspect_ratio": round(float(aspect_ratio), 4),
+                    "area_ratio": round(float(area_ratio), 4),
+                    "rectangularity": round(float(rectangularity), 4),
+                    "edge_support": round(float(edge_support), 4),
+                    "edge_side_support": [round(float(value), 4) for value in sides],
+                    "strong_edge_side_count": int(strong_sides),
+                    "weakest_edge_support": round(float(min(sides) if sides else 0.0), 4),
+                    "polygon_vertices": int(len(polygon)),
+                    "kernel_size": int(kernel_size),
+                    "score": round(float(score), 4),
+                    "confidence": round(float(score), 4),
+                    "accepted": not reasons,
+                    "rejection_reasons": reasons,
+                }
+                candidates.append(candidate)
+                if candidate["accepted"]:
+                    kernel_accepted.append(candidate)
+            if self.PDF_CARD_CROP_EARLY_EXIT and any(
+                float(candidate["edge_support"]) >= self.PDF_CARD_CROP_EARLY_EXIT_EDGE
+                and float(candidate["rectangularity"]) >= self.PDF_CARD_CROP_EARLY_EXIT_RECTANGULARITY
+                and int(candidate["strong_edge_side_count"]) == 4
+                for candidate in kernel_accepted
+            ):
+                early_stopped = True
+                break
         candidates.sort(key=lambda item: (bool(item["accepted"]), float(item["score"]), float(item["area_ratio"])), reverse=True)
         selected = next((candidate for candidate in candidates if candidate["accepted"]), None)
         debug = {
@@ -523,6 +541,9 @@ class ImageNormalizationService:
             "scale_x": round(float(scale_x), 6),
             "scale_y": round(float(scale_y), 6),
             "candidate_count": len(candidates),
+            "kernels_tried": kernels_tried,
+            "early_stopped": early_stopped,
+            "card_detection_ms": round((time.perf_counter() - started) * 1000.0, 2),
             "selected_candidate": selected,
             "top_candidates": candidates[: self.PDF_CARD_CROP_DEBUG_CANDIDATES],
             "thresholds": {
@@ -539,6 +560,9 @@ class ImageNormalizationService:
                 "min_edge_support": self.PDF_SUBDOCUMENT_MIN_EDGE_SUPPORT,
                 "min_strong_sides": self.PDF_SUBDOCUMENT_MIN_STRONG_EDGE_SIDES,
                 "strong_side_threshold": self.PDF_CARD_CROP_STRONG_SIDE_THRESHOLD,
+                "early_exit": self.PDF_CARD_CROP_EARLY_EXIT,
+                "early_exit_edge": self.PDF_CARD_CROP_EARLY_EXIT_EDGE,
+                "early_exit_rectangularity": self.PDF_CARD_CROP_EARLY_EXIT_RECTANGULARITY,
                 "padding": self.PDF_SUBDOCUMENT_PADDING_RATIO,
             },
         }
