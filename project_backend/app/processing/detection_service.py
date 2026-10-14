@@ -2530,23 +2530,30 @@ def _candidate_from_result(
                 / "aligned"
                 / f"{_safe_file_token(str(template_id or 'template'))}_page_{template_page_number}_post_match_physical_layout_safe_crop.png"
             )
-            if not layout_crop_path:
-                safe_crop_path, safe_crop_box, crop_box_adjusted = _save_crop_box_including_layout(
-                    original_path,
-                    post_match_physical_crop.get("crop_box"),
-                    original_layout_bounds_box,
-                    adjusted_crop_path,
-                )
+
+            safe_crop_path, safe_crop_box, crop_box_adjusted = _save_crop_box_including_layout(
+                original_path,
+                post_match_physical_crop.get("crop_box"),
+                original_layout_bounds_box,
+                adjusted_crop_path,
+            )
+
+            if safe_crop_path:
+                post_match_physical_crop["output_path"] = safe_crop_path
                 post_match_physical_crop["layout_safe_crop_box"] = safe_crop_box
                 post_match_physical_crop["layout_safe_crop_adjusted"] = crop_box_adjusted
                 post_match_physical_crop["layout_safe_crop_method"] = "physical_boundary_expanded_to_layout"
-                if safe_crop_path:
-                    post_match_physical_crop["output_path"] = safe_crop_path
-                    post_match_alignment_query_image_path = safe_crop_path
-                    post_match_alignment_source = "post_match_original_physical_boundary_layout_safe_crop"
-            if not post_match_alignment_query_image_path or post_match_alignment_query_image_path == query_image_path:
+                post_match_alignment_query_image_path = safe_crop_path
+                post_match_alignment_source = "post_match_original_physical_boundary_layout_safe_crop"
+            else:
                 post_match_alignment_query_image_path = str(post_match_physical_crop["output_path"])
                 post_match_alignment_source = "post_match_original_physical_boundary_crop"
+
+        else:
+            post_match_alignment_query_image_path = str(original_path)
+            post_match_alignment_source = "rendered_pdf_page"
+            post_match_physical_crop["layout_safe_crop_method"] = "not_applied"
+            
     if not normalized_passed:
         should_try_alignment = False
         alignment_skip_reason = "normalized_verification_failed_alignment_not_attempted"
@@ -2721,12 +2728,19 @@ def _candidate_from_result(
     if (
         decision.get("final_passed")
         and verification_source_used != "aligned"
-        and post_match_original_processing_path
+        and use_original_for_post_match
     ):
-        extraction_image_path = post_match_original_processing_path
-        selected_processing_source = post_match_alignment_source
-        alignment_debug["post_match_original_crop_selected"] = True
-        alignment_debug["selected_processing_reason"] = "post_match_original_crop_selected_after_normalized_verification_passed"
+        if post_match_physical_crop.get("passed") and post_match_original_processing_path:
+            extraction_image_path = post_match_original_processing_path
+            selected_processing_source = post_match_alignment_source
+            alignment_debug["post_match_original_crop_selected"] = True
+            alignment_debug["selected_processing_reason"] = "physical_subdocument_crop_passed"
+        else:
+            extraction_image_path = str(original_image_path)
+            selected_processing_source = "rendered_pdf_page"
+            alignment_debug["post_match_original_crop_selected"] = False
+            alignment_debug["selected_processing_reason"] = "physical_subdocument_crop_rejected_use_original"
+
     if (
         decision.get("final_passed")
         and use_original_for_post_match
@@ -2737,10 +2751,12 @@ def _candidate_from_result(
         alignment_debug["selected_processing_reason"] = "post_match_original_crop_was_alignment_input_only"
         alignment_debug["post_match_original_crop_selected"] = False
         alignment["alignment_debug"] = alignment_debug
+
     template_page_size = None
     template_image_source_for_processing = _fetch_template_page_image_source(template_id, template_page_number) if template_id else None
     if template_image_source_for_processing:
         template_page_size = _image_source_dimensions(template_image_source_for_processing)
+
     extraction_image_preview_url = _detection_preview_url(extraction_image_path)
     selected_processing_path = extraction_image_path
     processing_image_size = _image_dimensions(extraction_image_path)
