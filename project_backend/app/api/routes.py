@@ -63,7 +63,10 @@ from app.business.services import (
 from app.business.maintenance_events import maintenance_event_hub
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
+# Uvicorn configures this logger and its handler for the backend process, so
+# background-task logs remain visible in the same backend log as access logs.
+logger = logging.getLogger("uvicorn.error")
+logger.setLevel(logging.INFO)
 
 template_requests = TemplateRequestService()
 admin_templates = AdminTemplateService()
