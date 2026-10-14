@@ -378,17 +378,18 @@ def get_verification_fields(template_id: str) -> Optional[List[Dict[str, Any]]]:
         return copy.deepcopy(entry.verification_fields) if entry else None
 
 
-def get_text_only_template_anchors() -> Optional[List[Dict[str, Any]]]:
+def get_verification_anchor_templates(anchor_types: Optional[set[str]] = None) -> Optional[List[Dict[str, Any]]]:
     with _LOCK:
         if not _READY or _DEGRADED:
             return None
+        normalized_types = {str(item).lower() for item in anchor_types or set()}
         templates: List[Dict[str, Any]] = []
         for entry in _ENTRIES.values():
             metadata = dict(entry.metadata)
-            text_anchors = [
+            anchors = [
                 copy.deepcopy(field)
                 for field in entry.verification_fields
-                if str(field.get("data_type") or "").lower() == "text" and field.get("expected_text")
+                if not normalized_types or str(field.get("data_type") or "").lower() in normalized_types
             ]
             templates.append(
                 {
@@ -407,10 +408,16 @@ def get_text_only_template_anchors() -> Optional[List[Dict[str, Any]]]:
                     "image_anchor_weight": metadata.get("image_anchor_weight"),
                     "page_count": metadata.get("page_count"),
                     "field_count": entry.field_count,
-                    "text_anchors": text_anchors,
+                    "verification_anchors": anchors,
+                    "text_anchors": [field for field in anchors if str(field.get("data_type") or "").lower() == "text" and field.get("expected_text")],
+                    "image_anchors": [field for field in anchors if str(field.get("data_type") or "").lower() == "image"],
                 }
             )
         return templates
+
+
+def get_text_only_template_anchors() -> Optional[List[Dict[str, Any]]]:
+    return get_verification_anchor_templates({"text"})
 
 
 def get_layout_candidate_rows(

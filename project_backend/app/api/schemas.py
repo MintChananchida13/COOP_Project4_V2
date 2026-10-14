@@ -172,6 +172,10 @@ class VerificationStrategyUpdate(BaseModel):
     verification_strategy: str = Field(validation_alias=AliasChoices("verification_strategy", "verificationStrategy"))
 
 
+class DetectionBatchModeUpdate(BaseModel):
+    detection_batch_processing_mode: str = Field(validation_alias=AliasChoices("detection_batch_processing_mode", "detectionBatchProcessingMode"))
+
+
 class SystemMaintenanceUpdate(BaseModel):
     enforcement_enabled: Optional[bool] = Field(
         default=None,

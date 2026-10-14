@@ -41,6 +41,9 @@ const verificationStrategyDisplayLabel = (value: unknown) => {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "strict") return "แบบเข้มงวด (strict)";
   if (normalized === "text_only") return "เฉพาะข้อความ (Text Only)";
+  if (normalized === "text_image") return "ข้อความ + รูปภาพ (Text + Image)";
+  if (normalized === "image_only") return "เฉพาะรูปภาพ (Image Only)";
+  if (normalized === "layout_only") return "เฉพาะ Layout (Layout Only)";
   if (normalized === "standard") return "แบบมาตรฐาน (standard)";
   return String(value || "-");
 };
@@ -51,6 +54,8 @@ let templateRequestListPromise: Promise<AdminTemplateRequest[]> | null = null;
 let templateListPromise: Promise<Template[]> | null = null;
 let verificationStrategyCache: AdminMemoryCache<VerificationStrategySettings> | null = null;
 let verificationStrategyPromise: Promise<VerificationStrategySettings> | null = null;
+let detectionBatchModeCache: AdminMemoryCache<DetectionBatchModeSettings> | null = null;
+let detectionBatchModePromise: Promise<DetectionBatchModeSettings> | null = null;
 let adminMaintenanceCache: AdminMemoryCache<SystemMaintenanceState> | null = null;
 let adminMaintenancePromise: Promise<SystemMaintenanceState> | null = null;
 let ocrModelSettingsCache: AdminMemoryCache<OcrModelSettings> | null = null;
@@ -453,6 +458,7 @@ export const invalidateAdminListCache = (target: "templates" | "requests" | "all
 };
 
 const cloneVerificationStrategySettings = (settings: VerificationStrategySettings): VerificationStrategySettings => ({ ...settings });
+const cloneDetectionBatchModeSettings = (settings: DetectionBatchModeSettings): DetectionBatchModeSettings => ({ ...settings });
 const cloneSystemMaintenanceState = (state: SystemMaintenanceState): SystemMaintenanceState => ({ ...state });
 const cloneOcrModelSettings = (settings: OcrModelSettings): OcrModelSettings => ({
   active: { ...settings.active },
@@ -1933,11 +1939,19 @@ export const updateTemplateApi = async (templateId: string, patch: Partial<Templ
 export const updateTemplateStatus = async (templateId: string, status: TemplateStatus) =>
   updateTemplateApi(templateId, { status });
 
-export type VerificationStrategy = "standard" | "strict" | "text_only";
+export type VerificationStrategy = "standard" | "strict" | "text_only" | "text_image" | "image_only" | "layout_only";
 
 export interface VerificationStrategySettings {
   active: VerificationStrategy;
   pending: VerificationStrategy | null;
+  deferred: boolean;
+}
+
+export type DetectionBatchMode = "global" | "per_template";
+
+export interface DetectionBatchModeSettings {
+  active: DetectionBatchMode;
+  pending: DetectionBatchMode | null;
   deferred: boolean;
 }
 
@@ -1965,6 +1979,9 @@ export interface SystemMaintenanceUpdate {
 const mapVerificationStrategy = (value: unknown): VerificationStrategy => {
   if (value === "strict") return "strict";
   if (value === "text_only") return "text_only";
+  if (value === "text_image") return "text_image";
+  if (value === "image_only") return "image_only";
+  if (value === "layout_only") return "layout_only";
   return "standard";
 };
 
@@ -1973,6 +1990,20 @@ const mapVerificationStrategySettings = (data: Record<string, unknown>): Verific
   pending:
     data.pending_verification_strategy || data.pendingVerificationStrategy
       ? mapVerificationStrategy(data.pending_verification_strategy || data.pendingVerificationStrategy)
+      : null,
+  deferred: Boolean(data.deferred),
+});
+
+const mapDetectionBatchMode = (value: unknown): DetectionBatchMode => {
+  if (value === "per_template") return "per_template";
+  return "global";
+};
+
+const mapDetectionBatchModeSettings = (data: Record<string, unknown>): DetectionBatchModeSettings => ({
+  active: mapDetectionBatchMode(data.detection_batch_processing_mode || data.detectionBatchProcessingMode),
+  pending:
+    data.pending_detection_batch_processing_mode || data.pendingDetectionBatchProcessingMode
+      ? mapDetectionBatchMode(data.pending_detection_batch_processing_mode || data.pendingDetectionBatchProcessingMode)
       : null,
   deferred: Boolean(data.deferred),
 });
@@ -2010,6 +2041,41 @@ export const updateVerificationStrategy = async (strategy: VerificationStrategy)
   verificationStrategyCache = { value: cloneVerificationStrategySettings(settings) };
   verificationStrategyPromise = null;
   return cloneVerificationStrategySettings(settings);
+};
+
+export const fetchDetectionBatchMode = async (options: { forceRefresh?: boolean } = {}): Promise<DetectionBatchModeSettings> => {
+  const cached = options.forceRefresh ? null : cachedValue(detectionBatchModeCache, cloneDetectionBatchModeSettings);
+  if (cached) return cached;
+  if (!options.forceRefresh && detectionBatchModePromise) return detectionBatchModePromise.then(cloneDetectionBatchModeSettings);
+  detectionBatchModePromise = (async () => {
+    const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/settings/detection-batch-mode`);
+    const json = await response.json();
+    if (!response.ok || json?.success === false) {
+      throw new Error(json?.detail || json?.error?.message || "Fetch detection batch mode failed");
+    }
+    const settings = mapDetectionBatchModeSettings((json?.data as Record<string, unknown>) || {});
+    detectionBatchModeCache = { value: cloneDetectionBatchModeSettings(settings) };
+    return settings;
+  })().finally(() => {
+    detectionBatchModePromise = null;
+  });
+  return detectionBatchModePromise.then(cloneDetectionBatchModeSettings);
+};
+
+export const updateDetectionBatchMode = async (mode: DetectionBatchMode): Promise<DetectionBatchModeSettings> => {
+  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/settings/detection-batch-mode`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ detection_batch_processing_mode: mode }),
+  });
+  const json = await response.json();
+  if (!response.ok || json?.success === false) {
+    throw new Error(json?.detail || json?.error?.message || "Update detection batch mode failed");
+  }
+  const settings = mapDetectionBatchModeSettings((json?.data as Record<string, unknown>) || {});
+  detectionBatchModeCache = { value: cloneDetectionBatchModeSettings(settings) };
+  detectionBatchModePromise = null;
+  return cloneDetectionBatchModeSettings(settings);
 };
 
 const mapSystemMaintenance = (data: Record<string, unknown>): SystemMaintenanceState => ({

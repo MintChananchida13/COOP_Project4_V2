@@ -83,10 +83,25 @@ logger = logging.getLogger(__name__)
 SAVE_DEBUG_ARTIFACTS = os.getenv("SAVE_DEBUG_ARTIFACTS", "false").strip().lower() in {"1", "true", "yes", "on"}
 VERIFICATION_STRATEGY_SETTING_KEY = "verification_strategy"
 PENDING_VERIFICATION_STRATEGY_SETTING_KEY = "pending_verification_strategy"
+DETECTION_BATCH_MODE_SETTING_KEY = "detection_batch_processing_mode"
+PENDING_DETECTION_BATCH_MODE_SETTING_KEY = "pending_detection_batch_processing_mode"
 VERIFICATION_STRATEGY_STANDARD = "standard"
 VERIFICATION_STRATEGY_STRICT = "strict"
 VERIFICATION_STRATEGY_TEXT_ONLY = "text_only"
-VERIFICATION_STRATEGIES = {VERIFICATION_STRATEGY_STANDARD, VERIFICATION_STRATEGY_STRICT, VERIFICATION_STRATEGY_TEXT_ONLY}
+VERIFICATION_STRATEGY_TEXT_IMAGE = "text_image"
+VERIFICATION_STRATEGY_IMAGE_ONLY = "image_only"
+VERIFICATION_STRATEGY_LAYOUT_ONLY = "layout_only"
+VERIFICATION_STRATEGIES = {
+    VERIFICATION_STRATEGY_STANDARD,
+    VERIFICATION_STRATEGY_STRICT,
+    VERIFICATION_STRATEGY_TEXT_ONLY,
+    VERIFICATION_STRATEGY_TEXT_IMAGE,
+    VERIFICATION_STRATEGY_IMAGE_ONLY,
+    VERIFICATION_STRATEGY_LAYOUT_ONLY,
+}
+DETECTION_BATCH_MODE_GLOBAL = "global"
+DETECTION_BATCH_MODE_PER_TEMPLATE = "per_template"
+DETECTION_BATCH_MODES = {DETECTION_BATCH_MODE_GLOBAL, DETECTION_BATCH_MODE_PER_TEMPLATE}
 OCR_MODEL_SETTINGS_KEY = "ocr_model_settings"
 PENDING_OCR_MODEL_SETTINGS_KEY = "pending_ocr_model_settings"
 PENDING_TEMPLATE_CHANGES_SETTING_KEY = "pending_template_changes"
@@ -94,6 +109,8 @@ SYSTEM_MAINTENANCE_SETTING_KEY = "system_maintenance"
 OCR_MODEL_KINDS = {"text_detection", "text_recognition"}
 _VERIFICATION_STRATEGY_CACHE_LOCK = threading.RLock()
 _VERIFICATION_STRATEGY_CACHE: Optional[str] = None
+_DETECTION_BATCH_MODE_CACHE_LOCK = threading.RLock()
+_DETECTION_BATCH_MODE_CACHE: Optional[str] = None
 
 DEFAULT_SYSTEM_MAINTENANCE: Dict[str, Any] = {
     "enforcementEnabled": False,
@@ -240,6 +257,11 @@ def normalize_verification_strategy(value: Optional[str]) -> str:
     return normalized if normalized in VERIFICATION_STRATEGIES else VERIFICATION_STRATEGY_STANDARD
 
 
+def normalize_detection_batch_mode(value: Optional[str]) -> str:
+    normalized = str(value or DETECTION_BATCH_MODE_GLOBAL).strip().lower()
+    return normalized if normalized in DETECTION_BATCH_MODES else DETECTION_BATCH_MODE_GLOBAL
+
+
 def _get_cached_verification_strategy() -> Optional[str]:
     with _VERIFICATION_STRATEGY_CACHE_LOCK:
         return _VERIFICATION_STRATEGY_CACHE
@@ -250,6 +272,18 @@ def _set_cached_verification_strategy(value: str) -> None:
     with _VERIFICATION_STRATEGY_CACHE_LOCK:
         global _VERIFICATION_STRATEGY_CACHE
         _VERIFICATION_STRATEGY_CACHE = strategy
+
+
+def _get_cached_detection_batch_mode() -> Optional[str]:
+    with _DETECTION_BATCH_MODE_CACHE_LOCK:
+        return _DETECTION_BATCH_MODE_CACHE
+
+
+def _set_cached_detection_batch_mode(value: str) -> None:
+    mode = normalize_detection_batch_mode(value)
+    with _DETECTION_BATCH_MODE_CACHE_LOCK:
+        global _DETECTION_BATCH_MODE_CACHE
+        _DETECTION_BATCH_MODE_CACHE = mode
 
 
 def _normalize_model_kind(kind: str) -> str:
@@ -562,20 +596,24 @@ class GlobalSettingsService:
             return False
 
         pending_strategy_raw = self._load_setting_value(PENDING_VERIFICATION_STRATEGY_SETTING_KEY)
+        pending_batch_mode_raw = self._load_setting_value(PENDING_DETECTION_BATCH_MODE_SETTING_KEY)
         pending_ocr_raw = self._load_setting_value(PENDING_OCR_MODEL_SETTINGS_KEY)
         pending_template_statuses = self._pending_template_statuses()
         pending_template_updates = self._pending_template_updates()
         pending_template_field_ops = self._pending_template_field_ops()
         pending_template_page_ops = self._pending_template_page_ops()
-        if pending_strategy_raw is None and pending_ocr_raw is None and not pending_template_statuses and not pending_template_updates and not pending_template_field_ops and not pending_template_page_ops:
+        if pending_strategy_raw is None and pending_batch_mode_raw is None and pending_ocr_raw is None and not pending_template_statuses and not pending_template_updates and not pending_template_field_ops and not pending_template_page_ops:
             return False
 
         try:
             strategy: Optional[str] = None
+            batch_mode: Optional[str] = None
             pending_ocr: Optional[Dict[str, Any]] = None
             applied_template_statuses: Dict[str, str] = {}
             if pending_strategy_raw is not None:
                 strategy = normalize_verification_strategy(pending_strategy_raw)
+            if pending_batch_mode_raw is not None:
+                batch_mode = normalize_detection_batch_mode(pending_batch_mode_raw)
             if pending_ocr_raw is not None:
                 pending_ocr = normalize_ocr_model_settings(jsonb_load(pending_ocr_raw, None))
             with _connect() as conn:
@@ -587,6 +625,15 @@ class GlobalSettingsService:
                         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
                         """,
                         (VERIFICATION_STRATEGY_SETTING_KEY, strategy),
+                    )
+                if batch_mode is not None:
+                    conn.execute(
+                        """
+                        INSERT INTO app_settings (key, value, updated_at)
+                        VALUES (?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (DETECTION_BATCH_MODE_SETTING_KEY, batch_mode),
                     )
                 if pending_ocr is not None:
                     conn.execute(
@@ -651,6 +698,8 @@ class GlobalSettingsService:
                     applied_template_statuses[template_id] = target_status
                 if strategy is not None:
                     conn.execute("DELETE FROM app_settings WHERE key = ?", (PENDING_VERIFICATION_STRATEGY_SETTING_KEY,))
+                if batch_mode is not None:
+                    conn.execute("DELETE FROM app_settings WHERE key = ?", (PENDING_DETECTION_BATCH_MODE_SETTING_KEY,))
                 if pending_ocr is not None:
                     conn.execute("DELETE FROM app_settings WHERE key = ?", (PENDING_OCR_MODEL_SETTINGS_KEY,))
                 if pending_template_statuses or pending_template_updates or pending_template_field_ops or pending_template_page_ops:
@@ -658,6 +707,8 @@ class GlobalSettingsService:
                 conn.commit()
             if strategy is not None:
                 _set_cached_verification_strategy(strategy)
+            if batch_mode is not None:
+                _set_cached_detection_batch_mode(batch_mode)
             for template_id, target_status in applied_template_statuses.items():
                 if target_status == "active":
                     _refresh_published_template_cache(template_id)
@@ -845,7 +896,7 @@ class GlobalSettingsService:
     def update_verification_strategy(self, value: str) -> Dict[str, Any]:
         strategy = normalize_verification_strategy(value)
         if strategy != str(value or "").strip().lower():
-            raise HTTPException(status_code=400, detail="verification_strategy must be standard, strict, or text_only")
+            raise HTTPException(status_code=400, detail="verification_strategy must be standard, strict, text_only, text_image, image_only, or layout_only")
         if self._should_defer_admin_setting_updates():
             self._save_setting(PENDING_VERIFICATION_STRATEGY_SETTING_KEY, strategy)
             current = {"verification_strategy": self._active_verification_strategy_no_apply()}
@@ -856,6 +907,85 @@ class GlobalSettingsService:
         self._delete_setting(PENDING_VERIFICATION_STRATEGY_SETTING_KEY)
         _set_cached_verification_strategy(strategy)
         return {"verification_strategy": strategy, "pending_verification_strategy": None, "deferred": False}
+
+    def get_detection_batch_mode(self) -> Dict[str, Any]:
+        result, _ = self.get_detection_batch_mode_with_timing()
+        pending = self._pending_detection_batch_mode()
+        if pending is not None:
+            result["pending_detection_batch_processing_mode"] = pending
+        return result
+
+    def _pending_detection_batch_mode(self) -> Optional[str]:
+        raw_value = self._load_setting_value(PENDING_DETECTION_BATCH_MODE_SETTING_KEY)
+        if raw_value is None:
+            return None
+        return normalize_detection_batch_mode(raw_value)
+
+    def get_detection_batch_mode_with_timing(self) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        timing: Dict[str, Any] = {
+            "detection_batch_mode_cache_hit": False,
+            "connect": 0.0,
+            "execute": 0.0,
+            "fetch": 0.0,
+            "processing": 0.0,
+            "total": 0.0,
+        }
+        total_started = time.perf_counter()
+        cached_mode = _get_cached_detection_batch_mode()
+        if cached_mode is not None:
+            timing["detection_batch_mode_cache_hit"] = True
+            timing["source"] = "process_cache"
+            timing["total"] = time.perf_counter() - total_started
+            return {"detection_batch_processing_mode": cached_mode}, timing
+
+        timing["source"] = "database"
+        step_started = time.perf_counter()
+        conn = connect_db()
+        timing["connect"] = time.perf_counter() - step_started
+        with conn:
+            step_started = time.perf_counter()
+            cursor = conn.execute(
+                "SELECT value FROM app_settings WHERE key = ?",
+                (DETECTION_BATCH_MODE_SETTING_KEY,),
+            )
+            timing["execute"] = time.perf_counter() - step_started
+            step_started = time.perf_counter()
+            row = cursor.fetchone()
+            timing["fetch"] = time.perf_counter() - step_started
+        step_started = time.perf_counter()
+        mode = normalize_detection_batch_mode(row["value"] if row else None)
+        _set_cached_detection_batch_mode(mode)
+        timing["processing"] = time.perf_counter() - step_started
+        timing["total"] = time.perf_counter() - total_started
+        return {"detection_batch_processing_mode": mode}, timing
+
+    def _active_detection_batch_mode_no_apply(self) -> str:
+        cached_mode = _get_cached_detection_batch_mode()
+        if cached_mode is not None:
+            return cached_mode
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = ?",
+                (DETECTION_BATCH_MODE_SETTING_KEY,),
+            ).fetchone()
+        mode = normalize_detection_batch_mode(row["value"] if row else None)
+        _set_cached_detection_batch_mode(mode)
+        return mode
+
+    def update_detection_batch_mode(self, value: str) -> Dict[str, Any]:
+        mode = normalize_detection_batch_mode(value)
+        if mode != str(value or "").strip().lower():
+            raise HTTPException(status_code=400, detail="detection_batch_processing_mode must be global or per_template")
+        if self._should_defer_admin_setting_updates():
+            self._save_setting(PENDING_DETECTION_BATCH_MODE_SETTING_KEY, mode)
+            current = {"detection_batch_processing_mode": self._active_detection_batch_mode_no_apply()}
+            current["pending_detection_batch_processing_mode"] = mode
+            current["deferred"] = True
+            return current
+        self._save_setting(DETECTION_BATCH_MODE_SETTING_KEY, mode)
+        self._delete_setting(PENDING_DETECTION_BATCH_MODE_SETTING_KEY)
+        _set_cached_detection_batch_mode(mode)
+        return {"detection_batch_processing_mode": mode, "pending_detection_batch_processing_mode": None, "deferred": False}
 
     def get_ocr_model_settings(self) -> Dict[str, Any]:
         try:
@@ -3735,6 +3865,7 @@ class VerificationService:
         template_id: str,
         page_image_paths: Optional[Dict[int, str]] = None,
         verification_fields: Optional[List[Dict[str, Any]]] = None,
+        detection_batch_mode: str = DETECTION_BATCH_MODE_GLOBAL,
     ) -> Dict[str, Any]:
         verify_started = time.perf_counter()
         load_started = time.perf_counter()
@@ -4096,6 +4227,7 @@ class VerificationService:
                 "load_fields": load_fields_elapsed,
                 "text_verification": text_verification_elapsed,
                 "image_verification": image_verification_elapsed,
+                "detection_batch_mode": normalize_detection_batch_mode(detection_batch_mode),
             },
         }
         logger.info(

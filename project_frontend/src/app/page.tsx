@@ -2495,6 +2495,51 @@ function HomeWorkspace() {
   };
 
   const handleBatchConfirm = async (finalProcessedImages: string[]) => {
+    const userWaitStartedAt = performance.now();
+    const timingBreakdown: Record<string, number | null> = {
+      detectionJobMs: null,
+      templateBundleMs: null,
+      canvasPreparationMs: null,
+      roiMappingMs: null,
+      flexibleRoiMs: null,
+      detectionAutoRoiMs: null,
+      wholePageAutoRoiMs: null,
+      totalUserWaitMs: null,
+    };
+    let detectionMatchedForTiming: boolean | null = null;
+    let timingLogged = false;
+    const measureStage = async <T,>(key: keyof typeof timingBreakdown, operation: () => Promise<T>): Promise<T> => {
+      const startedAt = performance.now();
+      try {
+        return await operation();
+      } finally {
+        timingBreakdown[key] = Math.round((performance.now() - startedAt) * 100) / 100;
+      }
+    };
+    const logTemplateDetectionTiming = (status: "matched" | "no_match" | "failed") => {
+      if (timingLogged) return;
+      timingLogged = true;
+      timingBreakdown.totalUserWaitMs = Math.round((performance.now() - userWaitStartedAt) * 100) / 100;
+      const rows = Object.entries(timingBreakdown).map(([stage, elapsedMs]) => ({
+        stage,
+        elapsedMs,
+        status,
+        matched: detectionMatchedForTiming,
+      }));
+      console.table(rows);
+      const measuredRows = rows.filter((row) => typeof row.elapsedMs === "number" && row.stage !== "totalUserWaitMs");
+      const bottleneck = measuredRows.reduce<(typeof measuredRows)[number] | null>(
+        (current, row) => (!current || Number(row.elapsedMs) > Number(current.elapsedMs) ? row : current),
+        null
+      );
+      console.info("[Template detection timing] summary", {
+        status,
+        matched: detectionMatchedForTiming,
+        totalUserWaitMs: timingBreakdown.totalUserWaitMs,
+        bottleneckStage: bottleneck?.stage ?? null,
+        bottleneckMs: bottleneck?.elapsedMs ?? null,
+      });
+    };
     activeProcessingRunIdRef.current = "";
     ocrProcessingTimeMsRef.current = null;
     originalProcessingLogOcrResultsRef.current = [];
@@ -2520,6 +2565,8 @@ function HomeWorkspace() {
         message: "ระบบไม่สามารถเริ่มค้นหา Template ได้ เพราะไม่มีภาพที่ยืนยันขอบเขตแล้ว",
         detail: "โปรดกลับไปตรวจสอบภาพ หรือใช้งาน Custom OCR ต่อ",
       });
+      detectionMatchedForTiming = false;
+      logTemplateDetectionTiming("failed");
       setIsTemplateDecisionOpen(false);
       setTemplateDecisionStatus("");
       return;
@@ -2536,7 +2583,10 @@ function HomeWorkspace() {
         const detectionInput = shouldUseOriginalPdfForDetection
           ? uploadedSourceFile
           : await Promise.all(finalProcessedImages.map((src, index) => dataUrlToFile(src, `confirmed-document-page-${index + 1}.jpg`)));
-        detection = await detectTemplateDev(Array.isArray(detectionInput) && detectionInput.length === 1 ? detectionInput[0] : detectionInput);
+        detection = await measureStage("detectionJobMs", () =>
+          detectTemplateDev(Array.isArray(detectionInput) && detectionInput.length === 1 ? detectionInput[0] : detectionInput)
+        );
+        detectionMatchedForTiming = detection.matched;
         setTemplateDetectionSnapshot(buildTemplateDetectionSnapshot(detection));
         devTemplateFlowLog("detection completed", {
           matched: detection.matched,
@@ -2559,6 +2609,7 @@ function HomeWorkspace() {
           detail: detectionFailureDetail(detection),
           verificationStrategy: detectionVerificationStrategy(detection),
         });
+        logTemplateDetectionTiming("no_match");
         return;
       }
 
@@ -2566,7 +2617,7 @@ function HomeWorkspace() {
       setTemplateDetectionNotice(null);
       let bundle: Awaited<ReturnType<typeof fetchTemplateBundle>>;
       try {
-        bundle = await fetchTemplateBundle(templateId);
+        bundle = await measureStage("templateBundleMs", () => fetchTemplateBundle(templateId));
         devTemplateFlowLog("bundle loaded", {
           templateId: bundle.template.id,
           fieldCount: bundle.fields.length,
@@ -2581,7 +2632,9 @@ function HomeWorkspace() {
       );
       let templateCanvasImages: string[];
       try {
-        templateCanvasImages = await buildTemplateCanvasImages(finalProcessedImages, detection, templateId);
+        templateCanvasImages = await measureStage("canvasPreparationMs", () =>
+          buildTemplateCanvasImages(finalProcessedImages, detection, templateId)
+        );
         devTemplateFlowLog("canvas images prepared", {
           pageCount: templateCanvasImages.length,
           replacedCount: templateCanvasImages.filter((src, index) => src !== finalProcessedImages[index]).length,
@@ -2605,10 +2658,14 @@ function HomeWorkspace() {
             1
           ) - 1
         );
-        detectedRois = await templateFieldsToWorkspaceRois(bundle.fields, templateCanvasImages, detection, templateId, {
-          templatePageToImageIndex: isMainPageDetection ? { 1: matchedQueryPageIndex } : undefined,
-        });
-        const flexibleResolvedRois = await buildFlexibleResolvedDisplayRois(templateCanvasImages, detectedRois);
+        detectedRois = await measureStage("roiMappingMs", () =>
+          templateFieldsToWorkspaceRois(bundle.fields, templateCanvasImages, detection, templateId, {
+            templatePageToImageIndex: isMainPageDetection ? { 1: matchedQueryPageIndex } : undefined,
+          })
+        );
+        const flexibleResolvedRois = await measureStage("flexibleRoiMs", () =>
+          buildFlexibleResolvedDisplayRois(templateCanvasImages, detectedRois)
+        );
         if (flexibleResolvedRois.length > 0) {
           const resolvedParentIds = new Set(flexibleResolvedRois.map((roi) => roi.parentRoiId).filter((id): id is number => typeof id === "number"));
           detectedRois = [
@@ -2643,16 +2700,20 @@ function HomeWorkspace() {
               setImage(templateCanvasImages[currentIndex] || templateCanvasImages[0] || null);
             }
           }
-          let extraPageAutoRois = await buildDetectionAutoRois(
-            templateCanvasImages,
-            detectedRois,
-            detectionAutoRoiPages
-          );
-          if (extraPageAutoRois.length === 0) {
-            extraPageAutoRois = await buildWholePageAutoRois(
+          let extraPageAutoRois = await measureStage("detectionAutoRoiMs", () =>
+            buildDetectionAutoRois(
               templateCanvasImages,
               detectedRois,
-              new Set([matchedQueryPageIndex])
+              detectionAutoRoiPages
+            )
+          );
+          if (extraPageAutoRois.length === 0) {
+            extraPageAutoRois = await measureStage("wholePageAutoRoiMs", () =>
+              buildWholePageAutoRois(
+                templateCanvasImages,
+                detectedRois,
+                new Set([matchedQueryPageIndex])
+              )
             );
           }
           detectedRois = [...detectedRois, ...extraPageAutoRois];
@@ -2719,12 +2780,14 @@ function HomeWorkspace() {
 
       if (detectedRois.length === 0) {
         setClassificationStatus(`ตรวจพบ Template: ${matchedTemplateDisplayName} แต่ยังไม่มี Extraction ROI ให้ใช้งาน`);
+        logTemplateDetectionTiming("matched");
         return;
       }
 
       setRois(detectedRois);
       setSelectedId(detectedRois[0]?.id ?? null);
       setClassificationStatus(`ตรวจพบ Template: ${matchedTemplateDisplayName} และโหลด ROI สำหรับ OCR แล้ว`);
+      logTemplateDetectionTiming("matched");
     } catch (error) {
       if (await handleSystemMaintenanceError(error)) return;
       console.warn("Document classification after boundary confirmation failed.", error);
@@ -2734,6 +2797,7 @@ function HomeWorkspace() {
         message: error instanceof Error ? error.message : "ระบบค้นหา Template ไม่สำเร็จ",
         detail: "ระบบเปิด Custom OCR ให้ใช้งานต่อ",
       });
+      logTemplateDetectionTiming("failed");
     } finally {
       setIsTemplateDecisionOpen(false);
       setTemplateDecisionStatus("");

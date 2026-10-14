@@ -33,7 +33,12 @@ from app.business.services import (
     VERIFICATION_STRATEGY_STANDARD,
     VERIFICATION_STRATEGY_STRICT,
     VERIFICATION_STRATEGY_TEXT_ONLY,
+    VERIFICATION_STRATEGY_TEXT_IMAGE,
+    VERIFICATION_STRATEGY_IMAGE_ONLY,
+    VERIFICATION_STRATEGY_LAYOUT_ONLY,
+    DETECTION_BATCH_MODE_GLOBAL,
     normalize_verification_strategy,
+    normalize_detection_batch_mode,
 )
 
 
@@ -2397,44 +2402,84 @@ def _candidate_from_result(
     )
     candidate_timing["candidate_setup"] = float(candidate_timing.get("candidate_setup") or 0.0) + (time.perf_counter() - step_started)
 
-    # Verify normalized image first, matching the old detection flow.
-    verify_template_for_strategy = (
-        verification_service.verify_template_strict
-        if verification_strategy == VERIFICATION_STRATEGY_STANDARD
-        else verification_service.verify_template
-    )
-    verification_fields = None
-    if template_id:
-        step_started = time.perf_counter()
-        verification_fields, verification_fields_cache_hit, verification_fields_db_timing = _fetch_verification_fields_cached(template_id, request_cache)
-        candidate_cache_debug["verification_fields_cache_hit"] = verification_fields_cache_hit
-        candidate_cache_debug["verification_fields_preloaded"] = True
-        candidate_db_debug["verification_fields"] = _db_timing_ms(verification_fields_db_timing)
-        candidate_timing["verification_fields_load"] = time.perf_counter() - step_started
-    step_started = time.perf_counter()
-    verification_runtime_cache = request_cache.verification_runtime if request_cache is not None else None
-    normalized_verification = (
-        verify_template_for_strategy(
-            template_id,
-            verification_page_image_paths,
-            verification_fields,
-            verification_runtime_cache,
-        )
-        if template_id and verification_strategy == VERIFICATION_STRATEGY_STANDARD
-        else verify_template_for_strategy(
-            template_id,
-            verification_page_image_paths,
-            verification_fields,
-        ) if template_id else {
-        "status": "failed",
-        "passed": False,
-        "score": 0.0,
-        "required_passed": False,
-        "checked_fields": [],
+    if verification_strategy == VERIFICATION_STRATEGY_LAYOUT_ONLY:
+        normalized_verification = {
+            "template_id": template_id,
+            "status": "layout_only_verified",
+            "passed": True,
+            "score": 1.0,
+            "text_anchor_score": 1.0,
+            "image_anchor_score": 1.0,
+            "required_passed": True,
+            "checked_fields": [],
+            "verification_details": [],
+            "timing": {
+                "text_verification": 0.0,
+                "image_verification": 0.0,
+                "text_ocr_inference": 0.0,
+                "image_model_inference": 0.0,
+            },
         }
-    )
-    candidate_timing["normalized_verification"] = time.perf_counter() - step_started
-    normalized_internal_timing = normalized_verification.get("timing") if isinstance(normalized_verification, dict) else {}
+        candidate_timing["normalized_verification"] = 0.0
+        normalized_internal_timing = normalized_verification["timing"]
+        normalized_internal_timing_ms = _timing_ms_map(normalized_internal_timing)
+        normalized_score = 1.0
+        normalized_passed = True
+        verification = normalized_verification
+        candidate_retrieval_score = float(result.get("score", 0.0) or 0.0)
+        should_try_alignment = False
+        alignment_skip_reason = "layout_only_strategy"
+        alignment_debug = alignment.get("alignment_debug") or {}
+        alignment_debug["reason"] = alignment_skip_reason
+        alignment_debug["alignment_status"] = "skipped"
+        alignment_debug["verification_source_used"] = verification_source_used
+        alignment["alignment_debug"] = alignment_debug
+        aligned_internal_timing_ms = {}
+        aligned_verification = None
+        aligned_score = None
+        goto_decision_direct = True
+    else:
+        goto_decision_direct = False
+
+    # Verify normalized image first, matching the old detection flow.
+    verification_fields = None
+    if not goto_decision_direct:
+        verify_template_for_strategy = (
+            verification_service.verify_template_strict
+            if verification_strategy == VERIFICATION_STRATEGY_STANDARD
+            else verification_service.verify_template
+        )
+        if template_id:
+            step_started = time.perf_counter()
+            verification_fields, verification_fields_cache_hit, verification_fields_db_timing = _fetch_verification_fields_cached(template_id, request_cache)
+            candidate_cache_debug["verification_fields_cache_hit"] = verification_fields_cache_hit
+            candidate_cache_debug["verification_fields_preloaded"] = True
+            candidate_db_debug["verification_fields"] = _db_timing_ms(verification_fields_db_timing)
+            candidate_timing["verification_fields_load"] = time.perf_counter() - step_started
+        step_started = time.perf_counter()
+        verification_runtime_cache = request_cache.verification_runtime if request_cache is not None else None
+        normalized_verification = (
+            verify_template_for_strategy(
+                template_id,
+                verification_page_image_paths,
+                verification_fields,
+                verification_runtime_cache,
+            )
+            if template_id and verification_strategy == VERIFICATION_STRATEGY_STANDARD
+            else verify_template_for_strategy(
+                template_id,
+                verification_page_image_paths,
+                verification_fields,
+            ) if template_id else {
+            "status": "failed",
+            "passed": False,
+            "score": 0.0,
+            "required_passed": False,
+            "checked_fields": [],
+            }
+        )
+        candidate_timing["normalized_verification"] = time.perf_counter() - step_started
+        normalized_internal_timing = normalized_verification.get("timing") if isinstance(normalized_verification, dict) else {}
     if isinstance(normalized_internal_timing, dict):
         candidate_timing["text_verification"] = float(candidate_timing.get("text_verification") or 0.0) + float(normalized_internal_timing.get("text_verification") or 0.0)
         candidate_timing["image_verification"] = float(candidate_timing.get("image_verification") or 0.0) + float(normalized_internal_timing.get("image_verification") or 0.0)
@@ -2685,7 +2730,29 @@ def _candidate_from_result(
 
     step_started = time.perf_counter()
     retrieval_score = float(result.get("score", 0.0) or 0.0)
-    if verification_strategy == VERIFICATION_STRATEGY_STANDARD:
+    layout_threshold = float((template or {}).get("similarity_threshold") or metadata.get("similarity_threshold") or DETECTION_THRESHOLD)
+    if verification_strategy == VERIFICATION_STRATEGY_LAYOUT_ONLY:
+        final_passed = retrieval_score >= layout_threshold
+        decision = {
+            "retrieval_score": round(retrieval_score, 4),
+            "verification_score": 1.0,
+            "text_anchor_score": None,
+            "image_anchor_score": None,
+            "anchor_score": None,
+            "matching_weights": {"layout": 1.0, "text_anchor": 0.0, "image_anchor": 0.0},
+            "effective_matching_weights": {"layout": 1.0, "text_anchor": 0.0, "image_anchor": 0.0},
+            "verification_passed": True,
+            "final_score": round(retrieval_score, 4),
+            "final_passed": final_passed,
+            "decision_reason": "layout_only_passed" if final_passed else "layout_only_score_below_threshold",
+            "decision_path": "layout_only_passed" if final_passed else "layout_only_score_below_threshold",
+            "final_confidence_threshold": layout_threshold,
+            "final_threshold_passed": final_passed,
+            "layout_passed": final_passed,
+            "required_passed": True,
+            "required_failed_fields": [],
+        }
+    elif verification_strategy == VERIFICATION_STRATEGY_STANDARD:
         decision = decision_service.decide_candidate_strict(
             retrieval_score,
             verification,
@@ -2699,8 +2766,7 @@ def _candidate_from_result(
             final_confidence_threshold,
             matching_weights,
         )
-    layout_threshold = float((template or {}).get("similarity_threshold") or metadata.get("similarity_threshold") or DETECTION_THRESHOLD)
-    if retrieval_score < layout_threshold:
+    if verification_strategy != VERIFICATION_STRATEGY_LAYOUT_ONLY and retrieval_score < layout_threshold:
         decision = {
             **decision,
             "final_passed": False,
@@ -3820,6 +3886,233 @@ def _load_text_only_template_anchors(request_cache: Optional[DetectionRequestCac
     }
 
 
+def _load_anchor_strategy_templates(anchor_types: set[str], request_cache: Optional[DetectionRequestCache] = None) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    total_started = time.perf_counter()
+    cache_lookup_started = time.perf_counter()
+    cached_templates = published_template_cache.get_verification_anchor_templates(anchor_types)
+    cache_lookup_elapsed = time.perf_counter() - cache_lookup_started
+    if cached_templates is not None:
+        if request_cache is not None:
+            request_cache.stats["published_template_cache_hits"] += len(cached_templates)
+            request_cache.stats["published_verification_fields_cache_hits"] += len(cached_templates)
+        return cached_templates, {
+            "source": "published_template_cache",
+            "cache_hit": True,
+            "anchor_types": sorted(anchor_types),
+            "cache_lookup_ms": _ms(cache_lookup_elapsed),
+            "db_connect_ms": None,
+            "db_query_ms": None,
+            "anchor_processing_ms": 0.0,
+            "total_ms": _ms(time.perf_counter() - total_started),
+            "template_count": len(cached_templates),
+            "anchor_count": sum(len(template.get("verification_anchors") or []) for template in cached_templates),
+            "db_fallback": False,
+        }
+    templates, debug = _load_text_only_template_anchors(request_cache)
+    return templates, {**debug, "anchor_types": sorted(anchor_types), "fallback_note": "cache_unavailable_text_only_db_fallback"}
+
+
+def _candidate_from_anchor_strategy(
+    template: Dict[str, Any],
+    verification: Dict[str, Any],
+    fields: List[Dict[str, Any]],
+    page_image_paths: Dict[int, str],
+    strategy: str,
+    timing: Dict[str, Any],
+) -> Dict[str, Any]:
+    template_id = str(template.get("template_id"))
+    checked_fields = verification.get("checked_fields", [])
+    final_threshold = float(template.get("final_confidence_threshold") or DecisionService.DEFAULT_FINAL_CONFIDENCE_THRESHOLD)
+    verification_score = float(verification.get("score", 0.0) or 0.0)
+    final_passed = bool(verification.get("passed")) and bool(fields) and verification_score >= final_threshold
+    text_score = verification.get("text_anchor_score")
+    image_score = verification.get("image_anchor_score")
+    return {
+        "template_id": template_id,
+        "vector_id": f"{strategy}:{template_id}",
+        "score": round(verification_score, 4),
+        "retrieval_score": 0.0,
+        "layout_score": 0.0,
+        "layout_debug": {"skipped": True, "reason": f"{strategy}_strategy"},
+        "average_score": 0.0,
+        "matched_pages": len({field.get("page_number") for field in checked_fields if isinstance(field, dict) and field.get("passed")}),
+        "template_name": template.get("template_name"),
+        "version_name": template.get("version_name"),
+        "version_number": template.get("version_number"),
+        "template_status": template.get("template_status"),
+        "page_count": template.get("page_count"),
+        "field_count": template.get("field_count"),
+        "model_name": strategy,
+        "vector_store_engine": strategy,
+        "retrieval_engine": strategy,
+        "query_page_index": 1,
+        "template_page_number": 1,
+        "alignment_status": "skipped",
+        "alignment": {"alignment_status": "skipped", "alignment_reason": f"{strategy}_strategy"},
+        "alignment_debug": {"alignment_status": "skipped", "reason": f"{strategy}_strategy"},
+        "alignment_score": 0.0,
+        "alignment_passed": False,
+        "alignment_fallback_used": True,
+        "alignment_reason": f"{strategy}_strategy",
+        "normalized_verification_score": round(verification_score, 4),
+        "aligned_verification_score": None,
+        "verification_source_used": f"{strategy}_original_roi",
+        "before_alignment_verification": round(verification_score, 4),
+        "after_alignment_verification": None,
+        "verification_improvement": None,
+        "normalized_image_path": page_image_paths.get(1),
+        "normalized_image_preview_url": _detection_preview_url(page_image_paths.get(1)) if page_image_paths.get(1) else None,
+        "extraction_image_path": page_image_paths.get(1),
+        "extraction_image_preview_url": _detection_preview_url(page_image_paths.get(1)) if page_image_paths.get(1) else None,
+        "selected_processing_source": f"{strategy}_original_roi",
+        "selected_processing_path": page_image_paths.get(1),
+        "roi_coordinate_space": "normalized",
+        "verification": verification,
+        "verification_details": checked_fields,
+        "verification_score": round(verification_score, 4),
+        "text_anchor_score": text_score,
+        "image_anchor_score": image_score,
+        "anchor_score": round(verification_score, 4),
+        "matching_weights": {"layout": 0.0, "text_anchor": 0.0 if strategy == VERIFICATION_STRATEGY_IMAGE_ONLY else 1.0, "image_anchor": 1.0 if strategy == VERIFICATION_STRATEGY_IMAGE_ONLY else 0.0},
+        "effective_matching_weights": {"layout": 0.0, "text_anchor": 0.0 if strategy == VERIFICATION_STRATEGY_IMAGE_ONLY else 1.0, "image_anchor": 1.0 if strategy == VERIFICATION_STRATEGY_IMAGE_ONLY else 0.0},
+        "verification_passed": bool(verification.get("passed")),
+        "final_score": round(verification_score, 4),
+        "final_passed": final_passed,
+        "decision_reason": f"{strategy}_passed" if final_passed else f"{strategy}_anchors_failed",
+        "decision_path": f"{strategy}_passed" if final_passed else f"{strategy}_anchors_failed",
+        "required_passed": verification.get("required_passed"),
+        "required_failed_fields": [field for field in checked_fields if isinstance(field, dict) and field.get("required") and not field.get("passed")],
+        "final_confidence_threshold": final_threshold,
+        "layout_similarity_threshold": None,
+        "template_rois": [],
+        "projection": {"status": "skipped", "reason": f"{strategy}_strategy"},
+        "projected_fields": [],
+        "extraction_test": None,
+        "coordinate_debug": None,
+        "metadata": {
+            "template_id": template_id,
+            "template_name": template.get("template_name"),
+            "document_type": template.get("document_type"),
+            "category": template.get("category"),
+            "page_count": template.get("page_count"),
+            "detection_mode": template.get("detection_mode"),
+        },
+        "verification_strategy": strategy,
+        "evaluation_status": "full",
+        "alignment_evaluated": False,
+        "candidate_rejection_reason": None if final_passed else f"{strategy}_anchors_failed",
+        "timing": {
+            "text_verification_ms": _ms((verification.get("timing") or {}).get("text_verification")),
+            "image_verification_ms": _ms((verification.get("timing") or {}).get("image_verification")),
+            "text_ocr_inference_ms": _ms((verification.get("timing") or {}).get("text_ocr_inference")),
+            "image_model_inference_ms": _ms((verification.get("timing") or {}).get("image_model_inference")),
+            "anchor_strategy_matching_ms": _ms(timing.get("anchor_strategy_matching")),
+        },
+    }
+
+
+def _detect_template_anchor_strategy(
+    query_id: str,
+    normalized_pages: List[Dict[str, Any]],
+    timing: Dict[str, float],
+    request_cache: DetectionRequestCache,
+    total_started: float,
+    source_type: str,
+    strategy: str,
+    detection_batch_mode: str,
+) -> Dict[str, Any]:
+    started = time.perf_counter()
+    page_image_paths = {int(page["page_index"]): page["normalized_path"] for page in normalized_pages}
+    if strategy == VERIFICATION_STRATEGY_IMAGE_ONLY:
+        anchor_types = {"image"}
+    elif strategy == VERIFICATION_STRATEGY_TEXT_ONLY:
+        anchor_types = {"text"}
+    else:
+        anchor_types = {"text", "image"}
+    load_started = time.perf_counter()
+    templates, load_debug = _load_anchor_strategy_templates(anchor_types, request_cache)
+    timing["anchor_strategy_template_load"] = time.perf_counter() - load_started
+    match_started = time.perf_counter()
+    candidates: List[Dict[str, Any]] = []
+    pages_by_index: Dict[int, Dict[str, Any]] = {
+        int(page["page_index"]): {
+            "page_index": int(page["page_index"]),
+            "image_path": page["normalized_path"],
+            "normalized_image_path": page["normalized_path"],
+            "matching_image_path": page.get("matching_path") or page["normalized_path"],
+            "candidates": [],
+            "best_candidate": None,
+            "debug": {"verification_strategy": strategy},
+        }
+        for page in normalized_pages
+    }
+    for template in templates:
+        fields = [
+            field for field in (template.get("verification_anchors") or [])
+            if str(field.get("data_type") or "").lower() in anchor_types
+            and (str(field.get("data_type") or "").lower() != "text" or field.get("expected_text"))
+        ]
+        if not fields:
+            verification = verification_service._verification_summary(str(template.get("template_id")), [], status=f"no_{strategy}_anchors")
+            verification["passed"] = False
+        else:
+            verification = verification_service.verify_template(
+                str(template.get("template_id")),
+                page_image_paths,
+                fields,
+                detection_batch_mode=detection_batch_mode,
+            )
+        candidate = _candidate_from_anchor_strategy(template, verification, fields, page_image_paths, strategy, timing)
+        candidates.append(candidate)
+        page = pages_by_index.get(1) or next(iter(pages_by_index.values()), None)
+        if page is not None:
+            page["candidates"].append(candidate)
+    timing["anchor_strategy_matching"] = time.perf_counter() - match_started
+    candidates.sort(key=lambda item: (bool(item.get("final_passed")), float(item.get("final_score") or 0.0)), reverse=True)
+    for page in pages_by_index.values():
+        page["candidates"].sort(key=lambda item: (bool(item.get("final_passed")), float(item.get("final_score") or 0.0)), reverse=True)
+        page["best_candidate"] = page["candidates"][0] if page["candidates"] else None
+    pages = list(pages_by_index.values())
+    best_candidate = next((candidate for candidate in candidates if candidate.get("final_passed")), None)
+    matched = best_candidate is not None
+    processing_pages = _persist_selected_processing_pages(query_id, pages, best_candidate, normalized_pages)
+    if best_candidate is not None:
+        best_candidate["processing_pages"] = processing_pages
+    timing["anchor_strategy_total"] = time.perf_counter() - started
+    return {
+        "query_id": query_id,
+        "engine": strategy,
+        "version": DETECTION_VERSION,
+        "threshold": verification_service.DEFAULT_VERIFICATION_THRESHOLD,
+        "matched": matched,
+        "best_candidate": best_candidate,
+        "candidates": candidates,
+        "pages": pages,
+        "main_page_auto_roi_pages": [],
+        "main_page_auto_roi_total_pages": 0,
+        "main_page_auto_roi_total_regions": 0,
+        "message": None if matched else f"ไม่พบ Template ที่ผ่าน {strategy}",
+        "debug": {
+            "pipeline_core": PIPELINE_CONFIG.to_debug_dict(),
+            "retrieval_engine": strategy,
+            "layout_retrieval_skipped": True,
+            "layout_prefilter_skipped": True,
+            "source_type": source_type,
+            "verification_strategy": strategy,
+            "anchor_strategy": {
+                "template_anchor_load": load_debug,
+                "anchor_types": sorted(anchor_types),
+                "batch_mode": detection_batch_mode,
+                "batch_scope": "per_template" if detection_batch_mode != DETECTION_BATCH_MODE_GLOBAL else "global_text_per_template_image",
+                "templates_checked": len(templates),
+                "anchors_checked": sum(len(candidate.get("verification_details") or []) for candidate in candidates),
+                "total_ms": _ms(timing.get("anchor_strategy_total")),
+            },
+            "timing": _detection_timing_debug(timing, pages, total_started, request_cache=request_cache),
+        },
+    }
+
+
 def _text_only_checked_field(field: Dict[str, Any], ocr_result: Optional[Dict[str, Any]], error: Optional[str] = None) -> Dict[str, Any]:
     expected_text = field.get("expected_text")
     actual_text = str((ocr_result or {}).get("text") or "")
@@ -3882,6 +4175,7 @@ def _detect_template_text_only(
     request_cache: DetectionRequestCache,
     total_started: float,
     source_type: str,
+    detection_batch_mode: str,
 ) -> Dict[str, Any]:
     text_only_started = time.perf_counter()
     page_image_paths = {int(page["page_index"]): page["normalized_path"] for page in normalized_pages}
@@ -3889,6 +4183,17 @@ def _detect_template_text_only(
     load_started = time.perf_counter()
     templates, load_debug = _load_text_only_template_anchors(request_cache)
     timing["text_only_template_anchor_load"] = time.perf_counter() - load_started
+    if detection_batch_mode != DETECTION_BATCH_MODE_GLOBAL:
+        return _detect_template_anchor_strategy(
+            query_id,
+            normalized_pages,
+            timing,
+            request_cache,
+            total_started,
+            source_type,
+            VERIFICATION_STRATEGY_TEXT_ONLY,
+            detection_batch_mode,
+        )
 
     crop_started = time.perf_counter()
     roi_items_by_page: Dict[int, List[Dict[str, Any]]] = {}
@@ -4115,6 +4420,8 @@ def _detect_template_text_only(
             "verification_strategy": VERIFICATION_STRATEGY_TEXT_ONLY,
             "text_only": {
                 "template_anchor_load": load_debug,
+                "batch_mode": detection_batch_mode,
+                "batch_scope": "global",
                 "ocr_timing": _timing_ms_map(ocr_timing),
                 "crop_ms": _ms(timing.get("text_only_crop_prepare")),
                 "batch_ocr_ms": _ms(timing.get("text_only_batch_ocr")),
@@ -4572,6 +4879,15 @@ def detect_template_dev(
             timing["verification_strategy_load_breakdown"] = verification_strategy_timing
         verification_strategy = normalize_verification_strategy(verification_strategy_setting.get("verification_strategy"))
         timing["verification_strategy_load"] = time.perf_counter() - step_started
+        step_started = time.perf_counter()
+        if verification_strategy_override is not None:
+            detection_batch_mode_setting = {"detection_batch_processing_mode": DETECTION_BATCH_MODE_GLOBAL}
+            timing["detection_batch_mode_load_breakdown"] = {"source": "default_for_override"}
+        else:
+            detection_batch_mode_setting, detection_batch_mode_timing = global_settings_service.get_detection_batch_mode_with_timing()
+            timing["detection_batch_mode_load_breakdown"] = detection_batch_mode_timing
+        detection_batch_mode = normalize_detection_batch_mode(detection_batch_mode_setting.get("detection_batch_processing_mode"))
+        timing["detection_batch_mode_load"] = time.perf_counter() - step_started
         if verification_strategy == VERIFICATION_STRATEGY_TEXT_ONLY:
             return _detect_template_text_only(
                 query_id,
@@ -4580,6 +4896,18 @@ def detect_template_dev(
                 request_cache,
                 total_started,
                 source_type,
+                detection_batch_mode,
+            )
+        if verification_strategy in {VERIFICATION_STRATEGY_TEXT_IMAGE, VERIFICATION_STRATEGY_IMAGE_ONLY}:
+            return _detect_template_anchor_strategy(
+                query_id,
+                normalized_pages,
+                timing,
+                request_cache,
+                total_started,
+                source_type,
+                verification_strategy,
+                detection_batch_mode,
             )
         pages: List[Dict[str, Any]] = []
         confirmed_main_page_candidate: Optional[Dict[str, Any]] = None

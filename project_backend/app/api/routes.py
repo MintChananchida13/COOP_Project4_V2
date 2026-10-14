@@ -15,6 +15,7 @@ from app.api.schemas import (
     ApiResponse,
     AuthLoginRequest,
     AuthRegisterRequest,
+    DetectionBatchModeUpdate,
     IgnoreRegionCreate,
     IgnoreRegionUpdate,
     ImageVerificationCategoryCreate,
@@ -670,6 +671,16 @@ def get_verification_strategy() -> ApiResponse:
 @router.put("/admin/settings/verification-strategy", response_model=ApiResponse)
 def update_verification_strategy(payload: VerificationStrategyUpdate) -> ApiResponse:
     return ok(global_settings.update_verification_strategy(payload.verification_strategy))
+
+
+@router.get("/admin/settings/detection-batch-mode", response_model=ApiResponse)
+def get_detection_batch_mode() -> ApiResponse:
+    return ok(global_settings.get_detection_batch_mode())
+
+
+@router.put("/admin/settings/detection-batch-mode", response_model=ApiResponse)
+def update_detection_batch_mode(payload: DetectionBatchModeUpdate) -> ApiResponse:
+    return ok(global_settings.update_detection_batch_mode(payload.detection_batch_processing_mode))
 
 
 @router.get("/admin/system/maintenance", response_model=ApiResponse)
