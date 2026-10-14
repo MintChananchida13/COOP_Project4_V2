@@ -408,3 +408,28 @@ def remote_verify_image_logits(
         },
         timeout=240.0,
     )
+
+
+def remote_verify_image_logits_batch(
+    image_paths: List[str],
+    categories: Optional[List[Dict[str, Any]]] = None,
+    timing: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    if not is_runtime_configured(ModelRuntimeKind.IMAGE_VERIFICATION):
+        return None
+    encode_started = time.perf_counter()
+    images = [_path_to_data_url(image_path) for image_path in image_paths]
+    if timing is not None:
+        timing["image_encode_ms"] = round((time.perf_counter() - encode_started) * 1000.0, 2)
+        timing["image_count"] = len(images)
+        timing["image_data_url_bytes"] = sum(len(item) for item in images)
+    return _post_predict(
+        ModelRuntimeKind.IMAGE_VERIFICATION,
+        {
+            "images": images,
+            "categories": categories or [],
+        },
+        timeout=240.0,
+        path_override="/api/v1/image-classification-batches",
+        timing=timing,
+    )

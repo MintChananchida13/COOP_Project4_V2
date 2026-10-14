@@ -10,6 +10,7 @@ from app.core.model_runtime_client import (
     ModelRuntimeUnavailableError,
     is_runtime_configured,
     remote_verify_image_logits,
+    remote_verify_image_logits_batch,
 )
 
 
@@ -304,6 +305,75 @@ def verify_image_category(
         return _result_from_remote(remote_result, category_value, active_categories)
     device = str(remote_result.get("device") or "remote")
     return _result_from_logits([_as_float(item, 0.0) for item in logits], category_value, active_categories, device)
+
+
+def verify_image_categories_batch(
+    image_paths: List[str],
+    image_categories: List[List[str]],
+    categories: Optional[List[Dict[str, Any]]] = None,
+    timing: Optional[Dict[str, Any]] = None,
+) -> List[List[SiglipImageVerificationResult]]:
+    active_categories = _normalize_categories(categories or [])
+    if not active_categories:
+        return [
+            [
+                _empty_result(
+                    str(category or ""),
+                    active_categories,
+                    "error",
+                    "no_active_categories",
+                    "No active SigLIP image categories are configured.",
+                )
+                for category in (category_values or [""])
+            ]
+            for category_values in image_categories
+        ]
+    if len(image_paths) != len(image_categories):
+        raise RuntimeError("Image batch request count does not match target category count.")
+    runtime_configured = is_runtime_configured(ModelRuntimeKind.IMAGE_VERIFICATION)
+    if not runtime_configured:
+        raise RuntimeError("GATEWAY_URL is not configured.")
+
+    try:
+        remote_result = remote_verify_image_logits_batch(
+            image_paths,
+            [item.to_dict() for item in active_categories],
+            timing=timing,
+        )
+    except ModelRuntimeUnavailableError as error:
+        raise RuntimeError(f"SigLIP batch model runtime unavailable: {error}") from error
+
+    if not isinstance(remote_result, dict):
+        raise RuntimeError("SigLIP batch model runtime returned an invalid response.")
+    results = remote_result.get("results")
+    if results is None and isinstance(remote_result.get("data"), dict):
+        results = remote_result["data"].get("results")
+    if results is None and isinstance(remote_result.get("data"), list):
+        results = remote_result.get("data")
+    if not isinstance(results, list):
+        raise RuntimeError("SigLIP batch model runtime returned no results list.")
+    if len(results) != len(image_paths):
+        raise RuntimeError(f"SigLIP batch returned {len(results)} results for {len(image_paths)} images.")
+
+    classified: List[List[SiglipImageVerificationResult]] = []
+    for raw_item, target_categories in zip(results, image_categories):
+        item = raw_item if isinstance(raw_item, dict) else {}
+        raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
+        logits = item.get("logits") or raw.get("logits")
+        device = str(item.get("device") or remote_result.get("device") or "remote")
+        item_results: List[SiglipImageVerificationResult] = []
+        for category_value in (target_categories or [""]):
+            category = str(category_value or "").strip()
+            if not category:
+                item_results.append(_empty_result(category, active_categories, "error", "category_missing", "Image anchor category is required.", device))
+            elif not any(active.value == category for active in active_categories):
+                item_results.append(_empty_result(category, active_categories, "error", "category_not_found", f"Image category is not active: {category}", device))
+            elif isinstance(logits, list):
+                item_results.append(_result_from_logits([_as_float(value, 0.0) for value in logits], category, active_categories, device))
+            else:
+                item_results.append(_result_from_remote(item, category, active_categories))
+        classified.append(item_results)
+    return classified
 
 
 def _result_from_remote(

@@ -50,6 +50,8 @@ from app.processing.ocr_adapter import (
 )
 from app.processing.ocr_postprocess import normalize_ocr_text
 from app.model_runtime.siglip_image_verification_adapter import (
+    SiglipImageVerificationResult,
+    verify_image_categories_batch,
     verify_image_category,
 )
 from app.model_runtime.table_recognition_v2_adapter import TableRecognitionV2UnavailableError, recognize_table_v2
@@ -3860,12 +3862,171 @@ class VerificationService:
             if cropped:
                 Path(cropped).unlink(missing_ok=True)
 
+    def _image_match_from_siglip_result(
+        self,
+        result: SiglipImageVerificationResult,
+        current_crop_preview_data_url: Optional[str],
+    ) -> Dict[str, Any]:
+        score = round(float(result.evidence_score), 4)
+        return {
+            "score": score,
+            "field_score": score,
+            "evidence_score": score,
+            "passed": result.passed,
+            "status": result.status,
+            "failure_reason": result.failure_reason,
+            "verification_threshold": round(float(result.verification_threshold), 4),
+            "margin_threshold": round(float(result.margin_threshold), 4),
+            "model_version": result.model_version,
+            "scoring_version": result.scoring_version,
+            "siglip_similarity_score": score,
+            "image_category_score": score,
+            "raw_logit": result.raw_logit,
+            "raw_pair_score": result.raw_pair_score,
+            "relative_percentage": result.relative_percentage,
+            "image_category": result.image_category,
+            "image_category_label": result.image_category_label,
+            "image_category_prompt": result.prompt,
+            "predicted_image_category": result.predicted_category,
+            "predicted_image_category_label": result.predicted_label,
+            "predicted_image_category_prompt": result.predicted_prompt,
+            "siglip_target_rank": result.target_rank,
+            "siglip_score_margin": result.score_margin,
+            "siglip_labels": result.labels,
+            "siglip_ui_percentages": result.ui_percentages,
+            "reference_crop_preview_data_url": None,
+            "current_crop_preview_data_url": current_crop_preview_data_url,
+            "model_name": result.model_name,
+            "device": result.device,
+            "error": result.error,
+        }
+
+    def score_image_anchors_batch(
+        self,
+        fields: List[Dict[str, Any]],
+        page_image_paths: Dict[int, str],
+    ) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Any]]:
+        started = time.perf_counter()
+        active_categories = _active_image_category_payloads()
+        matches: Dict[str, Dict[str, Any]] = {}
+        crop_paths: List[str] = []
+        target_categories: List[List[str]] = []
+        request_field_ids: List[str] = []
+        crop_preview_by_field: Dict[str, Optional[str]] = {}
+        errors: List[Dict[str, Any]] = []
+
+        try:
+            for field in fields:
+                if field.get("data_type") != "image":
+                    continue
+                field_id = str(field.get("id") or "")
+                page_number = int(field.get("page_number") or 1)
+                image_path = page_image_paths.get(page_number)
+                category_values = _image_category_values(field.get("image_category"))
+                category_infos = [_image_category_api(value) for value in category_values]
+                valid_category_values = [
+                    value for value, info in zip(category_values, category_infos) if not info.get("error")
+                ]
+                category_value = category_values[0] if category_values else ""
+                category_info = category_infos[0] if category_infos else _image_category_api(category_value)
+                category_error = category_info.get("error") if not valid_category_values else None
+                if not image_path:
+                    errors.append({"field_id": field_id, "reason": "query_page_missing"})
+                    continue
+                if category_error:
+                    matches[field_id] = {
+                        "score": 0.0,
+                        "field_score": 0.0,
+                        "evidence_score": 0.0,
+                        "passed": False,
+                        "status": "error",
+                        "failure_reason": category_error,
+                        "verification_threshold": category_info.get("match_threshold", 0.0),
+                        "margin_threshold": category_info.get("margin_threshold", 0.0),
+                        "image_category": ", ".join(category_values) or category_value,
+                        "image_category_label": _image_category_display(category_values) or category_info.get("label") or category_value,
+                        "image_category_prompt": " | ".join(str(info.get("prompt") or "") for info in category_infos if info.get("prompt")),
+                        "predicted_image_category": "",
+                        "predicted_image_category_label": "",
+                        "predicted_image_category_prompt": "",
+                        "reference_crop_preview_data_url": None,
+                        "current_crop_preview_data_url": None,
+                        "siglip_similarity_score": 0.0,
+                        "image_category_score": 0.0,
+                        "raw_logit": 0.0,
+                        "raw_pair_score": 0.0,
+                        "relative_percentage": 0.0,
+                        "siglip_target_rank": 0,
+                        "siglip_score_margin": 0.0,
+                        "siglip_labels": [],
+                        "siglip_ui_percentages": [],
+                    }
+                    continue
+                cropped = _crop_anchor_roi_to_temp(image_path, field["roi"], field.get("roi_padding") or 6)
+                if not cropped:
+                    errors.append({"field_id": field_id, "reason": "roi_crop_failed"})
+                    continue
+                crop_paths.append(cropped)
+                request_field_ids.append(field_id)
+                target_categories.append(valid_category_values or category_values)
+                crop_preview_by_field[field_id] = _image_path_to_data_url(cropped)
+
+            runtime_timing: Dict[str, Any] = {}
+            batch_results: List[List[SiglipImageVerificationResult]] = []
+            batch_limit = max(1, int(os.getenv("IMAGE_CLASSIFICATION_BATCH_LIMIT", "64")))
+            if crop_paths:
+                for start_index in range(0, len(crop_paths), batch_limit):
+                    chunk_timing: Dict[str, Any] = {}
+                    chunk_results = verify_image_categories_batch(
+                        crop_paths[start_index:start_index + batch_limit],
+                        target_categories[start_index:start_index + batch_limit],
+                        active_categories,
+                        timing=chunk_timing,
+                    )
+                    batch_results.extend(chunk_results)
+                    runtime_timing.setdefault("chunks", []).append(chunk_timing)
+            for field_id, results in zip(request_field_ids, batch_results):
+                result = next((item for item in results if item.passed), None) or (
+                    max(results, key=lambda item: float(item.evidence_score)) if results else None
+                )
+                if result is None:
+                    matches[field_id] = {
+                        "score": 0.0,
+                        "field_score": 0.0,
+                        "evidence_score": 0.0,
+                        "passed": False,
+                        "status": "error",
+                        "failure_reason": "missing_batch_result",
+                        "reference_crop_preview_data_url": None,
+                        "current_crop_preview_data_url": crop_preview_by_field.get(field_id),
+                    }
+                else:
+                    matches[field_id] = self._image_match_from_siglip_result(result, crop_preview_by_field.get(field_id))
+            return matches, {
+                "image_roi_count": len(request_field_ids),
+                "image_batch_limit": batch_limit,
+                "image_batch_count": math.ceil(len(request_field_ids) / batch_limit) if request_field_ids else 0,
+                "image_model_request_count": math.ceil(len(request_field_ids) / batch_limit) if request_field_ids else 0,
+                "result_count": len(batch_results),
+                "error_count": len(errors),
+                "errors": errors[:10],
+                "runtime_timing": runtime_timing,
+                "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 2),
+            }
+        finally:
+            for crop_path in crop_paths:
+                Path(crop_path).unlink(missing_ok=True)
+
     def verify_template(
         self,
         template_id: str,
         page_image_paths: Optional[Dict[int, str]] = None,
         verification_fields: Optional[List[Dict[str, Any]]] = None,
         detection_batch_mode: str = DETECTION_BATCH_MODE_GLOBAL,
+        precomputed_text_ocr_cache: Optional[Dict[str, Dict[str, Any]]] = None,
+        precomputed_text_ocr_errors: Optional[Dict[str, str]] = None,
+        precomputed_image_matches: Optional[Dict[str, Dict[str, Any]]] = None,
+        use_image_batch: bool = False,
     ) -> Dict[str, Any]:
         verify_started = time.perf_counter()
         load_started = time.perf_counter()
@@ -3887,64 +4048,72 @@ class VerificationService:
                 },
             }
 
-        text_ocr_cache: Dict[str, Dict[str, Any]] = {}
-        text_ocr_errors: Dict[str, str] = {}
+        text_ocr_cache: Dict[str, Dict[str, Any]] = dict(precomputed_text_ocr_cache or {})
+        text_ocr_errors: Dict[str, str] = dict(precomputed_text_ocr_errors or {})
+        image_match_cache: Dict[str, Dict[str, Any]] = dict(precomputed_image_matches or {})
         text_verification_elapsed = 0.0
         image_verification_elapsed = 0.0
         text_fields_by_page: Dict[int, List[Dict[str, Any]]] = {}
-        for field in fields:
-            if field.get("data_type") == "image":
-                continue
-            page_number = int(field["page_number"])
-            image_path = (page_image_paths or {}).get(page_number)
-            if image_path:
-                text_fields_by_page.setdefault(page_number, []).append(field)
+        if precomputed_text_ocr_cache is None and precomputed_text_ocr_errors is None:
+            for field in fields:
+                if field.get("data_type") == "image":
+                    continue
+                page_number = int(field["page_number"])
+                image_path = (page_image_paths or {}).get(page_number)
+                if image_path:
+                    text_fields_by_page.setdefault(page_number, []).append(field)
 
-        for page_number, page_fields in text_fields_by_page.items():
-            image_path = (page_image_paths or {}).get(page_number)
-            if not image_path:
-                continue
-            page_started = time.perf_counter()
-            try:
-                page_results = ocr_rois(
-                    image_path,
-                    [{"id": field["id"], "roi": field["roi"]} for field in page_fields],
-                )
-                text_verification_elapsed += time.perf_counter() - page_started
-                text_ocr_cache.update(page_results)
-                logger.info(
-                    "[TEMPLATE VERIFY] text OCR batch done: template_id=%s page=%s anchors=%s elapsed=%.2fs",
-                    template_id,
-                    page_number,
-                    len(page_fields),
-                    time.perf_counter() - page_started,
-                )
-            except OcrUnavailableError as error:
-                text_verification_elapsed += time.perf_counter() - page_started
-                for field in page_fields:
-                    text_ocr_errors[field["id"]] = str(error)
-                logger.info(
-                    "[TEMPLATE VERIFY] text OCR batch failed: template_id=%s page=%s anchors=%s elapsed=%.2fs error=%s",
-                    template_id,
-                    page_number,
-                    len(page_fields),
-                    time.perf_counter() - page_started,
-                    error,
-                )
-            except Exception as error:
-                text_verification_elapsed += time.perf_counter() - page_started
-                for field in page_fields:
-                    text_ocr_errors[field["id"]] = f"ROI OCR failed: {error}"
-                logger.info(
-                    "[TEMPLATE VERIFY] text OCR batch failed: template_id=%s page=%s anchors=%s elapsed=%.2fs error=%s",
-                    template_id,
-                    page_number,
-                    len(page_fields),
-                    time.perf_counter() - page_started,
-                    error,
-                )
+            for page_number, page_fields in text_fields_by_page.items():
+                image_path = (page_image_paths or {}).get(page_number)
+                if not image_path:
+                    continue
+                page_started = time.perf_counter()
+                try:
+                    page_results = ocr_rois(
+                        image_path,
+                        [{"id": field["id"], "roi": field["roi"]} for field in page_fields],
+                    )
+                    text_verification_elapsed += time.perf_counter() - page_started
+                    text_ocr_cache.update(page_results)
+                    logger.info(
+                        "[TEMPLATE VERIFY] text OCR batch done: template_id=%s page=%s anchors=%s elapsed=%.2fs",
+                        template_id,
+                        page_number,
+                        len(page_fields),
+                        time.perf_counter() - page_started,
+                    )
+                except OcrUnavailableError as error:
+                    text_verification_elapsed += time.perf_counter() - page_started
+                    for field in page_fields:
+                        text_ocr_errors[field["id"]] = str(error)
+                    logger.info(
+                        "[TEMPLATE VERIFY] text OCR batch failed: template_id=%s page=%s anchors=%s elapsed=%.2fs error=%s",
+                        template_id,
+                        page_number,
+                        len(page_fields),
+                        time.perf_counter() - page_started,
+                        error,
+                    )
+                except Exception as error:
+                    text_verification_elapsed += time.perf_counter() - page_started
+                    for field in page_fields:
+                        text_ocr_errors[field["id"]] = f"ROI OCR failed: {error}"
+                    logger.info(
+                        "[TEMPLATE VERIFY] text OCR batch failed: template_id=%s page=%s anchors=%s elapsed=%.2fs error=%s",
+                        template_id,
+                        page_number,
+                        len(page_fields),
+                        time.perf_counter() - page_started,
+                        error,
+                    )
 
         checked_fields = []
+        if use_image_batch and precomputed_image_matches is None:
+            image_batch_started = time.perf_counter()
+            image_match_cache, image_batch_debug = self.score_image_anchors_batch(fields, page_image_paths or {})
+            image_verification_elapsed += time.perf_counter() - image_batch_started
+        else:
+            image_batch_debug = None
         for field in fields:
             expected_text = field.get("expected_text")
             page_number = int(field["page_number"])
@@ -4006,7 +4175,9 @@ class VerificationService:
             if anchor_type == "image" and image_path:
                 image_started = time.perf_counter()
                 try:
-                    image_match = self._score_image_anchor(field, image_path)
+                    image_match = image_match_cache.get(str(field.get("id"))) if image_match_cache else None
+                    if image_match is None:
+                        image_match = self._score_image_anchor(field, image_path)
                 except Exception as error:
                     category_values = _image_category_values(field.get("image_category"))
                     category_value = category_values[0] if category_values else ""
@@ -4228,6 +4399,7 @@ class VerificationService:
                 "text_verification": text_verification_elapsed,
                 "image_verification": image_verification_elapsed,
                 "detection_batch_mode": normalize_detection_batch_mode(detection_batch_mode),
+                "image_batch": image_batch_debug,
             },
         }
         logger.info(

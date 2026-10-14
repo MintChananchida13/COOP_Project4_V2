@@ -4011,6 +4011,113 @@ def _candidate_from_anchor_strategy(
     }
 
 
+def _anchor_strategy_template_fields(template: Dict[str, Any], anchor_types: set[str]) -> List[Dict[str, Any]]:
+    return [
+        field for field in (template.get("verification_anchors") or [])
+        if str(field.get("data_type") or "").lower() in anchor_types
+        and (str(field.get("data_type") or "").lower() != "text" or field.get("expected_text"))
+    ]
+
+
+def _ordered_anchor_templates(
+    templates: List[Dict[str, Any]],
+    anchor_types: set[str],
+) -> tuple[List[tuple[Dict[str, Any], List[Dict[str, Any]]]], List[Dict[str, Any]]]:
+    ordered: List[tuple[Dict[str, Any], List[Dict[str, Any]]]] = []
+    debug_order: List[Dict[str, Any]] = []
+    for template in templates:
+        fields = _anchor_strategy_template_fields(template, anchor_types)
+        required_count = sum(1 for field in fields if bool(field.get("required_for_verification")))
+        total_count = len(fields)
+        template_id = str(template.get("template_id") or "")
+        ordered.append((template, fields))
+        debug_order.append({
+            "template_id": template_id,
+            "required_anchor_count": required_count,
+            "anchor_count": total_count,
+        })
+    ordered.sort(key=lambda item: (
+        sum(1 for field in item[1] if bool(field.get("required_for_verification"))),
+        len(item[1]),
+        str(item[0].get("template_id") or ""),
+    ))
+    debug_order.sort(key=lambda item: (
+        int(item.get("required_anchor_count") or 0),
+        int(item.get("anchor_count") or 0),
+        str(item.get("template_id") or ""),
+    ))
+    return ordered, debug_order
+
+
+def _run_global_text_anchor_batch(
+    ordered_templates: List[tuple[Dict[str, Any], List[Dict[str, Any]]]],
+    page_image_paths: Dict[int, str],
+    timing: Dict[str, Any],
+    timing_prefix: str,
+) -> tuple[Dict[str, Dict[str, Any]], Dict[str, str], Dict[str, Any]]:
+    batch_started = time.perf_counter()
+    roi_items_by_page: Dict[int, List[Dict[str, Any]]] = {}
+    text_anchor_count = 0
+    for _, fields in ordered_templates:
+        for field in fields:
+            if str(field.get("data_type") or "").lower() != "text":
+                continue
+            page_number = int(field.get("page_number") or 1)
+            if page_number not in page_image_paths:
+                continue
+            text_anchor_count += 1
+            roi_items_by_page.setdefault(page_number, []).append({"id": field["id"], "roi": field["roi"]})
+
+    ocr_results: Dict[str, Dict[str, Any]] = {}
+    ocr_errors: Dict[str, str] = {}
+    ocr_timing: Dict[str, Any] = {}
+    model_request_count = 0
+    for page_number, roi_items in roi_items_by_page.items():
+        image_path = page_image_paths.get(page_number)
+        if not image_path:
+            continue
+        model_request_count += 1
+        try:
+            page_results = ocr_rois(image_path, roi_items, timing=ocr_timing)
+            ocr_results.update(page_results)
+        except OcrUnavailableError as error:
+            for item in roi_items:
+                ocr_errors[str(item.get("id"))] = str(error)
+        except Exception as error:
+            for item in roi_items:
+                ocr_errors[str(item.get("id"))] = f"ROI OCR failed: {error}"
+    timing[f"{timing_prefix}_global_text_batch"] = time.perf_counter() - batch_started
+    return ocr_results, ocr_errors, {
+        "batch_mode": DETECTION_BATCH_MODE_GLOBAL,
+        "text_roi_count": text_anchor_count,
+        "text_batch_count": len([items for items in roi_items_by_page.values() if items]),
+        "text_model_request_count": model_request_count,
+        "ocr_timing": _timing_ms_map(ocr_timing),
+        "elapsed_ms": _ms(timing.get(f"{timing_prefix}_global_text_batch")),
+    }
+
+
+def _ordered_text_only_templates(templates: List[Dict[str, Any]]) -> tuple[List[tuple[Dict[str, Any], List[Dict[str, Any]]]], List[Dict[str, Any]]]:
+    prepared: List[tuple[Dict[str, Any], List[Dict[str, Any]]]] = []
+    for template in templates:
+        fields = [field for field in template.get("text_anchors", []) if field.get("expected_text")]
+        prepared.append((template, fields))
+    prepared.sort(key=lambda item: (
+        sum(1 for field in item[1] if bool(field.get("required_for_verification"))),
+        len(item[1]),
+        str(item[0].get("template_id") or ""),
+    ))
+    debug_order = [
+        {
+            "template_id": str(template.get("template_id") or ""),
+            "required_anchor_count": sum(1 for field in fields if bool(field.get("required_for_verification"))),
+            "anchor_count": len(fields),
+        }
+        for template, fields in prepared
+    ]
+    return prepared, debug_order
+
+
 def _detect_template_anchor_strategy(
     query_id: str,
     normalized_pages: List[Dict[str, Any]],
@@ -4032,6 +4139,32 @@ def _detect_template_anchor_strategy(
     load_started = time.perf_counter()
     templates, load_debug = _load_anchor_strategy_templates(anchor_types, request_cache)
     timing["anchor_strategy_template_load"] = time.perf_counter() - load_started
+    ordered_templates, template_order_debug = _ordered_anchor_templates(templates, anchor_types)
+    global_text_results: Optional[Dict[str, Dict[str, Any]]] = None
+    global_text_errors: Optional[Dict[str, str]] = None
+    global_text_debug: Optional[Dict[str, Any]] = None
+    if detection_batch_mode == DETECTION_BATCH_MODE_GLOBAL and "text" in anchor_types:
+        global_text_results, global_text_errors, global_text_debug = _run_global_text_anchor_batch(
+            ordered_templates,
+            page_image_paths,
+            timing,
+            "anchor_strategy",
+        )
+    global_image_matches: Optional[Dict[str, Dict[str, Any]]] = None
+    global_image_debug: Optional[Dict[str, Any]] = None
+    if detection_batch_mode == DETECTION_BATCH_MODE_GLOBAL and "image" in anchor_types:
+        image_batch_started = time.perf_counter()
+        global_image_fields = [
+            field
+            for _, fields in ordered_templates
+            for field in fields
+            if str(field.get("data_type") or "").lower() == "image"
+        ]
+        global_image_matches, global_image_debug = verification_service.score_image_anchors_batch(
+            global_image_fields,
+            page_image_paths,
+        )
+        timing["anchor_strategy_global_image_batch"] = time.perf_counter() - image_batch_started
     match_started = time.perf_counter()
     candidates: List[Dict[str, Any]] = []
     pages_by_index: Dict[int, Dict[str, Any]] = {
@@ -4046,12 +4179,8 @@ def _detect_template_anchor_strategy(
         }
         for page in normalized_pages
     }
-    for template in templates:
-        fields = [
-            field for field in (template.get("verification_anchors") or [])
-            if str(field.get("data_type") or "").lower() in anchor_types
-            and (str(field.get("data_type") or "").lower() != "text" or field.get("expected_text"))
-        ]
+    early_exit = False
+    for template, fields in ordered_templates:
         if not fields:
             verification = verification_service._verification_summary(str(template.get("template_id")), [], status=f"no_{strategy}_anchors")
             verification["passed"] = False
@@ -4061,12 +4190,19 @@ def _detect_template_anchor_strategy(
                 page_image_paths,
                 fields,
                 detection_batch_mode=detection_batch_mode,
+                precomputed_text_ocr_cache=global_text_results if global_text_results is not None else None,
+                precomputed_text_ocr_errors=global_text_errors if global_text_errors is not None else None,
+                precomputed_image_matches=global_image_matches if global_image_matches is not None else None,
+                use_image_batch=detection_batch_mode != DETECTION_BATCH_MODE_GLOBAL,
             )
         candidate = _candidate_from_anchor_strategy(template, verification, fields, page_image_paths, strategy, timing)
         candidates.append(candidate)
         page = pages_by_index.get(1) or next(iter(pages_by_index.values()), None)
         if page is not None:
             page["candidates"].append(candidate)
+        if candidate.get("final_passed"):
+            early_exit = True
+            break
     timing["anchor_strategy_matching"] = time.perf_counter() - match_started
     candidates.sort(key=lambda item: (bool(item.get("final_passed")), float(item.get("final_score") or 0.0)), reverse=True)
     for page in pages_by_index.values():
@@ -4103,9 +4239,35 @@ def _detect_template_anchor_strategy(
                 "template_anchor_load": load_debug,
                 "anchor_types": sorted(anchor_types),
                 "batch_mode": detection_batch_mode,
-                "batch_scope": "per_template" if detection_batch_mode != DETECTION_BATCH_MODE_GLOBAL else "global_text_per_template_image",
-                "templates_checked": len(templates),
+                "batch_scope": "per_template" if detection_batch_mode != DETECTION_BATCH_MODE_GLOBAL else "global_text_image",
+                "image_batch_schema_available": True,
+                "image_batch_schema_source": "/api/v1/image-classification-batches images[] + categories, response data.results[]",
+                "template_order": template_order_debug,
+                "early_exit": early_exit,
+                "templates_checked": len(candidates),
+                "templates_available": len(templates),
                 "anchors_checked": sum(len(candidate.get("verification_details") or []) for candidate in candidates),
+                "global_text_batch": global_text_debug,
+                "global_image_batch": global_image_debug,
+                "model_request_count": (
+                    int((global_text_debug or {}).get("text_model_request_count") or 0)
+                    if detection_batch_mode == DETECTION_BATCH_MODE_GLOBAL
+                    else sum(
+                        len({
+                            int(field.get("page_number") or 1)
+                            for field in candidate.get("verification_details") or []
+                            if isinstance(field, dict) and field.get("anchor_type") == "text"
+                        })
+                        for candidate in candidates
+                    )
+                ) + (
+                    int((global_image_debug or {}).get("image_model_request_count") or 0)
+                    if detection_batch_mode == DETECTION_BATCH_MODE_GLOBAL
+                    else sum(
+                        int((((candidate.get("verification") or {}).get("timing") or {}).get("image_batch") or {}).get("image_model_request_count") or 0)
+                        for candidate in candidates
+                    )
+                ),
                 "total_ms": _ms(timing.get("anchor_strategy_total")),
             },
             "timing": _detection_timing_debug(timing, pages, total_started, request_cache=request_cache),
@@ -4199,9 +4361,9 @@ def _detect_template_text_only(
     roi_items_by_page: Dict[int, List[Dict[str, Any]]] = {}
     field_by_key: Dict[str, Dict[str, Any]] = {}
     fields_by_template: Dict[str, List[Dict[str, Any]]] = {}
-    for template in templates:
+    ordered_templates, template_order_debug = _ordered_text_only_templates(templates)
+    for template, fields in ordered_templates:
         template_id = str(template.get("template_id"))
-        fields = [field for field in template.get("text_anchors", []) if field.get("expected_text")]
         fields_by_template[template_id] = fields
         for field in fields:
             page_number = int(field.get("page_number") or 1)
@@ -4253,7 +4415,8 @@ def _detect_template_text_only(
         for page in normalized_pages
     }
 
-    for template in templates:
+    early_exit = False
+    for template, _ordered_fields in ordered_templates:
         template_id = str(template.get("template_id"))
         fields = fields_by_template.get(template_id) or []
         checked_fields = []
@@ -4367,10 +4530,11 @@ def _detect_template_text_only(
         target_page = pages_by_index.get(int(candidate["query_page_index"])) or next(iter(pages_by_index.values()), None)
         if target_page is not None:
             target_page["candidates"].append(candidate)
+        if final_passed:
+            early_exit = True
+            break
 
-    candidates.sort(key=lambda item: (bool(item.get("final_passed")), float(item.get("final_score") or 0.0)), reverse=True)
     for page in pages_by_index.values():
-        page["candidates"].sort(key=lambda item: (bool(item.get("final_passed")), float(item.get("final_score") or 0.0)), reverse=True)
         page["best_candidate"] = page["candidates"][0] if page["candidates"] else None
     timing["text_only_matching"] = time.perf_counter() - match_started
     for candidate in candidates:
@@ -4422,13 +4586,18 @@ def _detect_template_text_only(
                 "template_anchor_load": load_debug,
                 "batch_mode": detection_batch_mode,
                 "batch_scope": "global",
+                "template_order": template_order_debug,
+                "early_exit": early_exit,
                 "ocr_timing": _timing_ms_map(ocr_timing),
                 "crop_ms": _ms(timing.get("text_only_crop_prepare")),
                 "batch_ocr_ms": _ms(timing.get("text_only_batch_ocr")),
                 "matching_ms": _ms(timing.get("text_only_matching")),
                 "total_ms": _ms(timing.get("text_only_total")),
-                "templates_checked": len(templates),
+                "templates_checked": len(candidates),
+                "templates_available": len(templates),
                 "anchors_checked": sum(len(fields) for fields in fields_by_template.values()),
+                "batch_count": len([items for items in roi_items_by_page.values() if items]),
+                "model_request_count": len([items for items in roi_items_by_page.values() if items]),
             },
             "timing": {
                 **_detection_timing_debug(timing, pages, total_started, request_cache=request_cache),
