@@ -1494,26 +1494,21 @@ def _normalize_query_pages(
                 and bool(pdf_boundary.get("passed"))
                 and bool(pdf_boundary.get("output_path"))
             )
-            layout_sub_document = layout_crop_candidate and physical_sub_document
+            layout_sub_document = False
             crop_rejection_reason = (
                 None
-                if layout_sub_document or physical_sub_document
+                if physical_sub_document
                 else "layout_crop_candidate_without_physical_subdocument_confirmation"
                 if layout_crop_candidate
                 else (layout_crop.get("rejection_reason") or layout_crop.get("reason"))
             )
             matching_layout_signature = None
-            document_boundary_source = "layout" if layout_sub_document else ("physical_boundary" if physical_sub_document else "full_page")
-            if layout_sub_document:
-                pdf_document_mode = "sub_document"
-                matching_path = str(layout_crop["output_path"])
-                matching_path_source = "pdf_layout_assisted_subdocument"
-                matching_reason = "pdf_layout_assisted_crop_used_after_physical_subdocument_confirmation"
-            elif physical_sub_document:
+            document_boundary_source = "physical_boundary" if physical_sub_document else "full_page"
+            if physical_sub_document:
                 pdf_document_mode = "sub_document"
                 matching_path = str(pdf_boundary["output_path"])
                 matching_path_source = "pdf_physical_subdocument"
-                matching_reason = "pdf_physical_subdocument_crop_used_for_template_matching"
+                matching_reason = "pdf_physical_subdocument_crop_used_for_template_matching_and_processing"
             else:
                 pdf_document_mode = "full_page"
                 matching_path = str(page_path)
@@ -1545,6 +1540,11 @@ def _normalize_query_pages(
                 "layout_crop_candidate": layout_crop_candidate,
                 "physical_subdocument_confirmed": bool(physical_sub_document),
                 "physical_detector_confidence": pdf_boundary.get("confidence"),
+                "physical_detector_aspect_ratio": pdf_boundary.get("aspect_ratio"),
+                "physical_detector_area_ratio": pdf_boundary.get("area_ratio"),
+                "physical_detector_edge_support": pdf_boundary.get("edge_support"),
+                "physical_detector_strong_edge_side_count": pdf_boundary.get("strong_edge_side_count"),
+                "physical_detector_rectangularity": pdf_boundary.get("rectangularity"),
                 "crop_rejection_reason": crop_rejection_reason,
                 "final_matching_path_source": matching_path_source,
                 "normalization_crop_area_ratio": round(pdf_crop_area_ratio, 4) if pdf_crop_area_ratio is not None else None,

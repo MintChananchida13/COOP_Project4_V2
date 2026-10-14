@@ -22,12 +22,15 @@ class ImageNormalizationService:
     LAYOUT_CROP_PADDING_X_RATIO = 0.08
     LAYOUT_CROP_PADDING_TOP_RATIO = 0.12
     LAYOUT_CROP_PADDING_BOTTOM_RATIO = 0.12
-    PDF_SUBDOCUMENT_MIN_AREA_RATIO = 0.03
-    PDF_SUBDOCUMENT_MAX_AREA_RATIO = 0.65
+    PDF_SUBDOCUMENT_MIN_AREA_RATIO = 0.05
+    PDF_SUBDOCUMENT_MAX_AREA_RATIO = 0.50
     PDF_SUBDOCUMENT_MIN_CONFIDENCE = 0.80
     PDF_SUBDOCUMENT_MIN_EDGE_SUPPORT = 0.66
     PDF_SUBDOCUMENT_MIN_RECTANGULARITY = 0.76
     PDF_SUBDOCUMENT_MIN_STRONG_EDGE_SIDES = 3
+    PDF_SUBDOCUMENT_MIN_ASPECT_RATIO = 1.35
+    PDF_SUBDOCUMENT_MAX_ASPECT_RATIO = 1.85
+    PDF_SUBDOCUMENT_PADDING_RATIO = 0.03
 
     def normalize_document(
         self,
@@ -255,6 +258,8 @@ class ImageNormalizationService:
             return {"passed": False, "reason": "no_rectangular_subdocument_candidate", "crop_box": None, "confidence": 0.0, "debug": debug}
         if float(best["rectangularity"]) < self.PDF_SUBDOCUMENT_MIN_RECTANGULARITY:
             return {"passed": False, "reason": "rectangularity_below_threshold", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
+        if float(best.get("aspect_ratio") or 0.0) < self.PDF_SUBDOCUMENT_MIN_ASPECT_RATIO or float(best.get("aspect_ratio") or 0.0) > self.PDF_SUBDOCUMENT_MAX_ASPECT_RATIO:
+            return {"passed": False, "reason": "aspect_ratio_outside_subdocument_range", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
         if float(best["edge_support"]) < self.PDF_SUBDOCUMENT_MIN_EDGE_SUPPORT:
             return {"passed": False, "reason": "edge_support_below_threshold", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
         if int(best.get("strong_edge_side_count") or 0) < self.PDF_SUBDOCUMENT_MIN_STRONG_EDGE_SIDES:
@@ -262,7 +267,14 @@ class ImageNormalizationService:
         if float(best["confidence"]) < self.PDF_SUBDOCUMENT_MIN_CONFIDENCE:
             return {"passed": False, "reason": "confidence_below_threshold", "crop_box": best["crop_box"], "confidence": best["confidence"], "debug": debug}
         crop_left, crop_top, crop_right, crop_bottom = [int(value) for value in best["crop_box"]]
-        crop = image[crop_top:crop_bottom, crop_left:crop_right].copy()
+        padded_crop_box = self._pad_crop_box(
+            [crop_left, crop_top, crop_right, crop_bottom],
+            width,
+            height,
+            self.PDF_SUBDOCUMENT_PADDING_RATIO,
+        )
+        padded_left, padded_top, padded_right, padded_bottom = padded_crop_box
+        crop = image[padded_top:padded_bottom, padded_left:padded_right].copy()
         if output_path:
             target = Path(output_path)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -271,8 +283,11 @@ class ImageNormalizationService:
             "passed": True,
             "reason": "physical_rectangular_subdocument_detected",
             "crop_box": best["crop_box"],
+            "padded_crop_box": padded_crop_box,
+            "padding_ratio": self.PDF_SUBDOCUMENT_PADDING_RATIO,
             "confidence": best["confidence"],
             "area_ratio": best["area_ratio"],
+            "aspect_ratio": best.get("aspect_ratio"),
             "edge_support": best["edge_support"],
             "edge_side_support": best.get("edge_side_support"),
             "strong_edge_side_count": best.get("strong_edge_side_count"),
@@ -372,6 +387,19 @@ class ImageNormalizationService:
             "points": [[round(float(x), 2), round(float(y), 2)] for x, y in ordered.tolist()],
         }
         return result
+
+    def _pad_crop_box(self, crop_box: List[int], image_width: int, image_height: int, padding_ratio: float) -> List[int]:
+        left, top, right, bottom = [int(value) for value in crop_box]
+        crop_width = max(1, right - left)
+        crop_height = max(1, bottom - top)
+        pad_x = int(round(crop_width * max(0.0, float(padding_ratio))))
+        pad_y = int(round(crop_height * max(0.0, float(padding_ratio))))
+        return [
+            max(0, left - pad_x),
+            max(0, top - pad_y),
+            min(image_width, right + pad_x),
+            min(image_height, bottom + pad_y),
+        ]
 
     def _pdf_rectangle_edge_support(self, edge_image: np.ndarray, crop_box: List[int]) -> tuple[float, Dict[str, float]]:
         height, width = edge_image.shape[:2]
