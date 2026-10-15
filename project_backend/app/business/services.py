@@ -79,6 +79,7 @@ from app.api.schemas import (
     TemplateVersionFromRequestCreate,
 )
 from app.core.json_utils import jsonb_dump, jsonb_load
+from app.core import admin_cache
 
 
 logger = logging.getLogger(__name__)
@@ -238,7 +239,12 @@ def _connect() -> Any:
     return conn
 
 
-def _refresh_published_template_cache(template_id: str) -> None:
+def _refresh_published_template_cache(template_id: str, *, list_changed: bool = False) -> None:
+    # Keep only the changed Admin detail entry cold. The list is invalidated
+    # only when fields represented by the list response actually change.
+    admin_cache.invalidate(f"templates:detail:{template_id}:")
+    if list_changed:
+        admin_cache.invalidate("templates:list")
     try:
         published_template_cache.refresh(template_id)
     except Exception:
@@ -3309,7 +3315,7 @@ class EmbeddingService:
             if settings._should_defer_admin_setting_updates():
                 _remove_published_template_cache(template_id)
             else:
-                _refresh_published_template_cache(template_id)
+                _refresh_published_template_cache(template_id, list_changed=True)
             return self._job_with_template(conn, job_id)
 
     def run_job_dev(self, job_id: str) -> Dict[str, Any]:
@@ -3413,7 +3419,7 @@ class EmbeddingService:
             if settings._should_defer_admin_setting_updates():
                 _remove_published_template_cache(template_id)
             else:
-                _refresh_published_template_cache(template_id)
+                _refresh_published_template_cache(template_id, list_changed=True)
             return self._job_with_template(conn, job_id)
 
     def fail_job_dev(self, job_id: str) -> Dict[str, Any]:
@@ -5352,9 +5358,13 @@ class TemplateRequestService:
                     ),
                 )
             conn.commit()
+        admin_cache.invalidate("template_requests:")
         return self.get(request_id)
 
     def list(self) -> Dict[str, Any]:
+        return admin_cache.get_or_load("template_requests:list", self._list_uncached)
+
+    def _list_uncached(self) -> Dict[str, Any]:
         with _connect() as conn:
             request_rows = conn.execute("SELECT * FROM template_requests ORDER BY created_at DESC").fetchall()
             page_rows = conn.execute(
@@ -5388,13 +5398,18 @@ class TemplateRequestService:
             request["pages"] = pages_by_request.get(request["id"], [])
             request["requested_fields"] = fields_by_request.get(request["id"], [])
             requests.append(request)
-        return {"template_requests": requests}
+        return admin_cache.set("template_requests:list", {"template_requests": requests})
 
     def get(self, request_id: str) -> Dict[str, Any]:
+        cache_key = f"template_requests:detail:{request_id}"
+        return admin_cache.get_or_load(cache_key, lambda: self._get_uncached(request_id))
+
+    def _get_uncached(self, request_id: str) -> Dict[str, Any]:
+        cache_key = f"template_requests:detail:{request_id}"
         with _connect() as conn:
             request_row = conn.execute("SELECT * FROM template_requests WHERE id = ?", (request_id,)).fetchone()
             if request_row is None:
-                return {"id": request_id, "status": "not_found", "pages": [], "requested_fields": []}
+                return admin_cache.set(cache_key, {"id": request_id, "status": "not_found", "pages": [], "requested_fields": []})
             page_rows = conn.execute(
                 """
                 SELECT * FROM template_request_pages
@@ -5404,11 +5419,11 @@ class TemplateRequestService:
                 (request_id,),
             ).fetchall()
             field_rows = self._requested_field_rows(conn, request_id)
-        return {
+        return admin_cache.set(cache_key, {
             **_request_row_to_api(request_row),
             "pages": [_page_row_to_api(row) for row in page_rows],
             "requested_fields": [_field_row_to_api(row) for row in field_rows],
-        }
+        })
 
     def update(self, request_id: str, payload: TemplateRequestUpdate) -> Dict[str, Any]:
         patch = payload.model_dump(exclude_unset=True)
@@ -5426,6 +5441,7 @@ class TemplateRequestService:
                 [*column_values.values(), request_id],
             )
             conn.commit()
+        admin_cache.invalidate("template_requests:")
         return self.get(request_id)
 
     def delete(self, request_id: str, reason: Optional[str] = None) -> Dict[str, Any]:
@@ -5473,6 +5489,7 @@ class TemplateRequestService:
                 (request_id,),
             )
             conn.commit()
+        admin_cache.invalidate("template_requests:")
         return self.get(request_id)
 
     def pages(self, request_id: str) -> Dict[str, Any]:
@@ -5528,6 +5545,7 @@ class TemplateRequestService:
             )
             conn.commit()
             row = conn.execute("SELECT * FROM template_request_pages WHERE id = ?", (image_id,)).fetchone()
+        admin_cache.invalidate("template_requests:")
         return _page_row_to_api(row)
 
     def update_image(self, request_id: str, image_id: str, payload: TemplateRequestImageUpdate) -> Dict[str, Any]:
@@ -5567,6 +5585,7 @@ class TemplateRequestService:
             )
             conn.commit()
             updated = conn.execute("SELECT * FROM template_request_pages WHERE id = ?", (image_id,)).fetchone()
+        admin_cache.invalidate("template_requests:")
         return _page_row_to_api(updated)
 
     def delete_image(self, request_id: str, image_id: str) -> Dict[str, Any]:
@@ -5590,6 +5609,7 @@ class TemplateRequestService:
             for index, page in enumerate(remaining, start=1):
                 conn.execute("UPDATE template_request_pages SET page_number = ? WHERE id = ?", (index, page["id"]))
             conn.commit()
+        admin_cache.invalidate("template_requests:")
         return {"id": image_id, "template_request_id": request_id, "deleted": True}
 
     def add_requested_field(self, request_id: str, payload: RequestedFieldCreate) -> Dict[str, Any]:
@@ -5645,6 +5665,7 @@ class TemplateRequestService:
                 field_id = saved["id"]
             conn.commit()
             row = self._requested_field_rows(conn, request_id)
+        admin_cache.invalidate("template_requests:")
         selected = next((item for item in row if item["id"] == field_id), None)
         return _field_row_to_api(selected) if selected else {"id": field_id, "template_request_id": request_id, "status": "not_found"}
 
@@ -5689,6 +5710,7 @@ class TemplateRequestService:
                     [*column_values.values(), field_id, request_id],
                 )
                 conn.commit()
+                admin_cache.invalidate("template_requests:")
             rows = self._requested_field_rows(conn, request_id)
         selected = next((item for item in rows if item["id"] == field_id), None)
         if selected is None:
@@ -5708,6 +5730,7 @@ class TemplateRequestService:
                 (field_id, request_id),
             ).rowcount
             conn.commit()
+        admin_cache.invalidate("template_requests:")
         return {"id": field_id, "template_request_id": request_id, "deleted": bool(deleted)}
 
     def reject(self, request_id: str, reason: Optional[str]) -> Dict[str, Any]:
@@ -6114,9 +6137,13 @@ class AdminTemplateService:
                 ),
             )
             conn.commit()
+        admin_cache.invalidate("templates:list")
         return self.get_template(template_id)
 
     def list_templates(self) -> Dict[str, Any]:
+        return admin_cache.get_or_load("templates:list", self._list_templates_uncached)
+
+    def _list_templates_uncached(self) -> Dict[str, Any]:
         settings = GlobalSettingsService()
         settings.get_system_maintenance()
         pending_statuses = settings._pending_template_statuses()
@@ -6143,9 +6170,14 @@ class AdminTemplateService:
                 template["pending_update"] = {**(template.get("pending_update") or {}), "page_ops": len(pending_page_ops[template["id"]])}
             template["pages"] = pages_by_template.get(template["id"], [])
             templates.append(template)
-        return {"templates": templates}
+        return admin_cache.set("templates:list", {"templates": templates})
 
     def get_template(self, template_id: str, apply_pending: bool = True) -> Dict[str, Any]:
+        cache_key = f"templates:detail:{template_id}:{int(bool(apply_pending))}"
+        return admin_cache.get_or_load(cache_key, lambda: self._get_template_uncached(template_id, apply_pending))
+
+    def _get_template_uncached(self, template_id: str, apply_pending: bool = True) -> Dict[str, Any]:
+        cache_key = f"templates:detail:{template_id}:{int(bool(apply_pending))}"
         settings = GlobalSettingsService()
         if apply_pending:
             settings.get_system_maintenance()
@@ -6156,7 +6188,7 @@ class AdminTemplateService:
         with _connect() as conn:
             template_row = conn.execute(f"{self._template_base_query()} WHERE tv.id = ?", (template_id,)).fetchone()
             if template_row is None:
-                return {"id": template_id, "status": "not_found", "pages": [], "fields": [], "ignore_regions": [], "layout_references": []}
+                return admin_cache.set(cache_key, {"id": template_id, "status": "not_found", "pages": [], "fields": [], "ignore_regions": [], "layout_references": []})
             page_rows = conn.execute("SELECT * FROM template_pages WHERE template_version_id = ? ORDER BY page_number ASC", (template_id,)).fetchall()
             extraction_rows = conn.execute(
                 """
@@ -6228,7 +6260,7 @@ class AdminTemplateService:
             result["pending_update"] = {**(result.get("pending_update") or {}), "field_ops": len(pending_field_ops[template_id])}
         if template_id in pending_page_ops:
             result["pending_update"] = {**(result.get("pending_update") or {}), "page_ops": len(pending_page_ops[template_id])}
-        return result
+        return admin_cache.set(cache_key, result)
 
     def _template_page_image_paths(self, template_id: str, pages: List[Dict[str, Any]]) -> Dict[int, str]:
         paths: Dict[int, str] = {}
@@ -7036,7 +7068,7 @@ class AdminTemplateService:
         if pending_status is not None:
             settings.save_pending_template_status(template_id, pending_status)
         else:
-            _refresh_published_template_cache(template_id)
+            _refresh_published_template_cache(template_id, list_changed=True)
         return self.get_template(template_id, apply_pending=False)
 
     def delete_template(self, template_id: str) -> Dict[str, Any]:
@@ -7062,7 +7094,7 @@ class AdminTemplateService:
                 raise HTTPException(status_code=404, detail="Template not found.")
             conn.execute("INSERT INTO template_pages (id, template_version_id, page_number, page_name, sample_image_url, normalized_image_url, layout_signature_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (_stub_id("tpl_page"), template_id, payload.page_number, payload.page_name, payload.sample_image_url, payload.normalized_image_url, payload.layout_signature_json))
             conn.commit()
-        _refresh_published_template_cache(template_id)
+        _refresh_published_template_cache(template_id, list_changed=True)
         return self.get_template(template_id)
 
     def update_template_page(self, template_id: str, page_id: str, payload: TemplatePageUpdate) -> Dict[str, Any]:
@@ -7078,14 +7110,14 @@ class AdminTemplateService:
             with _connect() as conn:
                 conn.execute(f"UPDATE template_pages SET {', '.join(f'{c} = ?' for c, _ in updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND template_version_id = ?", [*(v for _, v in updates), page_id, template_id])
                 conn.commit()
-            _refresh_published_template_cache(template_id)
+            _refresh_published_template_cache(template_id, list_changed=True)
         return self.get_template(template_id)
 
     def delete_template_page(self, template_id: str, page_id: str) -> Dict[str, Any]:
         with _connect() as conn:
             conn.execute("DELETE FROM template_pages WHERE id = ? AND template_version_id = ?", (page_id, template_id))
             conn.commit()
-        _refresh_published_template_cache(template_id)
+        _refresh_published_template_cache(template_id, list_changed=True)
         return self.get_template(template_id)
 
     def create_template_field(self, template_id: str, payload: TemplateFieldCreate) -> Dict[str, Any]:

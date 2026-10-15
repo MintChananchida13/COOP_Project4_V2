@@ -24,7 +24,6 @@ import {
   deleteTemplateRequest,
   fetchTemplateBundle,
   fetchTemplateRequest,
-  fetchTemplateRequestPages,
   fetchTemplates,
   suggestTemplateRequestBaseVersion,
   updateTemplateApi,
@@ -242,16 +241,15 @@ export default function AdminRequestDetailPage({
           throw new Error("Request id is required");
         }
 
-        const [requestDetail, requestPages] = await Promise.all([
+        const needsTemplateList = searchParams.get("creationType") === "new_version";
+        const [requestDetail, templateList] = await Promise.all([
           fetchTemplateRequest(requestId),
-          fetchTemplateRequestPages(requestId),
+          needsTemplateList ? fetchTemplates() : Promise.resolve([] as Template[]),
         ]);
-        const templateList = await fetchTemplates();
 
         if (cancelled) return;
 
-        const fallbackPages = Array.isArray(requestDetail.pages) ? requestDetail.pages : [];
-        const nextPages = requestPages.length > 0 ? requestPages : fallbackPages;
+        const nextPages = Array.isArray(requestDetail.pages) ? requestDetail.pages : [];
         setRequest({
           ...requestDetail,
           pages: nextPages,
@@ -559,21 +557,21 @@ export default function AdminRequestDetailPage({
     setIsConverting(true);
 
     try {
-      const updatedRequest = await updateTemplateRequest(request.id, {
-        requestTitle: nextTemplateName,
-        documentType: nextDocumentType,
-        adminNote,
-      });
       const primaryPageIds = new Set(primaryPages.map((page) => page.id));
       const pendingPages = pages.filter((page) => page.reviewStatus !== "approved" || !primaryPageIds.has(page.id));
-      await Promise.all(
-        pendingPages.map((page) =>
+      const [updatedRequest] = await Promise.all([
+        updateTemplateRequest(request.id, {
+          requestTitle: nextTemplateName,
+          documentType: nextDocumentType,
+          adminNote,
+        }),
+        ...pendingPages.map((page) =>
           updateTemplateRequestImage(request.id, page.id, {
             reviewStatus: primaryPageIds.has(page.id) ? "approved" : "rejected",
             isCanonical: primaryPageIds.has(page.id) && (detectionMode === "main_page" ? page.pageNumber === safeMainPageNumber : page.pageNumber === 1),
           })
-        )
-      );
+        ),
+      ]);
       const result =
         creationType === "new_version"
           ? await convertTemplateRequestToVersion(request.id, {

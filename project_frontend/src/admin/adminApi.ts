@@ -52,6 +52,8 @@ let templateRequestListCache: AdminTemplateRequest[] | null = null;
 let templateListCache: Template[] | null = null;
 let templateRequestListPromise: Promise<AdminTemplateRequest[]> | null = null;
 let templateListPromise: Promise<Template[]> | null = null;
+const templateRequestDetailCache = new Map<string, AdminTemplateRequest>();
+const templateRequestDetailPromises = new Map<string, Promise<AdminTemplateRequest>>();
 let verificationStrategyCache: AdminMemoryCache<VerificationStrategySettings> | null = null;
 let verificationStrategyPromise: Promise<VerificationStrategySettings> | null = null;
 let detectionBatchModeCache: AdminMemoryCache<DetectionBatchModeSettings> | null = null;
@@ -450,6 +452,8 @@ export const invalidateAdminListCache = (target: "templates" | "requests" | "all
   if (target === "requests" || target === "all") {
     templateRequestListCache = null;
     templateRequestListPromise = null;
+    templateRequestDetailCache.clear();
+    templateRequestDetailPromises.clear();
   }
   adminDashboardCache = null;
   adminDashboardPromise = null;
@@ -1608,15 +1612,30 @@ export const createTemplateRequest = async (payload: {
 };
 
 export const fetchTemplateRequest = async (requestId: string) => {
-  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/template-requests/${requestId}`);
-  if (!response.ok) {
-    throw new Error(`Template request detail failed with ${response.status}`);
-  }
+  const cached = templateRequestDetailCache.get(requestId);
+  if (cached) return cloneTemplateRequests([cached])[0];
 
-  const json = await response.json();
-  const request = mapApiRequest(json?.data as ApiTemplateRequest);
-  upsertTemplateRequestListCache(request);
-  return request;
+  const pending = templateRequestDetailPromises.get(requestId);
+  if (pending) return cloneTemplateRequests([await pending])[0];
+
+  const promise = (async () => {
+    const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/template-requests/${requestId}`);
+    if (!response.ok) {
+      throw new Error(`Template request detail failed with ${response.status}`);
+    }
+
+    const json = await response.json();
+    const request = mapApiRequest(json?.data as ApiTemplateRequest);
+    templateRequestDetailCache.set(requestId, request);
+    upsertTemplateRequestListCache(request);
+    return request;
+  })();
+  templateRequestDetailPromises.set(requestId, promise);
+  try {
+    return cloneTemplateRequests([await promise])[0];
+  } finally {
+    templateRequestDetailPromises.delete(requestId);
+  }
 };
 
 export const updateTemplateRequest = async (
@@ -1643,6 +1662,7 @@ export const updateTemplateRequest = async (
     throw new Error(json?.detail || json?.error?.message || `Template request update failed with ${response.status}`);
   }
   const request = mapApiRequest(json?.data as ApiTemplateRequest);
+  templateRequestDetailCache.set(requestId, request);
   upsertTemplateRequestListCache(request);
   return request;
 };

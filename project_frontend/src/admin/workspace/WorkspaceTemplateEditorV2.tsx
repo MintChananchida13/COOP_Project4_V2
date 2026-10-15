@@ -94,13 +94,13 @@ const fieldImageCategories = (value?: string | string[]) =>
 const extractionFieldTestSignature = (fields: TemplateField[]) =>
   fields
     .filter((field) => !isAnchor(field))
-    .map((field) => `${field.id}:${field.pageNumber}:${field.fieldName}:${field.dataType}:${field.extractionMethod}:${field.roi.xRatio}:${field.roi.yRatio}:${field.roi.widthRatio}:${field.roi.heightRatio}`)
+    .map((field) => `${field.pageNumber}:${field.fieldName}:${field.dataType}:${field.extractionMethod}:${field.roi.xRatio}:${field.roi.yRatio}:${field.roi.widthRatio}:${field.roi.heightRatio}`)
     .join("|");
 
 const verificationAnchorTestSignature = (fields: TemplateField[]) =>
   fields
     .filter(isAnchor)
-    .map((field) => `${field.id}:${field.pageNumber}:${field.fieldName}:${field.dataType}:${field.extractionMethod}:${field.expectedText || ""}:${field.imageCategory || ""}:${field.roi.xRatio}:${field.roi.yRatio}:${field.roi.widthRatio}:${field.roi.heightRatio}`)
+    .map((field) => `${field.pageNumber}:${field.fieldName}:${field.dataType}:${field.extractionMethod}:${field.expectedText || ""}:${field.imageCategory || ""}:${field.roi.xRatio}:${field.roi.yRatio}:${field.roi.widthRatio}:${field.roi.heightRatio}`)
     .join("|");
 
 const normalizeTableRows = (rows?: unknown): string[][] | null => {
