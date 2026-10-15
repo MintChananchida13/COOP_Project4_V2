@@ -44,6 +44,7 @@ from app.business.services import (
 
 DETECTION_THRESHOLD = 0.50
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 PIPELINE_CONFIG = get_pipeline_core_config()
 DETECTION_VERSION = PIPELINE_CONFIG.version
 PDF_RENDER_SCALE = 2.0

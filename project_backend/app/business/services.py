@@ -83,6 +83,7 @@ from app.core import admin_cache
 
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 SAVE_DEBUG_ARTIFACTS = os.getenv("SAVE_DEBUG_ARTIFACTS", "false").strip().lower() in {"1", "true", "yes", "on"}
 VERIFICATION_STRATEGY_SETTING_KEY = "verification_strategy"
 PENDING_VERIFICATION_STRATEGY_SETTING_KEY = "pending_verification_strategy"
