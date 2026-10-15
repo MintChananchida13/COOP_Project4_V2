@@ -4013,6 +4013,11 @@ def _candidate_from_anchor_strategy(
             "image_verification_ms": _ms((verification.get("timing") or {}).get("image_verification")),
             "text_ocr_inference_ms": _ms((verification.get("timing") or {}).get("text_ocr_inference")),
             "image_model_inference_ms": _ms((verification.get("timing") or {}).get("image_model_inference")),
+            "siglip_preprocess_ms": _ms(((verification.get("timing") or {}).get("image_batch") or {}).get("siglip_preprocess_ms")),
+            "siglip_inference_ms": _ms(((verification.get("timing") or {}).get("image_batch") or {}).get("siglip_inference_ms")),
+            "siglip_postprocess_ms": _ms(((verification.get("timing") or {}).get("image_batch") or {}).get("siglip_postprocess_ms")),
+            "image_batch_total_ms": _ms(((verification.get("timing") or {}).get("image_batch") or {}).get("image_batch_total_ms")),
+            "siglip_batch_size": ((verification.get("timing") or {}).get("image_batch") or {}).get("siglip_batch_size"),
             "anchor_strategy_matching_ms": _ms(timing.get("anchor_strategy_matching")),
         },
     }
@@ -4760,6 +4765,23 @@ def _benchmark_timing_debug(
         "image_batch_total_ms": global_image_batch_debug.get("image_batch_total_ms"),
         "siglip_batch_size": global_image_batch_debug.get("siglip_batch_size"),
     }
+    # Per-template mode performs one or more image batches inside each
+    # candidate. Aggregate only Runtime-provided SigLIP timings from the
+    # candidates that were actually evaluated (including an early-exit match).
+    if global_image_siglip_timing["siglip_inference_ms"] is None:
+        for timing_key in ("siglip_preprocess_ms", "siglip_inference_ms", "siglip_postprocess_ms", "image_batch_total_ms"):
+            values = [
+                float(item[timing_key])
+                for item in candidate_timings
+                if isinstance(item.get(timing_key), (int, float))
+            ]
+            global_image_siglip_timing[timing_key] = round(sum(values), 2) if values else None
+        batch_sizes = [
+            int(item["siglip_batch_size"])
+            for item in candidate_timings
+            if isinstance(item.get("siglip_batch_size"), (int, float))
+        ]
+        global_image_siglip_timing["siglip_batch_size"] = sum(batch_sizes) if batch_sizes else None
     global_image_batch_ms = _ms(global_image_batch_debug.get("image_batch_total_ms")) or _ms(timing.get("anchor_strategy_global_image_batch"))
     if not text_only and global_image_batch_ms is not None and (image_verification_ms is None or image_verification_ms <= 0):
         image_verification_ms = global_image_batch_ms
@@ -4963,6 +4985,23 @@ def _detection_timing_debug(
 
     total_elapsed_ms = _ms(total_elapsed)
     global_image_batch_debug = timing.get("anchor_strategy_global_image_batch_debug") if isinstance(timing.get("anchor_strategy_global_image_batch_debug"), dict) else {}
+    if global_image_batch_debug.get("siglip_inference_ms") is None:
+        per_template_siglip = {}
+        for timing_key in ("siglip_preprocess_ms", "siglip_inference_ms", "siglip_postprocess_ms", "image_batch_total_ms"):
+            values = [
+                float(item[timing_key])
+                for item in candidate_timings
+                if isinstance(item.get(timing_key), (int, float))
+            ]
+            per_template_siglip[timing_key] = round(sum(values), 2) if values else None
+        batch_sizes = [
+            int(item["siglip_batch_size"])
+            for item in candidate_timings
+            if isinstance(item.get("siglip_batch_size"), (int, float))
+        ]
+        per_template_siglip["siglip_batch_size"] = sum(batch_sizes) if batch_sizes else None
+        if per_template_siglip["siglip_inference_ms"] is not None:
+            global_image_batch_debug = {**global_image_batch_debug, **per_template_siglip}
     return {
         "total_detection_ms": total_elapsed_ms,
         "prepare_pages_ms": _ms(timing.get("prepare_pages")),
