@@ -291,6 +291,16 @@ def _detect_boxes_in_crops_batch(
             detections.extend(chunk_detections)
             detection_breakdowns.append({"chunk": chunk_index, "size": len(chunk), **detection_timing})
         if timing is not None:
+            det_inference_values = [
+                float(item["text_det_inference_ms"])
+                for item in detection_breakdowns
+                if isinstance(item.get("text_det_inference_ms"), (int, float))
+            ]
+            timing["text_det_inference_ms"] = (
+                round(sum(det_inference_values), 2)
+                if det_inference_values
+                else None
+            )
             timing["text_detection_batch"] = float(timing.get("text_detection_batch") or 0.0) + (time.perf_counter() - step_started)
             timing["text_detection_batch_size"] = int(timing.get("text_detection_batch_size") or 0) + len(text_items)
             timing["text_detection_batch_chunk_size"] = OCR_BATCH_CHUNK_SIZE
