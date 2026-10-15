@@ -4081,6 +4081,7 @@ class VerificationService:
         text_verification_elapsed = 0.0
         image_verification_elapsed = 0.0
         ocr_timing: Dict[str, Any] = {}
+        runtime_timing: Dict[str, Any] = {}
         text_fields_by_page: Dict[int, List[Dict[str, Any]]] = {}
         if precomputed_text_ocr_cache is None and precomputed_text_ocr_errors is None:
             for field in fields:
@@ -4137,11 +4138,10 @@ class VerificationService:
                         error,
                     )
 
-            runtime_timing = {
+            runtime_timing.update({
                 "text_det_inference_ms": ocr_timing.get("text_det_inference_ms"),
                 "text_rec_inference_ms": ocr_timing.get("text_rec_inference_ms"),
-                **runtime_timing,
-            }
+            })
 
         checked_fields = []
         if use_image_batch and precomputed_image_matches is None:
