@@ -4173,6 +4173,7 @@ def _detect_template_anchor_strategy(
             timing,
             "anchor_strategy",
         )
+        timing["anchor_strategy_global_text_batch_debug"] = global_text_debug
     global_image_matches: Optional[Dict[str, Dict[str, Any]]] = None
     global_image_debug: Optional[Dict[str, Any]] = None
     if detection_batch_mode == DETECTION_BATCH_MODE_GLOBAL and "image" in anchor_types:
@@ -4769,6 +4770,7 @@ def _benchmark_timing_debug(
     # verification, so the candidate-local timing can legitimately be zero.
     # Include the actual batch request time in the public benchmark timing.
     global_image_batch_debug = timing.get("anchor_strategy_global_image_batch_debug") if isinstance(timing.get("anchor_strategy_global_image_batch_debug"), dict) else {}
+    global_text_batch_debug = timing.get("anchor_strategy_global_text_batch_debug") if isinstance(timing.get("anchor_strategy_global_text_batch_debug"), dict) else {}
     global_image_siglip_timing = {
         "siglip_preprocess_ms": global_image_batch_debug.get("siglip_preprocess_ms"),
         "siglip_inference_ms": global_image_batch_debug.get("siglip_inference_ms"),
@@ -4803,6 +4805,9 @@ def _benchmark_timing_debug(
 
     text_det_inference_ms = _sum_runtime_field("text_det_inference_ms")
     text_rec_inference_ms = _sum_runtime_field("text_rec_inference_ms")
+    if global_text_batch_debug:
+        text_det_inference_ms = _runtime_ms(global_text_batch_debug.get("text_det_inference_ms"))
+        text_rec_inference_ms = _runtime_ms(global_text_batch_debug.get("text_rec_inference_ms"))
     siglip_inference_ms = global_image_siglip_timing.get("siglip_inference_ms")
     model_inference_values = [value for value in (text_det_inference_ms, text_rec_inference_ms, siglip_inference_ms) if isinstance(value, (int, float))]
     model_inference_total_ms = round(sum(model_inference_values), 2) if model_inference_values else None
@@ -5012,6 +5017,7 @@ def _detection_timing_debug(
 
     total_elapsed_ms = _ms(total_elapsed)
     global_image_batch_debug = timing.get("anchor_strategy_global_image_batch_debug") if isinstance(timing.get("anchor_strategy_global_image_batch_debug"), dict) else {}
+    global_text_batch_debug = timing.get("anchor_strategy_global_text_batch_debug") if isinstance(timing.get("anchor_strategy_global_text_batch_debug"), dict) else {}
     if global_image_batch_debug.get("siglip_inference_ms") is None:
         per_template_siglip = {}
         for timing_key in ("siglip_preprocess_ms", "siglip_inference_ms", "siglip_postprocess_ms", "image_batch_total_ms"):
@@ -5033,6 +5039,9 @@ def _detection_timing_debug(
     text_rec_values = [float(item["text_rec_inference_ms"]) for item in candidate_timings if isinstance(item.get("text_rec_inference_ms"), (int, float))]
     text_det_inference_ms = round(sum(text_det_values), 2) if text_det_values else None
     text_rec_inference_ms = round(sum(text_rec_values), 2) if text_rec_values else None
+    if global_text_batch_debug:
+        text_det_inference_ms = _runtime_ms(global_text_batch_debug.get("text_det_inference_ms"))
+        text_rec_inference_ms = _runtime_ms(global_text_batch_debug.get("text_rec_inference_ms"))
     siglip_inference_ms = global_image_batch_debug.get("siglip_inference_ms")
     model_values = [value for value in (text_det_inference_ms, text_rec_inference_ms, siglip_inference_ms) if isinstance(value, (int, float))]
     return {
