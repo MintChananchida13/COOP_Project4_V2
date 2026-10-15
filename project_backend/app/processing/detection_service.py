@@ -97,6 +97,13 @@ def _ms(value: Optional[float]) -> Optional[float]:
     return round(float(value) * 1000.0, 2)
 
 
+def _runtime_ms(value: Any) -> Optional[float]:
+    """Keep model-runtime timing in milliseconds; do not apply seconds conversion."""
+    if not isinstance(value, (int, float)):
+        return None
+    return round(float(value), 2)
+
+
 def _timing_ms_map(timing: Optional[Dict[str, Any]]) -> Dict[str, Optional[float]]:
     if not isinstance(timing, dict):
         return {}
@@ -4013,10 +4020,10 @@ def _candidate_from_anchor_strategy(
             "image_verification_ms": _ms((verification.get("timing") or {}).get("image_verification")),
             "text_ocr_inference_ms": _ms((verification.get("timing") or {}).get("text_ocr_inference")),
             "image_model_inference_ms": _ms((verification.get("timing") or {}).get("image_model_inference")),
-            "siglip_preprocess_ms": _ms(((verification.get("timing") or {}).get("image_batch") or {}).get("siglip_preprocess_ms")),
-            "siglip_inference_ms": _ms(((verification.get("timing") or {}).get("image_batch") or {}).get("siglip_inference_ms")),
-            "siglip_postprocess_ms": _ms(((verification.get("timing") or {}).get("image_batch") or {}).get("siglip_postprocess_ms")),
-            "image_batch_total_ms": _ms(((verification.get("timing") or {}).get("image_batch") or {}).get("image_batch_total_ms")),
+            "siglip_preprocess_ms": _runtime_ms(((verification.get("timing") or {}).get("image_batch") or {}).get("siglip_preprocess_ms")),
+            "siglip_inference_ms": _runtime_ms(((verification.get("timing") or {}).get("image_batch") or {}).get("siglip_inference_ms")),
+            "siglip_postprocess_ms": _runtime_ms(((verification.get("timing") or {}).get("image_batch") or {}).get("siglip_postprocess_ms")),
+            "image_batch_total_ms": _runtime_ms(((verification.get("timing") or {}).get("image_batch") or {}).get("image_batch_total_ms")),
             "siglip_batch_size": ((verification.get("timing") or {}).get("image_batch") or {}).get("siglip_batch_size"),
             "anchor_strategy_matching_ms": _ms(timing.get("anchor_strategy_matching")),
         },
