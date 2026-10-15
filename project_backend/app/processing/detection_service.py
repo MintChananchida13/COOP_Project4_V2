@@ -4748,6 +4748,12 @@ def _benchmark_timing_debug(
 
     text_ocr_ms = _ms(timing.get("text_only_batch_ocr")) if text_only else _sum_candidate_ms(candidate_timings, "text_ocr_inference_ms")
     image_verification_ms = None if text_only else _sum_candidate_ms(candidate_timings, "image_verification_ms")
+    # Image Only Global Batch performs the model call before candidate
+    # verification, so the candidate-local timing can legitimately be zero.
+    # Include the actual batch request time in the public benchmark timing.
+    global_image_batch_ms = _ms(timing.get("anchor_strategy_global_image_batch"))
+    if not text_only and global_image_batch_ms is not None and (image_verification_ms is None or image_verification_ms <= 0):
+        image_verification_ms = global_image_batch_ms
     alignment_ms = None if text_only else _sum_candidate_ms(candidate_timings, "alignment_ms")
     database_ms = _sum_candidate_db_total_ms(candidate_timings)
     if database_ms is None:
