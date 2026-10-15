@@ -4080,6 +4080,7 @@ class VerificationService:
         image_match_cache: Dict[str, Dict[str, Any]] = dict(precomputed_image_matches or {})
         text_verification_elapsed = 0.0
         image_verification_elapsed = 0.0
+        ocr_timing: Dict[str, Any] = {}
         text_fields_by_page: Dict[int, List[Dict[str, Any]]] = {}
         if precomputed_text_ocr_cache is None and precomputed_text_ocr_errors is None:
             for field in fields:
@@ -4099,6 +4100,7 @@ class VerificationService:
                     page_results = ocr_rois(
                         image_path,
                         [{"id": field["id"], "roi": field["roi"]} for field in page_fields],
+                        timing=ocr_timing,
                     )
                     text_verification_elapsed += time.perf_counter() - page_started
                     text_ocr_cache.update(page_results)
@@ -4109,6 +4111,7 @@ class VerificationService:
                         len(page_fields),
                         time.perf_counter() - page_started,
                     )
+
                 except OcrUnavailableError as error:
                     text_verification_elapsed += time.perf_counter() - page_started
                     for field in page_fields:
@@ -4133,6 +4136,12 @@ class VerificationService:
                         time.perf_counter() - page_started,
                         error,
                     )
+
+            runtime_timing = {
+                "text_det_inference_ms": ocr_timing.get("text_det_inference_ms"),
+                "text_rec_inference_ms": ocr_timing.get("text_rec_inference_ms"),
+                **runtime_timing,
+            }
 
         checked_fields = []
         if use_image_batch and precomputed_image_matches is None:
