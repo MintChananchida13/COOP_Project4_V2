@@ -4796,11 +4796,15 @@ def _benchmark_timing_debug(
         ]
         global_image_siglip_timing["siglip_batch_size"] = sum(batch_sizes) if batch_sizes else None
     def _sum_runtime_field(field: str) -> Optional[float]:
-        values = [
-            float(item[field])
-            for item in candidate_timings
-            if isinstance(item.get(field), (int, float))
-        ]
+        values = []
+        for item in candidate_timings:
+            value = item.get(field)
+            if not isinstance(value, (int, float)):
+                verification_timing = item.get("verification_timing")
+                if isinstance(verification_timing, dict):
+                    value = verification_timing.get(field)
+            if isinstance(value, (int, float)):
+                values.append(float(value))
         return round(sum(values), 2) if values else None
 
     text_det_inference_ms = _sum_runtime_field("text_det_inference_ms")
@@ -4976,6 +4980,7 @@ def _detection_timing_debug(
                     "verification_strategy": candidate.get("verification_strategy"),
                     "verification_source_used": candidate.get("verification_source_used"),
                     "alignment_status": candidate.get("alignment_status"),
+                    "verification_timing": (candidate.get("verification") or {}).get("timing") if isinstance(candidate.get("verification"), dict) else None,
                     **candidate_timing,
                 }
             )
@@ -5035,8 +5040,18 @@ def _detection_timing_debug(
         per_template_siglip["siglip_batch_size"] = sum(batch_sizes) if batch_sizes else None
         if per_template_siglip["siglip_inference_ms"] is not None:
             global_image_batch_debug = {**global_image_batch_debug, **per_template_siglip}
-    text_det_values = [float(item["text_det_inference_ms"]) for item in candidate_timings if isinstance(item.get("text_det_inference_ms"), (int, float))]
-    text_rec_values = [float(item["text_rec_inference_ms"]) for item in candidate_timings if isinstance(item.get("text_rec_inference_ms"), (int, float))]
+    def _candidate_runtime_values(field: str) -> List[float]:
+        values: List[float] = []
+        for item in candidate_timings:
+            value = item.get(field)
+            if not isinstance(value, (int, float)) and isinstance(item.get("verification_timing"), dict):
+                value = item["verification_timing"].get(field)
+            if isinstance(value, (int, float)):
+                values.append(float(value))
+        return values
+
+    text_det_values = _candidate_runtime_values("text_det_inference_ms")
+    text_rec_values = _candidate_runtime_values("text_rec_inference_ms")
     text_det_inference_ms = round(sum(text_det_values), 2) if text_det_values else None
     text_rec_inference_ms = round(sum(text_rec_values), 2) if text_rec_values else None
     if global_text_batch_debug:
