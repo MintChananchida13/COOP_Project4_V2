@@ -4172,6 +4172,7 @@ def _detect_template_anchor_strategy(
             page_image_paths,
         )
         timing["anchor_strategy_global_image_batch"] = time.perf_counter() - image_batch_started
+        timing["anchor_strategy_global_image_batch_debug"] = global_image_debug
     match_started = time.perf_counter()
     candidates: List[Dict[str, Any]] = []
     pages_by_index: Dict[int, Dict[str, Any]] = {
@@ -4751,7 +4752,15 @@ def _benchmark_timing_debug(
     # Image Only Global Batch performs the model call before candidate
     # verification, so the candidate-local timing can legitimately be zero.
     # Include the actual batch request time in the public benchmark timing.
-    global_image_batch_ms = _ms(timing.get("anchor_strategy_global_image_batch"))
+    global_image_batch_debug = timing.get("anchor_strategy_global_image_batch_debug") if isinstance(timing.get("anchor_strategy_global_image_batch_debug"), dict) else {}
+    global_image_siglip_timing = {
+        "siglip_preprocess_ms": global_image_batch_debug.get("siglip_preprocess_ms"),
+        "siglip_inference_ms": global_image_batch_debug.get("siglip_inference_ms"),
+        "siglip_postprocess_ms": global_image_batch_debug.get("siglip_postprocess_ms"),
+        "image_batch_total_ms": global_image_batch_debug.get("image_batch_total_ms"),
+        "siglip_batch_size": global_image_batch_debug.get("siglip_batch_size"),
+    }
+    global_image_batch_ms = _ms(global_image_batch_debug.get("image_batch_total_ms")) or _ms(timing.get("anchor_strategy_global_image_batch"))
     if not text_only and global_image_batch_ms is not None and (image_verification_ms is None or image_verification_ms <= 0):
         image_verification_ms = global_image_batch_ms
     alignment_ms = None if text_only else _sum_candidate_ms(candidate_timings, "alignment_ms")
@@ -4794,6 +4803,11 @@ def _benchmark_timing_debug(
         "schema_version": 1,
         "total_detection_ms": total_elapsed_ms,
         "verification_strategy": strategy,
+        "siglip_preprocess_ms": global_image_siglip_timing["siglip_preprocess_ms"],
+        "siglip_inference_ms": global_image_siglip_timing["siglip_inference_ms"],
+        "siglip_postprocess_ms": global_image_siglip_timing["siglip_postprocess_ms"],
+        "image_batch_total_ms": global_image_siglip_timing["image_batch_total_ms"],
+        "siglip_batch_size": global_image_siglip_timing["siglip_batch_size"],
         "benchmark_case": (
             "Text Only"
             if text_only
@@ -4830,6 +4844,7 @@ def _benchmark_timing_debug(
             "layout_retrieval": _benchmark_step(_ms(timing.get("template_matching")), layout_enabled, "text_only_strategy" if text_only else None),
             "text_det_rec": _benchmark_step(text_ocr_ms, text_enabled, "no_text_anchors" if not text_enabled else None),
             "image_verification": _benchmark_step(image_verification_ms, image_enabled, "text_only_or_no_image_anchors" if not image_enabled else None),
+            "siglip": global_image_siglip_timing,
             "alignment": _benchmark_step(alignment_ms, bool(alignment_ms and alignment_ms > 0), "not_required_or_skipped"),
             "database": _benchmark_step(database_ms, bool(database_ms is not None), "no_database_timing_available" if database_ms is None else None),
             "matching": _benchmark_step(matching_ms, True),
@@ -4947,6 +4962,7 @@ def _detection_timing_debug(
     detect_pages_overhead = max(0.0, float(timing.get("detect_pages_total") or 0.0) - detect_pages_inner_measured)
 
     total_elapsed_ms = _ms(total_elapsed)
+    global_image_batch_debug = timing.get("anchor_strategy_global_image_batch_debug") if isinstance(timing.get("anchor_strategy_global_image_batch_debug"), dict) else {}
     return {
         "total_detection_ms": total_elapsed_ms,
         "prepare_pages_ms": _ms(timing.get("prepare_pages")),
@@ -4963,6 +4979,11 @@ def _detection_timing_debug(
         "template_matching_ms": _ms(timing.get("template_matching")),
         "template_matching_breakdown": _template_matching_timing_ms_list(timing.get("layout_candidate_searches")),
         "verification_ms": _ms(timing.get("verification")),
+        "siglip_preprocess_ms": global_image_batch_debug.get("siglip_preprocess_ms"),
+        "siglip_inference_ms": global_image_batch_debug.get("siglip_inference_ms"),
+        "siglip_postprocess_ms": global_image_batch_debug.get("siglip_postprocess_ms"),
+        "image_batch_total_ms": global_image_batch_debug.get("image_batch_total_ms"),
+        "siglip_batch_size": global_image_batch_debug.get("siglip_batch_size"),
         "verification_strategy_cache_hit": bool(
             (timing.get("verification_strategy_load_breakdown") or {}).get("verification_strategy_cache_hit")
         ),

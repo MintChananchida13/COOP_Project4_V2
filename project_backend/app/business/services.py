@@ -3980,8 +3980,14 @@ class VerificationService:
             runtime_timing: Dict[str, Any] = {}
             batch_results: List[List[SiglipImageVerificationResult]] = []
             batch_limit = max(1, int(os.getenv("IMAGE_CLASSIFICATION_BATCH_LIMIT", "64")))
+            image_batch_total_ms = 0.0
+            siglip_preprocess_ms = 0.0
+            siglip_inference_ms = 0.0
+            siglip_postprocess_ms = 0.0
+            siglip_inference_measured = False
             if crop_paths:
                 for start_index in range(0, len(crop_paths), batch_limit):
+                    batch_started = time.perf_counter()
                     chunk_timing: Dict[str, Any] = {}
                     chunk_results = verify_image_categories_batch(
                         crop_paths[start_index:start_index + batch_limit],
@@ -3991,6 +3997,18 @@ class VerificationService:
                     )
                     batch_results.extend(chunk_results)
                     runtime_timing.setdefault("chunks", []).append(chunk_timing)
+                    image_batch_total_ms += float(chunk_timing.get("total_runtime_client_ms") or ((time.perf_counter() - batch_started) * 1000.0))
+                    gateway_timing = chunk_timing.get("gateway_timing") if isinstance(chunk_timing.get("gateway_timing"), dict) else {}
+                    preprocess_value = gateway_timing.get("siglip_preprocess_ms", gateway_timing.get("preprocess_ms"))
+                    inference_value = gateway_timing.get("siglip_inference_ms", gateway_timing.get("model_forward_ms", gateway_timing.get("inference_ms")))
+                    postprocess_value = gateway_timing.get("siglip_postprocess_ms", gateway_timing.get("postprocess_ms"))
+                    if isinstance(preprocess_value, (int, float)):
+                        siglip_preprocess_ms += float(preprocess_value)
+                    if isinstance(inference_value, (int, float)):
+                        siglip_inference_ms += float(inference_value)
+                        siglip_inference_measured = True
+                    if isinstance(postprocess_value, (int, float)):
+                        siglip_postprocess_ms += float(postprocess_value)
             for field_id, results in zip(request_field_ids, batch_results):
                 result = next((item for item in results if item.passed), None) or (
                     max(results, key=lambda item: float(item.evidence_score)) if results else None
@@ -4017,6 +4035,11 @@ class VerificationService:
                 "error_count": len(errors),
                 "errors": errors[:10],
                 "runtime_timing": runtime_timing,
+                "image_batch_total_ms": round(image_batch_total_ms, 2),
+                "siglip_batch_size": len(request_field_ids),
+                "siglip_preprocess_ms": round(siglip_preprocess_ms, 2) if crop_paths else None,
+                "siglip_inference_ms": round(siglip_inference_ms, 2) if siglip_inference_measured else None,
+                "siglip_postprocess_ms": round(siglip_postprocess_ms, 2) if crop_paths else None,
                 "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 2),
             }
         finally:
