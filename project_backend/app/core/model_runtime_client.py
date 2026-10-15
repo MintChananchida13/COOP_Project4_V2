@@ -172,6 +172,41 @@ def _field_size_summary(value: Any, limit: int = 12) -> List[Dict[str, Any]]:
     return sorted(items, key=lambda item: int(item.get("bytes") or 0), reverse=True)[:limit]
 
 
+def _extract_gateway_timing(parsed: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Read Runtime timing, preserving milliseconds and avoiding duplicates."""
+    result_value = parsed.get("result")
+    if result_value is None and "data" in parsed:
+        result_value = parsed.get("data")
+
+    candidates: List[Any] = [parsed.get("timing"), parsed.get("debug_timing")]
+    debug = parsed.get("debug")
+    if isinstance(debug, dict):
+        candidates.append(debug.get("timing"))
+    if isinstance(result_value, dict):
+        candidates.append(result_value.get("timing"))
+        result_debug = result_value.get("debug")
+        if isinstance(result_debug, dict):
+            candidates.append(result_debug.get("timing"))
+
+    selected: Dict[str, Any] = {}
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            for key, value in candidate.items():
+                if key not in selected:
+                    selected[key] = value
+
+    # API Service OCR timing is sometimes a sibling of data.timing.
+    # Fill only missing keys so an explicit timing object wins once.
+    for key in ("text_det_inference_ms", "text_rec_inference_ms"):
+        if key in selected:
+            continue
+        if isinstance(result_value, dict) and isinstance(result_value.get(key), (int, float)):
+            selected[key] = result_value[key]
+        elif isinstance(parsed.get(key), (int, float)):
+            selected[key] = parsed[key]
+    return selected or None
+
+
 def _post_predict(
     kind: ModelRuntimeKind,
     payload: Dict[str, Any],
@@ -255,18 +290,11 @@ def _post_predict(
     )
 
     if timing is not None:
-        gateway_timing = parsed.get("timing") or parsed.get("debug_timing")
-
-        debug = parsed.get("debug")
-        if not gateway_timing and isinstance(debug, dict):
-            gateway_timing = debug.get("timing")
-
         result_value = parsed.get("result")
         if result_value is None and "data" in parsed:
             result_value = parsed.get("data")
 
-        if not gateway_timing and isinstance(result_value, dict):
-            gateway_timing = result_value.get("timing")
+        gateway_timing = _extract_gateway_timing(parsed)
 
         if isinstance(gateway_timing, dict):
             timing["gateway_timing"] = gateway_timing
