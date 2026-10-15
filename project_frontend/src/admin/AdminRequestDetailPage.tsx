@@ -301,6 +301,21 @@ export default function AdminRequestDetailPage({
   }, [searchParams, templates]);
 
   useEffect(() => {
+    if (isTemplateEditMode || creationType !== "new_version" || templates.length > 0) return;
+    let cancelled = false;
+    fetchTemplates()
+      .then((nextTemplates) => {
+        if (!cancelled) setTemplates(nextTemplates);
+      })
+      .catch((error) => {
+        if (!cancelled) console.warn("Template list load for version creation failed.", error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [creationType, isTemplateEditMode, templates.length]);
+
+  useEffect(() => {
     const panel = previewPanelRef.current;
     if (!panel) return;
 
