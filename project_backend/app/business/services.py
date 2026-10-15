@@ -4142,6 +4142,18 @@ class VerificationService:
                 "text_det_inference_ms": ocr_timing.get("text_det_inference_ms"),
                 "text_rec_inference_ms": ocr_timing.get("text_rec_inference_ms"),
             })
+            logger.info(
+                "[TIMING DEBUG] verify_template template_id=%s ocr_timing det=(%s,%s) rec=(%s,%s) runtime_timing det=(%s,%s) rec=(%s,%s)",
+                template_id,
+                type(ocr_timing.get("text_det_inference_ms")).__name__,
+                ocr_timing.get("text_det_inference_ms"),
+                type(ocr_timing.get("text_rec_inference_ms")).__name__,
+                ocr_timing.get("text_rec_inference_ms"),
+                type(runtime_timing.get("text_det_inference_ms")).__name__,
+                runtime_timing.get("text_det_inference_ms"),
+                type(runtime_timing.get("text_rec_inference_ms")).__name__,
+                runtime_timing.get("text_rec_inference_ms"),
+            )
 
         checked_fields = []
         if use_image_batch and precomputed_image_matches is None:

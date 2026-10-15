@@ -4805,6 +4805,14 @@ def _benchmark_timing_debug(
                     value = verification_timing.get(field)
             if isinstance(value, (int, float)):
                 values.append(float(value))
+            logger.info(
+                "[TIMING DEBUG] benchmark candidate template_id=%s field=%s value_type=%s value=%s verification_type=%s",
+                item.get("template_id"),
+                field,
+                type(value).__name__,
+                value,
+                type(item.get("verification_timing")).__name__,
+            )
         return round(sum(values), 2) if values else None
 
     text_det_inference_ms = _sum_runtime_field("text_det_inference_ms")
