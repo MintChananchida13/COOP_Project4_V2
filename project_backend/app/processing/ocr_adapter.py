@@ -42,7 +42,7 @@ def _load_image():
     return Image, np
 
 
-def ocr_roi(image_path: str, roi: Dict[str, Any]) -> Dict[str, Any]:
+def ocr_roi(image_path: str, roi: Dict[str, Any], timing: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     Image, np = _load_image()
     path = Path(image_path)
     if not path.exists():
@@ -67,7 +67,7 @@ def ocr_roi(image_path: str, roi: Dict[str, Any]) -> Dict[str, Any]:
     crop = image.crop((x, y, right, bottom))
     try:
         bgr_crop = cv2.cvtColor(np.array(crop), cv2.COLOR_RGB2BGR)
-        result = recognize_text_roi(bgr_crop, source="ocr_roi")
+        result = recognize_text_roi(bgr_crop, source="ocr_roi", timing=timing)
     except PaddleThaiOcrUnavailableError as error:
         raise OcrUnavailableError(str(error)) from error
 
@@ -475,7 +475,7 @@ def _recognize_text_crops_with_detection(
         [str(meta.get("key")) for meta in recognition_meta],
     )
     step_started = time.perf_counter()
-    batch_results = run_paddle_thai_ocr_batch(recognition_crops)
+    batch_results = run_paddle_thai_ocr_batch(recognition_crops, timing=timing)
     if timing is not None:
         timing["text_recognition_batch"] = float(timing.get("text_recognition_batch") or 0.0) + (time.perf_counter() - step_started)
         timing["text_recognition_batch_size"] = int(timing.get("text_recognition_batch_size") or 0) + len(recognition_crops)
@@ -535,7 +535,7 @@ def _recognize_text_crops_with_detection(
             _diagnostic_ids(fallback_requests),
         )
         step_started = time.perf_counter()
-        fallback_results = run_paddle_thai_ocr_batch([crop for _, crop in fallback_requests])
+        fallback_results = run_paddle_thai_ocr_batch([crop for _, crop in fallback_requests], timing=timing)
         if timing is not None:
             timing["text_recognition_fallback"] = float(timing.get("text_recognition_fallback") or 0.0) + (time.perf_counter() - step_started)
             timing["text_recognition_fallback_size"] = int(timing.get("text_recognition_fallback_size") or 0) + len(fallback_requests)
@@ -597,8 +597,12 @@ def _recognize_text_crops_with_detection(
     return results
 
 
-def recognize_text_crop_with_detection(bgr_crop, source: str = "single_text_roi") -> Dict[str, Any]:
-    return _recognize_text_crops_with_detection([("roi", bgr_crop)], source=source)["roi"]
+def recognize_text_crop_with_detection(
+    bgr_crop,
+    source: str = "single_text_roi",
+    timing: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return _recognize_text_crops_with_detection([("roi", bgr_crop)], source=source, timing=timing)["roi"]
 
 
 def recognize_text_crops_with_detection(
@@ -607,8 +611,12 @@ def recognize_text_crops_with_detection(
     return _recognize_text_crops_with_detection(text_items, source=source)
 
 
-def recognize_text_roi(bgr_crop, source: str = "single_text_roi") -> Dict[str, Any]:
-    result = recognize_text_crop_with_detection(bgr_crop, source=source)
+def recognize_text_roi(
+    bgr_crop,
+    source: str = "single_text_roi",
+    timing: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    result = recognize_text_crop_with_detection(bgr_crop, source=source, timing=timing)
     segments = result.get("segments") or []
     return {
         "text": normalize_ocr_text(result.get("text")),

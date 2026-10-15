@@ -4020,6 +4020,8 @@ def _candidate_from_anchor_strategy(
             "image_verification_ms": _ms((verification.get("timing") or {}).get("image_verification")),
             "text_ocr_inference_ms": _ms((verification.get("timing") or {}).get("text_ocr_inference")),
             "image_model_inference_ms": _ms((verification.get("timing") or {}).get("image_model_inference")),
+            "text_det_inference_ms": _runtime_ms((verification.get("timing") or {}).get("text_det_inference_ms")),
+            "text_rec_inference_ms": _runtime_ms((verification.get("timing") or {}).get("text_rec_inference_ms")),
             "siglip_preprocess_ms": _runtime_ms(((verification.get("timing") or {}).get("image_batch") or {}).get("siglip_preprocess_ms")),
             "siglip_inference_ms": _runtime_ms(((verification.get("timing") or {}).get("image_batch") or {}).get("siglip_inference_ms")),
             "siglip_postprocess_ms": _runtime_ms(((verification.get("timing") or {}).get("image_batch") or {}).get("siglip_postprocess_ms")),
@@ -4111,6 +4113,8 @@ def _run_global_text_anchor_batch(
         "text_roi_count": text_anchor_count,
         "text_batch_count": len([items for items in roi_items_by_page.values() if items]),
         "text_model_request_count": model_request_count,
+        "text_det_inference_ms": _runtime_ms(ocr_timing.get("text_det_inference_ms")),
+        "text_rec_inference_ms": _runtime_ms(ocr_timing.get("text_rec_inference_ms")),
         "ocr_timing": _timing_ms_map(ocr_timing),
         "elapsed_ms": _ms(timing.get(f"{timing_prefix}_global_text_batch")),
     }
@@ -4789,6 +4793,19 @@ def _benchmark_timing_debug(
             if isinstance(item.get("siglip_batch_size"), (int, float))
         ]
         global_image_siglip_timing["siglip_batch_size"] = sum(batch_sizes) if batch_sizes else None
+    def _sum_runtime_field(field: str) -> Optional[float]:
+        values = [
+            float(item[field])
+            for item in candidate_timings
+            if isinstance(item.get(field), (int, float))
+        ]
+        return round(sum(values), 2) if values else None
+
+    text_det_inference_ms = _sum_runtime_field("text_det_inference_ms")
+    text_rec_inference_ms = _sum_runtime_field("text_rec_inference_ms")
+    siglip_inference_ms = global_image_siglip_timing.get("siglip_inference_ms")
+    model_inference_values = [value for value in (text_det_inference_ms, text_rec_inference_ms, siglip_inference_ms) if isinstance(value, (int, float))]
+    model_inference_total_ms = round(sum(model_inference_values), 2) if model_inference_values else None
     global_image_batch_ms = _ms(global_image_batch_debug.get("image_batch_total_ms")) or _ms(timing.get("anchor_strategy_global_image_batch"))
     if not text_only and global_image_batch_ms is not None and (image_verification_ms is None or image_verification_ms <= 0):
         image_verification_ms = global_image_batch_ms
@@ -4837,6 +4854,9 @@ def _benchmark_timing_debug(
         "siglip_postprocess_ms": global_image_siglip_timing["siglip_postprocess_ms"],
         "image_batch_total_ms": global_image_siglip_timing["image_batch_total_ms"],
         "siglip_batch_size": global_image_siglip_timing["siglip_batch_size"],
+        "text_det_inference_ms": text_det_inference_ms,
+        "text_rec_inference_ms": text_rec_inference_ms,
+        "model_inference_total_ms": model_inference_total_ms,
         "benchmark_case": (
             "Text Only"
             if text_only
@@ -5009,6 +5029,12 @@ def _detection_timing_debug(
         per_template_siglip["siglip_batch_size"] = sum(batch_sizes) if batch_sizes else None
         if per_template_siglip["siglip_inference_ms"] is not None:
             global_image_batch_debug = {**global_image_batch_debug, **per_template_siglip}
+    text_det_values = [float(item["text_det_inference_ms"]) for item in candidate_timings if isinstance(item.get("text_det_inference_ms"), (int, float))]
+    text_rec_values = [float(item["text_rec_inference_ms"]) for item in candidate_timings if isinstance(item.get("text_rec_inference_ms"), (int, float))]
+    text_det_inference_ms = round(sum(text_det_values), 2) if text_det_values else None
+    text_rec_inference_ms = round(sum(text_rec_values), 2) if text_rec_values else None
+    siglip_inference_ms = global_image_batch_debug.get("siglip_inference_ms")
+    model_values = [value for value in (text_det_inference_ms, text_rec_inference_ms, siglip_inference_ms) if isinstance(value, (int, float))]
     return {
         "total_detection_ms": total_elapsed_ms,
         "prepare_pages_ms": _ms(timing.get("prepare_pages")),
@@ -5030,6 +5056,9 @@ def _detection_timing_debug(
         "siglip_postprocess_ms": global_image_batch_debug.get("siglip_postprocess_ms"),
         "image_batch_total_ms": global_image_batch_debug.get("image_batch_total_ms"),
         "siglip_batch_size": global_image_batch_debug.get("siglip_batch_size"),
+        "text_det_inference_ms": text_det_inference_ms,
+        "text_rec_inference_ms": text_rec_inference_ms,
+        "model_inference_total_ms": round(sum(model_values), 2) if model_values else None,
         "verification_strategy_cache_hit": bool(
             (timing.get("verification_strategy_load_breakdown") or {}).get("verification_strategy_cache_hit")
         ),

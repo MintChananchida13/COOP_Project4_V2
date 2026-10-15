@@ -371,7 +371,7 @@ def remote_recognize_image(image: np.ndarray) -> Optional[Dict[str, Any]]:
     )
 
 
-def remote_recognize_images(images: List[np.ndarray]) -> Optional[Dict[str, Any]]:
+def remote_recognize_images(images: List[np.ndarray], timing: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     if not is_runtime_configured(ModelRuntimeKind.TEXT_RECOGNITION):
         return None
     return _post_predict(
@@ -379,6 +379,7 @@ def remote_recognize_images(images: List[np.ndarray]) -> Optional[Dict[str, Any]
         {"images": [_image_to_data_url(image) for image in images]},
         timeout=240.0,
         path_override=_active_ocr_path("text_recognition", "batch"),
+        timing=timing,
     )
 
 

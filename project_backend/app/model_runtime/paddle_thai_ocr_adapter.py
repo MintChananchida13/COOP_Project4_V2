@@ -137,7 +137,10 @@ def run_paddle_thai_ocr(opencv_img: np.ndarray) -> Dict[str, Any]:
     return run_paddle_thai_ocr_batch([opencv_img])[0]
 
 
-def run_paddle_thai_ocr_batch(opencv_images: List[np.ndarray]) -> List[Dict[str, Any]]:
+def run_paddle_thai_ocr_batch(
+    opencv_images: List[np.ndarray],
+    timing: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     if not opencv_images:
         return []
 
@@ -148,7 +151,13 @@ def run_paddle_thai_ocr_batch(opencv_images: List[np.ndarray]) -> List[Dict[str,
     for chunk_index, chunk in enumerate(chunks, start=1):
         logger.info("Using remote OCR runtime batch chunk %s/%s size=%s", chunk_index, len(chunks), len(chunk))
         try:
-            remote_result = remote_recognize_images(chunk)
+            runtime_timing: Dict[str, Any] = {}
+            remote_result = remote_recognize_images(chunk, timing=runtime_timing)
+            gateway_timing = runtime_timing.get("gateway_timing")
+            if isinstance(timing, dict) and isinstance(gateway_timing, dict):
+                value = gateway_timing.get("text_rec_inference_ms")
+                if isinstance(value, (int, float)):
+                    timing["text_rec_inference_ms"] = float(timing.get("text_rec_inference_ms") or 0.0) + float(value)
         except ModelRuntimeUnavailableError as error:
             raise PaddleThaiOcrUnavailableError(str(error)) from error
         except Exception as error:

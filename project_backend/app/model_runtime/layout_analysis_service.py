@@ -1355,6 +1355,11 @@ def detect_text_boxes_batch(images: List[np.ndarray], timing: Optional[Dict[str,
         if timing is not None:
             timing["remote_call_ms"] = round((time.perf_counter() - step_started) * 1000.0, 2)
             timing["runtime_client"] = runtime_timing
+            gateway_timing = runtime_timing.get("gateway_timing")
+            if isinstance(gateway_timing, dict):
+                value = gateway_timing.get("text_det_inference_ms")
+                if isinstance(value, (int, float)):
+                    timing["text_det_inference_ms"] = float(timing.get("text_det_inference_ms") or 0.0) + float(value)
     except ModelRuntimeUnavailableError as error:
         raise LayoutAnalysisUnavailableError(str(error)) from error
     except Exception as error:

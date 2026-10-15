@@ -4502,7 +4502,7 @@ class VerificationService:
                     if timing is not None:
                         timing["text_ocr_cache_misses"] = int(timing.get("text_ocr_cache_misses") or 0) + 1
                     inference_started = time.perf_counter()
-                    ocr_result = ocr_roi(image_path, field["roi"])
+                    ocr_result = ocr_roi(image_path, field["roi"], timing=timing)
                     if timing is not None:
                         timing["text_ocr_inference"] = float(timing.get("text_ocr_inference") or 0.0) + (time.perf_counter() - inference_started)
                     if text_cache is not None:
