@@ -4129,6 +4129,7 @@ def _run_global_text_anchor_batch(
         "text_model_request_count": model_request_count,
         "text_det_inference_ms": _runtime_ms(ocr_timing.get("text_det_inference_ms")),
         "text_rec_inference_ms": _runtime_ms(ocr_timing.get("text_rec_inference_ms")),
+        "model_call_intervals": list(ocr_timing.get("model_call_intervals") or []),
         "ocr_timing": _timing_ms_map(ocr_timing),
         "elapsed_ms": _ms(timing.get(f"{timing_prefix}_global_text_batch")),
     }
@@ -4899,11 +4900,18 @@ def _benchmark_timing_debug(
         "text_detection_wait_ms": _ms(timing.get("text_detection_wait_ms")),
         "text_recognition_wait_ms": _ms(timing.get("text_recognition_wait_ms")),
         "image_siglip_wait_ms": _ms(timing.get("image_siglip_wait_ms")),
-        "model_wall_clock_ms": None,
+        "model_wall_clock_ms": _ms(timing.get("model_wall_clock_ms")),
+        "model_wait_union_ms": _ms(timing.get("model_wait_union_ms")),
+        "model_intervals_overlap": timing.get("model_intervals_overlap"),
         "total_runtime_ms": total_elapsed_ms,
         "backend_to_frontend_ms": None,
         "frontend_render_ms": None,
         "end_to_end_ms": None,
+        "verification_breakdown": {
+            key: _ms(timing.get("verification_breakdown", {}).get(key))
+            if isinstance(timing.get("verification_breakdown"), dict) else None
+            for key in ("database", "anchor_loading", "ocr", "image_verification", "alignment", "scoring", "candidate_verification")
+        },
         "benchmark_case": (
             "Text Only"
             if text_only
@@ -5078,6 +5086,17 @@ def _detection_timing_debug(
         per_template_siglip["siglip_batch_size"] = sum(batch_sizes) if batch_sizes else None
         if per_template_siglip["siglip_inference_ms"] is not None:
             global_image_batch_debug = {**global_image_batch_debug, **per_template_siglip}
+    if global_image_batch_debug.get("siglip_inference_ms") is None:
+        candidate_siglip_values = [
+            float(item["siglip_inference_ms"])
+            for item in candidate_timings
+            if isinstance(item.get("siglip_inference_ms"), (int, float))
+        ]
+        if candidate_siglip_values:
+            global_image_batch_debug = {
+                **global_image_batch_debug,
+                "siglip_inference_ms": round(sum(candidate_siglip_values), 2),
+            }
     def _candidate_runtime_values(field: str) -> List[float]:
         values: List[float] = []
         for item in candidate_timings:
@@ -5170,6 +5189,14 @@ def _detection_timing_debug(
         if model_wall_clock_ms is not None else None
     )
     model_inference_total_ms = round(sum(model_values), 2) if model_values else None
+    verification_breakdown = {
+        key: round(sum(
+            float((item.get("verification_timing") or {}).get(key))
+            for item in candidate_timings
+            if isinstance((item.get("verification_timing") or {}).get(key), (int, float))
+        ), 2) if any(isinstance((item.get("verification_timing") or {}).get(key), (int, float)) for item in candidate_timings) else None
+        for key in ("database", "anchor_loading", "ocr", "image_verification", "alignment", "scoring", "candidate_verification")
+    }
     timing.update({
         "layout_wait_ms": layout_wait_ms,
         "text_detection_wait_ms": text_detection_wait_ms,
@@ -5180,6 +5207,7 @@ def _detection_timing_debug(
         "model_intervals_overlap": model_intervals_overlap,
         "backend_runtime_ms": backend_runtime_ms,
         "backend_to_model_ms": backend_to_model_ms,
+        "verification_breakdown": verification_breakdown,
     })
     return {
         "total_detection_ms": total_elapsed_ms,
@@ -5217,10 +5245,13 @@ def _detection_timing_debug(
         "text_recognition_wait_ms": text_recognition_wait_ms,
         "image_siglip_wait_ms": image_siglip_wait_ms,
         "model_wall_clock_ms": model_wall_clock_ms,
+        "model_wait_union_ms": model_wait_union_ms,
+        "model_intervals_overlap": model_intervals_overlap,
         "total_runtime_ms": total_elapsed_ms,
         "backend_to_frontend_ms": None,
         "frontend_render_ms": None,
         "end_to_end_ms": None,
+        "verification_breakdown": verification_breakdown,
         "verification_strategy_cache_hit": bool(
             (timing.get("verification_strategy_load_breakdown") or {}).get("verification_strategy_cache_hit")
         ),
