@@ -5099,8 +5099,19 @@ def _detection_timing_debug(
     model_values = [value for value in (text_det_inference_ms, text_rec_inference_ms, siglip_inference_ms) if isinstance(value, (int, float))]
     wait_by_kind = {"layout": 0.0, "text_detection": 0.0, "text_recognition": 0.0, "image_siglip": 0.0}
     wait_found = set()
+    model_intervals: List[tuple[float, float]] = []
     def _collect_model_waits(value: Any) -> None:
         if isinstance(value, dict):
+            start_value = value.get("model_call_start_monotonic")
+            end_value = value.get("model_call_end_monotonic")
+            if isinstance(start_value, (int, float)) and isinstance(end_value, (int, float)) and end_value >= start_value:
+                model_intervals.append((float(start_value), float(end_value)))
+            interval_list = value.get("model_call_intervals")
+            if isinstance(interval_list, list):
+                for interval in interval_list:
+                    if isinstance(interval, dict) and isinstance(interval.get("start_monotonic"), (int, float)) and isinstance(interval.get("end_monotonic"), (int, float)):
+                        if interval["end_monotonic"] >= interval["start_monotonic"]:
+                            model_intervals.append((float(interval["start_monotonic"]), float(interval["end_monotonic"])))
             wait = value.get("http_request_ms")
             endpoint = str(value.get("endpoint_path") or "")
             if isinstance(wait, (int, float)) and endpoint:
@@ -5130,8 +5141,30 @@ def _detection_timing_debug(
     text_recognition_wait_ms = round(wait_by_kind["text_recognition"], 2) if "text_recognition" in wait_found else None
     image_siglip_wait_ms = round(wait_by_kind["image_siglip"], 2) if "image_siglip" in wait_found else None
     model_wait_values = [value for value in (layout_wait_ms, text_detection_wait_ms, text_recognition_wait_ms, image_siglip_wait_ms) if isinstance(value, (int, float))]
-    model_wall_clock_ms = round(sum(model_wait_values), 2) if model_wait_values else None
-    backend_runtime_ms = round(total_elapsed_ms - model_wall_clock_ms, 2) if model_wall_clock_ms is not None else None
+    model_wall_clock_ms = None
+    model_wait_union_ms = None
+    model_intervals_overlap = False
+    if model_intervals:
+        merged_intervals: List[tuple[float, float]] = []
+        for start_value, end_value in sorted(model_intervals):
+            if merged_intervals and start_value <= merged_intervals[-1][1]:
+                model_intervals_overlap = True
+                merged_intervals[-1] = (merged_intervals[-1][0], max(merged_intervals[-1][1], end_value))
+            else:
+                merged_intervals.append((start_value, end_value))
+        # Wall clock is the envelope, not the sum of model intervals.
+        model_wall_clock_ms = round((max(end_value for _, end_value in model_intervals) - min(start_value for start_value, _ in model_intervals)) * 1000.0, 2)
+        model_wait_union_ms = round(sum(end_value - start_value for start_value, end_value in merged_intervals) * 1000.0, 2)
+    elif model_wait_values:
+        model_wall_clock_ms = round(sum(model_wait_values), 2)
+        model_wait_union_ms = model_wall_clock_ms
+    # A wall-clock subtraction is valid only when model waits are sequential.
+    # With overlap, backend work may run concurrently and requires explicit
+    # backend-active intervals; do not present a guessed value.
+    backend_runtime_ms = (
+        round(max(0.0, total_elapsed_ms - model_wait_union_ms), 2)
+        if model_wait_union_ms is not None and not model_intervals_overlap else None
+    )
     backend_to_model_ms = (
         round(max(0.0, model_wall_clock_ms - (round(sum(model_values), 2) if model_values else 0.0)), 2)
         if model_wall_clock_ms is not None else None
@@ -5143,6 +5176,8 @@ def _detection_timing_debug(
         "text_recognition_wait_ms": text_recognition_wait_ms,
         "image_siglip_wait_ms": image_siglip_wait_ms,
         "model_wall_clock_ms": model_wall_clock_ms,
+        "model_wait_union_ms": model_wait_union_ms,
+        "model_intervals_overlap": model_intervals_overlap,
         "backend_runtime_ms": backend_runtime_ms,
         "backend_to_model_ms": backend_to_model_ms,
     })

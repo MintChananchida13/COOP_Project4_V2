@@ -4071,8 +4071,14 @@ class VerificationService:
                 "timing": {
                     "total_verification": time.perf_counter() - verify_started,
                     "load_fields": load_fields_elapsed,
+                    "anchor_loading": load_fields_elapsed,
+                    "database": load_fields_elapsed,
                     "text_verification": 0.0,
                     "image_verification": 0.0,
+                    "ocr": 0.0,
+                    "alignment": None,
+                    "scoring": None,
+                    "candidate_verification": time.perf_counter() - verify_started,
                 },
             }
 
@@ -4445,8 +4451,14 @@ class VerificationService:
             "timing": {
                 "total_verification": time.perf_counter() - verify_started,
                 "load_fields": load_fields_elapsed,
+                "anchor_loading": load_fields_elapsed,
+                "database": load_fields_elapsed,
                 "text_verification": text_verification_elapsed,
                 "image_verification": image_verification_elapsed,
+                "ocr": text_verification_elapsed,
+                "alignment": None,
+                "scoring": None,
+                "candidate_verification": time.perf_counter() - verify_started,
                 "detection_batch_mode": normalize_detection_batch_mode(detection_batch_mode),
                 "image_batch": image_batch_debug,
             },

@@ -237,6 +237,7 @@ def _post_predict(
     )
     try:
         http_started = time.perf_counter()
+        monotonic_started = time.monotonic()
         with urllib.request.urlopen(request, timeout=timeout) as response:
             read_started = time.perf_counter()
             raw_bytes = response.read()
@@ -246,6 +247,11 @@ def _post_predict(
             decode_elapsed = time.perf_counter() - decode_started
         if timing is not None:
             timing["http_request_ms"] = round((time.perf_counter() - http_started) * 1000.0, 2)
+            timing["model_call_start_monotonic"] = monotonic_started
+            timing["model_call_end_monotonic"] = time.monotonic()
+            timing["model_call_interval_ms"] = round(
+                (timing["model_call_end_monotonic"] - monotonic_started) * 1000.0, 2
+            )
             timing["response_read_ms"] = round(read_elapsed * 1000.0, 2)
             timing["response_decode_ms"] = round(decode_elapsed * 1000.0, 2)
             timing["response_bytes"] = len(raw_bytes)

@@ -153,6 +153,14 @@ def run_paddle_thai_ocr_batch(
         try:
             runtime_timing: Dict[str, Any] = {}
             remote_result = remote_recognize_images(chunk, timing=runtime_timing)
+            if isinstance(timing, dict):
+                intervals = timing.setdefault("model_call_intervals", [])
+                if isinstance(intervals, list) and isinstance(runtime_timing.get("model_call_start_monotonic"), (int, float)) and isinstance(runtime_timing.get("model_call_end_monotonic"), (int, float)):
+                    intervals.append({
+                        "kind": "text_recognition",
+                        "start_monotonic": runtime_timing["model_call_start_monotonic"],
+                        "end_monotonic": runtime_timing["model_call_end_monotonic"],
+                    })
             gateway_timing = runtime_timing.get("gateway_timing")
             if isinstance(timing, dict) and isinstance(gateway_timing, dict):
                 value = gateway_timing.get("text_rec_inference_ms")
