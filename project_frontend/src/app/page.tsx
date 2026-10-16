@@ -2507,6 +2507,7 @@ function HomeWorkspace() {
       totalUserWaitMs: null,
     };
     let detectionMatchedForTiming: boolean | null = null;
+    let detectionForTiming: DetectionDevResult | null = null;
     let timingLogged = false;
     const measureStage = async <T,>(key: keyof typeof timingBreakdown, operation: () => Promise<T>): Promise<T> => {
       const startedAt = performance.now();
@@ -2520,6 +2521,29 @@ function HomeWorkspace() {
       if (timingLogged) return;
       timingLogged = true;
       timingBreakdown.totalUserWaitMs = Math.round((performance.now() - userWaitStartedAt) * 100) / 100;
+      const backendTiming = detectionForTiming?.debug?.timing as Record<string, unknown> | undefined;
+      const benchmarkTiming = backendTiming?.benchmark as Record<string, unknown> | undefined;
+      const numberOrNull = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? value : null;
+      const backendMetric = (key: string): number | null =>
+        numberOrNull(backendTiming?.[key]) ?? numberOrNull(benchmarkTiming?.[key]);
+      const sixteenMetrics = {
+        frontend_to_backend_ms: null,
+        backend_runtime_ms: backendMetric("backend_runtime_ms"),
+        backend_to_model_ms: backendMetric("backend_to_model_ms"),
+        layout_runtime_ms: backendMetric("layout_analysis_ms"),
+        text_detection_runtime_ms: backendMetric("text_det_inference_ms"),
+        text_recognition_runtime_ms: backendMetric("text_rec_inference_ms"),
+        image_siglip_runtime_ms: backendMetric("siglip_inference_ms"),
+        layout_wait_ms: backendMetric("layout_wait_ms"),
+        text_detection_wait_ms: backendMetric("text_detection_wait_ms"),
+        text_recognition_wait_ms: backendMetric("text_recognition_wait_ms"),
+        image_siglip_wait_ms: backendMetric("image_siglip_wait_ms"),
+        model_wall_clock_ms: backendMetric("model_wall_clock_ms"),
+        total_runtime_ms: backendMetric("total_detection_ms"),
+        backend_to_frontend_ms: null,
+        frontend_render_ms: Math.max(0, Math.round((performance.now() - userWaitStartedAt - (backendMetric("total_detection_ms") ?? 0)) * 100) / 100),
+        end_to_end_ms: timingBreakdown.totalUserWaitMs,
+      };
       const rows = Object.entries(timingBreakdown).map(([stage, elapsedMs]) => ({
         stage,
         elapsedMs,
@@ -2527,6 +2551,7 @@ function HomeWorkspace() {
         matched: detectionMatchedForTiming,
       }));
       console.table(rows);
+      console.table(Object.entries(sixteenMetrics).map(([metric, value]) => ({ metric, valueMs: value })));
       const measuredRows = rows.filter((row) => typeof row.elapsedMs === "number" && row.stage !== "totalUserWaitMs");
       const bottleneck = measuredRows.reduce<(typeof measuredRows)[number] | null>(
         (current, row) => (!current || Number(row.elapsedMs) > Number(current.elapsedMs) ? row : current),
@@ -2586,6 +2611,7 @@ function HomeWorkspace() {
         detection = await measureStage("detectionJobMs", () =>
           detectTemplateDev(Array.isArray(detectionInput) && detectionInput.length === 1 ? detectionInput[0] : detectionInput)
         );
+        detectionForTiming = detection;
         detectionMatchedForTiming = detection.matched;
         setTemplateDetectionSnapshot(buildTemplateDetectionSnapshot(detection));
         devTemplateFlowLog("detection completed", {

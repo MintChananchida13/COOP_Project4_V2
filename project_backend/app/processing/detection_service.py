@@ -2496,6 +2496,14 @@ def _candidate_from_result(
         candidate_timing["image_verification"] = float(candidate_timing.get("image_verification") or 0.0) + float(normalized_internal_timing.get("image_verification") or 0.0)
         candidate_timing["text_ocr_inference"] = float(candidate_timing.get("text_ocr_inference") or 0.0) + float(normalized_internal_timing.get("text_ocr_inference") or 0.0)
         candidate_timing["image_model_inference"] = float(candidate_timing.get("image_model_inference") or 0.0) + float(normalized_internal_timing.get("image_model_inference") or 0.0)
+        image_batch_timing = normalized_internal_timing.get("image_batch")
+        if isinstance(image_batch_timing, dict):
+            for key in ("siglip_preprocess_ms", "siglip_inference_ms", "siglip_postprocess_ms", "image_batch_total_ms"):
+                value = image_batch_timing.get(key)
+                if isinstance(value, (int, float)):
+                    candidate_timing[key] = round(float(value), 2)
+            if isinstance(image_batch_timing.get("siglip_batch_size"), (int, float)):
+                candidate_timing["siglip_batch_size"] = int(image_batch_timing["siglip_batch_size"])
         candidate_cache_debug["text_ocr_cache_hit"] = bool(int(normalized_internal_timing.get("text_ocr_cache_hits") or 0))
         candidate_cache_debug["image_model_cache_hit"] = bool(int(normalized_internal_timing.get("image_model_cache_hits") or 0))
         if request_cache is not None:
@@ -3050,6 +3058,11 @@ def _candidate_from_result(
             "image_verification_ms": _ms(candidate_timing.get("image_verification")),
             "text_ocr_inference_ms": _ms(candidate_timing.get("text_ocr_inference")),
             "image_model_inference_ms": _ms(candidate_timing.get("image_model_inference")),
+            "siglip_preprocess_ms": _runtime_ms(candidate_timing.get("siglip_preprocess_ms")),
+            "siglip_inference_ms": _runtime_ms(candidate_timing.get("siglip_inference_ms")),
+            "siglip_postprocess_ms": _runtime_ms(candidate_timing.get("siglip_postprocess_ms")),
+            "image_batch_total_ms": _runtime_ms(candidate_timing.get("image_batch_total_ms")),
+            "siglip_batch_size": candidate_timing.get("siglip_batch_size"),
             "normalized_verification_breakdown": normalized_internal_timing_ms,
             "aligned_verification_breakdown": aligned_internal_timing_ms,
             "projection_breakdown": _timing_ms_map(projection.get("timing") if isinstance(projection, dict) else {}),
@@ -4875,6 +4888,22 @@ def _benchmark_timing_debug(
         "text_det_inference_ms": text_det_inference_ms,
         "text_rec_inference_ms": text_rec_inference_ms,
         "model_inference_total_ms": model_inference_total_ms,
+        "frontend_to_backend_ms": None,
+        "backend_runtime_ms": None,
+        "backend_to_model_ms": None,
+        "layout_runtime_ms": _ms(timing.get("layout_runtime_ms")),
+        "text_detection_runtime_ms": text_det_inference_ms,
+        "text_recognition_runtime_ms": text_rec_inference_ms,
+        "image_siglip_runtime_ms": siglip_inference_ms,
+        "layout_wait_ms": _ms(timing.get("layout_wait_ms")),
+        "text_detection_wait_ms": _ms(timing.get("text_detection_wait_ms")),
+        "text_recognition_wait_ms": _ms(timing.get("text_recognition_wait_ms")),
+        "image_siglip_wait_ms": _ms(timing.get("image_siglip_wait_ms")),
+        "model_wall_clock_ms": None,
+        "total_runtime_ms": total_elapsed_ms,
+        "backend_to_frontend_ms": None,
+        "frontend_render_ms": None,
+        "end_to_end_ms": None,
         "benchmark_case": (
             "Text Only"
             if text_only
@@ -5068,6 +5097,55 @@ def _detection_timing_debug(
         text_rec_inference_ms = _runtime_ms(global_text_batch_debug.get("text_rec_inference_ms"))
     siglip_inference_ms = global_image_batch_debug.get("siglip_inference_ms")
     model_values = [value for value in (text_det_inference_ms, text_rec_inference_ms, siglip_inference_ms) if isinstance(value, (int, float))]
+    wait_by_kind = {"layout": 0.0, "text_detection": 0.0, "text_recognition": 0.0, "image_siglip": 0.0}
+    wait_found = set()
+    def _collect_model_waits(value: Any) -> None:
+        if isinstance(value, dict):
+            wait = value.get("http_request_ms")
+            endpoint = str(value.get("endpoint_path") or "")
+            if isinstance(wait, (int, float)) and endpoint:
+                key = (endpoint, float(wait))
+                if key not in wait_found:
+                    wait_found.add(key)
+                    if "text-detection" in endpoint:
+                        wait_found.add("text_detection")
+                        wait_by_kind["text_detection"] += float(wait)
+                    elif "text-recognition" in endpoint:
+                        wait_found.add("text_recognition")
+                        wait_by_kind["text_recognition"] += float(wait)
+                    elif "image-verification" in endpoint or "image-classification" in endpoint:
+                        wait_found.add("image_siglip")
+                        wait_by_kind["image_siglip"] += float(wait)
+                    elif "layout" in endpoint:
+                        wait_found.add("layout")
+                        wait_by_kind["layout"] += float(wait)
+            for child in value.values():
+                _collect_model_waits(child)
+        elif isinstance(value, list):
+            for child in value:
+                _collect_model_waits(child)
+    _collect_model_waits(timing)
+    layout_wait_ms = round(wait_by_kind["layout"], 2) if "layout" in wait_found else None
+    text_detection_wait_ms = round(wait_by_kind["text_detection"], 2) if "text_detection" in wait_found else None
+    text_recognition_wait_ms = round(wait_by_kind["text_recognition"], 2) if "text_recognition" in wait_found else None
+    image_siglip_wait_ms = round(wait_by_kind["image_siglip"], 2) if "image_siglip" in wait_found else None
+    model_wait_values = [value for value in (layout_wait_ms, text_detection_wait_ms, text_recognition_wait_ms, image_siglip_wait_ms) if isinstance(value, (int, float))]
+    model_wall_clock_ms = round(sum(model_wait_values), 2) if model_wait_values else None
+    backend_runtime_ms = round(total_elapsed_ms - model_wall_clock_ms, 2) if model_wall_clock_ms is not None else None
+    backend_to_model_ms = (
+        round(max(0.0, model_wall_clock_ms - (round(sum(model_values), 2) if model_values else 0.0)), 2)
+        if model_wall_clock_ms is not None else None
+    )
+    model_inference_total_ms = round(sum(model_values), 2) if model_values else None
+    timing.update({
+        "layout_wait_ms": layout_wait_ms,
+        "text_detection_wait_ms": text_detection_wait_ms,
+        "text_recognition_wait_ms": text_recognition_wait_ms,
+        "image_siglip_wait_ms": image_siglip_wait_ms,
+        "model_wall_clock_ms": model_wall_clock_ms,
+        "backend_runtime_ms": backend_runtime_ms,
+        "backend_to_model_ms": backend_to_model_ms,
+    })
     return {
         "total_detection_ms": total_elapsed_ms,
         "prepare_pages_ms": _ms(timing.get("prepare_pages")),
@@ -5091,7 +5169,23 @@ def _detection_timing_debug(
         "siglip_batch_size": global_image_batch_debug.get("siglip_batch_size"),
         "text_det_inference_ms": text_det_inference_ms,
         "text_rec_inference_ms": text_rec_inference_ms,
-        "model_inference_total_ms": round(sum(model_values), 2) if model_values else None,
+        "model_inference_total_ms": model_inference_total_ms,
+        "frontend_to_backend_ms": None,
+        "backend_runtime_ms": backend_runtime_ms,
+        "backend_to_model_ms": backend_to_model_ms,
+        "layout_runtime_ms": _ms(timing.get("layout_runtime_ms")) if timing.get("layout_runtime_ms") is not None else None,
+        "text_detection_runtime_ms": text_det_inference_ms,
+        "text_recognition_runtime_ms": text_rec_inference_ms,
+        "image_siglip_runtime_ms": siglip_inference_ms,
+        "layout_wait_ms": layout_wait_ms,
+        "text_detection_wait_ms": text_detection_wait_ms,
+        "text_recognition_wait_ms": text_recognition_wait_ms,
+        "image_siglip_wait_ms": image_siglip_wait_ms,
+        "model_wall_clock_ms": model_wall_clock_ms,
+        "total_runtime_ms": total_elapsed_ms,
+        "backend_to_frontend_ms": None,
+        "frontend_render_ms": None,
+        "end_to_end_ms": None,
         "verification_strategy_cache_hit": bool(
             (timing.get("verification_strategy_load_breakdown") or {}).get("verification_strategy_cache_hit")
         ),
