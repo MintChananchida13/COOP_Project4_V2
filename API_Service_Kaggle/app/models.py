@@ -42,7 +42,6 @@ class ModelManager:
                 from paddleocr import LayoutDetection, TableRecognitionPipelineV2, TextDetection, TextRecognition
 
                 paddle.set_device("cpu")
-                paddle.set_flags({"FLAGS_cpu_num_threads": settings.cpu_threads})
                 if name == "layout":
                     instance = LayoutDetection(model_name=NAMES[name], device="cpu")
                 elif name == "det":

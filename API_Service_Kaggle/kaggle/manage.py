@@ -114,6 +114,8 @@ def start():
     environment.update({
         "GATEWAY_URL": API_URL,
         "MODEL_DEVICE": "cpu",
+        "OMP_NUM_THREADS": str(int(environment.get("MODEL_CPU_THREADS", "2"))),
+        "MKL_NUM_THREADS": str(int(environment.get("MODEL_CPU_THREADS", "2"))),
         "CUDA_VISIBLE_DEVICES": "",
         "PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK": "True",
         "SAVE_CROPPED_ROIS": "false",
