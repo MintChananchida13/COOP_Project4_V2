@@ -59,9 +59,19 @@ python manage.py status
 python manage.py check
 python manage.py integration
 python real_siglip.py
+python test_all_models.py
+python test_all_models.py --model layout
+python test_all_models.py --model det
+python test_all_models.py --model rec
+python test_all_models.py --model table
+python test_all_models.py --model siglip
 ```
 
 `start` launches API Service first, waits for `GET http://127.0.0.1:8080/health`, then launches backend and waits for `GET http://127.0.0.1:18081/health`. `check` also calls the real backend `/health/db` (`SELECT 1` against Neon) and `/health/models` (configuration). Backend startup initializes schema, so failure can occur before health responds. `integration` uses the backend's actual `remote_analyze_layout()` client to send a small image to the API Service with `layout_only=true`; this downloads/loads the real layout model. `real_siglip.py` downloads/loads the full SigLIP model and checks that two ordered raw logits return. It uses a synthetic image to test runtime compatibility, not classification accuracy. Both model tests can take minutes and require substantial RAM. They do not test all eight models.
+
+`test_all_models.py` calls all eight API routes over HTTP, one model group at a time. It creates a document page, separate text crops, and a gridded invoice table; checks authentication, envelope, raw output fields, batch count and input order; and saves PASS/FAIL/SKIP, service timing, wall time, and API process RSS before/after each model to `all_models_result.json`. The default timeout is 900 seconds per request for first downloads; use `--timeout 1200` if needed. Use `--output /kaggle/working/ocr_runtime/my_results.json` to choose the report path. RSS is unavailable when the API PID file or Linux `/proc` cannot be read. Results validate runtime output structure, not OCR accuracy. A non-PASS result exits with code 1; inspect `api.log` for model errors.
+
+The model groups run sequentially, but the API Service keeps loaded models cached. If RAM is insufficient for the full suite, run one `--model` at a time and restart the API Service between groups. First-load timing includes download and initialization; subsequent calls in the same group reuse the model.
 
 Logs are separate at `/kaggle/working/ocr_runtime/api.log` and `backend.log`; PIDs are stored beside them. Inspect with `tail -n 80 /kaggle/working/ocr_runtime/api.log` and the corresponding backend file. `status` shows PIDs and ports; install `psutil` in the notebook environment for per-process RSS and CPU. Kaggle system tools such as `ps`, `free -h`, and `ss -ltn` can also inspect resources. Stop with:
 
