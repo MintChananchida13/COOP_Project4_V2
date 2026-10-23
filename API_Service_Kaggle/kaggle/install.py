@@ -16,7 +16,8 @@ BACKEND_ROOT = REPO_ROOT / "project_backend"
 WORK_ROOT = Path(os.environ.get("KAGGLE_RUNTIME_DIR", "/kaggle/working/ocr_runtime"))
 OVERRIDES = Path(__file__).with_name("py313_overrides.json")
 REQUIREMENT = re.compile(r"^([A-Za-z0-9_.-]+)(\[[^]]+\])?\s*([<>=!~].*)?$")
-CORE_API = {"paddlepaddle", "paddleocr", "torch"}
+CRITICAL_API = {"paddlepaddle", "paddleocr", "paddlex", "torch", "transformers", "fastapi", "uvicorn", "pydantic", "numpy"}
+PIP_CONFLICT = re.compile(r"^([A-Za-z0-9_.-]+)\s+\S+\s+(?:requires|has requirement)\s+", re.IGNORECASE)
 
 
 def python_path(environment):
@@ -124,9 +125,17 @@ def smoke(python, code, *, cwd=None, environment=None):
     return result.returncode == 0, (result.stderr.strip() or result.stdout.strip())[-1200:]
 
 
-OCR_SMOKE = """import paddle, paddleocr, torch
+OCR_SMOKE = """import paddle, paddleocr, paddlex, torch
 from paddleocr import LayoutDetection, TableRecognitionPipelineV2, TextDetection, TextRecognition
 assert paddle.get_device().startswith('cpu')
+assert float((paddle.ones([1]) + 1).numpy()[0]) == 2.0
+assert torch.device('cpu').type == 'cpu'
+"""
+
+API_FRAMEWORK_SMOKE = "import fastapi, uvicorn, pydantic, numpy"
+TORCH_CPU_SMOKE = """import torch
+assert not torch.cuda.is_available()
+assert float((torch.ones(1) + 1)[0]) == 2.0
 """
 
 SIGLIP_SMOKE = """import torch
@@ -156,12 +165,14 @@ def preflight(python=Path(sys.executable)):
     overrides = json.loads(OVERRIDES.read_text(encoding="utf-8"))
     backend = requirements(BACKEND_ROOT / "requirements.txt", overrides["backend"])
     api = requirements(SERVICE_ROOT / "requirements.txt", overrides["api"])
-    packages = report["packages"]
+    packages = {name.lower(): version for name, version in report["packages"].items()}
     ocr_ok, ocr_detail = smoke(python, OCR_SMOKE)
+    torch_ok, torch_detail = smoke(python, TORCH_CPU_SMOKE) if packages.get("torch") else (False, "PyTorch absent")
     siglip_ok, siglip_detail = smoke(python, SIGLIP_SMOKE) if packages.get("transformers") else (False, "Transformers absent")
     print("Base Python:", report["python"])
     print("Base packages:", json.dumps(packages, sort_keys=True))
     print("OCR import smoke:", "PASS" if ocr_ok else f"FAIL ({ocr_detail})")
+    print("PyTorch CPU smoke:", "PASS" if torch_ok else f"FAIL ({torch_detail})")
     print("SigLIP API smoke:", "PASS" if siglip_ok else f"FAIL ({siglip_detail})")
     print("Backend environment: isolated; effective requirements:")
     for item in backend:
@@ -174,7 +185,8 @@ def preflight(python=Path(sys.executable)):
         name = item["name"]
         installed = packages.get(name)
         can_reuse = (
-            (name in CORE_API and installed and ocr_ok)
+            (name in {"paddlepaddle", "paddleocr"} and installed == item["version"] and ocr_ok)
+            or (name == "torch" and installed and torch_ok)
             or (name == "transformers" and installed and siglip_ok)
             or (name == "numpy" and installed == item["version"])
         )
@@ -187,8 +199,53 @@ def preflight(python=Path(sys.executable)):
             print(f"  {action}: {item['specification']} (existing: {installed or 'absent'})")
     if packages.get("transformers") and not siglip_ok:
         print("Transformers is not assumed compatible; API requirement pin will be installed")
+    if "torch" not in reused:
+        raise RuntimeError("A working CPU PyTorch is required in Kaggle base Python; refusing generic torch installation that may download CUDA packages")
     print("Actual checkpoint/processor compatibility requires real SigLIP inference after installation")
     return backend, api_install, reused
+
+
+def pip_conflicts(python, *, api=False):
+    result = subprocess.run([str(python), "-m", "pip", "check"], capture_output=True, text=True, check=False)
+    if result.returncode == 0:
+        return [], []
+    lines = [line.strip() for line in (result.stdout + "\n" + result.stderr).splitlines() if line.strip()]
+    if not api:
+        return lines or ["pip check failed without details"], []
+    critical, external = [], []
+    for line in lines:
+        match = PIP_CONFLICT.match(line)
+        if match and match.group(1).lower().replace("_", "-").replace(".", "-") not in CRITICAL_API:
+            external.append(line)
+        else:
+            critical.append(line)
+    return critical or (["pip check failed without details"] if not lines else []), external
+
+
+def validate_runtime(python, *, api, environment=None):
+    critical, external = pip_conflicts(python, api=api)
+    if api:
+        overrides = json.loads(OVERRIDES.read_text(encoding="utf-8"))["api"]
+        required = requirements(SERVICE_ROOT / "requirements.txt", overrides)
+        installed = {name.lower(): version for name, version in version_report(python)["packages"].items()}
+        for item in required:
+            name = item["name"]
+            if name in {"torch", "transformers"}:
+                if not installed.get(name):
+                    critical.append(f"{name}: missing")
+            elif installed.get(name) != item["version"]:
+                critical.append(f"{name}: expected {item['version']}, found {installed.get(name) or 'missing'}")
+        if not installed.get("paddlex"):
+            critical.append("paddlex: missing")
+        for label, code in (("OCR", OCR_SMOKE), ("Torch CPU", TORCH_CPU_SMOKE), ("API framework", API_FRAMEWORK_SMOKE), ("SigLIP forward", SIGLIP_SMOKE)):
+            healthy, detail = smoke(python, code, environment=environment)
+            if not healthy:
+                critical.append(f"{label} smoke failed: {detail}")
+    else:
+        healthy, detail = smoke(python, BACKEND_SMOKE, cwd=BACKEND_ROOT, environment=environment)
+        if not healthy:
+            critical.append(f"Backend import smoke failed: {detail}")
+    return critical, external
 
 
 def install():
@@ -205,10 +262,9 @@ def install():
     api_python = ensure_environment(api_env, system_site_packages=True)
 
     run([str(backend_python), "-m", "pip", "install", *(item["specification"] for item in backend)])
-    run([str(backend_python), "-m", "pip", "check"])
-    backend_ok, backend_detail = smoke(backend_python, BACKEND_SMOKE, cwd=BACKEND_ROOT)
-    if not backend_ok:
-        raise RuntimeError(f"Backend import smoke failed: {backend_detail}")
+    backend_errors, _ = validate_runtime(backend_python, api=False)
+    if backend_errors:
+        raise RuntimeError("Backend dependency validation failed: " + "; ".join(backend_errors))
 
     constraints = WORK_ROOT / "reused_constraints.txt"
     constraints.write_text("".join(f"{name}=={version}\n" for name, version in reused.items()), encoding="utf-8")
@@ -217,13 +273,11 @@ def install():
         if reused:
             command += ["-c", str(constraints)]
         run(command + api_install)
-    run([str(api_python), "-m", "pip", "check"])
-    ocr_ok, ocr_detail = smoke(api_python, OCR_SMOKE)
-    if not ocr_ok:
-        raise RuntimeError(f"API OCR import smoke failed: {ocr_detail}")
-    siglip_ok, siglip_detail = smoke(api_python, SIGLIP_SMOKE)
-    if not siglip_ok:
-        raise RuntimeError(f"API SigLIP API smoke failed: {siglip_detail}")
+    api_errors, external = validate_runtime(api_python, api=True)
+    for conflict in external:
+        print(f"Kaggle system package conflict (non-blocking): {conflict}")
+    if api_errors:
+        raise RuntimeError("API critical dependency validation failed: " + "; ".join(api_errors))
     print("Backend environment:", json.dumps(version_report(backend_python), sort_keys=True))
     print("API environment:", json.dumps(version_report(api_python), sort_keys=True))
     print("Install and import checks passed; real models remain untested by this script")

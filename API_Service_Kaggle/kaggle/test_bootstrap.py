@@ -8,6 +8,26 @@ import bootstrap
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_external_api_conflicts_reuse_environment(self):
+        installer = SimpleNamespace(
+            WORK_ROOT=Path("fake_work"),
+            environment_state=Mock(return_value="healthy"),
+            python_path=Mock(return_value=Path("python")),
+            validate_runtime=Mock(side_effect=[([], []), ([], ["torchvision has requirement torch"])]),
+        )
+        with patch("builtins.print"):
+            self.assertEqual(bootstrap.environment_issues(installer), [])
+        self.assertEqual(installer.validate_runtime.call_count, 2)
+
+    def test_critical_api_failure_requires_repair(self):
+        installer = SimpleNamespace(
+            WORK_ROOT=Path("fake_work"),
+            environment_state=Mock(return_value="healthy"),
+            python_path=Mock(return_value=Path("python")),
+            validate_runtime=Mock(side_effect=[([], []), (["SigLIP forward smoke failed"], [])]),
+        )
+        self.assertEqual(bootstrap.environment_issues(installer), ["api_env: SigLIP forward smoke failed"])
+
     def test_redacts_secrets_from_subprocess_output(self):
         self.assertEqual(
             bootstrap.redact("database=pw1 key=key123", {"DATABASE_URL": "pw1", "MODEL_GATEWAY_API_KEY": "key123"}),

@@ -73,7 +73,13 @@ Dependency differences found in source:
 | PaddleOCR | None | 3.7.0 with `doc-parser` extra | Retain working wheel; ensure extra dependencies |
 | Transformers | None | 4.51.3 | Reuse 5.16.1 **only if** SigLIP API smoke passes; otherwise install pin and test again |
 
-NumPy 1.26.4 has no Python 3.13 support; NumPy 2.1.3 does. Backend compatibility with NumPy 2 is checked by importing its real `main` module together with CV2 and database/text dependencies. This catches import and binary ABI failures, but a full backend workflow remains to be tested. Both virtual environments must pass `pip check`; dependency conflicts or failed imports stop installation. The installer never uses blanket `--no-deps`. The SigLIP smoke runs a tiny `SiglipModel` forward pass and verifies `logits_per_image` plus `AutoProcessor` availability; it does not prove the full SO400M checkpoint works. Run a real SigLIP request separately before claiming image classification works.
+NumPy 1.26.4 has no Python 3.13 support; NumPy 2.1.3 does. Backend compatibility with NumPy 2 is checked by importing its real `main` module together with CV2 and database/text dependencies. This catches import and binary ABI failures, but a full backend workflow remains to be tested. The isolated backend must pass `pip check`; API conflicts are handled as described below. The installer never uses blanket `--no-deps`. The SigLIP smoke runs a tiny `SiglipModel` forward pass and verifies `logits_per_image` plus `AutoProcessor` availability; it does not prove the full SO400M checkpoint works. Run a real SigLIP request separately before claiming image classification works.
+
+### Reusing environments despite Kaggle system conflicts
+
+The isolated backend must pass full `pip check`. The API environment uses `--system-site-packages`, so `pip check` can also report unrelated Kaggle packages such as `torchvision`, `google-adk`, or `gradio`. Those are printed as non-blocking warnings; conflicts owned by PaddlePaddle, PaddleOCR, PaddleX, Torch, Transformers, FastAPI, Uvicorn, Pydantic, or NumPy remain failures. The installer also checks effective package versions, API and backend imports, CPU Torch operation, and a tiny SigLIP forward pass. This forward pass does **not** verify the full SO400M checkpoint; run `python real_siglip.py` or `python test_all_models.py --model siglip` for that. Generic Torch installation is refused when working Kaggle CPU Torch is absent, to avoid CUDA dependency downloads.
+
+After the changed scripts are present in the Kaggle checkout, rerun the one-cell startup above or run `python /kaggle/working/COOP_Project4_Kaggle/API_Service_Kaggle/kaggle/bootstrap.py`. Healthy environments are reused. If a critical check fails, inspect `/kaggle/working/ocr_runtime/bootstrap_install.log`, `api.log`, and `backend.log`. Do not remove healthy environments to silence system-package warnings.
 
 ## 3. Start and verify
 

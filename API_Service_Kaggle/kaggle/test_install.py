@@ -64,10 +64,31 @@ class InstallPlanTests(unittest.TestCase):
 
     def test_preflight_falls_back_from_incompatible_transformers(self):
         report = {"python": "3.13.15", "packages": {"transformers": "5.16.1"}}
-        with patch.object(install, "version_report", return_value=report), patch.object(install, "smoke", side_effect=[(False, "OCR absent"), (False, "SigLIP failed")]), patch("builtins.print"):
-            _, api_install, reused = install.preflight(Path("python"))
-        self.assertNotIn("transformers", reused)
-        self.assertIn("transformers==4.51.3", api_install)
+        with patch.object(install, "version_report", return_value=report), patch.object(install, "smoke", return_value=(False, "not available")), patch("builtins.print"):
+            with self.assertRaisesRegex(RuntimeError, "working CPU PyTorch"):
+                install.preflight(Path("python"))
+
+    def test_system_conflicts_do_not_fail_api_validation(self):
+        output = "torchvision 0.20 has requirement torch==2.5, but you have torch 2.11.\ngoogle-adk 1.0 requires grpcio, which is not installed.\ngradio 1.0 requires foo, which is not installed."
+        with patch.object(install.subprocess, "run", return_value=type("Result", (), {"returncode": 1, "stdout": output, "stderr": ""})()):
+            critical, external = install.pip_conflicts(Path("python"), api=True)
+        self.assertEqual(critical, [])
+        self.assertEqual(len(external), 3)
+
+    def test_critical_conflict_fails_api_validation(self):
+        output = "paddleocr 3.7 requires paddlex>=3.7, but you have paddlex 3.6.\ntorchvision 0.20 has requirement torch==2.5, but you have torch 2.11."
+        with patch.object(install.subprocess, "run", return_value=type("Result", (), {"returncode": 1, "stdout": output, "stderr": ""})()):
+            critical, external = install.pip_conflicts(Path("python"), api=True)
+        self.assertEqual(len(critical), 1)
+        self.assertIn("paddleocr", critical[0])
+        self.assertEqual(len(external), 1)
+
+    def test_critical_smoke_failure_is_not_ignored(self):
+        packages = {"paddlepaddle": "3.2.1", "paddleocr": "3.7.0", "paddlex": "3.7.2", "torch": "2.11.0+cpu", "transformers": "5.16.1", "fastapi": "0.115.12", "uvicorn": "0.34.2", "pydantic": "2.11.4", "numpy": "2.1.3", "opencv-python-headless": "4.11.0.86", "Pillow": "11.2.1"}
+        with patch.object(install, "pip_conflicts", return_value=([], ["gradio 1.0 requires something"])), patch.object(install, "version_report", return_value={"packages": packages}), patch.object(install, "smoke", side_effect=[(True, ""), (True, ""), (True, ""), (False, "forward failed")]):
+            critical, external = install.validate_runtime(Path("python"), api=True)
+        self.assertTrue(any("SigLIP forward smoke failed" in issue for issue in critical))
+        self.assertEqual(len(external), 1)
 
     def test_python_312_rejected(self):
         with patch.object(install, "version_report", return_value={"python": "3.12.10", "packages": {}}):

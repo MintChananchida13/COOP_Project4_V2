@@ -103,25 +103,19 @@ def modules():
 def environment_issues(installer, secrets=None):
     issues = []
     environment = {**os.environ, **(secrets or {})}
-    for name, system_packages, smoke_code, root in (
-        ("backend_env", False, installer.BACKEND_SMOKE, installer.BACKEND_ROOT),
-        ("api_env", True, installer.OCR_SMOKE, None),
+    for name, system_packages in (
+        ("backend_env", False),
+        ("api_env", True),
     ):
         directory = installer.WORK_ROOT / name
         if installer.environment_state(directory, system_site_packages=system_packages) != "healthy":
             issues.append(f"{name}: missing or incomplete")
             continue
         python = installer.python_path(directory)
-        if subprocess.run([str(python), "-m", "pip", "check"], capture_output=True, check=False).returncode:
-            issues.append(f"{name}: pip check failed")
-            continue
-        healthy, _ = installer.smoke(python, smoke_code, cwd=root, environment=environment)
-        if not healthy:
-            issues.append(f"{name}: import smoke failed")
-        if name == "api_env":
-            healthy, _ = installer.smoke(python, installer.SIGLIP_SMOKE, environment=environment)
-            if not healthy:
-                issues.append(f"{name}: SigLIP smoke failed")
+        critical, external = installer.validate_runtime(python, api=name == "api_env", environment=environment)
+        issues.extend(f"{name}: {problem}" for problem in critical)
+        for conflict in external:
+            print(f"{name}: Kaggle system package conflict (non-blocking): {conflict}")
     return issues
 
 
