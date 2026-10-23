@@ -16,12 +16,21 @@ The scripts retrieve these through `kaggle_secrets.UserSecretsClient` (or existi
 
 ## 2. Inspect and install
 
+Kaggle Python 3.13.15 may provide pip without `ensurepip`. Install `virtualenv` with the working base pip first:
+
 ```bash
-python install.py --report-only
-python install.py
+/usr/bin/python3 -m pip --version
+/usr/bin/python3 -m pip install virtualenv
 ```
 
-The installer targets **Python 3.13**. `--report-only` reads both original requirements files, prints the effective dependency plan, and runs import/API smoke checks without installing anything. The backend gets an isolated virtual environment. The API gets a separate environment with Kaggle system packages visible. Effective pins are generated from the original files plus [py313_overrides.json](py313_overrides.json); the original requirements are never edited. Both environments live in `/kaggle/working/ocr_runtime` by default. Override `KAGGLE_RUNTIME_DIR` to use another working directory.
+`install.py` also installs `virtualenv` automatically if absent. It never calls `ensurepip`. Use `/usr/bin/python3` for the following commands on the reported Kaggle image:
+
+```bash
+/usr/bin/python3 install.py --report-only
+/usr/bin/python3 install.py
+```
+
+The installer targets **Python 3.13**. `--report-only` reads both original requirements files, prints the effective dependency plan, and runs import/API smoke checks without installing anything. `virtualenv` creates an isolated backend environment and an API environment with `--system-site-packages`, so the API can see existing Kaggle PaddlePaddle and PyTorch. The installer checks Python version, `pyvenv.cfg`, and `python -m pip --version` for each environment. It retains complete environments and recreates only incomplete or broken ones under the runtime directory. Effective pins are generated from the original files plus [py313_overrides.json](py313_overrides.json); the original requirements are never edited. Both environments live in `/kaggle/working/ocr_runtime` by default. Override `KAGGLE_RUNTIME_DIR` to use another working directory.
 
 On the tested Kaggle image, Python is 3.13.15, PaddlePaddle is 3.2.1, PaddleOCR is 3.7.0, PaddleX is 3.7.2, PyTorch is 2.11.0+cpu, Transformers is 5.16.1, and NumPy is 2.1.3. PP-OCRv6 Medium DET and Thai PP-OCRv5 Mobile REC have run on that CPU image. Preflight still checks the **current** session before reusing them. The PaddleOCR `doc-parser` extra is resolved with pip so missing optional dependencies are installed without forcing a new PaddleOCR wheel.
 

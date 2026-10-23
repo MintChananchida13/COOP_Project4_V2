@@ -4,9 +4,9 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
-import venv
 from pathlib import Path
 
 
@@ -25,6 +25,62 @@ def python_path(environment):
 
 def run(arguments, **kwargs):
     return subprocess.run(arguments, check=True, **kwargs)
+
+
+def pip_available(python):
+    return subprocess.run(
+        [str(python), "-m", "pip", "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).returncode == 0
+
+
+def environment_state(environment, *, system_site_packages):
+    if not environment.exists():
+        return "missing"
+    config = environment / "pyvenv.cfg"
+    python = python_path(environment)
+    if not config.is_file() or not python.is_file():
+        return "incomplete"
+    try:
+        lines = config.read_text(encoding="utf-8").splitlines()
+        settings = {key.strip(): value.strip() for line in lines if "=" in line for key, value in [line.split("=", 1)]}
+        enabled = settings.get("include-system-site-packages", "").strip().lower() == "true"
+        if enabled != system_site_packages or not pip_available(python):
+            return "incomplete"
+        python_version = version_report(python)["python"]
+        if tuple(map(int, python_version.split(".")[:2])) != (3, 13):
+            return "incomplete"
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return "incomplete"
+    return "healthy"
+
+
+def ensure_environment(environment, *, system_site_packages):
+    state = environment_state(environment, system_site_packages=system_site_packages)
+    if state == "healthy":
+        print(f"Reusing complete environment: {environment}")
+        return python_path(environment)
+    if state == "incomplete":
+        root = WORK_ROOT.resolve()
+        target = environment.resolve()
+        if target.parent != root or environment.name not in {"backend_env", "api_env"}:
+            raise RuntimeError(f"Refusing to remove environment outside runtime directory: {environment}")
+        print(f"Recreating incomplete environment: {environment}")
+        if environment.is_dir():
+            shutil.rmtree(environment)
+        else:
+            environment.unlink()
+    command = [sys.executable, "-m", "virtualenv", "--python", sys.executable]
+    if system_site_packages:
+        command.append("--system-site-packages")
+    run(command + [str(environment)])
+    python = python_path(environment)
+    if environment_state(environment, system_site_packages=system_site_packages) != "healthy":
+        raise RuntimeError(f"virtualenv did not create a complete environment: {environment}")
+    print(f"pip available in {environment}")
+    return python
 
 
 def version_report(python):
@@ -137,18 +193,16 @@ def preflight(python=Path(sys.executable)):
 
 def install():
     backend, api_install, reused = preflight()
+    if not pip_available(Path(sys.executable)):
+        raise RuntimeError("Base Python has no pip; run /usr/bin/python3 -m pip --version")
+    if subprocess.run([sys.executable, "-m", "virtualenv", "--version"], capture_output=True, check=False).returncode:
+        print("Installing virtualenv with base pip")
+        run([sys.executable, "-m", "pip", "install", "virtualenv"])
     WORK_ROOT.mkdir(parents=True, exist_ok=True)
     backend_env = WORK_ROOT / "backend_env"
     api_env = WORK_ROOT / "api_env"
-    if not python_path(backend_env).exists():
-        venv.EnvBuilder(with_pip=True).create(backend_env)
-    if not python_path(api_env).exists():
-        venv.EnvBuilder(with_pip=True, system_site_packages=True).create(api_env)
-    backend_python = python_path(backend_env)
-    api_python = python_path(api_env)
-    for name, environment_python in (("backend_env", backend_python), ("api_env", api_python)):
-        if tuple(map(int, version_report(environment_python)["python"].split(".")[:2])) != (3, 13):
-            raise RuntimeError(f"Existing {name} uses a different Python; remove or relocate it")
+    backend_python = ensure_environment(backend_env, system_site_packages=False)
+    api_python = ensure_environment(api_env, system_site_packages=True)
 
     run([str(backend_python), "-m", "pip", "install", *(item["specification"] for item in backend)])
     run([str(backend_python), "-m", "pip", "check"])

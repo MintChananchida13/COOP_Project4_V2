@@ -6,6 +6,38 @@ import install
 
 
 class InstallPlanTests(unittest.TestCase):
+    def test_complete_environment_is_reused(self):
+        environment = Path("runtime") / "backend_env"
+        with patch.object(install, "environment_state", return_value="healthy"), patch.object(install, "run") as create:
+            self.assertEqual(install.ensure_environment(environment, system_site_packages=False), install.python_path(environment))
+        create.assert_not_called()
+
+    def test_incomplete_environment_is_recreated(self):
+        root = Path("runtime")
+        environment = root / "api_env"
+        with patch.object(install, "WORK_ROOT", root), patch.object(install, "environment_state", side_effect=["incomplete", "healthy"]), patch.object(install, "run") as create, patch.object(Path, "is_dir", return_value=True), patch.object(install.shutil, "rmtree") as remove:
+            install.ensure_environment(environment, system_site_packages=True)
+        remove.assert_called_once_with(environment)
+        arguments = create.call_args.args[0]
+        self.assertIn("--system-site-packages", arguments)
+        self.assertIn("virtualenv", arguments)
+
+    def test_missing_pip_marks_environment_incomplete(self):
+        environment = Path("runtime") / "backend_env"
+        with patch.object(Path, "exists", return_value=True), patch.object(Path, "is_file", return_value=True), patch.object(Path, "read_text", return_value="include-system-site-packages = false\n"), patch.object(install, "pip_available", return_value=False):
+            self.assertEqual(install.environment_state(environment, system_site_packages=False), "incomplete")
+
+    def test_wrong_site_packages_marks_environment_incomplete(self):
+        environment = Path("runtime") / "api_env"
+        with patch.object(Path, "exists", return_value=True), patch.object(Path, "is_file", return_value=True), patch.object(Path, "read_text", return_value="include-system-site-packages = false\n"), patch.object(install, "pip_available") as pip_check:
+            self.assertEqual(install.environment_state(environment, system_site_packages=True), "incomplete")
+        pip_check.assert_not_called()
+
+    def test_missing_python_marks_environment_incomplete(self):
+        environment = Path("runtime") / "backend_env"
+        with patch.object(Path, "exists", return_value=True), patch.object(Path, "is_file", side_effect=[True, False]):
+            self.assertEqual(install.environment_state(environment, system_site_packages=False), "incomplete")
+
     def test_backend_numpy_override_and_original_unchanged(self):
         original = (install.BACKEND_ROOT / "requirements.txt").read_text(encoding="utf-8")
         items = install.requirements(install.BACKEND_ROOT / "requirements.txt", {"numpy": "2.1.3"})
