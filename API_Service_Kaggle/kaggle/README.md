@@ -21,22 +21,24 @@ python install.py --report-only
 python install.py
 ```
 
-The report prints Python and package **versions only** before installation. The backend gets an isolated virtual environment using `project_backend/requirements.txt`. The API gets a separate virtual environment with system packages visible, so existing Kaggle `torch` and `paddlepaddle` are reused if present. Their installed versions are reported even if they differ from service pins; verify imports and real inference before drawing a compatibility conclusion. Missing heavy packages are installed from `API_Service_Kaggle/requirements.txt`. Both environments live in `/kaggle/working/ocr_runtime` by default. Override `KAGGLE_RUNTIME_DIR` to use another working directory.
+The installer targets **Python 3.13**. `--report-only` reads both original requirements files, prints the effective dependency plan, and runs import/API smoke checks without installing anything. The backend gets an isolated virtual environment. The API gets a separate environment with Kaggle system packages visible. Effective pins are generated from the original files plus [py313_overrides.json](py313_overrides.json); the original requirements are never edited. Both environments live in `/kaggle/working/ocr_runtime` by default. Override `KAGGLE_RUNTIME_DIR` to use another working directory.
+
+On the tested Kaggle image, Python is 3.13.15, PaddlePaddle is 3.2.1, PaddleOCR is 3.7.0, PaddleX is 3.7.2, PyTorch is 2.11.0+cpu, Transformers is 5.16.1, and NumPy is 2.1.3. PP-OCRv6 Medium DET and Thai PP-OCRv5 Mobile REC have run on that CPU image. Preflight still checks the **current** session before reusing them. The PaddleOCR `doc-parser` extra is resolved with pip so missing optional dependencies are installed without forcing a new PaddleOCR wheel.
 
 Dependency differences found in source:
 
 | Package | Backend pin | API pin | Strategy |
 |---|---|---|---|
-| FastAPI | 0.110.0 | 0.115.12 | Separate environments |
-| Pydantic | 2.6.4 | 2.11.4 | Separate environments |
-| OpenCV headless | 4.9.0.80 | 4.11.0.86 | Separate environments |
-| NumPy | 1.26.4 | 1.26.4 | Install per environment |
-| PaddlePaddle | None | 3.2.1 | Reuse Kaggle copy when present |
-| PyTorch | None | 2.6.0 | Reuse Kaggle copy when present |
-| PaddleOCR | None | 3.7.0 with `doc-parser` extra | Install into API environment |
-| Transformers | None | 4.51.3 | Install into API environment |
+| FastAPI | 0.110.0 → 0.115.12 | 0.115.12 | Separate environments; backend override |
+| Pydantic | 2.6.4 → 2.11.4 | 2.11.4 | Separate environments; backend override |
+| OpenCV headless | 4.9.0.80 → 4.11.0.86 | 4.11.0.86 | Separate environments; backend override |
+| NumPy | 1.26.4 → 2.1.3 | 1.26.4 → 2.1.3 | Python 3.13 compatible override in both |
+| PaddlePaddle | None | 3.2.1 | Reuse working Kaggle copy |
+| PyTorch | None | 2.6.0 | Reuse working Kaggle CPU copy, including 2.11.0+cpu |
+| PaddleOCR | None | 3.7.0 with `doc-parser` extra | Retain working wheel; ensure extra dependencies |
+| Transformers | None | 4.51.3 | Reuse 5.16.1 **only if** SigLIP API smoke passes; otherwise install pin and test again |
 
-Package resolution and wheel support depend on the Kaggle Python image. `pip check` and import smoke tests run after installation. The requested OCR and SigLIP weights download on first real inference and can consume substantial RAM and disk.
+NumPy 1.26.4 has no Python 3.13 support; NumPy 2.1.3 does. Backend compatibility with NumPy 2 is checked by importing its real `main` module together with CV2 and database/text dependencies. This catches import and binary ABI failures, but a full backend workflow remains to be tested. Both virtual environments must pass `pip check`; dependency conflicts or failed imports stop installation. The installer never uses blanket `--no-deps`. The SigLIP smoke runs a tiny `SiglipModel` forward pass and verifies `logits_per_image` plus `AutoProcessor` availability; it does not prove the full SO400M checkpoint works. Run a real SigLIP request separately before claiming image classification works.
 
 ## 3. Start and verify
 
@@ -45,9 +47,10 @@ python manage.py start
 python manage.py status
 python manage.py check
 python manage.py integration
+python real_siglip.py
 ```
 
-`start` launches API Service first, waits for `GET http://127.0.0.1:8080/health`, then launches backend and waits for `GET http://127.0.0.1:18081/health`. `check` also calls the real backend `/health/db` (`SELECT 1` against Neon) and `/health/models` (configuration). Backend startup initializes schema, so failure can occur before health responds. `integration` uses the backend's actual `remote_analyze_layout()` client to send a small image to the API Service with `layout_only=true`; this downloads/loads the real layout model and is the meaningful backend → API inference check. It can take minutes and does not test all eight models.
+`start` launches API Service first, waits for `GET http://127.0.0.1:8080/health`, then launches backend and waits for `GET http://127.0.0.1:18081/health`. `check` also calls the real backend `/health/db` (`SELECT 1` against Neon) and `/health/models` (configuration). Backend startup initializes schema, so failure can occur before health responds. `integration` uses the backend's actual `remote_analyze_layout()` client to send a small image to the API Service with `layout_only=true`; this downloads/loads the real layout model. `real_siglip.py` downloads/loads the full SigLIP model and checks that two ordered raw logits return. It uses a synthetic image to test runtime compatibility, not classification accuracy. Both model tests can take minutes and require substantial RAM. They do not test all eight models.
 
 Logs are separate at `/kaggle/working/ocr_runtime/api.log` and `backend.log`; PIDs are stored beside them. Inspect with `tail -n 80 /kaggle/working/ocr_runtime/api.log` and the corresponding backend file. `status` shows PIDs and ports; install `psutil` in the notebook environment for per-process RSS and CPU. Kaggle system tools such as `ps`, `free -h`, and `ss -ltn` can also inspect resources. Stop with:
 
