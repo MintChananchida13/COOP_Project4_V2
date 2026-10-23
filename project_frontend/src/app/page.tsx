@@ -24,6 +24,7 @@ import {
 import AuthGate from "../auth/AuthGate";
 import { AuthSession, authHeaders, clearAuthSession, readAuthSession } from "../auth/session";
 import { AppHeader } from "../shared/ui";
+import { browserTiming } from "../shared/browserTiming";
 
 interface PageConfig {
   rotation: number;
@@ -2498,6 +2499,8 @@ function HomeWorkspace() {
     const userWaitStartedAt = performance.now();
     const timingBreakdown: Record<string, number | null> = {
       detectionJobMs: null,
+      uploadJobMs: null,
+      jobPollingMs: null,
       templateBundleMs: null,
       canvasPreparationMs: null,
       roiMappingMs: null,
@@ -2508,6 +2511,7 @@ function HomeWorkspace() {
     };
     let detectionMatchedForTiming: boolean | null = null;
     let detectionForTiming: DetectionDevResult | null = null;
+    const detectionTransportTiming: { uploadJobMs?: number; jobPollingMs?: number } = {};
     let timingLogged = false;
     const measureStage = async <T,>(key: keyof typeof timingBreakdown, operation: () => Promise<T>): Promise<T> => {
       const startedAt = performance.now();
@@ -2520,29 +2524,34 @@ function HomeWorkspace() {
     const logTemplateDetectionTiming = (status: "matched" | "no_match" | "failed") => {
       if (timingLogged) return;
       timingLogged = true;
-      timingBreakdown.totalUserWaitMs = Math.round((performance.now() - userWaitStartedAt) * 100) / 100;
+      const browserMetrics = browserTiming(userWaitStartedAt, performance.now());
+      timingBreakdown.totalUserWaitMs = browserMetrics.end_to_end_ms;
       const backendTiming = detectionForTiming?.debug?.timing as Record<string, unknown> | undefined;
       const benchmarkTiming = backendTiming?.benchmark as Record<string, unknown> | undefined;
       const numberOrNull = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? value : null;
       const backendMetric = (key: string): number | null =>
         numberOrNull(backendTiming?.[key]) ?? numberOrNull(benchmarkTiming?.[key]);
+      timingBreakdown.uploadJobMs = detectionTransportTiming.uploadJobMs ?? null;
+      timingBreakdown.jobPollingMs = detectionTransportTiming.jobPollingMs ?? null;
       const sixteenMetrics = {
-        frontend_to_backend_ms: null,
+        frontend_to_backend_ms: browserMetrics.frontend_to_backend_ms,
         backend_runtime_ms: backendMetric("backend_runtime_ms"),
         backend_to_model_ms: backendMetric("backend_to_model_ms"),
         layout_runtime_ms: backendMetric("layout_runtime_ms"),
         text_detection_runtime_ms: backendMetric("text_detection_runtime_ms") ?? backendMetric("text_det_inference_ms"),
         text_recognition_runtime_ms: backendMetric("text_recognition_runtime_ms") ?? backendMetric("text_rec_inference_ms"),
         image_siglip_runtime_ms: backendMetric("image_siglip_runtime_ms") ?? backendMetric("siglip_inference_ms"),
+        table_runtime_ms: backendMetric("table_runtime_ms"),
         layout_wait_ms: backendMetric("layout_wait_ms"),
         text_detection_wait_ms: backendMetric("text_detection_wait_ms"),
         text_recognition_wait_ms: backendMetric("text_recognition_wait_ms"),
         image_siglip_wait_ms: backendMetric("image_siglip_wait_ms"),
+        table_wait_ms: backendMetric("table_wait_ms"),
         model_wall_clock_ms: backendMetric("model_wall_clock_ms"),
         total_runtime_ms: backendMetric("total_detection_ms"),
-        backend_to_frontend_ms: null,
-        frontend_render_ms: Math.max(0, Math.round((performance.now() - userWaitStartedAt - (backendMetric("total_detection_ms") ?? 0)) * 100) / 100),
-        end_to_end_ms: timingBreakdown.totalUserWaitMs,
+        backend_to_frontend_ms: browserMetrics.backend_to_frontend_ms,
+        frontend_render_ms: browserMetrics.frontend_render_ms,
+        end_to_end_ms: browserMetrics.end_to_end_ms,
       };
       const rows = Object.entries(timingBreakdown).map(([stage, elapsedMs]) => ({
         stage,
@@ -2609,7 +2618,7 @@ function HomeWorkspace() {
           ? uploadedSourceFile
           : await Promise.all(finalProcessedImages.map((src, index) => dataUrlToFile(src, `confirmed-document-page-${index + 1}.jpg`)));
         detection = await measureStage("detectionJobMs", () =>
-          detectTemplateDev(Array.isArray(detectionInput) && detectionInput.length === 1 ? detectionInput[0] : detectionInput)
+          detectTemplateDev(Array.isArray(detectionInput) && detectionInput.length === 1 ? detectionInput[0] : detectionInput, { timing: detectionTransportTiming })
         );
         detectionForTiming = detection;
         detectionMatchedForTiming = detection.matched;
@@ -2825,6 +2834,7 @@ function HomeWorkspace() {
       });
       logTemplateDetectionTiming("failed");
     } finally {
+      if (!timingLogged) logTemplateDetectionTiming("failed");
       setIsTemplateDecisionOpen(false);
       setTemplateDecisionStatus("");
     }

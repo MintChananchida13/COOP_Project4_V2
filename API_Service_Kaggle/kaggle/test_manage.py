@@ -31,6 +31,17 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(environment["OMP_NUM_THREADS"], "3")
             self.assertEqual(environment["MKL_NUM_THREADS"], "3")
 
+    def test_start_reuses_healthy_processes_without_spawn(self):
+        values = {"DATABASE_URL": "postgresql://user:password@db.example/test", "MODEL_GATEWAY_API_KEY": "secret-key"}
+        with patch.object(manage, "load_secrets", return_value=values), \
+                patch.object(manage, "python_path", return_value=Path(__file__)), \
+                patch.object(manage, "live_pid", return_value=123), \
+                patch.object(manage, "request", side_effect=[{"status": "ok"}, {"status": "success", "data": {"status": "ok"}}]), \
+                patch.object(Path, "mkdir"), \
+                patch.object(manage, "spawn") as spawn, patch.object(manage, "check"):
+            manage.start()
+        spawn.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

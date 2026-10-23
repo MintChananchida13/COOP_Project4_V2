@@ -2,6 +2,30 @@
 
 Place `project_backend/` and `API_Service_Kaggle/` side by side in a writable Kaggle checkout. Run these commands from `API_Service_Kaggle/kaggle/`. This setup starts one API worker on localhost port 8080 and one backend worker on localhost port 18081. Only the backend gets an optional HTTPS tunnel. Windows Next.js remains on port 3000.
 
+## One-cell startup after a Kaggle restart
+
+Enable Notebook Internet and configure the two required Kaggle Secrets below. Run this **single Python cell**; do not paste secrets into it:
+
+```python
+import pathlib
+import subprocess
+import sys
+
+repo = pathlib.Path("/kaggle/working/COOP_Project4_Kaggle")
+if not repo.exists():
+    subprocess.run([
+        "git", "clone", "--branch", "kaggle-cpu-runtime", "--single-branch",
+        "https://github.com/MintChananchida13/COOP_Project4_V2.git", str(repo),
+    ], check=True)
+subprocess.run([sys.executable, str(repo / "API_Service_Kaggle/kaggle/bootstrap.py")], check=True)
+```
+
+`bootstrap.py` also clones the requested branch when invoked from an existing copy of the script and the Kaggle checkout is absent. It checks the repository origin and branch, verifies both virtual environments with Python/pip, `pip check`, OCR/Backend/SigLIP smoke tests, retrieves secrets, runs `manage.py start`, `status`, and `check`, and starts a Cloudflare quick tunnel. It downloads a SHA256-verified, pinned Linux amd64 `cloudflared` binary into `/kaggle/working/ocr_runtime` only when needed. It waits for a newly emitted tunnel URL and verifies public `/health` before marking the tunnel ready. Network policy or model/database startup can still prevent success; the summary then shows the failed stage and log paths. Existing healthy services and tunnel are reused, not duplicated.
+
+The clone cell can use `bootstrap.py` only **after these local changes are pushed** to the named branch. This task does not commit or push them.
+
+By default an existing checkout is **not updated**. To fast-forward a clean checkout only, run `python /kaggle/working/COOP_Project4_Kaggle/API_Service_Kaggle/kaggle/bootstrap.py --update`. A dirty checkout is left untouched; this script never resets or force-checkouts local changes. A different origin/branch fails safely. After a successful run, use the printed `NEXT_PUBLIC_API_URL=https://...` in Windows `project_frontend/.env.local` and restart Next.js. Never use an unverified tunnel URL as a successful startup signal.
+
 ## 1. Configure Kaggle Secrets
 
 In Kaggle Notebook **Add-ons → Secrets**, create:

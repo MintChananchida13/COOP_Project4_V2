@@ -1,0 +1,13 @@
+# Debug timing for Kaggle CPU tests
+
+`debug.timing` is the primary timing record. `debug.timing.benchmark` repeats the public timing keys from the same record for compatibility. Durations are milliseconds; never add an HTTP wait to an inference duration because the latter occurs inside the former.
+
+- `model_calls[]` identifies each backend-to-API request by `call_id` and separates Backend HTTP duration from API model load, executor queue wait, inference-lock wait, inference operation, and API total runtime. API inference includes preprocessing/postprocessing performed by the model operation, not only neural-network forward time.
+- `model_wait_union_ms` merges complete backend monotonic HTTP intervals for distinct call IDs. It is `null` when there are no calls or any recorded call has an incomplete interval; `model_timing_missing_reason` explains this. `model_wall_clock_ms` is the envelope from first call start to last call end and can include gaps.
+- `model_intervals_overlap` is `null` when intervals are incomplete, `false` when complete and sequential, and `true` when complete and overlapping.
+- `backend_runtime_ms` is detection elapsed time outside complete, non-overlapping model HTTP waits. It is not CPU-active time and is `null` for overlapping or incomplete calls. `backend_to_model_ms` remains `null` because one-way network time cannot be isolated from these measurements.
+- `layout_runtime_ms`, `text_detection_runtime_ms`, `text_recognition_runtime_ms`, `table_runtime_ms`, and `image_siglip_runtime_ms` are API operation durations where available. Corresponding `*_wait_ms` values are Backend HTTP durations, not API queue waits.
+- Legacy `model_inference_total_ms` remains the sum of available DET, REC, and SigLIP operation durations. It is not a complete five-model total or a wall-clock duration; use per-call records for model comparisons.
+- Frontend `uploadJobMs` is the POST-and-ack round trip, `jobPollingMs` includes poll sleeps and completed-response reading, and `end_to_end_ms` covers the browser confirmation flow until its timing log. `frontend_to_backend_ms`, `backend_to_frontend_ms`, and `frontend_render_ms` remain `null` because one-way latency and actual paint are not measured.
+
+`null` means not measured or not applicable, never zero. `0` is a measured zero after rounding or a cached-model load. A missing key means an older response or a path without that optional instrumentation. Model calls without a timing collector cannot be included in the interval union; validate `model_call_count` against the expected call sequence when benchmarking. Browser and Backend metrics cover different asynchronous boundaries and must not be summed as a partition of end-to-end time.

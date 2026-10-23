@@ -119,8 +119,8 @@ def requirements(path, overrides):
     return parsed
 
 
-def smoke(python, code, *, cwd=None):
-    result = subprocess.run([str(python), "-c", code], cwd=cwd, text=True, capture_output=True)
+def smoke(python, code, *, cwd=None, environment=None):
+    result = subprocess.run([str(python), "-c", code], cwd=cwd, env=environment, text=True, capture_output=True)
     return result.returncode == 0, (result.stderr.strip() or result.stdout.strip())[-1200:]
 
 

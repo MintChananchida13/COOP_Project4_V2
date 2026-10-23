@@ -1,6 +1,14 @@
 import unittest
+from unittest.mock import patch
 
-from app.core.model_runtime_client import _extract_gateway_timing
+from app.core.model_runtime_client import (
+    _extract_gateway_timing,
+    remote_recognize_image,
+    remote_recognize_images,
+    remote_recognize_table_raw,
+    remote_verify_image_logits,
+    remote_verify_image_logits_batch,
+)
 
 
 class ModelRuntimeTimingTests(unittest.TestCase):
@@ -29,6 +37,23 @@ class ModelRuntimeTimingTests(unittest.TestCase):
 
     def test_missing_model_timing_stays_missing(self):
         self.assertIsNone(_extract_gateway_timing({"data": {"results": []}}))
+
+    def test_single_and_batch_calls_forward_timing_collectors(self):
+        timing = {}
+        with patch("app.core.model_runtime_client.is_runtime_configured", return_value=True), \
+                patch("app.core.model_runtime_client._image_to_data_url", return_value="image"), \
+                patch("app.core.model_runtime_client._path_to_data_url", return_value="image"), \
+                patch("app.core.model_runtime_client._post_predict", return_value={}) as predict:
+            remote_recognize_image(None, timing=timing)
+            self.assertIs(predict.call_args.kwargs["timing"], timing)
+            remote_recognize_images([None], timing=timing)
+            self.assertIs(predict.call_args.kwargs["timing"], timing)
+            remote_recognize_table_raw(None, timing=timing)
+            self.assertIs(predict.call_args.kwargs["timing"], timing)
+            remote_verify_image_logits("image.png", "type", timing=timing)
+            self.assertIs(predict.call_args.kwargs["timing"], timing)
+            remote_verify_image_logits_batch(["image.png"], timing=timing)
+            self.assertIs(predict.call_args.kwargs["timing"], timing)
 
 
 if __name__ == "__main__":

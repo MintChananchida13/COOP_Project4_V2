@@ -5,6 +5,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from uuid import uuid4
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -226,6 +227,8 @@ def _post_predict(
     serialize_started = time.perf_counter()
     body = json.dumps(payload).encode("utf-8")
     if timing is not None:
+        timing["model_call_id"] = uuid4().hex
+        timing["model_kind"] = kind.value
         timing["json_serialize_ms"] = round((time.perf_counter() - serialize_started) * 1000.0, 2)
         timing["payload_bytes"] = len(body)
         timing["endpoint_path"] = urllib.request.urlparse(endpoint_url).path
@@ -395,13 +398,14 @@ def remote_detect_text_boxes_batch(images: List[np.ndarray], timing: Optional[Di
     )
 
 
-def remote_recognize_image(image: np.ndarray) -> Optional[Dict[str, Any]]:
+def remote_recognize_image(image: np.ndarray, timing: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     if not is_runtime_configured(ModelRuntimeKind.TEXT_RECOGNITION):
         return None
     return _post_predict(
         ModelRuntimeKind.TEXT_RECOGNITION,
         {"image": _image_to_data_url(image)},
         path_override=_active_ocr_path("text_recognition", "single"),
+        timing=timing,
     )
 
 
@@ -417,7 +421,7 @@ def remote_recognize_images(images: List[np.ndarray], timing: Optional[Dict[str,
     )
 
 
-def remote_recognize_table_raw(image: np.ndarray) -> Optional[Dict[str, Any]]:
+def remote_recognize_table_raw(image: np.ndarray, timing: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     if not is_runtime_configured(ModelRuntimeKind.TABLE):
         return None
 
@@ -425,12 +429,14 @@ def remote_recognize_table_raw(image: np.ndarray) -> Optional[Dict[str, Any]]:
         ModelRuntimeKind.TABLE,
         {"image": _image_to_data_url(image)},
         timeout=240.0,
+        timing=timing,
     )
 
 def remote_verify_image_logits(
     image_path: str,
     image_category: str,
     categories: Optional[List[Dict[str, Any]]] = None,
+    timing: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     if not is_runtime_configured(ModelRuntimeKind.IMAGE_VERIFICATION):
         return None
@@ -442,6 +448,7 @@ def remote_verify_image_logits(
             "categories": categories or [],
         },
         timeout=240.0,
+        timing=timing,
     )
 
 

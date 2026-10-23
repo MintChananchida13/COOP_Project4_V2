@@ -2388,7 +2388,7 @@ function mapDetectionDevResult(data: Record<string, unknown> | undefined): Detec
 
 export const detectTemplateDev = async (
   file: File | File[],
-  options: { standardTop5?: boolean; context?: "admin" | "user" } = {}
+  options: { standardTop5?: boolean; context?: "admin" | "user"; timing?: { uploadJobMs?: number; jobPollingMs?: number } } = {}
 ): Promise<DetectionDevResult> => {
   const formData = new FormData();
   const files = Array.isArray(file) ? file : [file];
@@ -2399,11 +2399,13 @@ export const detectTemplateDev = async (
   if (options.standardTop5) queryParams.set("standardTop5", "1");
   if (options.context) queryParams.set("context", options.context);
   const query = queryParams.toString() ? `?${queryParams.toString()}` : "";
+  const uploadStartedAt = performance.now();
   const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/api/templates/detect-dev${query}`, {
     method: "POST",
     body: formData,
   });
   const json = await response.json().catch(() => null);
+  if (options.timing) options.timing.uploadJobMs = Math.round((performance.now() - uploadStartedAt) * 100) / 100;
   if (!response.ok) {
     const detail = json?.detail || json?.error?.message || json?.error || `Detection failed with ${response.status}`;
     const maintenanceError = typeof detail === "object" ? detail?.error : null;
@@ -2424,6 +2426,7 @@ export const detectTemplateDev = async (
     return mapDetectionDevResult(initialData);
   }
 
+  const pollingStartedAt = performance.now();
   while (true) {
     await sleep(1000);
     const pollResponse = await fetchWithAuth(`${ADMIN_API_BASE_URL}/api/templates/detect-dev/jobs/${jobId}`, {
@@ -2437,9 +2440,11 @@ export const detectTemplateDev = async (
     }
     const job = pollJson?.data as Record<string, unknown> | undefined;
     if (job?.status === "completed") {
+      if (options.timing) options.timing.jobPollingMs = Math.round((performance.now() - pollingStartedAt) * 100) / 100;
       return mapDetectionDevResult(asRecord(job.result));
     }
     if (job?.status === "failed") {
+      if (options.timing) options.timing.jobPollingMs = Math.round((performance.now() - pollingStartedAt) * 100) / 100;
       const detail = job.error || "Detection job failed.";
       throw new Error(typeof detail === "string" ? detail : "Detection job failed.");
     }

@@ -113,6 +113,8 @@ def _timing_ms_map(timing: Optional[Dict[str, Any]]) -> Dict[str, Optional[float
         if isinstance(value, (int, float)):
             if key.endswith(("_count", "_hits", "_misses", "_size")):
                 result[key] = int(value)
+            elif key.endswith(("_ms", "_monotonic")):
+                result[key] = value
             else:
                 result[f"{key}_ms"] = _ms(float(value))
         elif isinstance(value, dict):
@@ -4036,6 +4038,8 @@ def _candidate_from_anchor_strategy(
             "image_model_inference_ms": _ms((verification.get("timing") or {}).get("image_model_inference")),
             "text_det_inference_ms": _runtime_ms((verification.get("timing") or {}).get("text_det_inference_ms")),
             "text_rec_inference_ms": _runtime_ms((verification.get("timing") or {}).get("text_rec_inference_ms")),
+            "table_runtime_ms": _runtime_ms((verification.get("timing") or {}).get("table_runtime_ms")),
+            "model_calls": list((verification.get("timing") or {}).get("model_calls") or []),
             "siglip_preprocess_ms": _runtime_ms(((verification.get("timing") or {}).get("image_batch") or {}).get("siglip_preprocess_ms")),
             "siglip_inference_ms": _runtime_ms(((verification.get("timing") or {}).get("image_batch") or {}).get("siglip_inference_ms")),
             "siglip_postprocess_ms": _runtime_ms(((verification.get("timing") or {}).get("image_batch") or {}).get("siglip_postprocess_ms")),
@@ -4129,6 +4133,8 @@ def _run_global_text_anchor_batch(
         "text_model_request_count": model_request_count,
         "text_det_inference_ms": _runtime_ms(ocr_timing.get("text_det_inference_ms")),
         "text_rec_inference_ms": _runtime_ms(ocr_timing.get("text_rec_inference_ms")),
+        "table_runtime_ms": _runtime_ms(ocr_timing.get("table_runtime_ms")),
+        "model_calls": list(ocr_timing.get("model_calls") or []),
         "model_call_intervals": list(ocr_timing.get("model_call_intervals") or []),
         "ocr_timing": _timing_ms_map(ocr_timing),
         "elapsed_ms": _ms(timing.get(f"{timing_prefix}_global_text_batch")),
@@ -4439,6 +4445,7 @@ def _detect_template_text_only(
             for item in roi_items:
                 ocr_errors[str(item.get("id"))] = f"ROI OCR failed: {error}"
     timing["text_only_batch_ocr"] = time.perf_counter() - batch_started
+    timing["text_only_model_calls"] = list(ocr_timing.get("model_calls") or [])
 
     match_started = time.perf_counter()
     candidates: List[Dict[str, Any]] = []
@@ -4838,7 +4845,9 @@ def _benchmark_timing_debug(
     siglip_inference_ms = global_image_siglip_timing.get("siglip_inference_ms")
     model_inference_values = [value for value in (text_det_inference_ms, text_rec_inference_ms, siglip_inference_ms) if isinstance(value, (int, float))]
     model_inference_total_ms = round(sum(model_inference_values), 2) if model_inference_values else None
-    global_image_batch_ms = _ms(global_image_batch_debug.get("image_batch_total_ms")) or _ms(timing.get("anchor_strategy_global_image_batch"))
+    global_image_batch_ms = _runtime_ms(global_image_batch_debug.get("image_batch_total_ms"))
+    if global_image_batch_ms is None:
+        global_image_batch_ms = _ms(timing.get("anchor_strategy_global_image_batch"))
     if not text_only and global_image_batch_ms is not None and (image_verification_ms is None or image_verification_ms <= 0):
         image_verification_ms = global_image_batch_ms
     alignment_ms = None if text_only else _sum_candidate_ms(candidate_timings, "alignment_ms")
@@ -5116,78 +5125,27 @@ def _detection_timing_debug(
         text_rec_inference_ms = _runtime_ms(global_text_batch_debug.get("text_rec_inference_ms"))
     siglip_inference_ms = global_image_batch_debug.get("siglip_inference_ms")
     model_values = [value for value in (text_det_inference_ms, text_rec_inference_ms, siglip_inference_ms) if isinstance(value, (int, float))]
-    wait_by_kind = {"layout": 0.0, "text_detection": 0.0, "text_recognition": 0.0, "image_siglip": 0.0}
-    wait_found = set()
-    model_intervals: List[tuple[float, float]] = []
-    def _collect_model_waits(value: Any) -> None:
-        if isinstance(value, dict):
-            start_value = value.get("model_call_start_monotonic")
-            end_value = value.get("model_call_end_monotonic")
-            if isinstance(start_value, (int, float)) and isinstance(end_value, (int, float)) and end_value >= start_value:
-                model_intervals.append((float(start_value), float(end_value)))
-            interval_list = value.get("model_call_intervals")
-            if isinstance(interval_list, list):
-                for interval in interval_list:
-                    if isinstance(interval, dict) and isinstance(interval.get("start_monotonic"), (int, float)) and isinstance(interval.get("end_monotonic"), (int, float)):
-                        if interval["end_monotonic"] >= interval["start_monotonic"]:
-                            model_intervals.append((float(interval["start_monotonic"]), float(interval["end_monotonic"])))
-            wait = value.get("http_request_ms")
-            endpoint = str(value.get("endpoint_path") or "")
-            if isinstance(wait, (int, float)) and endpoint:
-                key = (endpoint, float(wait))
-                if key not in wait_found:
-                    wait_found.add(key)
-                    if "text-detection" in endpoint:
-                        wait_found.add("text_detection")
-                        wait_by_kind["text_detection"] += float(wait)
-                    elif "text-recognition" in endpoint:
-                        wait_found.add("text_recognition")
-                        wait_by_kind["text_recognition"] += float(wait)
-                    elif "image-verification" in endpoint or "image-classification" in endpoint:
-                        wait_found.add("image_siglip")
-                        wait_by_kind["image_siglip"] += float(wait)
-                    elif "layout" in endpoint:
-                        wait_found.add("layout")
-                        wait_by_kind["layout"] += float(wait)
-            for child in value.values():
-                _collect_model_waits(child)
-        elif isinstance(value, list):
-            for child in value:
-                _collect_model_waits(child)
-    _collect_model_waits(timing)
-    layout_wait_ms = round(wait_by_kind["layout"], 2) if "layout" in wait_found else None
-    text_detection_wait_ms = round(wait_by_kind["text_detection"], 2) if "text_detection" in wait_found else None
-    text_recognition_wait_ms = round(wait_by_kind["text_recognition"], 2) if "text_recognition" in wait_found else None
-    image_siglip_wait_ms = round(wait_by_kind["image_siglip"], 2) if "image_siglip" in wait_found else None
-    model_wait_values = [value for value in (layout_wait_ms, text_detection_wait_ms, text_recognition_wait_ms, image_siglip_wait_ms) if isinstance(value, (int, float))]
-    model_wall_clock_ms = None
-    model_wait_union_ms = None
-    model_intervals_overlap = False
-    if model_intervals:
-        merged_intervals: List[tuple[float, float]] = []
-        for start_value, end_value in sorted(model_intervals):
-            if merged_intervals and start_value <= merged_intervals[-1][1]:
-                model_intervals_overlap = True
-                merged_intervals[-1] = (merged_intervals[-1][0], max(merged_intervals[-1][1], end_value))
-            else:
-                merged_intervals.append((start_value, end_value))
-        # Wall clock is the envelope, not the sum of model intervals.
-        model_wall_clock_ms = round((max(end_value for _, end_value in model_intervals) - min(start_value for start_value, _ in model_intervals)) * 1000.0, 2)
-        model_wait_union_ms = round(sum(end_value - start_value for start_value, end_value in merged_intervals) * 1000.0, 2)
-    elif model_wait_values:
-        model_wall_clock_ms = round(sum(model_wait_values), 2)
-        model_wait_union_ms = model_wall_clock_ms
-    # A wall-clock subtraction is valid only when model waits are sequential.
-    # With overlap, backend work may run concurrently and requires explicit
-    # backend-active intervals; do not present a guessed value.
-    backend_runtime_ms = (
-        round(max(0.0, total_elapsed_ms - model_wait_union_ms), 2)
-        if model_wait_union_ms is not None and not model_intervals_overlap else None
-    )
-    backend_to_model_ms = (
-        round(max(0.0, model_wall_clock_ms - (round(sum(model_values), 2) if model_values else 0.0)), 2)
-        if model_wall_clock_ms is not None else None
-    )
+    from app.processing.model_timing import backend_runtime_from_union, layout_runtime_from_breakdown, summarize_model_calls
+
+    model_summary = summarize_model_calls([timing, candidate_timings])
+    waits = model_summary["waits"]
+    layout_wait_ms = waits.get("layout")
+    text_detection_wait_ms = waits.get("text_detection")
+    text_recognition_wait_ms = waits.get("text_recognition")
+    image_siglip_wait_ms = waits.get("image_verification")
+    table_wait_ms = waits.get("table")
+    model_wall_clock_ms = model_summary["model_wall_clock_ms"]
+    model_wait_union_ms = model_summary["model_wait_union_ms"]
+    model_intervals_overlap = model_summary["model_intervals_overlap"]
+    backend_runtime_ms = backend_runtime_from_union(total_elapsed_ms, model_wait_union_ms, model_intervals_overlap)
+    backend_to_model_ms = None
+    layout_runtime_ms = layout_runtime_from_breakdown(timing.get("layout_analysis_breakdown"))
+    if layout_runtime_ms is None:
+        layout_runtime_ms = _runtime_ms(timing.get("layout_runtime_ms"))
+    table_runtime_values = _candidate_runtime_values("table_runtime_ms")
+    table_runtime_ms = _runtime_ms(global_text_batch_debug.get("table_runtime_ms")) if global_text_batch_debug else None
+    if table_runtime_ms is None and table_runtime_values:
+        table_runtime_ms = round(sum(table_runtime_values), 2)
     model_inference_total_ms = round(sum(model_values), 2) if model_values else None
     verification_breakdown = {
         key: round(sum(
@@ -5207,9 +5165,13 @@ def _detection_timing_debug(
         "model_intervals_overlap": model_intervals_overlap,
         "backend_runtime_ms": backend_runtime_ms,
         "backend_to_model_ms": backend_to_model_ms,
+        "table_wait_ms": table_wait_ms,
+        "model_timing_missing_reason": model_summary["model_timing_missing_reason"],
+        "model_call_count": model_summary["model_call_count"],
+        "model_calls": model_summary["model_calls"],
         "verification_breakdown": verification_breakdown,
     })
-    return {
+    result = {
         "total_detection_ms": total_elapsed_ms,
         "prepare_pages_ms": _ms(timing.get("prepare_pages")),
         "prepare_pages_breakdown": {
@@ -5236,7 +5198,8 @@ def _detection_timing_debug(
         "frontend_to_backend_ms": None,
         "backend_runtime_ms": backend_runtime_ms,
         "backend_to_model_ms": backend_to_model_ms,
-        "layout_runtime_ms": _ms(timing.get("layout_runtime_ms")) if timing.get("layout_runtime_ms") is not None else None,
+        "layout_runtime_ms": layout_runtime_ms,
+        "table_runtime_ms": table_runtime_ms,
         "text_detection_runtime_ms": text_det_inference_ms,
         "text_recognition_runtime_ms": text_rec_inference_ms,
         "image_siglip_runtime_ms": siglip_inference_ms,
@@ -5244,9 +5207,13 @@ def _detection_timing_debug(
         "text_detection_wait_ms": text_detection_wait_ms,
         "text_recognition_wait_ms": text_recognition_wait_ms,
         "image_siglip_wait_ms": image_siglip_wait_ms,
+        "table_wait_ms": table_wait_ms,
         "model_wall_clock_ms": model_wall_clock_ms,
         "model_wait_union_ms": model_wait_union_ms,
         "model_intervals_overlap": model_intervals_overlap,
+        "model_timing_missing_reason": model_summary["model_timing_missing_reason"],
+        "model_call_count": model_summary["model_call_count"],
+        "model_calls": model_summary["model_calls"],
         "total_runtime_ms": total_elapsed_ms,
         "backend_to_frontend_ms": None,
         "frontend_render_ms": None,
@@ -5289,6 +5256,16 @@ def _detection_timing_debug(
             request_cache=request_cache,
         ),
     }
+    for key in (
+        "total_detection_ms", "total_runtime_ms", "backend_runtime_ms", "backend_to_model_ms",
+        "layout_runtime_ms", "text_detection_runtime_ms", "text_recognition_runtime_ms",
+        "image_siglip_runtime_ms", "table_runtime_ms", "layout_wait_ms",
+        "text_detection_wait_ms", "text_recognition_wait_ms", "image_siglip_wait_ms",
+        "table_wait_ms", "model_wall_clock_ms", "model_wait_union_ms",
+        "model_intervals_overlap", "model_timing_missing_reason", "model_call_count", "model_calls",
+    ):
+        result["benchmark"][key] = result[key]
+    return result
 
 
 def detect_template_dev(

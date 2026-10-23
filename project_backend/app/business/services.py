@@ -3774,7 +3774,7 @@ class VerificationService:
             "failure_reason": failure_reason,
         }
 
-    def _score_image_anchor(self, field: Dict[str, Any], image_path: str) -> Dict[str, Any]:
+    def _score_image_anchor(self, field: Dict[str, Any], image_path: str, timing: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         cropped = _crop_anchor_roi_to_temp(image_path, field["roi"], field.get("roi_padding") or 6)
         try:
             current_crop_preview_data_url = _image_path_to_data_url(cropped) if cropped else None
@@ -3830,8 +3830,15 @@ class VerificationService:
                     "current_crop_preview_data_url": None,
                 }
 
-            results = [verify_image_category(cropped, value, active_categories) for value in (valid_category_values or category_values)]
-            result = next((item for item in results if item.passed), None) or (max(results, key=lambda item: float(item.evidence_score)) if results else verify_image_category(cropped, category_value, active_categories))
+            def verify_with_timing(value: str):
+                call_timing: Dict[str, Any] = {}
+                result = verify_image_category(cropped, value, active_categories, timing=call_timing if timing is not None else None)
+                if timing is not None and call_timing:
+                    timing.setdefault("model_calls", []).append(call_timing)
+                return result
+
+            results = [verify_with_timing(value) for value in (valid_category_values or category_values)]
+            result = next((item for item in results if item.passed), None) or (max(results, key=lambda item: float(item.evidence_score)) if results else verify_with_timing(category_value))
             score = round(float(result.evidence_score), 4)
             threshold = result.verification_threshold
             return {
@@ -4148,6 +4155,8 @@ class VerificationService:
             runtime_timing.update({
                 "text_det_inference_ms": ocr_timing.get("text_det_inference_ms"),
                 "text_rec_inference_ms": ocr_timing.get("text_rec_inference_ms"),
+                "table_runtime_ms": ocr_timing.get("table_runtime_ms"),
+                "model_calls": list(ocr_timing.get("model_calls") or []),
             })
             logger.info(
                 "[TIMING DEBUG] verify_template template_id=%s ocr_timing det=(%s,%s) rec=(%s,%s) runtime_timing det=(%s,%s) rec=(%s,%s)",
@@ -4232,7 +4241,7 @@ class VerificationService:
                 try:
                     image_match = image_match_cache.get(str(field.get("id"))) if image_match_cache else None
                     if image_match is None:
-                        image_match = self._score_image_anchor(field, image_path)
+                        image_match = self._score_image_anchor(field, image_path, timing=timing)
                 except Exception as error:
                     category_values = _image_category_values(field.get("image_category"))
                     category_value = category_values[0] if category_values else ""
@@ -4676,7 +4685,7 @@ class VerificationService:
                 if timing is not None:
                     timing["image_model_cache_misses"] = int(timing.get("image_model_cache_misses") or 0) + 1
                 inference_started = time.perf_counter()
-                image_match = self._score_image_anchor(field, image_path)
+                image_match = self._score_image_anchor(field, image_path, timing=timing)
                 if timing is not None:
                     timing["image_model_inference"] = float(timing.get("image_model_inference") or 0.0) + (time.perf_counter() - inference_started)
                 if image_cache is not None:

@@ -2851,12 +2851,12 @@ def _unwrap_remote_result(remote_result: Dict[str, Any]) -> Any:
     return remote_result
 
 
-def _predict_table_model(image: np.ndarray) -> Any:
+def _predict_table_model(image: np.ndarray, timing: Optional[Dict[str, Any]] = None) -> Any:
     started = time.perf_counter()
     if not _use_remote_runtime():
         raise TableRecognitionV2UnavailableError("GATEWAY_URL is not configured.")
     try:
-        remote_result = remote_recognize_table_raw(image)
+        remote_result = remote_recognize_table_raw(image, timing=timing)
     except ModelRuntimeUnavailableError as error:
         raise TableRecognitionV2UnavailableError(str(error)) from error
     except Exception as error:
@@ -2970,8 +2970,16 @@ def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
             "model": _TABLE_MODEL_NAME,
             "table_debug": {"status": "empty_image", "runtime_called": True},
         }
-    output = _predict_table_model(image)
+    runtime_timing: Dict[str, Any] = {}
+    output = _predict_table_model(image, timing=runtime_timing)
     result = _reconstruct_with_test_structure_rules(output, image, started)
+    table_debug = result.get("table_debug")
+    if isinstance(table_debug, dict):
+        table_debug["runtime_client"] = runtime_timing
+        gateway_timing = runtime_timing.get("gateway_timing")
+        if isinstance(gateway_timing, dict):
+            table_debug["table_runtime_ms"] = gateway_timing.get("table_runtime_ms")
+        table_debug["table_wait_ms"] = runtime_timing.get("http_request_ms")
     logger.info(
         "Table Recognition phase timing: phase=Total path=embedded_table_rules elapsed=%.3fs",
         time.perf_counter() - started,

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from .config import settings
 from .models import NAMES, manager, predict, siglip_logits
 from .serialization import decode_image, json_safe
+from .timing import build_timing
 
 
 logging.basicConfig(level=logging.INFO)
@@ -65,26 +66,22 @@ def run(name, operation):
         def execute():
             queue_wait_ms = round((time.perf_counter() - submitted) * 1000, 2)
             model, model_load_ms = manager.get(name)
-            inference_started = time.perf_counter()
+            lock_started = time.perf_counter()
             with manager.inference_locks[name]:
+                lock_wait_ms = round((time.perf_counter() - lock_started) * 1000, 2)
+                inference_started = time.perf_counter()
                 result = operation(model)
-            inference_ms = round((time.perf_counter() - inference_started) * 1000, 2)
-            return result, queue_wait_ms, model_load_ms, inference_ms
+                inference_ms = round((time.perf_counter() - inference_started) * 1000, 2)
+            return result, queue_wait_ms, model_load_ms, lock_wait_ms, inference_ms
 
-        result, queue_wait_ms, model_load_ms, inference_ms = executor.submit(execute).result()
+        result, queue_wait_ms, model_load_ms, lock_wait_ms, inference_ms = executor.submit(execute).result()
         serialize_started = time.perf_counter()
         safe_result = json_safe(result)
         serialization_ms = round((time.perf_counter() - serialize_started) * 1000, 2)
-        timing = {
-            "queue_wait_ms": queue_wait_ms,
-            "model_load_ms": model_load_ms,
-            "inference_ms": inference_ms,
-            "serialization_ms": serialization_ms,
-            "total_runtime_ms": round((time.perf_counter() - started) * 1000, 2),
-        }
-        timing[{"layout": "layout_runtime_ms", "det": "text_det_inference_ms", "rec": "text_rec_inference_ms", "table": "table_runtime_ms", "siglip": "image_siglip_runtime_ms"}[name]] = inference_ms
-        if name == "layout":
-            timing["inference_including_load_and_adaptation"] = round(model_load_ms + inference_ms + serialization_ms, 2)
+        timing = build_timing(
+            name, queue_wait_ms, model_load_ms, lock_wait_ms, inference_ms,
+            serialization_ms, round((time.perf_counter() - started) * 1000, 2),
+        )
         return {"success": True, "model": NAMES[name], "result": safe_result, "timing": timing}
     except HTTPException:
         raise

@@ -1189,7 +1189,7 @@ def analyze_layout_signature(image: np.ndarray, timing: Optional[Dict[str, Any]]
                 timing["runtime_client"] = runtime_timing
                 gateway_timing = runtime_timing.get("gateway_timing")
                 if isinstance(gateway_timing, dict):
-                    runtime_value = gateway_timing.get("inference_including_load_and_adaptation")
+                    runtime_value = gateway_timing.get("layout_runtime_ms", gateway_timing.get("inference_ms"))
                     if isinstance(runtime_value, (int, float)):
                         timing["layout_runtime_ms"] = round(float(runtime_value), 2)
         except ModelRuntimeUnavailableError as error:

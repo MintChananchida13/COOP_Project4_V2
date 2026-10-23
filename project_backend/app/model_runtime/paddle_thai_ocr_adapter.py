@@ -124,7 +124,7 @@ def _result_from_output(output: Any) -> Dict[str, Any]:
     return result
 
 
-def run_paddle_thai_ocr(opencv_img: np.ndarray) -> Dict[str, Any]:
+def run_paddle_thai_ocr(opencv_img: np.ndarray, timing: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if opencv_img is None or opencv_img.size == 0:
         return {
             "text": "",
@@ -134,7 +134,7 @@ def run_paddle_thai_ocr(opencv_img: np.ndarray) -> Dict[str, Any]:
             "error": "empty_image",
         }
 
-    return run_paddle_thai_ocr_batch([opencv_img])[0]
+    return run_paddle_thai_ocr_batch([opencv_img], timing=timing)[0]
 
 
 def run_paddle_thai_ocr_batch(
@@ -154,6 +154,7 @@ def run_paddle_thai_ocr_batch(
             runtime_timing: Dict[str, Any] = {}
             remote_result = remote_recognize_images(chunk, timing=runtime_timing)
             if isinstance(timing, dict):
+                timing.setdefault("model_calls", []).append(runtime_timing)
                 intervals = timing.setdefault("model_call_intervals", [])
                 if isinstance(intervals, list) and isinstance(runtime_timing.get("model_call_start_monotonic"), (int, float)) and isinstance(runtime_timing.get("model_call_end_monotonic"), (int, float)):
                     intervals.append({

@@ -122,12 +122,21 @@ def start():
     })
     started_names = []
     try:
-        api_process = spawn("api", api_python, SERVICE_ROOT, "app.main:app", 8080, environment)
-        started_names.append("api")
-        print("API health:", json.dumps(wait_health(API_URL + "/health", api_process)))
-        backend_process = spawn("backend", backend_python, BACKEND_ROOT, "main:app", 18081, environment)
-        started_names.append("backend")
-        print("Backend health:", json.dumps(wait_health(BACKEND_URL + "/health", backend_process)))
+        for name, python, root, module, port, url in (
+            ("api", api_python, SERVICE_ROOT, "app.main:app", 8080, API_URL + "/health"),
+            ("backend", backend_python, BACKEND_ROOT, "main:app", 18081, BACKEND_URL + "/health"),
+        ):
+            if live_pid(name):
+                health = request(url)
+                data = health.get("data", health)
+                if not isinstance(data, dict) or data.get("status") != "ok":
+                    raise RuntimeError(f"Existing {name} process is not healthy; inspect {WORK_ROOT / (name + '.log')}")
+                print(f"{name}: reusing healthy process")
+            else:
+                process = spawn(name, python, root, module, port, environment)
+                started_names.append(name)
+                health = wait_health(url, process)
+            print(f"{name} health:", json.dumps(health))
         check()
     except Exception:
         stop_selected(reversed(started_names))

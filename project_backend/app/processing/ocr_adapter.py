@@ -291,6 +291,10 @@ def _detect_boxes_in_crops_batch(
             detections.extend(chunk_detections)
             detection_breakdowns.append({"chunk": chunk_index, "size": len(chunk), **detection_timing})
         if timing is not None:
+            timing.setdefault("model_calls", []).extend(
+                item["runtime_client"] for item in detection_breakdowns
+                if isinstance(item.get("runtime_client"), dict)
+            )
             det_inference_values = [
                 float(item["text_det_inference_ms"])
                 for item in detection_breakdowns
@@ -850,6 +854,11 @@ def ocr_rois(
                 table_debug = table_result.get("table_debug")
                 if not isinstance(table_debug, dict):
                     table_debug = {}
+                if timing is not None and isinstance(table_debug.get("runtime_client"), dict):
+                    timing.setdefault("model_calls", []).append(table_debug["runtime_client"])
+                    table_runtime_ms = table_debug.get("table_runtime_ms")
+                    if isinstance(table_runtime_ms, (int, float)):
+                        timing["table_runtime_ms"] = float(timing.get("table_runtime_ms") or 0.0) + float(table_runtime_ms)
                 table_debug = {
                     **table_debug,
                     **processing_debug,
