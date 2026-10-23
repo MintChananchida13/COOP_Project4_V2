@@ -51,13 +51,14 @@ class InstallPlanTests(unittest.TestCase):
             "python": "3.13.15",
             "packages": {
                 "paddlepaddle": "3.2.1", "paddleocr": "3.7.0", "paddlex": "3.7.2",
-                "torch": "2.11.0+cpu", "transformers": "5.16.1", "numpy": "2.1.3",
+                "torch": "2.11.0+cpu", "torchvision": "0.26.0+cpu", "transformers": "5.16.1", "numpy": "2.1.3",
             },
         }
         with patch.object(install, "version_report", return_value=report), patch.object(install, "smoke", return_value=(True, "")), patch("builtins.print"):
             backend, api_install, reused = install.preflight(Path("python"))
         self.assertEqual(next(item["version"] for item in backend if item["name"] == "numpy"), "2.1.3")
         self.assertEqual(reused["torch"], "2.11.0+cpu")
+        self.assertEqual(reused["torchvision"], "0.26.0+cpu")
         self.assertEqual(reused["transformers"], "5.16.1")
         self.assertNotIn("paddlepaddle==3.2.1", api_install)
         self.assertIn("paddleocr[doc-parser]==3.7.0", api_install)
@@ -72,23 +73,49 @@ class InstallPlanTests(unittest.TestCase):
         output = "torchvision 0.20 has requirement torch==2.5, but you have torch 2.11.\ngoogle-adk 1.0 requires grpcio, which is not installed.\ngradio 1.0 requires foo, which is not installed."
         with patch.object(install.subprocess, "run", return_value=type("Result", (), {"returncode": 1, "stdout": output, "stderr": ""})()):
             critical, external = install.pip_conflicts(Path("python"), api=True)
-        self.assertEqual(critical, [])
-        self.assertEqual(len(external), 3)
+        self.assertEqual(len(critical), 1)
+        self.assertIn("torchvision", critical[0])
+        self.assertEqual(len(external), 2)
 
     def test_critical_conflict_fails_api_validation(self):
         output = "paddleocr 3.7 requires paddlex>=3.7, but you have paddlex 3.6.\ntorchvision 0.20 has requirement torch==2.5, but you have torch 2.11."
         with patch.object(install.subprocess, "run", return_value=type("Result", (), {"returncode": 1, "stdout": output, "stderr": ""})()):
             critical, external = install.pip_conflicts(Path("python"), api=True)
-        self.assertEqual(len(critical), 1)
+        self.assertEqual(len(critical), 2)
         self.assertIn("paddleocr", critical[0])
-        self.assertEqual(len(external), 1)
+        self.assertEqual(len(external), 0)
 
     def test_critical_smoke_failure_is_not_ignored(self):
-        packages = {"paddlepaddle": "3.2.1", "paddleocr": "3.7.0", "paddlex": "3.7.2", "torch": "2.11.0+cpu", "transformers": "5.16.1", "fastapi": "0.115.12", "uvicorn": "0.34.2", "pydantic": "2.11.4", "numpy": "2.1.3", "opencv-python-headless": "4.11.0.86", "Pillow": "11.2.1"}
-        with patch.object(install, "pip_conflicts", return_value=([], ["gradio 1.0 requires something"])), patch.object(install, "version_report", return_value={"packages": packages}), patch.object(install, "smoke", side_effect=[(True, ""), (True, ""), (True, ""), (False, "forward failed")]):
+        packages = {"paddlepaddle": "3.2.1", "paddleocr": "3.7.0", "paddlex": "3.7.2", "torch": "2.11.0+cpu", "torchvision": "0.26.0+cpu", "transformers": "5.16.1", "fastapi": "0.115.12", "uvicorn": "0.34.2", "pydantic": "2.11.4", "numpy": "2.1.3", "opencv-python-headless": "4.11.0.86", "Pillow": "11.2.1"}
+        startup = type("Result", (), {"returncode": 0, "stderr": ""})()
+        with patch.object(install, "pip_conflicts", return_value=([], ["gradio 1.0 requires something"])), patch.object(install, "version_report", return_value={"packages": packages}), patch.object(install.subprocess, "run", return_value=startup), patch.object(install, "smoke", side_effect=[(True, ""), (True, ""), (True, ""), (True, ""), (False, "forward failed")]):
             critical, external = install.validate_runtime(Path("python"), api=True)
         self.assertTrue(any("SigLIP forward smoke failed" in issue for issue in critical))
         self.assertEqual(len(external), 1)
+
+    def test_mismatched_torch_pair_is_rejected(self):
+        self.assertFalse(install.torch_pair_compatible({"torch": "2.6.0", "torchvision": "0.26.0+cpu"}))
+        self.assertTrue(install.torch_pair_compatible({"torch": "2.11.0+cpu", "torchvision": "0.26.0+cpu"}))
+
+    def test_repair_removes_only_local_mismatched_torch(self):
+        base = {"torch": "2.11.0+cpu", "torchvision": "0.26.0+cpu"}
+        versions = {"packages": base}
+        with patch.object(install, "local_distribution", side_effect=[{"version": "2.6.0"}, None]), patch.object(install, "version_report", return_value=versions), patch.object(install, "smoke", return_value=(True, "")), patch.object(install, "run") as command:
+            install.repair_torch_stack(Path("api_python"), Path("api_env"), base)
+        command.assert_called_once_with(["api_python", "-m", "pip", "uninstall", "-y", "torch"])
+
+    def test_repair_reuses_matching_system_pair(self):
+        base = {"torch": "2.11.0+cpu", "torchvision": "0.26.0+cpu"}
+        with patch.object(install, "local_distribution", return_value=None), patch.object(install, "version_report", return_value={"packages": base}), patch.object(install, "smoke", return_value=(True, "")), patch.object(install, "run") as command:
+            install.repair_torch_stack(Path("api_python"), Path("api_env"), base)
+        command.assert_not_called()
+
+    def test_sitecustomize_wrapt_repair_is_local(self):
+        failure = type("Result", (), {"returncode": 0, "stderr": "Error in sitecustomize: No module named 'wrapt'"})()
+        success = type("Result", (), {"returncode": 0, "stderr": ""})()
+        with patch.object(install.subprocess, "run", side_effect=[failure, success]), patch.object(install, "run") as command:
+            install.repair_sitecustomize(Path("api_python"))
+        command.assert_called_once_with(["api_python", "-m", "pip", "install", "--ignore-installed", "wrapt"])
 
     def test_python_312_rejected(self):
         with patch.object(install, "version_report", return_value={"python": "3.12.10", "packages": {}}):

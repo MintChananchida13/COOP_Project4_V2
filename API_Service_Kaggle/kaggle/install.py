@@ -16,7 +16,7 @@ BACKEND_ROOT = REPO_ROOT / "project_backend"
 WORK_ROOT = Path(os.environ.get("KAGGLE_RUNTIME_DIR", "/kaggle/working/ocr_runtime"))
 OVERRIDES = Path(__file__).with_name("py313_overrides.json")
 REQUIREMENT = re.compile(r"^([A-Za-z0-9_.-]+)(\[[^]]+\])?\s*([<>=!~].*)?$")
-CRITICAL_API = {"paddlepaddle", "paddleocr", "paddlex", "torch", "transformers", "fastapi", "uvicorn", "pydantic", "numpy"}
+CRITICAL_API = {"paddlepaddle", "paddleocr", "paddlex", "torch", "torchvision", "transformers", "fastapi", "uvicorn", "pydantic", "numpy"}
 PIP_CONFLICT = re.compile(r"^([A-Za-z0-9_.-]+)\s+\S+\s+(?:requires|has requirement)\s+", re.IGNORECASE)
 
 
@@ -86,7 +86,7 @@ def ensure_environment(environment, *, system_site_packages):
 
 def version_report(python):
     code = """import importlib.metadata as metadata, json, sys
-names = ('torch', 'paddlepaddle', 'paddleocr', 'paddlex', 'transformers', 'fastapi', 'uvicorn', 'pydantic', 'numpy', 'opencv-python-headless', 'Pillow')
+names = ('torch', 'torchvision', 'paddlepaddle', 'paddleocr', 'paddlex', 'transformers', 'fastapi', 'uvicorn', 'pydantic', 'numpy', 'opencv-python-headless', 'Pillow')
 found = {}
 for name in names:
     try: found[name] = metadata.version(name)
@@ -137,6 +137,13 @@ TORCH_CPU_SMOKE = """import torch
 assert not torch.cuda.is_available()
 assert float((torch.ones(1) + 1)[0]) == 2.0
 """
+TORCH_VISION_SMOKE = """import torch, torchvision
+assert not torch.cuda.is_available()
+assert torch.ops.torchvision.nms is not None
+boxes = torch.empty((0, 4), dtype=torch.float32)
+scores = torch.empty((0,), dtype=torch.float32)
+assert torch.ops.torchvision.nms(boxes, scores, 0.5).numel() == 0
+"""
 
 SIGLIP_SMOKE = """import torch
 from transformers import AutoProcessor, SiglipConfig, SiglipModel
@@ -168,11 +175,13 @@ def preflight(python=Path(sys.executable)):
     packages = {name.lower(): version for name, version in report["packages"].items()}
     ocr_ok, ocr_detail = smoke(python, OCR_SMOKE)
     torch_ok, torch_detail = smoke(python, TORCH_CPU_SMOKE) if packages.get("torch") else (False, "PyTorch absent")
+    vision_ok, vision_detail = smoke(python, TORCH_VISION_SMOKE) if packages.get("torchvision") else (False, "Torchvision absent")
     siglip_ok, siglip_detail = smoke(python, SIGLIP_SMOKE) if packages.get("transformers") else (False, "Transformers absent")
     print("Base Python:", report["python"])
     print("Base packages:", json.dumps(packages, sort_keys=True))
     print("OCR import smoke:", "PASS" if ocr_ok else f"FAIL ({ocr_detail})")
     print("PyTorch CPU smoke:", "PASS" if torch_ok else f"FAIL ({torch_detail})")
+    print("Torchvision NMS smoke:", "PASS" if vision_ok else f"FAIL ({vision_detail})")
     print("SigLIP API smoke:", "PASS" if siglip_ok else f"FAIL ({siglip_detail})")
     print("Backend environment: isolated; effective requirements:")
     for item in backend:
@@ -201,8 +210,59 @@ def preflight(python=Path(sys.executable)):
         print("Transformers is not assumed compatible; API requirement pin will be installed")
     if "torch" not in reused:
         raise RuntimeError("A working CPU PyTorch is required in Kaggle base Python; refusing generic torch installation that may download CUDA packages")
+    if not vision_ok or not torch_pair_compatible(packages):
+        raise RuntimeError("Kaggle base Torch/Torchvision CPU pair is incompatible; refusing to install a second Torch stack")
+    reused["torchvision"] = packages["torchvision"]
     print("Actual checkpoint/processor compatibility requires real SigLIP inference after installation")
     return backend, api_install, reused
+
+
+def torch_pair_compatible(packages):
+    torch_version = packages.get("torch") or ""
+    vision_version = packages.get("torchvision") or ""
+    return torch_version.startswith("2.11.0+cpu") and vision_version.startswith("0.26.0+cpu")
+
+
+def local_distribution(python, environment, name):
+    code = """import importlib.metadata as metadata, json
+try:
+    distribution = metadata.distribution(%r)
+    print(json.dumps({'version': distribution.version, 'location': str(distribution.locate_file(''))}))
+except metadata.PackageNotFoundError:
+    print('null')
+""" % name
+    found = json.loads(subprocess.check_output([str(python), "-c", code], text=True))
+    if not found:
+        return None
+    location = Path(found["location"]).resolve()
+    return found if location.is_relative_to(environment.resolve()) else None
+
+
+def repair_torch_stack(python, environment, base_packages):
+    for name in ("torch", "torchvision"):
+        local = local_distribution(python, environment, name)
+        if local and local["version"] != base_packages[name]:
+            print(f"Removing only api_env-local {name}=={local['version']} to expose Kaggle CPU {base_packages[name]}")
+            run([str(python), "-m", "pip", "uninstall", "-y", name])
+    current = {name.lower(): version for name, version in version_report(python)["packages"].items()}
+    for name in ("torch", "torchvision"):
+        if current.get(name) != base_packages[name]:
+            raise RuntimeError(f"api_env {name} must match Kaggle CPU package {base_packages[name]}; found {current.get(name)}")
+    healthy, detail = smoke(python, TORCH_VISION_SMOKE)
+    if not healthy:
+        raise RuntimeError(f"api_env Torch/Torchvision NMS smoke failed after repair: {detail}")
+
+
+def repair_sitecustomize(python):
+    result = subprocess.run([str(python), "-c", "pass"], capture_output=True, text=True, check=False)
+    if result.returncode == 0 and "Error in sitecustomize" not in result.stderr:
+        return
+    if "No module named 'wrapt'" in result.stderr:
+        print("Installing missing wrapt in api_env only for sitecustomize")
+        run([str(python), "-m", "pip", "install", "--ignore-installed", "wrapt"])
+        result = subprocess.run([str(python), "-c", "import wrapt"], capture_output=True, text=True, check=False)
+    if result.returncode or "Error in sitecustomize" in result.stderr:
+        raise RuntimeError(f"api_env sitecustomize/wrapt smoke failed: {result.stderr[-1200:]}")
 
 
 def pip_conflicts(python, *, api=False):
@@ -237,7 +297,12 @@ def validate_runtime(python, *, api, environment=None):
                 critical.append(f"{name}: expected {item['version']}, found {installed.get(name) or 'missing'}")
         if not installed.get("paddlex"):
             critical.append("paddlex: missing")
-        for label, code in (("OCR", OCR_SMOKE), ("Torch CPU", TORCH_CPU_SMOKE), ("API framework", API_FRAMEWORK_SMOKE), ("SigLIP forward", SIGLIP_SMOKE)):
+        if not torch_pair_compatible(installed):
+            critical.append(f"Torch/Torchvision CPU pair incompatible: {installed.get('torch')} / {installed.get('torchvision')}")
+        startup = subprocess.run([str(python), "-c", "pass"], capture_output=True, text=True, check=False, env=environment)
+        if startup.returncode or "Error in sitecustomize" in startup.stderr:
+            critical.append(f"sitecustomize startup failed: {startup.stderr[-1200:]}")
+        for label, code in (("OCR", OCR_SMOKE), ("Torch CPU", TORCH_CPU_SMOKE), ("Torchvision NMS", TORCH_VISION_SMOKE), ("API framework", API_FRAMEWORK_SMOKE), ("SigLIP forward", SIGLIP_SMOKE)):
             healthy, detail = smoke(python, code, environment=environment)
             if not healthy:
                 critical.append(f"{label} smoke failed: {detail}")
@@ -260,6 +325,9 @@ def install():
     api_env = WORK_ROOT / "api_env"
     backend_python = ensure_environment(backend_env, system_site_packages=False)
     api_python = ensure_environment(api_env, system_site_packages=True)
+    base_packages = {name.lower(): version for name, version in version_report(Path(sys.executable))["packages"].items()}
+    repair_torch_stack(api_python, api_env, base_packages)
+    repair_sitecustomize(api_python)
 
     run([str(backend_python), "-m", "pip", "install", *(item["specification"] for item in backend)])
     backend_errors, _ = validate_runtime(backend_python, api=False)
@@ -273,6 +341,7 @@ def install():
         if reused:
             command += ["-c", str(constraints)]
         run(command + api_install)
+    repair_torch_stack(api_python, api_env, base_packages)
     api_errors, external = validate_runtime(api_python, api=True)
     for conflict in external:
         print(f"Kaggle system package conflict (non-blocking): {conflict}")
