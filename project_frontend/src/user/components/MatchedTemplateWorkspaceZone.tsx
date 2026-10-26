@@ -180,7 +180,7 @@ export default function MatchedTemplateWorkspaceZone({
               </button>
             </div>
 
-            <section className="rounded-2xl border border-emerald-100 bg-emerald-50 p-3">
+            <section data-detection-summary="true" className="rounded-2xl border border-emerald-100 bg-emerald-50 p-3">
               <div className="flex items-start gap-2.5">
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-emerald-600 shadow-sm ring-1 ring-emerald-100">
                   <CheckCircle2 size={18} />

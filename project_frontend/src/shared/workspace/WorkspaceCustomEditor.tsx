@@ -80,6 +80,7 @@ const WORKSPACE_LOCKED_HEIGHT_CLASS = "h-[calc(100vh-220px)] min-h-[640px]";
 const WORKSPACE_MAX_FIT_ZOOM = 3.0;
 
 export interface WorkspaceCustomEditorProps {
+  detectionRunToken?: number;
   previewUrl: string;
   image: string | null;
   brightness: number;
@@ -145,6 +146,7 @@ export interface WorkspaceCustomEditorProps {
 }
 
 export default function WorkspaceCustomEditor({
+  detectionRunToken,
   previewUrl,
   rois,
   setRois,
@@ -916,7 +918,7 @@ export default function WorkspaceCustomEditor({
     }
   };
   return (
-    <div className={rootClassName}>
+    <div className={rootClassName} data-detection-run={detectionRunToken} data-preview-required={Boolean(previewUrl)}>
       {/* Main canvas row */}
       <div className={`relative grid min-h-0 ${workspaceHeightClassName} ${hideRightPanel ? "grid-cols-[64px_minmax(0,1fr)]" : "grid-cols-[64px_minmax(0,1fr)_320px] xl:grid-cols-[64px_minmax(0,1fr)_minmax(320px,360px)]"} gap-5 items-stretch overflow-hidden`}>
         
@@ -1079,6 +1081,7 @@ export default function WorkspaceCustomEditor({
                     ref={imageRef}
                     src={previewUrl} 
                     alt="Workspace" 
+                    data-detection-preview="true"
                     draggable="false" 
                     onLoad={() => {
                       fitCurrentImageToViewport();

@@ -9,6 +9,76 @@ import user_flow
 
 
 class UserFlowTests(unittest.TestCase):
+    def test_frontend_metrics_are_appended_and_browser_authoritative(self):
+        start = user_flow.HEADERS.index(user_flow.FRONTEND_METRICS[0])
+        self.assertEqual(user_flow.HEADERS[start:start + len(user_flow.FRONTEND_METRICS)], user_flow.FRONTEND_METRICS)
+        self.assertEqual(user_flow.HEADERS[user_flow.HEADERS.index("frontend_render_ms") + 1], "timing_missing_reasons")
+        tables = [[{"metric": "frontend_state_to_commit_ms", "valueMs": 12},
+                   {"metric": "frontend_response_processing_ms", "valueMs": 0},
+                   {"metric": "frontend_render_ms", "valueMs": 35},
+                   {"metric": "frontend_result_visible_ms", "valueMs": 60},
+                   {"metric": "frontend_preview_ready_ms", "valueMs": 40},
+                   {"metric": "end_to_end_ms", "valueMs": 120}]]
+        values = user_flow.timing_values(tables, {"debug": {"timing": {
+            "frontend_state_to_commit_ms": 999, "frontend_response_processing_ms": 999, "end_to_end_ms": None}}})
+        self.assertEqual(values["frontend_state_to_commit_ms"], 12)
+        self.assertEqual(values["frontend_response_processing_ms"], 0)
+        self.assertEqual(values["end_to_end_ms"], 120)
+        self.assertEqual(values["frontend_render_ms"], 35)
+        self.assertEqual(values["frontend_result_visible_ms"], 60)
+        self.assertEqual(values["frontend_preview_ready_ms"], 40)
+
+    def test_locked_excel_uses_unique_recovery_name(self):
+        from openpyxl import Workbook
+
+        original = Path("results.xlsx")
+        with patch.object(Path, "mkdir"), patch.object(Workbook, "save", side_effect=[PermissionError("locked"), None]) as save, patch("builtins.print"):
+            result = user_flow.save_excel(original, [])
+        self.assertNotEqual(result, original)
+        self.assertEqual(result.parent, original.parent)
+        self.assertTrue(result.name.startswith("results_recovery_"))
+        self.assertEqual(save.call_args_list[0].args[0], original)
+        self.assertEqual(save.call_args_list[1].args[0], result)
+
+    def test_save_results_reuses_recovery_path_on_next_save(self):
+        arguments = self.arguments()
+        alternative = Path("results_recovery_test.xlsx")
+        with patch.object(user_flow, "save_excel", side_effect=[alternative, alternative]) as save:
+            self.assertTrue(user_flow.save_results(arguments, []))
+            self.assertTrue(user_flow.save_results(arguments, []))
+        self.assertEqual(save.call_args_list[1].args[0], alternative)
+
+    def test_unwritable_output_stops_after_recovering_rows_without_reset(self):
+        arguments = self.arguments()
+        rows = []
+        with patch.object(user_flow, "run_case", return_value={"status": "PASS"}), \
+                patch.object(user_flow, "save_excel", side_effect=PermissionError("denied")), \
+                patch.object(Path, "write_text") as recover, patch.object(user_flow, "reset_document") as reset, patch("builtins.print"):
+            self.assertFalse(user_flow.run_cases(Mock(), arguments, [(Path("a.png"), "standard")], rows, {"closed": False}))
+        self.assertTrue(arguments.output_failed)
+        self.assertIn('"run_number": 1', recover.call_args.args[0])
+        reset.assert_not_called()
+
+    def test_cleanup_does_not_retry_failed_output(self):
+        context = Mock()
+        context.pages = [Mock()]
+        driver = Mock()
+        driver.chromium.launch_persistent_context.return_value = context
+        manager = Mock()
+        manager.__enter__ = Mock(return_value=driver)
+        manager.__exit__ = Mock(return_value=False)
+        api = SimpleNamespace(Error=RuntimeError, sync_playwright=lambda: manager)
+        with patch.dict("sys.modules", {"playwright": SimpleNamespace(), "playwright.sync_api": api}), \
+                patch("sys.argv", ["user_flow.py"]), \
+                patch.object(user_flow, "input_cases", return_value=[(Path("a.png"), None)]), \
+                patch.object(user_flow, "login_user"), \
+                patch.object(user_flow, "run_case", return_value={"status": "PASS"}), \
+                patch.object(user_flow, "save_excel", side_effect=PermissionError("denied")) as save, \
+                patch.object(Path, "write_text"), patch("builtins.print"):
+            self.assertEqual(user_flow.main(), 1)
+        save.assert_called_once()
+        context.close.assert_called_once()
+
     def test_canonical_null_zero_and_backend_source_priority(self):
         timing = {"image_siglip_runtime_ms": None, "siglip_inference_ms": 99,
                   "total_detection_ms": 10, "backend_runtime_ms": 0,
@@ -142,13 +212,19 @@ class UserFlowTests(unittest.TestCase):
         for matched in (True, False):
             with self.subTest(matched=matched):
                 page = Mock()
-                response = Mock()
-                response.url = "http://localhost:18081/api/templates/detect-dev/jobs/test-job"
-                response.json.return_value = {"data": {"status": "completed", "result": {
+                result = {
                     "matched": matched, "debug": {"verification_strategy": "standard"},
-                }}}
-                page.wait_for_function.side_effect = lambda *args, **kwargs: page.on.call_args.args[1](response)
-                page.evaluate.side_effect = [None, [[{"metric": "end_to_end_ms", "valueMs": 123}]]]
+                }
+                def evaluate(script, token=None):
+                    if token:
+                        page.run_token = token
+                    if script == user_flow.RUN_SNAPSHOT:
+                        return {"token": page.run_token, "job_id": "test-job", "posts": 1, "pending": 0,
+                                "job": {"status": "completed", "result": result},
+                                "tables": [[{"metric": "end_to_end_ms", "valueMs": 123},
+                                            {"metric": "frontend_visibility_status", "value": "READY"},
+                                            {"metric": "benchmark_run_token", "value": page.run_token}]]}
+                page.evaluate.side_effect = evaluate
                 row = user_flow.run_case(page, Path("one.png"), "standard", 1000)
                 self.assertEqual(row["status"], "PASS")
                 self.assertEqual(row["matched"], matched)
@@ -156,7 +232,8 @@ class UserFlowTests(unittest.TestCase):
                 self.assertNotIn("ocr_wall_ms", row)
                 self.assertEqual(page.get_by_role.call_count, 1)
                 self.assertEqual(page.get_by_role.call_args.kwargs["name"], "ยืนยันเอกสารและค้นหา Template")
-                page.remove_listener.assert_called_once_with("response", page.on.call_args.args[1])
+                page.on.assert_not_called()
+                page.remove_listener.assert_not_called()
                 page.close.assert_not_called()
 
     @unittest.skipUnless(importlib.util.find_spec("openpyxl"), "openpyxl is needed for Excel round-trip test")

@@ -1,5 +1,11 @@
 # Timing audit and measurement contract
 
+Frontend boundary update: see [Result Visibility](RESULT_VISIBILITY.md).
+`end_to_end_ms` now stops at Result Visibility Ready (paint-ready estimate, NOT
+Actual Paint). `frontend_flow_complete_ms` and `frontend_commit_end_to_end_ms`
+preserve handler/commit boundaries. The original frontend definitions below are
+historical; backend/model timing definitions are unchanged.
+
 Code/tests only: no browser, login, benchmark, real inference or Kaggle runtime
 was executed for this change.
 

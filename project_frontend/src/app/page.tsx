@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, Bell, LogOut, UserRound } from "lucide-react";
@@ -24,7 +24,8 @@ import {
 import AuthGate from "../auth/AuthGate";
 import { AuthSession, authHeaders, clearAuthSession, readAuthSession } from "../auth/session";
 import { AppHeader } from "../shared/ui";
-import { backendTimingMetric, browserTiming } from "../shared/browserTiming";
+import { backendTimingMetric, browserTiming, frontendCompletionTiming, type DetectionTransportTiming } from "../shared/browserTiming";
+import { elementReady, observeResultVisibility, visibilityMetrics } from "../shared/resultVisibility";
 
 interface PageConfig {
   rotation: number;
@@ -315,7 +316,7 @@ const NoTemplateDetectionCard = ({
     : "ไม่ผ่านเกณฑ์คะแนนความมั่นใจ";
 
   return (
-    <section className="rounded-2xl border border-amber-100 bg-amber-50 p-4">
+    <section data-detection-summary="true" className="rounded-2xl border border-amber-100 bg-amber-50 p-4">
       <div className="flex items-start gap-3">
         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-amber-600 shadow-sm ring-1 ring-amber-100">
           <AlertTriangle size={18} />
@@ -1737,6 +1738,18 @@ function HomeWorkspace() {
   const [templateDetectionNotice, setTemplateDetectionNotice] = useState<TemplateDetectionNotice | null>(null);
   const [, setOperationNotice] = useState<{ tone: NoticeTone; title: string; message: string } | null>(null);
   const [isTemplateDecisionOpen, setIsTemplateDecisionOpen] = useState<boolean>(false);
+  const pendingDetectionCommitRef = useRef<((committedAt: number) => void) | null>(null);
+  const detectionTimingRunRef = useRef(0);
+  const [detectionTimingRun, setDetectionTimingRun] = useState(0);
+  const visibilityAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => visibilityAbortRef.current?.abort(), []);
+  useLayoutEffect(() => {
+    if (isTemplateDecisionOpen || !pendingDetectionCommitRef.current) return;
+    const emit = pendingDetectionCommitRef.current;
+    pendingDetectionCommitRef.current = null;
+    const committedAt = performance.now();
+    queueMicrotask(() => emit(committedAt));
+  });
   const [templateDecisionStatus, setTemplateDecisionStatus] = useState<string>("");
   const [exportJson, setExportJson] = useState<string>("");
   const [exportPreviewJsonText, setExportPreviewJsonText] = useState<string>("");
@@ -2427,6 +2440,9 @@ function HomeWorkspace() {
   };
 
   const handleClearAndUploadNew = () => {
+    detectionTimingRunRef.current++;
+    visibilityAbortRef.current?.abort();
+    pendingDetectionCommitRef.current = null;
     queueProcessingLogSave("change_document");
     ocrRunIdRef.current += 1;
     activeProcessingRunIdRef.current = "";
@@ -2497,6 +2513,13 @@ function HomeWorkspace() {
 
   const handleBatchConfirm = async (finalProcessedImages: string[]) => {
     const userWaitStartedAt = performance.now();
+    visibilityAbortRef.current?.abort();
+    const runToken = ++detectionTimingRunRef.current;
+    setDetectionTimingRun(runToken);
+    const visibilityController = new AbortController();
+    visibilityAbortRef.current = visibilityController;
+    const benchmarkRunToken = (window as Window & { __ocrBenchmarkRun?: { token: string } }).__ocrBenchmarkRun?.token ?? null;
+    pendingDetectionCommitRef.current = null;
     const timingBreakdown: Record<string, number | null> = {
       detectionJobMs: null,
       uploadJobMs: null,
@@ -2511,7 +2534,7 @@ function HomeWorkspace() {
     };
     let detectionMatchedForTiming: boolean | null = null;
     let detectionForTiming: DetectionDevResult | null = null;
-    const detectionTransportTiming: { uploadJobMs?: number; jobPollingMs?: number } = {};
+    const detectionTransportTiming: DetectionTransportTiming = {};
     let timingLogged = false;
     const measureStage = async <T,>(key: keyof typeof timingBreakdown, operation: () => Promise<T>): Promise<T> => {
       const startedAt = performance.now();
@@ -2524,8 +2547,27 @@ function HomeWorkspace() {
     const logTemplateDetectionTiming = (status: "matched" | "no_match" | "failed") => {
       if (timingLogged) return;
       timingLogged = true;
-      const browserMetrics = browserTiming(userWaitStartedAt, performance.now());
-      timingBreakdown.totalUserWaitMs = browserMetrics.end_to_end_ms;
+      const flowCompleteAt = performance.now();
+      pendingDetectionCommitRef.current = async (committedAt) => {
+      if (detectionTimingRunRef.current !== runToken) return;
+      const visibility = await observeResultVisibility(() => {
+        const root = document.querySelector<HTMLElement>(`[data-detection-run="${runToken}"]`);
+        const preview = root?.querySelector<HTMLImageElement>("[data-detection-preview]") ?? null;
+        const summary = root?.querySelector<HTMLElement>("[data-detection-summary]") ?? null;
+        return {
+          current: detectionTimingRunRef.current === runToken,
+          domReady: elementReady(root) && elementReady(summary),
+          overlay: Boolean(document.querySelector("[data-detection-loading]")),
+          previewRequired: root?.dataset.previewRequired === "true",
+          image: preview,
+          previewVisible: elementReady(preview),
+        };
+      }, { signal: visibilityController.signal });
+      if (detectionTimingRunRef.current !== runToken || visibility.status === "RUN_CANCELLED") return;
+      const browserMetrics = browserTiming(userWaitStartedAt, visibility.readyAt ?? committedAt);
+      const completionMetrics = frontendCompletionTiming(userWaitStartedAt, flowCompleteAt, committedAt, detectionTransportTiming);
+      const readinessMetrics = visibilityMetrics(userWaitStartedAt, committedAt, detectionTransportTiming.frontendResponseHeadersAt, visibility);
+      timingBreakdown.totalUserWaitMs = readinessMetrics.end_to_end_ms;
       const backendTiming = detectionForTiming?.debug?.timing as Record<string, unknown> | undefined;
       const backendMetric = (key: string, alias?: string): number | null => backendTimingMetric(backendTiming, key, alias);
       timingBreakdown.uploadJobMs = detectionTransportTiming.uploadJobMs ?? null;
@@ -2551,8 +2593,13 @@ function HomeWorkspace() {
         model_timing_missing_reason: backendTiming?.model_timing_missing_reason ?? null,
         total_runtime_ms: backendMetric("total_runtime_ms", "total_detection_ms"),
         backend_to_frontend_ms: browserMetrics.backend_to_frontend_ms,
-        frontend_render_ms: browserMetrics.frontend_render_ms,
-        end_to_end_ms: browserMetrics.end_to_end_ms,
+        ...completionMetrics,
+        ...readinessMetrics,
+        frontend_visibility_status: visibility.status,
+        frontend_visibility_reason: visibility.reason,
+        frontend_timing_kind: "paint-ready estimate; not actual paint",
+        frontend_run_token: runToken,
+        benchmark_run_token: benchmarkRunToken,
       };
       const rows = Object.entries(timingBreakdown).map(([stage, elapsedMs]) => ({
         stage,
@@ -2563,7 +2610,11 @@ function HomeWorkspace() {
       console.table(rows);
       console.table(Object.entries(sixteenMetrics).map(([metric, value]) => ({
         metric, ...(metric.endsWith("_ms") ? { valueMs: value } : { value }),
-        reason: value === null ? (backendTiming?.timing_missing_reasons as Record<string, unknown> | undefined)?.[metric] ?? "measurement_unavailable" : null,
+        reason: value === null ? (metric === "frontend_preview_ready_ms" && !visibility.previewRequired
+          ? "preview_not_required"
+          : metric in readinessMetrics
+          ? visibility.reason ?? "completed_response_timestamp_missing"
+          : (backendTiming?.timing_missing_reasons as Record<string, unknown> | undefined)?.[metric] ?? "measurement_unavailable") : null,
       })));
       const measuredRows = rows.filter((row) => typeof row.elapsedMs === "number" && row.stage !== "totalUserWaitMs");
       const bottleneck = measuredRows.reduce<(typeof measuredRows)[number] | null>(
@@ -2577,6 +2628,7 @@ function HomeWorkspace() {
         bottleneckStage: bottleneck?.stage ?? null,
         bottleneckMs: bottleneck?.elapsedMs ?? null,
       });
+      };
     };
     activeProcessingRunIdRef.current = "";
     ocrProcessingTimeMsRef.current = null;
@@ -4650,6 +4702,7 @@ function HomeWorkspace() {
           <>
             {matchedTemplate ? (
               <MatchedTemplateWorkspaceZone
+                detectionRunToken={detectionTimingRun}
                 matchedTemplate={matchedTemplate}
                 previewUrl={imagesList[currentIndex] || previewUrl}
                 image={imagesList[currentIndex] || image}
@@ -4692,6 +4745,7 @@ function HomeWorkspace() {
               />
             ) : (
               <WorkspaceZone
+                detectionRunToken={detectionTimingRun}
                 previewUrl={imagesList[currentIndex] || previewUrl}
                 image={imagesList[currentIndex] || image}
                 brightness={pagesConfig[currentIndex]?.brightness ?? 100}
@@ -5113,7 +5167,7 @@ function HomeWorkspace() {
         )}
 
         {isTemplateDecisionOpen && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/45 px-4 backdrop-blur-sm">
+          <div data-detection-loading="true" className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/45 px-4 backdrop-blur-sm">
             <section className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-2xl">
               <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-indigo-50">
                 <div className="h-8 w-8 animate-spin rounded-full border-4 border-indigo-200 border-t-indigo-600" />

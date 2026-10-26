@@ -7,6 +7,7 @@
   TemplatePage,
   TemplateStatus,
 } from "../types/ocr";
+import type { DetectionTransportTiming } from "../shared/browserTiming";
 
 export const ADMIN_API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -2388,8 +2389,20 @@ function mapDetectionDevResult(data: Record<string, unknown> | undefined): Detec
 
 export const detectTemplateDev = async (
   file: File | File[],
-  options: { standardTop5?: boolean; context?: "admin" | "user"; timing?: { uploadJobMs?: number; jobPollingMs?: number } } = {}
+  options: { standardTop5?: boolean; context?: "admin" | "user"; timing?: DetectionTransportTiming } = {}
 ): Promise<DetectionDevResult> => {
+  const mapResult = (data: Record<string, unknown> | undefined) => {
+    const startedAt = performance.now();
+    try {
+      return mapDetectionDevResult(data);
+    } finally {
+      if (options.timing) {
+        const finishedAt = performance.now();
+        options.timing.frontend_response_processing_ms = Math.round((finishedAt - startedAt) * 100) / 100;
+        options.timing.frontendResponseMappedAt = finishedAt;
+      }
+    }
+  };
   const formData = new FormData();
   const files = Array.isArray(file) ? file : [file];
   files.forEach((item, index) => {
@@ -2423,7 +2436,7 @@ export const detectTemplateDev = async (
   const initialData = json?.data as Record<string, unknown> | undefined;
   const jobId = typeof initialData?.job_id === "string" ? initialData.job_id : "";
   if (!jobId) {
-    return mapDetectionDevResult(initialData);
+    return mapResult(initialData);
   }
 
   const pollingStartedAt = performance.now();
@@ -2433,15 +2446,21 @@ export const detectTemplateDev = async (
       method: "GET",
       cache: "no-store",
     });
+    const responseHeadersAt = performance.now();
     const pollJson = await pollResponse.json().catch(() => null);
+    const responseParsedAt = performance.now();
     if (!pollResponse.ok) {
       const detail = pollJson?.detail || pollJson?.error?.message || pollJson?.error || `Detection job failed with ${pollResponse.status}`;
       throw new Error(typeof detail === "string" ? detail : `Detection job failed with ${pollResponse.status}`);
     }
     const job = pollJson?.data as Record<string, unknown> | undefined;
     if (job?.status === "completed") {
+      if (options.timing) {
+        options.timing.frontendResponseHeadersAt = responseHeadersAt;
+        options.timing.frontend_response_json_ms = Math.round((responseParsedAt - responseHeadersAt) * 100) / 100;
+      }
       if (options.timing) options.timing.jobPollingMs = Math.round((performance.now() - pollingStartedAt) * 100) / 100;
-      return mapDetectionDevResult(asRecord(job.result));
+      return mapResult(asRecord(job.result));
     }
     if (job?.status === "failed") {
       if (options.timing) options.timing.jobPollingMs = Math.round((performance.now() - pollingStartedAt) * 100) / 100;
