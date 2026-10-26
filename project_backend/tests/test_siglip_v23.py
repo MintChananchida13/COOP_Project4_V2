@@ -63,9 +63,11 @@ class SiglipV23Tests(unittest.TestCase):
         ) or isinstance(node, ast.FunctionDef) and node.name == "guarded_decision"]
         original = {}
         exec(compile(ast.Module(body=selected, type_ignores=[]), str(source), "exec"), original)
-        self.assertEqual(SINGLE, original["SINGLE"])
+        expected_positive = dict(original["SINGLE"])
+        expected_positive["portrait"] = "An ID-style portrait photograph showing a real person's face, head, and shoulders."
+        self.assertEqual(SINGLE, expected_positive)
         expected_negative = {name: prompts[0] for name, prompts in original["NEGATIVE"].items()}
-        expected_negative["numbers"] = "A document image region primarily consisting of printed numbers and numerical digits."
+        expected_negative["numbers"] = "A close-up of printed numerical digits, such as an identification number, a date, or an amount, as the main content."
         self.assertEqual(NEGATIVE, expected_negative)
         generator = random.Random(23)
         names = [*SINGLE, *NEGATIVE]
