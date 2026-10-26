@@ -79,7 +79,7 @@ def siglip_logits(images, categories, instance):
     model, processor = instance
     prompts = [category["prompt"] for category in categories]
     pil_images = [Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB)) for image in images]
-    inputs = processor(text=prompts, images=pil_images, padding="max_length", return_tensors="pt")
+    inputs = processor(text=prompts, images=pil_images, padding="max_length", truncation=True, return_tensors="pt")
     with torch.inference_mode():
-        logits = model(**inputs).logits_per_image.cpu().tolist()
+        logits = model(**inputs).logits_per_image.float().cpu().tolist()
     return logits

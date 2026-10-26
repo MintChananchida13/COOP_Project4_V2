@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -12,11 +11,12 @@ from app.core.model_runtime_client import (
     remote_verify_image_logits,
     remote_verify_image_logits_batch,
 )
+from app.model_runtime.siglip_v23 import LABELS, NEGATIVE, SCORING_VERSION, SINGLE, classify, runtime_categories
 
 
 SIGLIP_MODEL_NAME = "google/siglip-so400m-patch14-384"
 SIGLIP_MODEL_VERSION = "google/siglip-so400m-patch14-384"
-SIGLIP_SCORING_VERSION = "siglip-image-category-binary-v3"
+SIGLIP_SCORING_VERSION = SCORING_VERSION
 
 @dataclass(frozen=True)
 class SiglipCategoryConfig:
@@ -80,6 +80,9 @@ class SiglipImageVerificationResult:
     labels: List[Dict[str, Any]]
     ui_percentages: List[Dict[str, Any]]
     error: Optional[str] = None
+    decision_rule: str = ""
+    negative_scores: Optional[Dict[str, float]] = None
+    positive_negative_margin: Optional[float] = None
 
 
 def _as_float(value: Any, fallback: float) -> float:
@@ -105,12 +108,16 @@ def _normalize_categories(categories: List[Dict[str, Any]] | List[SiglipCategory
             continue
         if not category.value or not category.prompt:
             continue
-        if category.value == "other":
+        if category.value not in SINGLE:
             continue
         if category.value in seen:
             continue
         seen.add(category.value)
-        normalized.append(category)
+        normalized.append(SiglipCategoryConfig(
+            value=category.value, label=category.label or LABELS[category.value], prompt=SINGLE[category.value],
+            match_threshold=category.match_threshold, margin_threshold=category.margin_threshold,
+            evidence_temperature=category.evidence_temperature, enabled=category.enabled,
+        ))
     return normalized
 
 
@@ -173,15 +180,25 @@ def _result_from_logits(
 ) -> SiglipImageVerificationResult:
     if not categories:
         return _empty_result(image_category, categories, "error", "no_active_categories", "No active SigLIP image categories are configured.", device)
-    if len(logits) != len(categories):
+    try:
+        prediction, decision_rule = classify(logits)
+    except ValueError as error:
         return _empty_result(
             image_category,
             categories,
             "error",
             "logit_category_count_mismatch",
-            f"SigLIP returned {len(logits)} logits for {len(categories)} categories.",
+            str(error),
             device,
         )
+    if not any(category.value == image_category for category in categories):
+        return _empty_result(image_category, categories, "error", "category_not_found", f"Image category not active: {image_category}", device)
+    configured = {category.value: category for category in categories}
+    categories = [configured.get(name) or SiglipCategoryConfig(name, LABELS[name], prompt)
+                  for name, prompt in SINGLE.items()]
+    negative_scores = dict(zip(NEGATIVE, logits[len(SINGLE):]))
+    positive_negative_margin = max(logits[:len(SINGLE)]) - max(negative_scores.values())
+    logits = logits[:len(SINGLE)]
     target_index = next((index for index, category in enumerate(categories) if category.value == image_category), -1)
     if target_index < 0:
         return _empty_result(image_category, categories, "error", "category_not_found", f"Image category not found: {image_category}", device)
@@ -190,7 +207,8 @@ def _result_from_logits(
     exp_values = [math.exp(logit - max(logits)) for logit in logits]
     exp_total = sum(exp_values) or 1.0
     relative_scores = [value / exp_total for value in exp_values]
-    pair_scores = [1.0 / (1.0 + math.exp(-logit)) for logit in logits]
+    pair_scores = [1.0 / (1.0 + math.exp(-logit)) if logit >= 0
+                   else math.exp(logit) / (1.0 + math.exp(logit)) for logit in logits]
     ranked_indices = sorted(range(len(categories)), key=lambda index: logits[index], reverse=True)
     top_index = ranked_indices[0]
     second_index = ranked_indices[1] if len(ranked_indices) > 1 else None
@@ -200,8 +218,7 @@ def _result_from_logits(
     second_logit = float(logits[second_index]) if second_index is not None else top_logit
     margin = round(top_logit - second_logit if target_rank == 1 else float(logits[target_index]) - top_logit, 4)
 
-    top_category = categories[top_index]
-    passed = target_rank == 1
+    passed = prediction == image_category
     evidence = 1.0 if passed else 0.0
     if passed:
         status = "matched"
@@ -224,8 +241,8 @@ def _result_from_logits(
                 "raw_pair_score": round(float(pair_scores[index]), 4),
                 "relative_score": round(float(relative_scores[index]), 4),
                 "relative_percentage": relative_percentage,
-                "field_score": 1.0 if index == top_index else 0.0,
-                "evidence_score": 1.0 if index == top_index else 0.0,
+                "field_score": 1.0 if category.value == prediction else 0.0,
+                "evidence_score": 1.0 if category.value == prediction else 0.0,
                 "match_threshold": round(float(category.match_threshold), 4),
                 "margin_threshold": round(float(category.margin_threshold), 4),
                 "target": index == target_index,
@@ -250,9 +267,9 @@ def _result_from_logits(
         image_category=target_category.value,
         image_category_label=target_category.label,
         prompt=target_category.prompt,
-        predicted_category=top_category.value,
-        predicted_label=top_category.label,
-        predicted_prompt=top_category.prompt,
+        predicted_category=prediction,
+        predicted_label=LABELS.get(prediction, "Other"),
+        predicted_prompt=SINGLE.get(prediction, ""),
         target_rank=target_rank,
         score_margin=margin,
         raw_logit=round(float(logits[target_index]), 4),
@@ -267,6 +284,9 @@ def _result_from_logits(
         device=device,
         labels=labels,
         ui_percentages=ui_percentages,
+        decision_rule=decision_rule,
+        negative_scores=negative_scores,
+        positive_negative_margin=round(positive_negative_margin, 4),
     )
 
 
@@ -293,7 +313,7 @@ def verify_image_category(
         raise RuntimeError("GATEWAY_URL is not configured.")
 
     try:
-        remote_result = remote_verify_image_logits(image_path, category_value, [item.to_dict() for item in active_categories], timing=timing)
+        remote_result = remote_verify_image_logits(image_path, category_value, runtime_categories(), timing=timing)
     except ModelRuntimeUnavailableError as error:
         raise RuntimeError(f"SigLIP model runtime unavailable: {error}") from error
 
@@ -303,9 +323,9 @@ def verify_image_category(
     raw_result = remote_result.get("raw") if isinstance(remote_result.get("raw"), dict) else {}
     logits = remote_result.get("logits") or raw_result.get("logits")
     if not isinstance(logits, list):
-        return _result_from_remote(remote_result, category_value, active_categories)
+        return _empty_result(category_value, active_categories, "error", "raw_logits_required", "V2.3 requires raw positive and negative logits")
     device = str(remote_result.get("device") or "remote")
-    return _result_from_logits([_as_float(item, 0.0) for item in logits], category_value, active_categories, device)
+    return _result_from_logits(logits, category_value, active_categories, device)
 
 
 def verify_image_categories_batch(
@@ -338,7 +358,7 @@ def verify_image_categories_batch(
     try:
         remote_result = remote_verify_image_logits_batch(
             image_paths,
-            [item.to_dict() for item in active_categories],
+            runtime_categories(),
             timing=timing,
         )
     except ModelRuntimeUnavailableError as error:
@@ -370,49 +390,11 @@ def verify_image_categories_batch(
             elif not any(active.value == category for active in active_categories):
                 item_results.append(_empty_result(category, active_categories, "error", "category_not_found", f"Image category is not active: {category}", device))
             elif isinstance(logits, list):
-                item_results.append(_result_from_logits([_as_float(value, 0.0) for value in logits], category, active_categories, device))
+                item_results.append(_result_from_logits(logits, category, active_categories, device))
             else:
-                item_results.append(_result_from_remote(item, category, active_categories))
+                item_results.append(_empty_result(category, active_categories, "error", "raw_logits_required", "V2.3 requires raw positive and negative logits", device))
         classified.append(item_results)
     return classified
-
-
-def _result_from_remote(
-    remote_result: Dict[str, Any],
-    image_category: str,
-    categories: List[SiglipCategoryConfig],
-) -> SiglipImageVerificationResult:
-    labels = list(remote_result.get("labels") or [])
-    ui_percentages = list(remote_result.get("ui_percentages") or remote_result.get("display_percentages") or [])
-    target = next((item for item in categories if item.value == image_category), None)
-    return SiglipImageVerificationResult(
-        evidence_score=round(float(remote_result.get("evidence_score") or remote_result.get("score") or 0.0), 4),
-        score=round(float(remote_result.get("score") or remote_result.get("evidence_score") or 0.0), 4),
-        passed=bool(remote_result.get("passed")),
-        status=str(remote_result.get("status") or ("matched" if remote_result.get("passed") else "mismatched")),
-        failure_reason=str(remote_result.get("failure_reason") or ("passed" if remote_result.get("passed") else "predicted_category_mismatch")),
-        image_category=str(remote_result.get("image_category") or image_category),
-        image_category_label=str(remote_result.get("image_category_label") or (target.label if target else image_category)),
-        prompt=str(remote_result.get("prompt") or (target.prompt if target else "")),
-        predicted_category=str(remote_result.get("predicted_category") or ""),
-        predicted_label=str(remote_result.get("predicted_label") or ""),
-        predicted_prompt=str(remote_result.get("predicted_prompt") or ""),
-        target_rank=int(remote_result.get("target_rank") or 0),
-        score_margin=round(float(remote_result.get("score_margin") or 0.0), 4),
-        raw_logit=round(float(remote_result.get("raw_logit") or 0.0), 4),
-        raw_pair_score=round(float(remote_result.get("raw_pair_score") or 0.0), 4),
-        relative_percentage=round(float(remote_result.get("relative_percentage") or 0.0), 2),
-        verification_threshold=round(float(remote_result.get("verification_threshold") or (target.match_threshold if target else 0.0)), 4),
-        margin_threshold=round(float(remote_result.get("margin_threshold") or (target.margin_threshold if target else 0.0)), 4),
-        model_name=str(remote_result.get("model_name") or SIGLIP_MODEL_NAME),
-        model_version=str(remote_result.get("model_version") or SIGLIP_MODEL_VERSION),
-        scoring_version=str(remote_result.get("scoring_version") or SIGLIP_SCORING_VERSION),
-        version=str(remote_result.get("version") or SIGLIP_SCORING_VERSION),
-        device=str(remote_result.get("device") or "remote"),
-        labels=labels,
-        ui_percentages=ui_percentages,
-        error=remote_result.get("error"),
-    )
 
 
 def verify_image_category_from_logits(

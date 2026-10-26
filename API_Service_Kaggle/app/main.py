@@ -166,14 +166,14 @@ def validate_categories(categories):
 
 @app.post("/api/v1/image-verifications", dependencies=[Depends(authenticate)])
 def verification(request: VerifyImage):
-    image = decode_image(request.image)
+    image = decode_image(request.image, composite_alpha=True)
     categories = validate_categories(request.categories)
     return run("siglip", lambda instance: {"logits": siglip_logits([image], categories, instance)[0], "device": "cpu"})
 
 
 @app.post("/api/v1/image-classification-batches", dependencies=[Depends(authenticate)])
 def classification_batch(request: ClassifyImages):
-    images = [decode_image(item) for item in request.images]
+    images = [decode_image(item, composite_alpha=True) for item in request.images]
     categories = validate_categories(request.categories)
 
     def operation(instance):

@@ -8,81 +8,14 @@ from typing import Any, Dict, Iterable, List, Optional
 from fastapi import HTTPException
 
 from app.core.db import connect as connect_db
+from app.model_runtime.siglip_v23 import LABELS, SINGLE
 
 
 DEFAULT_IMAGE_VERIFICATION_CATEGORIES: List[Dict[str, Any]] = [
-    {
-        "value": "company_logo",
-        "label": "\u0e42\u0e25\u0e42\u0e01\u0e49\u0e1a\u0e23\u0e34\u0e29\u0e31\u0e17",
-        "prompt": "This is a photo of a company logo.",
-        "match_threshold": 0.50,
-        "margin_threshold": 0.05,
-        "evidence_temperature": 1.0,
-        "enabled": True,
-    },
-    {
-        "value": "official_stamp",
-        "label": "\u0e15\u0e23\u0e32\u0e1b\u0e23\u0e30\u0e17\u0e31\u0e1a",
-        "prompt": "This is a photo of an official ink stamp on a document.",
-        "match_threshold": 0.50,
-        "margin_threshold": 0.05,
-        "evidence_temperature": 1.0,
-        "enabled": True,
-    },
-    {
-        "value": "signature",
-        "label": "\u0e25\u0e32\u0e22\u0e40\u0e0b\u0e47\u0e19",
-        "prompt": "This is a photo of a handwritten signature.",
-        "match_threshold": 0.45,
-        "margin_threshold": 0.04,
-        "evidence_temperature": 1.0,
-        "enabled": True,
-    },
-    {
-        "value": "qr_code",
-        "label": "QR Code",
-        "prompt": "This is a photo of a QR code.",
-        "match_threshold": 0.55,
-        "margin_threshold": 0.05,
-        "evidence_temperature": 1.0,
-        "enabled": True,
-    },
-    {
-        "value": "barcode",
-        "label": "\u0e1a\u0e32\u0e23\u0e4c\u0e42\u0e04\u0e49\u0e14",
-        "prompt": "This is a photo of a linear barcode.",
-        "match_threshold": 0.55,
-        "margin_threshold": 0.05,
-        "evidence_temperature": 1.0,
-        "enabled": True,
-    },
-    {
-        "value": "portrait",
-        "label": "\u0e23\u0e39\u0e1b\u0e16\u0e48\u0e32\u0e22\u0e1a\u0e38\u0e04\u0e04\u0e25",
-        "prompt": "This is a portrait photo of a real person.",
-        "match_threshold": 0.45,
-        "margin_threshold": 0.04,
-        "evidence_temperature": 1.0,
-        "enabled": True,
-    },
-    {
-        "value": "government_emblem",
-        "label": "\u0e15\u0e23\u0e32\u0e04\u0e23\u0e38\u0e11",
-        "prompt": "This is a photo of the Thai Garuda government emblem.",
-        "match_threshold": 0.40,
-        "margin_threshold": 0.03,
-        "evidence_temperature": 1.0,
-        "enabled": True,
-    },
-    {
-        "value": "thailand_symbol",
-        "label": "\u0e2a\u0e31\u0e0d\u0e25\u0e31\u0e01\u0e29\u0e13\u0e4c\u0e1b\u0e23\u0e30\u0e40\u0e17\u0e28\u0e44\u0e17\u0e22",
-        "prompt": "This is a photo of a recognizable symbol associated with Thailand, such as the map of Thailand, the Thai national flag, or a Thai elephant symbol.",
-        "match_threshold": 0.03,
-        "margin_threshold": 0.02,
-        "evidence_temperature": 1.0,
-        "enabled": True,
-    },
+    {"value": name, "label": LABELS[name], "prompt": prompt,
+     "match_threshold": 0.50, "margin_threshold": 0.05,
+     "evidence_temperature": 1.0, "enabled": True}
+    for name, prompt in SINGLE.items()
 ]
 
 _IMAGE_VERIFICATION_CATEGORIES_READY = False
@@ -165,6 +98,8 @@ def ensure_image_verification_categories_table(conn: Any) -> None:
             )
             """,
         )
+        placeholders = ", ".join("?" for name in SINGLE)
+        conn.execute(f"DELETE FROM image_verification_categories WHERE value NOT IN ({placeholders})", tuple(SINGLE))
         for item in DEFAULT_IMAGE_VERIFICATION_CATEGORIES:
             payload = _category_to_payload(item)
             conn.execute(
@@ -174,7 +109,7 @@ def ensure_image_verification_categories_table(conn: Any) -> None:
                     evidence_temperature, enabled, created_at, updated_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT(value) DO NOTHING
+                ON CONFLICT(value) DO UPDATE SET prompt = excluded.prompt
                 """,
                 (
                     f"ivc_{payload['value']}",
@@ -249,6 +184,8 @@ class ImageVerificationCategoryService:
             raise HTTPException(status_code=422, detail="Category value is required.")
         if category["value"] == "other":
             raise HTTPException(status_code=422, detail="'other' is reserved as a no-match status, not a SigLIP category.")
+        if category["value"] not in SINGLE or category["prompt"] != SINGLE[category["value"]]:
+            raise HTTPException(status_code=422, detail="SigLIP V2.3 requires one of the eight fixed positive categories and its single prompt.")
         if not category["label"] or not category["prompt"]:
             raise HTTPException(status_code=422, detail="Category label and prompt are required.")
         conn = connect_db()
@@ -281,6 +218,8 @@ class ImageVerificationCategoryService:
     def update(self, value: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         existing = require_image_verification_category(value)
         patch = {key: item for key, item in payload.items() if item is not None}
+        if "prompt" in patch and patch["prompt"] != SINGLE.get(value):
+            raise HTTPException(status_code=422, detail="SigLIP V2.3 uses a fixed single prompt for each category.")
         if not patch:
             return {"category": existing.to_api()}
         if "value" in patch and str(patch["value"]).strip() != value:
