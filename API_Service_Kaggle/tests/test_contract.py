@@ -22,6 +22,29 @@ def test_health_and_auth(monkeypatch):
     assert client.post("/api/v1/text-recognitions", json={"image": image_url()}).status_code == 401
 
 
+def test_siglip_single_and_batch_responses_include_measured_runtime(monkeypatch):
+    monkeypatch.setattr(main, "settings", replace(main.settings, api_key="secret"))
+    monkeypatch.setattr(main.manager, "get", lambda name: (None, 0.0))
+    monkeypatch.setattr(main, "siglip_logits", lambda images, categories, instance: [[1.0] for image in images])
+    client = TestClient(main.app)
+    categories = [{"value": "emblem", "prompt": "Institutional crest"}]
+    for route, payload in (
+        ("image-verifications", {"image": image_url()}),
+        ("image-classification-batches", {"images": [image_url(), image_url()]}),
+    ):
+        response = client.post(f"/api/v1/{route}", json={**payload, "categories": categories},
+                               headers={"Authorization": "Bearer secret"})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["model"] == "google/siglip-so400m-patch14-384"
+        timing = body["timing"]
+        assert isinstance(timing["inference_ms"], (int, float))
+        assert timing["inference_ms"] >= 0
+        assert timing["image_siglip_runtime_ms"] == timing["inference_ms"]
+        assert timing["model_load_ms"] == 0
+        assert timing["total_runtime_ms"] >= timing["inference_ms"]
+
+
 def test_layout_timing_separates_detector_without_changing_results(monkeypatch):
     monkeypatch.setattr(main.manager, "get", lambda name: (name, 0.0))
     monkeypatch.setattr(main, "paddle_result", lambda model, image: {"model": model})

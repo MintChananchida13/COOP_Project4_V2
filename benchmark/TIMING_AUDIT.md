@@ -116,6 +116,18 @@ connection or model inference was required by these tests.
 
 ## Changed files
 
+Follow-up inspection of existing `output/user_flow_20261026_224912.xlsx` (read-only):
+summary X (`image_siglip_runtime_ms`) was blank, AC (`image_siglip_wait_ms`) was
+13387.98 ms. Model Calls contained `image_verification` with inference 13383.1 ms
+and service total 13383.41 ms. Thus this sample does contain service inference
+timing; the missing summary is a propagation/aggregation discrepancy, not evidence
+of an unmeasured model. The exact deployed backend revision is not established by
+the workbook. Current source aggregation tests pass; deployments still require
+verification. AJ (`frontend_render_ms`) was blank and AK (`timing_missing_reasons`)
+held JSON: no column shift in this workbook. A new contract regression test uses
+the real API timing wrapper with stubbed model computation for both SigLIP routes;
+it does not execute real inference or validate a live Kaggle service.
+
 - `API_Service_Kaggle/app/main.py`
 - `API_Service_Kaggle/app/timing.py`
 - `API_Service_Kaggle/tests/test_contract.py`
