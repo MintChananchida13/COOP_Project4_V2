@@ -11,6 +11,7 @@ from .config import settings
 from .models import NAMES, manager, predict, siglip_logits
 from .serialization import decode_image, json_safe
 from .timing import build_timing
+from .siglip_policy import POSITIVE, NEGATIVE, decide
 
 
 logging.basicConfig(level=logging.INFO)
@@ -39,12 +40,20 @@ class Category(BaseModel):
     enabled: bool = True
 
 
+class SiglipDecisionConfig(BaseModel):
+    model_config = {"extra": "forbid"}
+    confidence_min_relative_score: float | None = Field(default=None, ge=0, le=1, strict=True)
+    margin_min_relative_score: float | None = Field(default=None, ge=0, le=1, strict=True)
+
+
 class VerifyImage(SingleImage):
+    decision_config: SiglipDecisionConfig | None = None
     image_category: str = ""
     categories: list[Category] = Field(min_length=1)
 
 
 class ClassifyImages(BatchImages):
+    decision_config: SiglipDecisionConfig | None = None
     categories: list[Category] = Field(min_length=1)
 
 
@@ -177,11 +186,19 @@ def validate_categories(categories):
     return active
 
 
+def siglip_result(logits, categories, config):
+    result = {"logits": logits, "device": "cpu"}
+    names = [category["value"] for category in categories]
+    if names == [*POSITIVE, *NEGATIVE]:
+        result["decision"] = decide(logits, config.model_dump() if config else None)
+    return result
+
+
 @app.post("/api/v1/image-verifications", dependencies=[Depends(authenticate)])
 def verification(request: VerifyImage):
     image = decode_image(request.image, composite_alpha=True)
     categories = validate_categories(request.categories)
-    return run("siglip", lambda instance: {"logits": siglip_logits([image], categories, instance)[0], "device": "cpu"})
+    return run("siglip", lambda instance: siglip_result(siglip_logits([image], categories, instance)[0], categories, request.decision_config))
 
 
 @app.post("/api/v1/image-classification-batches", dependencies=[Depends(authenticate)])
@@ -193,7 +210,7 @@ def classification_batch(request: ClassifyImages):
         results = []
         for start in range(0, len(images), settings.batch_chunk_size):
             logits = siglip_logits(images[start:start + settings.batch_chunk_size], categories, instance)
-            results.extend({"logits": item, "device": "cpu"} for item in logits)
+            results.extend(siglip_result(item, categories, request.decision_config) for item in logits)
         return {"results": results, "device": "cpu"}
 
     return run("siglip", operation)

@@ -12,11 +12,14 @@ from app.core.model_runtime_client import (
     remote_verify_image_logits_batch,
 )
 from app.model_runtime.siglip_v23 import LABELS, NEGATIVE, SCORING_VERSION, SINGLE, classify, runtime_categories
+from app.model_runtime.siglip_v24 import SCORING_VERSION as V24_SCORING_VERSION, gate_config, policy
 
 
 SIGLIP_MODEL_NAME = "google/siglip-so400m-patch14-384"
 SIGLIP_MODEL_VERSION = "google/siglip-so400m-patch14-384"
-SIGLIP_SCORING_VERSION = SCORING_VERSION
+SIGLIP_SCORING_VERSION = V24_SCORING_VERSION
+if tuple(SINGLE) != policy.POSITIVE or tuple(NEGATIVE) != policy.NEGATIVE:
+    raise RuntimeError("SigLIP prompt and V2.4 policy category ordering disagree")
 
 @dataclass(frozen=True)
 class SiglipCategoryConfig:
@@ -83,6 +86,7 @@ class SiglipImageVerificationResult:
     decision_rule: str = ""
     negative_scores: Optional[Dict[str, float]] = None
     positive_negative_margin: Optional[float] = None
+    decision: Optional[Dict[str, Any]] = None
 
 
 def _as_float(value: Any, fallback: float) -> float:
@@ -128,6 +132,7 @@ def _empty_result(
     failure_reason: str,
     error: Optional[str] = None,
     device: str = "unavailable",
+    scoring_version: str = SIGLIP_SCORING_VERSION,
 ) -> SiglipImageVerificationResult:
     target = next((category for category in categories if category.value == image_category), None)
     return SiglipImageVerificationResult(
@@ -151,8 +156,8 @@ def _empty_result(
         margin_threshold=target.margin_threshold if target else 0.0,
         model_name=SIGLIP_MODEL_NAME,
         model_version=SIGLIP_MODEL_VERSION,
-        scoring_version=SIGLIP_SCORING_VERSION,
-        version=SIGLIP_SCORING_VERSION,
+        scoring_version=scoring_version,
+        version=scoring_version,
         device=device,
         labels=[],
         ui_percentages=[],
@@ -177,22 +182,33 @@ def _result_from_logits(
     image_category: str,
     categories: List[SiglipCategoryConfig],
     device: str,
+    *,
+    legacy: bool = False,
+    decision: Optional[Dict[str, Any]] = None,
 ) -> SiglipImageVerificationResult:
+    version = SCORING_VERSION if legacy else SIGLIP_SCORING_VERSION
     if not categories:
-        return _empty_result(image_category, categories, "error", "no_active_categories", "No active SigLIP image categories are configured.", device)
+        return _empty_result(image_category, categories, "error", "no_active_categories", "No active SigLIP image categories are configured.", device, version)
     try:
-        prediction, decision_rule = classify(logits)
+        if legacy:
+            prediction, decision_rule = classify(logits)
+            decision = None
+        else:
+            decision = policy.consume_decision(logits, gate_config(), decision)
+            prediction = decision["final_predicted_category"]
+            decision_rule = decision["decision_rule"]
     except ValueError as error:
         return _empty_result(
             image_category,
             categories,
             "error",
-            "logit_category_count_mismatch",
+            "logit_category_count_mismatch" if legacy else "decision_contract_error",
             str(error),
             device,
+            version,
         )
     if not any(category.value == image_category for category in categories):
-        return _empty_result(image_category, categories, "error", "category_not_found", f"Image category not active: {image_category}", device)
+        return _empty_result(image_category, categories, "error", "category_not_found", f"Image category not active: {image_category}", device, version)
     configured = {category.value: category for category in categories}
     categories = [configured.get(name) or SiglipCategoryConfig(name, LABELS[name], prompt)
                   for name, prompt in SINGLE.items()]
@@ -201,7 +217,7 @@ def _result_from_logits(
     logits = logits[:len(SINGLE)]
     target_index = next((index for index, category in enumerate(categories) if category.value == image_category), -1)
     if target_index < 0:
-        return _empty_result(image_category, categories, "error", "category_not_found", f"Image category not found: {image_category}", device)
+        return _empty_result(image_category, categories, "error", "category_not_found", f"Image category not found: {image_category}", device, version)
 
     target_category = categories[target_index]
     exp_values = [math.exp(logit - max(logits)) for logit in logits]
@@ -225,7 +241,7 @@ def _result_from_logits(
         failure_reason = "passed"
     else:
         status = "mismatched"
-        failure_reason = "predicted_category_mismatch"
+        failure_reason = decision["decision_reason"] if decision and prediction == "other" else "predicted_category_mismatch"
 
     labels: List[Dict[str, Any]] = []
     for rank, index in enumerate(ranked_indices, start=1):
@@ -246,6 +262,7 @@ def _result_from_logits(
                 "match_threshold": round(float(category.match_threshold), 4),
                 "margin_threshold": round(float(category.margin_threshold), 4),
                 "target": index == target_index,
+                "final_selected": category.value == prediction,
             }
         )
 
@@ -255,6 +272,7 @@ def _result_from_logits(
             "label": categories[index].label,
             "prompt": categories[index].prompt,
             "percentage": relative_scores[index],
+            "final_selected": categories[index].value == prediction,
         }
         for index in range(len(categories))
     ])
@@ -279,14 +297,15 @@ def _result_from_logits(
         margin_threshold=round(float(target_category.margin_threshold), 4),
         model_name=SIGLIP_MODEL_NAME,
         model_version=SIGLIP_MODEL_VERSION,
-        scoring_version=SIGLIP_SCORING_VERSION,
-        version=SIGLIP_SCORING_VERSION,
+        scoring_version=SCORING_VERSION if legacy else SIGLIP_SCORING_VERSION,
+        version=SCORING_VERSION if legacy else SIGLIP_SCORING_VERSION,
         device=device,
         labels=labels,
         ui_percentages=ui_percentages,
         decision_rule=decision_rule,
         negative_scores=negative_scores,
         positive_negative_margin=round(positive_negative_margin, 4),
+        decision=decision,
     )
 
 
@@ -325,7 +344,7 @@ def verify_image_category(
     if not isinstance(logits, list):
         return _empty_result(category_value, active_categories, "error", "raw_logits_required", "V2.3 requires raw positive and negative logits")
     device = str(remote_result.get("device") or "remote")
-    return _result_from_logits(logits, category_value, active_categories, device)
+    return _result_from_logits(logits, category_value, active_categories, device, decision=remote_result.get("decision"))
 
 
 def verify_image_categories_batch(
@@ -390,7 +409,7 @@ def verify_image_categories_batch(
             elif not any(active.value == category for active in active_categories):
                 item_results.append(_empty_result(category, active_categories, "error", "category_not_found", f"Image category is not active: {category}", device))
             elif isinstance(logits, list):
-                item_results.append(_result_from_logits(logits, category, active_categories, device))
+                item_results.append(_result_from_logits(logits, category, active_categories, device, decision=item.get("decision")))
             else:
                 item_results.append(_empty_result(category, active_categories, "error", "raw_logits_required", "V2.3 requires raw positive and negative logits", device))
         classified.append(item_results)
@@ -404,3 +423,7 @@ def verify_image_category_from_logits(
     device: str = "test",
 ) -> SiglipImageVerificationResult:
     return _result_from_logits(logits, image_category, _normalize_categories(categories), device)
+
+
+def verify_image_category_from_logits_v23(logits, image_category, categories, device="legacy-test"):
+    return _result_from_logits(logits, image_category, _normalize_categories(categories), device, legacy=True)

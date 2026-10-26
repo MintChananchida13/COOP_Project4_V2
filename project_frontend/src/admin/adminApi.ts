@@ -958,6 +958,28 @@ export interface PrepublishDetectionProgress {
   pageIndex?: number | null;
 }
 
+export interface SiglipDecisionTrace {
+  scoring_version: string;
+  raw_top1_category: string;
+  raw_top1_logit: number;
+  raw_top2_category: string;
+  raw_top2_logit: number;
+  final_predicted_category: string;
+  decision_rule: string;
+  decision_reason: string;
+  positive_top1_logit: number;
+  negative_top1_category: string;
+  negative_top1_logit: number;
+  positive_negative_margin: number;
+  positive_top1_top2_margin: number;
+  positive_relative_score: number;
+  positive_relative_margin: number;
+  confidence_gate_passed: boolean | "not_applied" | "not_evaluated";
+  margin_gate_passed: boolean | "not_applied" | "not_evaluated";
+  negative_gate_passed: boolean;
+  decision_config: { confidence_min_relative_score: number | null; margin_min_relative_score: number | null };
+}
+
 export interface TemplateStepTestItem {
   fieldId?: string;
   anchorId?: string;
@@ -1027,6 +1049,8 @@ export interface TemplateStepTestItem {
   marginThreshold?: number | null;
   scoringVersion?: string | null;
   siglipUiPercentages?: Record<string, unknown>[];
+  siglipLabels?: Record<string, unknown>[];
+  siglipDecision?: SiglipDecisionTrace | null;
   imageCategory?: string | null;
   imageCategoryLabel?: string | null;
   imageCategoryPrompt?: string | null;
@@ -2887,6 +2911,9 @@ function mapTemplateStepTestItem(item: Record<string, unknown>): TemplateStepTes
     marginThreshold: typeof item.margin_threshold === "number" ? item.margin_threshold : null,
     scoringVersion: (item.scoring_version as string | null | undefined) ?? null,
     siglipUiPercentages: Array.isArray(item.siglip_ui_percentages) ? (item.siglip_ui_percentages as Record<string, unknown>[]) : [],
+    siglipLabels: Array.isArray(item.siglip_labels) ? item.siglip_labels as Record<string, unknown>[] : [],
+    siglipDecision: item.siglip_decision && typeof item.siglip_decision === "object"
+      ? item.siglip_decision as SiglipDecisionTrace : null,
     imageCategory: (item.image_category as string | null | undefined) ?? null,
     imageCategoryLabel: (item.image_category_label as string | null | undefined) ?? null,
     imageCategoryPrompt: (item.image_category_prompt as string | null | undefined) ?? null,

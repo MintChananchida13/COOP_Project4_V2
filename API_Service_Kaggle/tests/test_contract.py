@@ -22,6 +22,36 @@ def test_health_and_auth(monkeypatch):
     assert client.post("/api/v1/text-recognitions", json={"image": image_url()}).status_code == 401
 
 
+def test_v24_api_single_batch_decisions_and_config_validation(monkeypatch):
+    from app.siglip_policy import POSITIVE, NEGATIVE
+
+    monkeypatch.setattr(main, "settings", replace(main.settings, api_key="secret"))
+    monkeypatch.setattr(main.manager, "get", lambda name: (None, 0))
+    scores = [8.1 if name == "thai_garuda" else 6.5818 if name == "emblem" else -30.0 for name in (*POSITIVE, *NEGATIVE)]
+    monkeypatch.setattr(main, "siglip_logits", lambda images, categories, instance: [scores for image in images])
+    client = TestClient(main.app)
+    headers = {"Authorization": "Bearer secret"}
+    categories = [{"value": name, "prompt": name} for name in (*POSITIVE, *NEGATIVE)]
+    body = {"image": image_url(), "categories": categories}
+    single = client.post("/api/v1/image-verifications", json=body, headers=headers)
+    assert single.status_code == 200
+    result = single.json()["result"]
+    assert result["logits"] == scores
+    trace = result["decision"]
+    assert trace["scoring_version"] == "siglip-single-prompt-v2.4"
+    assert trace["final_predicted_category"] == "thai_garuda"
+    assert trace["confidence_gate_passed"] == "not_applied"
+    assert trace["margin_gate_passed"] == "not_applied"
+    batch = client.post("/api/v1/image-classification-batches", json={"images": [image_url(), image_url()], "categories": categories}, headers=headers)
+    assert batch.status_code == 200
+    assert all(item["decision"] == trace for item in batch.json()["result"]["results"])
+    rejected = client.post("/api/v1/image-verifications", json={**body, "decision_config": {"confidence_min_relative_score": 0.99}}, headers=headers)
+    assert rejected.json()["result"]["decision"]["decision_reason"] == "confidence_gate_failed"
+    for invalid in (True, -0.1, 1.1, "0.5"):
+        response = client.post("/api/v1/image-verifications", json={**body, "decision_config": {"confidence_min_relative_score": invalid}}, headers=headers)
+        assert response.status_code == 422
+
+
 def test_siglip_single_and_batch_responses_include_measured_runtime(monkeypatch):
     monkeypatch.setattr(main, "settings", replace(main.settings, api_key="secret"))
     monkeypatch.setattr(main.manager, "get", lambda name: (None, 0.0))

@@ -439,6 +439,7 @@ def remote_verify_image_logits(
     categories: Optional[List[Dict[str, Any]]] = None,
     timing: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
+    from app.model_runtime.siglip_v24 import gate_config
     if not is_runtime_configured(ModelRuntimeKind.IMAGE_VERIFICATION):
         return None
     return _post_predict(
@@ -447,6 +448,7 @@ def remote_verify_image_logits(
             "image": _path_to_data_url(image_path),
             "image_category": image_category,
             "categories": categories or [],
+            "decision_config": gate_config(),
         },
         timeout=240.0,
         timing=timing,
@@ -458,6 +460,7 @@ def remote_verify_image_logits_batch(
     categories: Optional[List[Dict[str, Any]]] = None,
     timing: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
+    from app.model_runtime.siglip_v24 import gate_config
     if not is_runtime_configured(ModelRuntimeKind.IMAGE_VERIFICATION):
         return None
     encode_started = time.perf_counter()
@@ -471,6 +474,7 @@ def remote_verify_image_logits_batch(
         {
             "images": images,
             "categories": categories or [],
+            "decision_config": gate_config(),
         },
         timeout=240.0,
         path_override="/api/v1/image-classification-batches",
