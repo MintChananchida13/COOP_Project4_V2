@@ -15,7 +15,7 @@ SINGLE = {
 }
 NEGATIVE = {
     "printed_text": "Ordinary printed text on a document without a logo or emblem.",
-    "numbers": "A cropped document region containing printed numbers and digits.",
+    "numbers": "A document image region primarily consisting of printed numbers and numerical digits.",
     "table": "A table with rows, columns, and printed text.",
     "blank": "An empty or nearly blank document region.",
     "background": "A decorative document security background without a distinct emblem.",
