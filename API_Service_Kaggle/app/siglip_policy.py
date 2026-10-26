@@ -6,7 +6,7 @@ import math
 
 SCORING_VERSION = "siglip-single-prompt-v2.4"
 POSITIVE = ("emblem", "thai_garuda", "company_logo", "document_stamp", "portrait", "signature", "barcode", "qr_code")
-NEGATIVE = ("printed_text", "numbers", "table", "blank", "background", "illustration", "pattern", "bar_chart")
+NEGATIVE = ("printed_text", "table", "blank", "background", "illustration", "pattern", "bar_chart")
 
 
 def normalize_config(config=None):
@@ -25,7 +25,7 @@ def normalize_config(config=None):
 
 def validate_logits(logits):
     if not isinstance(logits, list) or len(logits) != len(POSITIVE) + len(NEGATIVE):
-        raise ValueError("V2.4 requires 16 ordered raw logits")
+        raise ValueError(f"V2.4 requires {len(POSITIVE) + len(NEGATIVE)} ordered raw logits")
     if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) for value in logits):
         raise ValueError("V2.4 requires finite numeric raw logits")
 

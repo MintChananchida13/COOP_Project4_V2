@@ -22,6 +22,16 @@ def categories():
 
 
 class SiglipV24Tests(unittest.TestCase):
+    def test_numbers_removed_and_old_vector_rejected(self):
+        self.assertNotIn("numbers", NEGATIVE)
+        self.assertEqual(tuple(NEGATIVE), policy.NEGATIVE)
+        self.assertNotIn("numbers", [item["value"] for item in runtime_categories()])
+        self.assertEqual(len(runtime_categories()), 15)
+        with self.assertRaises(ValueError):
+            policy.decide([0.0] * 16)
+        self.assertEqual(policy.decide(raw(portrait=1))["final_predicted_category"], "portrait")
+        self.assertEqual(policy.decide(raw(portrait=1, background=2))["final_predicted_category"], "other")
+
     def setUp(self):
         environment = patch.dict(os.environ, {"SIGLIP_V24_CONFIDENCE_MIN_RELATIVE_SCORE": "",
                                               "SIGLIP_V24_MARGIN_MIN_RELATIVE_SCORE": ""})
@@ -52,7 +62,7 @@ class SiglipV24Tests(unittest.TestCase):
                 self.assertEqual(result["decision_reason"], "negative_category_won")
 
     def test_unknown_ties_reject_instead_of_arbitrary_positive(self):
-        result = policy.decide([0.0] * 16)
+        result = policy.decide([0.0] * 15)
         self.assertEqual(result["final_predicted_category"], "other")
         self.assertEqual(result["decision_reason"], "negative_category_tied")
 
@@ -73,7 +83,7 @@ class SiglipV24Tests(unittest.TestCase):
             self.assertEqual(result.raw_pair_score, 0.0003)
 
     def test_confidence_gate_enabled_only_by_new_explicit_config(self):
-        scores = [0.0] * 8 + [-1.0] * 8
+        scores = [0.0] * 8 + [-1.0] * 7
         accepted = policy.decide(scores)
         rejected = policy.decide(scores, {"confidence_min_relative_score": 0.2})
         self.assertEqual(accepted["final_predicted_category"], "emblem")
@@ -88,7 +98,7 @@ class SiglipV24Tests(unittest.TestCase):
         self.assertEqual(result["decision_reason"], "margin_gate_failed")
 
     def test_boundaries_and_gate_priority(self):
-        scores = [0.0] * 8 + [-1.0] * 8
+        scores = [0.0] * 8 + [-1.0] * 7
         boundary = policy.decide(scores, {"confidence_min_relative_score": 0.125, "margin_min_relative_score": 0})
         self.assertTrue(boundary["confidence_gate_passed"])
         self.assertTrue(boundary["margin_gate_passed"])
@@ -135,7 +145,7 @@ class SiglipV24Tests(unittest.TestCase):
         self.assertEqual([result.passed for result in results], [True, False])
         self.assertEqual(results[0].decision, results[1].decision)
         self.assertEqual(results[1].failure_reason, "predicted_category_mismatch")
-        self.assertEqual(len(runtime_categories()), 16)
+        self.assertEqual(len(runtime_categories()), 15)
 
     def test_environment_defaults_and_opt_in_are_unambiguous(self):
         self.assertEqual(gate_config(), {"confidence_min_relative_score": None, "margin_min_relative_score": None})

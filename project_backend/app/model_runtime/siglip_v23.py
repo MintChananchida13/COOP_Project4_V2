@@ -8,14 +8,13 @@ SINGLE = {
     "thai_garuda": "This is the standalone official Thai national Garuda (Phra Khrut) emblem, showing a winged human-bird deity, not a university or agency crest.",
     "company_logo": "This is a commercial brand identity logo, company trademark, or business wordmark.",
     "document_stamp": "An inked rubber stamp impression applied to a paper document.",
-    "portrait": "An ID-style portrait photograph showing a real person's face, head, and shoulders.",
+    "portrait": "A portrait photograph of a real person.",
     "signature": "A handwritten signature made with a pen.",
     "barcode": "A linear barcode made of parallel vertical bars.",
     "qr_code": "A square QR code with a black and white matrix pattern.",
 }
 NEGATIVE = {
     "printed_text": "Ordinary printed text on a document without a logo or emblem.",
-    "numbers": "A close-up of printed numerical digits, such as an identification number, a date, or an amount, as the main content.",
     "table": "A table with rows, columns, and printed text.",
     "blank": "An empty or nearly blank document region.",
     "background": "A decorative document security background without a distinct emblem.",

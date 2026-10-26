@@ -91,7 +91,7 @@ class SiglipV23AuditTests(unittest.TestCase):
                 self.assertEqual(result.evidence_score, 0)
 
     def test_low_relative_and_pair_scores_do_not_gate_generic_positive(self):
-        scores = [-10.0] * 8 + [-11.0] * 8
+        scores = [-10.0] * 8 + [-11.0] * 7
         scores[list(SINGLE).index("portrait")] = -9.999
         result = self.verify(scores, settings=categories(0.99, 1, 100))
         self.assertEqual(result.target_rank, 1)
@@ -135,7 +135,7 @@ class SiglipV23AuditTests(unittest.TestCase):
         self.assertEqual(classify(raw(portrait=0, barcode=-0.00001)), ("portrait", "unchanged"))
 
     def test_uniform_unknown_like_logits_do_not_guarantee_other(self):
-        result = self.verify([0.0] * 16, "emblem", categories(0.99, 1))
+        result = self.verify([0.0] * 15, "emblem", categories(0.99, 1))
         self.assertEqual(result.predicted_category, "emblem")
         self.assertEqual(result.labels[0]["relative_score"], 0.125)
         self.assertTrue(result.passed)

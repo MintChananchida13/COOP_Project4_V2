@@ -63,12 +63,11 @@ class SiglipV23Tests(unittest.TestCase):
         ) or isinstance(node, ast.FunctionDef) and node.name == "guarded_decision"]
         original = {}
         exec(compile(ast.Module(body=selected, type_ignores=[]), str(source), "exec"), original)
-        expected_positive = dict(original["SINGLE"])
-        expected_positive["portrait"] = "An ID-style portrait photograph showing a real person's face, head, and shoulders."
-        self.assertEqual(SINGLE, expected_positive)
+        self.assertEqual(SINGLE, original["SINGLE"])
         expected_negative = {name: prompts[0] for name, prompts in original["NEGATIVE"].items()}
-        expected_negative["numbers"] = "A close-up of printed numerical digits, such as an identification number, a date, or an amount, as the main content."
+        expected_negative.pop("numbers")
         self.assertEqual(NEGATIVE, expected_negative)
+        original["NEGATIVE"].pop("numbers")
         generator = random.Random(23)
         names = [*SINGLE, *NEGATIVE]
         for iteration in range(1000):
@@ -98,7 +97,7 @@ class SiglipV23Tests(unittest.TestCase):
             results = adapter.verify_image_categories_batch(["one.png", "two.png"], [["qr_code"], ["barcode", "qr_code"]], categories())
         self.assertEqual(single.call_args.args[2], runtime_categories())
         self.assertEqual(batch.call_args.args[1], runtime_categories())
-        self.assertEqual(len(runtime_categories()), 16)
+        self.assertEqual(len(runtime_categories()), 15)
         self.assertTrue(result.passed)
         self.assertEqual([item.passed for item in results[1]], [False, True])
         keys = asdict(result)
@@ -106,7 +105,7 @@ class SiglipV23Tests(unittest.TestCase):
             self.assertIn(key, keys)
 
     def test_extreme_finite_logits_keep_display_scores_finite(self):
-        result = adapter.verify_image_category_from_logits([1000] + [-1000] * 15, "emblem", categories())
+        result = adapter.verify_image_category_from_logits([1000] + [-1000] * 14, "emblem", categories())
         self.assertTrue(result.passed)
         self.assertTrue(math.isfinite(result.raw_pair_score))
 

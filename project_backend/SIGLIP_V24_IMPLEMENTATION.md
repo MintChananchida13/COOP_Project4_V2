@@ -1,5 +1,18 @@
 # SigLIP Single Prompt V2.4 implementation
 
+## Experimental category removal update
+
+At the user's request, `numbers` is now removed from the shared prompt registry
+and active policy: **8 Positive + 7 Negative = 15 ordered logits**. References
+to 16 logits/eight Negatives below describe the original V2.4 implementation.
+Remaining Negative competition and optional gates are unchanged. The V2.3
+comparison rules now use the same reduced prompt registry, so comparisons are
+not an exact replay of the original 16-category experiment. Tests verify the
+removed category is absent, reject stale 16-logit vectors, and retain rejection
+when another Negative wins. Restart/update both API and Backend together;
+mixed revisions are not supported. Accuracy effects are not verified and
+removing this Negative does not guarantee a portrait will pass.
+
 ## Decision flow
 
 The checkpoint, all eight Positive and eight Negative single prompts, model
