@@ -24,7 +24,7 @@ import {
 import AuthGate from "../auth/AuthGate";
 import { AuthSession, authHeaders, clearAuthSession, readAuthSession } from "../auth/session";
 import { AppHeader } from "../shared/ui";
-import { browserTiming } from "../shared/browserTiming";
+import { backendTimingMetric, browserTiming } from "../shared/browserTiming";
 
 interface PageConfig {
   rotation: number;
@@ -2527,10 +2527,7 @@ function HomeWorkspace() {
       const browserMetrics = browserTiming(userWaitStartedAt, performance.now());
       timingBreakdown.totalUserWaitMs = browserMetrics.end_to_end_ms;
       const backendTiming = detectionForTiming?.debug?.timing as Record<string, unknown> | undefined;
-      const benchmarkTiming = backendTiming?.benchmark as Record<string, unknown> | undefined;
-      const numberOrNull = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? value : null;
-      const backendMetric = (key: string): number | null =>
-        numberOrNull(backendTiming?.[key]) ?? numberOrNull(benchmarkTiming?.[key]);
+      const backendMetric = (key: string, alias?: string): number | null => backendTimingMetric(backendTiming, key, alias);
       timingBreakdown.uploadJobMs = detectionTransportTiming.uploadJobMs ?? null;
       timingBreakdown.jobPollingMs = detectionTransportTiming.jobPollingMs ?? null;
       const sixteenMetrics = {
@@ -2538,9 +2535,9 @@ function HomeWorkspace() {
         backend_runtime_ms: backendMetric("backend_runtime_ms"),
         backend_to_model_ms: backendMetric("backend_to_model_ms"),
         layout_runtime_ms: backendMetric("layout_runtime_ms"),
-        text_detection_runtime_ms: backendMetric("text_detection_runtime_ms") ?? backendMetric("text_det_inference_ms"),
-        text_recognition_runtime_ms: backendMetric("text_recognition_runtime_ms") ?? backendMetric("text_rec_inference_ms"),
-        image_siglip_runtime_ms: backendMetric("image_siglip_runtime_ms") ?? backendMetric("siglip_inference_ms"),
+        text_detection_runtime_ms: backendMetric("text_detection_runtime_ms", "text_det_inference_ms"),
+        text_recognition_runtime_ms: backendMetric("text_recognition_runtime_ms", "text_rec_inference_ms"),
+        image_siglip_runtime_ms: backendMetric("image_siglip_runtime_ms", "siglip_inference_ms"),
         table_runtime_ms: backendMetric("table_runtime_ms"),
         layout_wait_ms: backendMetric("layout_wait_ms"),
         text_detection_wait_ms: backendMetric("text_detection_wait_ms"),
@@ -2548,7 +2545,11 @@ function HomeWorkspace() {
         image_siglip_wait_ms: backendMetric("image_siglip_wait_ms"),
         table_wait_ms: backendMetric("table_wait_ms"),
         model_wall_clock_ms: backendMetric("model_wall_clock_ms"),
-        total_runtime_ms: backendMetric("total_detection_ms"),
+        model_wait_union_ms: backendMetric("model_wait_union_ms"),
+        model_intervals_overlap: backendTiming?.model_intervals_overlap ?? null,
+        model_call_count: backendMetric("model_call_count"),
+        model_timing_missing_reason: backendTiming?.model_timing_missing_reason ?? null,
+        total_runtime_ms: backendMetric("total_runtime_ms", "total_detection_ms"),
         backend_to_frontend_ms: browserMetrics.backend_to_frontend_ms,
         frontend_render_ms: browserMetrics.frontend_render_ms,
         end_to_end_ms: browserMetrics.end_to_end_ms,
@@ -2560,7 +2561,10 @@ function HomeWorkspace() {
         matched: detectionMatchedForTiming,
       }));
       console.table(rows);
-      console.table(Object.entries(sixteenMetrics).map(([metric, value]) => ({ metric, valueMs: value })));
+      console.table(Object.entries(sixteenMetrics).map(([metric, value]) => ({
+        metric, ...(metric.endsWith("_ms") ? { valueMs: value } : { value }),
+        reason: value === null ? (backendTiming?.timing_missing_reasons as Record<string, unknown> | undefined)?.[metric] ?? "measurement_unavailable" : null,
+      })));
       const measuredRows = rows.filter((row) => typeof row.elapsedMs === "number" && row.stage !== "totalUserWaitMs");
       const bottleneck = measuredRows.reduce<(typeof measuredRows)[number] | null>(
         (current, row) => (!current || Number(row.elapsedMs) > Number(current.elapsedMs) ? row : current),

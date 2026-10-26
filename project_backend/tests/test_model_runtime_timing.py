@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from app.core.model_runtime_client import (
     _extract_gateway_timing,
+    _post_predict, ModelRuntimeKind, ModelRuntimeUnavailableError,
     remote_recognize_image,
     remote_recognize_images,
     remote_recognize_table_raw,
@@ -12,6 +13,16 @@ from app.core.model_runtime_client import (
 
 
 class ModelRuntimeTimingTests(unittest.TestCase):
+    def test_failed_http_call_keeps_monotonic_interval(self):
+        timing = {}
+        with patch("app.core.model_runtime_client.runtime_url", return_value="http://localhost/model"), \
+                patch("app.core.model_runtime_client.urllib.request.urlopen", side_effect=OSError("offline")):
+            with self.assertRaises(ModelRuntimeUnavailableError):
+                _post_predict(ModelRuntimeKind.LAYOUT, {}, timing=timing)
+        self.assertGreaterEqual(timing["http_request_ms"], 0)
+        self.assertGreaterEqual(timing["model_call_end_monotonic"], timing["model_call_start_monotonic"])
+        self.assertEqual(timing["model_call_interval_ms"], timing["http_request_ms"])
+
     def test_reads_model_timing_from_data_siblings(self):
         timing = _extract_gateway_timing({
             "data": {

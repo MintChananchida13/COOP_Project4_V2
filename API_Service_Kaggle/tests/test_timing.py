@@ -4,6 +4,13 @@ from app.timing import build_timing
 
 
 class TimingContractTests(unittest.TestCase):
+    def test_layout_component_excludes_nested_detector_but_preserves_operation_total(self):
+        components = {"layout": {"inference_ms": 10.0}, "text_detection": {"inference_ms": 20.0}}
+        result = build_timing("layout", 1.0, 0.0, 2.0, 35.0, 3.0, 42.0, model_timings=components)
+        self.assertEqual(result["layout_runtime_ms"], 10.0)
+        self.assertEqual(result["inference_ms"], 35.0)
+        self.assertEqual(result["model_timings"], components)
+
     def test_cached_layout_model_retains_legacy_keys(self):
         result = build_timing("layout", 2.0, 0.0, 3.0, 40.0, 4.0, 52.0)
         self.assertEqual(result["model_load_ms"], 0.0)

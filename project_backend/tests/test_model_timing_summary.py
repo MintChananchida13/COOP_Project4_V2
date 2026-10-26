@@ -81,9 +81,45 @@ class ModelTimingSummaryTests(unittest.TestCase):
 
     def test_backend_residual_requires_complete_sequential_intervals(self):
         self.assertEqual(backend_runtime_from_union(500.0, 300.0, False), 200.0)
-        self.assertIsNone(backend_runtime_from_union(500.0, 300.0, True))
+        self.assertEqual(backend_runtime_from_union(500.0, 300.0, True), 200.0)
         self.assertIsNone(backend_runtime_from_union(500.0, None, None))
         self.assertIsNone(backend_runtime_from_union(500.0, 600.0, False))
+
+    def test_normalized_export_can_be_summarized_without_duplicate_intervals(self):
+        original = call("same", "image_verification", 1.0, 1.1)
+        first = summarize_model_calls(original)
+        result = summarize_model_calls([original, first["model_calls"]])
+        self.assertEqual(result["model_call_count"], 1)
+        self.assertEqual(result["model_wait_union_ms"], 100.0)
+        self.assertEqual(result["inferences"]["image_verification"], 10.0)
+
+    def test_complementary_duplicate_records_merge(self):
+        original = call("same", "table", 1.0, 1.1)
+        partial = dict(original, gateway_timing={})
+        result = summarize_model_calls([partial, original])
+        self.assertEqual(result["inferences"]["table"], 10.0)
+
+    def test_incomplete_wait_and_nonfinite_intervals_are_unknown(self):
+        incomplete = call("missing", "table", 1.2, float("inf"), wait=None)
+        result = summarize_model_calls([call("first", "table", 1.0, 1.1), incomplete])
+        self.assertIsNone(result["waits"]["table"])
+        self.assertIsNone(result["model_wait_union_ms"])
+
+    def test_conflicting_duplicate_is_not_silently_accepted(self):
+        result = summarize_model_calls([call("same", "layout", 1.0, 1.1), call("same", "layout", 1.0, 1.2)])
+        self.assertIsNone(result["model_wait_union_ms"])
+        self.assertIsNone(result["inferences"]["layout"])
+
+    def test_layout_components_share_one_http_interval(self):
+        original = call("layout-det", "layout", 1.0, 1.1)
+        original["gateway_timing"]["model_timings"] = {
+            "layout": {"inference_ms": 3.0}, "text_detection": {"inference_ms": 7.0},
+        }
+        result = summarize_model_calls(original)
+        self.assertEqual(result["inferences"], {"layout": 3.0, "text_detection": 7.0})
+        self.assertEqual(result["model_wait_union_ms"], 100.0)
+        self.assertEqual(result["model_call_count"], 1)
+        self.assertIsNone(result["waits"]["text_detection"])
 
 
 if __name__ == "__main__":

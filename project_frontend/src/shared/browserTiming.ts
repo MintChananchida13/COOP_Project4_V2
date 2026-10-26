@@ -6,3 +6,14 @@ export function browserTiming(startedAt: number, endedAt: number) {
     frontend_render_ms: null,
   };
 }
+
+export function backendTimingMetric(timing: Record<string, unknown> | undefined, key: string, alias?: string): number | null {
+  const benchmark = timing?.benchmark as Record<string, unknown> | undefined;
+  for (const source of [timing, benchmark]) {
+    if (source && Object.prototype.hasOwnProperty.call(source, key)) {
+      const value = source[key];
+      return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+    }
+  }
+  return alias ? backendTimingMetric(timing, alias) : null;
+}

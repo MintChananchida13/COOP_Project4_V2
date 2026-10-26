@@ -56,7 +56,7 @@ def authenticate(request: Request):
         raise HTTPException(401, "Invalid bearer token")
 
 
-def run(name, operation):
+def run(name, operation, model_timings=None):
     started = time.perf_counter()
     if not slots.acquire(blocking=False):
         raise HTTPException(503, "Inference queue is full")
@@ -78,9 +78,11 @@ def run(name, operation):
         serialize_started = time.perf_counter()
         safe_result = json_safe(result)
         serialization_ms = round((time.perf_counter() - serialize_started) * 1000, 2)
+        if model_timings:
+            model_timings["layout"].update(model_load_ms=model_load_ms, inference_lock_wait_ms=lock_wait_ms)
         timing = build_timing(
             name, queue_wait_ms, model_load_ms, lock_wait_ms, inference_ms,
-            serialization_ms, round((time.perf_counter() - started) * 1000, 2),
+            serialization_ms, round((time.perf_counter() - started) * 1000, 2), model_timings=model_timings,
         )
         return {"success": True, "model": NAMES[name], "result": safe_result, "timing": timing}
     except HTTPException:
@@ -107,17 +109,28 @@ def health():
 @app.post("/api/v1/document-layouts", dependencies=[Depends(authenticate)])
 def layout(request: LayoutImage):
     image = decode_image(request.image)
+    model_timings = {}
 
     def operation(model):
+        layout_started = time.perf_counter()
         layout_raw = paddle_result(model, image)
+        model_timings["layout"] = {"inference_ms": round((time.perf_counter() - layout_started) * 1000, 2)}
         if request.layout_only:
             return {"raw": {"layout": [layout_raw]}}
-        detector, _ = manager.get("det")
+        detector, detector_load_ms = manager.get("det")
+        detector_lock_started = time.perf_counter()
         with manager.inference_locks["det"]:
+            detector_lock_ms = round((time.perf_counter() - detector_lock_started) * 1000, 2)
+            detector_started = time.perf_counter()
             detection_raw = paddle_result(detector, image)
+            model_timings["text_detection"] = {
+                "inference_ms": round((time.perf_counter() - detector_started) * 1000, 2),
+                "model_load_ms": detector_load_ms,
+                "inference_lock_wait_ms": detector_lock_ms,
+            }
         return {"raw": {"layout": [layout_raw], "text_detection": [detection_raw]}}
 
-    return run("layout", operation)
+    return run("layout", operation, model_timings=model_timings)
 
 
 def require_v6(version: str = Query("v6")):

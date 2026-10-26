@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import math
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -21,7 +22,17 @@ METRICS = (
     "model_wall_clock_ms", "model_wait_union_ms", "total_runtime_ms",
     "frontend_to_backend_ms", "backend_to_frontend_ms", "frontend_render_ms",
 )
-HEADERS = ("file", "run_number", "runs_per_file", "expected_mode", "actual_mode", "status", "matched", "query_id", "ocr_status", "ocr_wall_ms", "error", "model_intervals_overlap", "model_call_count", "model_timing_missing_reason", *METRICS)
+HEADERS = ("file", "run_number", "runs_per_file", "expected_mode", "actual_mode", "status", "matched", "query_id", "ocr_status", "ocr_wall_ms", "error", "model_intervals_overlap", "model_call_count", "model_timing_missing_reason", *METRICS, "timing_missing_reasons")
+CALL_KEYS = ("call_id", "kind", "http_request_ms", "model_load_ms", "queue_wait_ms",
+             "inference_lock_wait_ms", "inference_ms", "serialization_ms", "service_total_runtime_ms",
+             "runs_per_file", "endpoint", "model_call_start_monotonic", "model_call_end_monotonic", "model_timings", "conflicting_record")
+MODEL_CALL_HEADERS = ("file", "run_number", "actual_mode", *CALL_KEYS)
+UNMEASURABLE = {
+    "frontend_to_backend_ms": "one_way_network_not_measurable",
+    "backend_to_frontend_ms": "one_way_network_not_measurable",
+    "frontend_render_ms": "browser_paint_not_instrumented",
+    "backend_to_model_ms": "http_duration_is_not_network_only",
+}
 CAPTURE_TABLES = """(() => {
   window.__ocrBenchmarkTables = [];
   const original = console.table.bind(console);
@@ -69,6 +80,15 @@ def actual_mode(result):
             or debug.get("verification_strategy") or result.get("verification_strategy"))
 
 
+def valid_duration(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0 else None
+
+
+def response_timing(result):
+    timing = (result.get("debug") or {}).get("timing") or {}
+    return {**(timing.get("benchmark") or {}), **timing}
+
+
 def timing_values(tables, result):
     values = {}
     for rows in tables:
@@ -76,15 +96,19 @@ def timing_values(tables, result):
             key = row.get("metric") or row.get("stage")
             if key in METRICS:
                 values[key] = row.get("valueMs", row.get("elapsedMs"))
-    timing = (result.get("debug") or {}).get("timing") or {}
+    timing = response_timing(result)
+    browser_keys = {"uploadJobMs", "jobPollingMs", "detectionJobMs", "end_to_end_ms"}
     for key in METRICS:
-        if values.get(key) is None and key in timing:
+        if key not in browser_keys and key in timing:
             values[key] = timing[key]
-    if values.get("image_siglip_runtime_ms") is None:
-        values["image_siglip_runtime_ms"] = timing.get("siglip_inference_ms")
-    if "total_runtime_ms" not in values:
-        values["total_runtime_ms"] = timing.get("total_detection_ms")
-    return {key: values.get(key) for key in METRICS}
+    for key, alias in (("image_siglip_runtime_ms", "siglip_inference_ms"),
+                       ("text_detection_runtime_ms", "text_det_inference_ms"),
+                       ("text_recognition_runtime_ms", "text_rec_inference_ms"),
+                       ("total_runtime_ms", "total_detection_ms")):
+        if key not in timing and alias in timing:
+            values[key] = timing[alias]
+    values.update({key: None for key in UNMEASURABLE})
+    return {key: valid_duration(values.get(key)) for key in METRICS}
 
 
 def excel_value(value):
@@ -108,14 +132,13 @@ def save_excel(path, rows):
         sheet.append([excel_value(row.get(header)) for header in HEADERS])
     sheet.auto_filter.ref = sheet.dimensions
     calls_sheet = workbook.create_sheet("Model Calls")
-    call_keys = ("call_id", "kind", "http_request_ms", "model_load_ms", "queue_wait_ms",
-                 "inference_lock_wait_ms", "inference_ms", "serialization_ms", "service_total_runtime_ms")
-    calls_sheet.append(("file", "run_number", "actual_mode", *call_keys))
+    calls_sheet.append(MODEL_CALL_HEADERS)
     for row in rows:
         for call in row.get("_model_calls", []):
-            calls_sheet.append([excel_value(row.get("file")), row.get("run_number"), excel_value(row.get("actual_mode")),
-                                *(excel_value(call.get(key)) for key in call_keys)])
+            record = {**call, **{key: row.get(key) for key in ("file", "run_number", "actual_mode", "runs_per_file")}}
+            calls_sheet.append([excel_value(valid_duration(record.get(key)) if key.endswith("_ms") else record.get(key)) for key in MODEL_CALL_HEADERS])
     calls_sheet.freeze_panes = "A2"
+    calls_sheet.auto_filter.ref = calls_sheet.dimensions
     workbook.save(path)
 
 
@@ -167,8 +190,12 @@ def run_case(page, path, expected_mode, timeout_ms):
         result = capture["result"] or {}
         tables = page.evaluate("window.__ocrBenchmarkTables")
         row.update(timing_values(tables, result))
-        timing = (result.get("debug") or {}).get("timing") or {}
+        timing = response_timing(result)
         row.update({key: timing.get(key) for key in ("model_intervals_overlap", "model_call_count", "model_timing_missing_reason")})
+        reasons = dict(timing.get("timing_missing_reasons") or {})
+        reasons.update(UNMEASURABLE)
+        reasons.pop("end_to_end_ms", None)
+        row["timing_missing_reasons"] = {key: reasons.get(key, "measurement_missing_or_invalid") for key in METRICS if row[key] is None}
         row["_model_calls"] = timing.get("model_calls") or []
         row["actual_mode"] = actual_mode(result)
         row["matched"] = result.get("matched")

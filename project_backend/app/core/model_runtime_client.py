@@ -198,7 +198,7 @@ def _extract_gateway_timing(parsed: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     # API Service OCR timing is sometimes a sibling of data.timing.
     # Fill only missing keys so an explicit timing object wins once.
-    for key in ("text_det_inference_ms", "text_rec_inference_ms"):
+    for key in ("text_det_inference_ms", "text_rec_inference_ms", "inference_ms", "image_siglip_runtime_ms", "siglip_inference_ms", "layout_runtime_ms", "table_runtime_ms"):
         if key in selected:
             continue
         if isinstance(result_value, dict) and isinstance(result_value.get(key), (int, float)):
@@ -238,9 +238,9 @@ def _post_predict(
         headers=_gateway_headers(),
         method="POST",
     )
+    monotonic_started = time.monotonic()
+    monotonic_ended = None
     try:
-        http_started = time.perf_counter()
-        monotonic_started = time.monotonic()
         with urllib.request.urlopen(request, timeout=timeout) as response:
             read_started = time.perf_counter()
             raw_bytes = response.read()
@@ -248,13 +248,8 @@ def _post_predict(
             decode_started = time.perf_counter()
             raw = raw_bytes.decode("utf-8")
             decode_elapsed = time.perf_counter() - decode_started
+        monotonic_ended = time.monotonic()
         if timing is not None:
-            timing["http_request_ms"] = round((time.perf_counter() - http_started) * 1000.0, 2)
-            timing["model_call_start_monotonic"] = monotonic_started
-            timing["model_call_end_monotonic"] = time.monotonic()
-            timing["model_call_interval_ms"] = round(
-                (timing["model_call_end_monotonic"] - monotonic_started) * 1000.0, 2
-            )
             timing["response_read_ms"] = round(read_elapsed * 1000.0, 2)
             timing["response_decode_ms"] = round(decode_elapsed * 1000.0, 2)
             timing["response_bytes"] = len(raw_bytes)
@@ -277,6 +272,12 @@ def _post_predict(
             time.perf_counter() - started,
         )
         raise ModelRuntimeUnavailableError(f"{kind.value} runtime unavailable: {error}") from error
+    finally:
+        if timing is not None:
+            timing["model_call_start_monotonic"] = monotonic_started
+            timing["model_call_end_monotonic"] = monotonic_ended if monotonic_ended is not None else time.monotonic()
+            timing["http_request_ms"] = round((timing["model_call_end_monotonic"] - monotonic_started) * 1000.0, 2)
+            timing["model_call_interval_ms"] = timing["http_request_ms"]
 
     try:
         parse_started = time.perf_counter()

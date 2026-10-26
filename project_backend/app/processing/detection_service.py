@@ -5124,12 +5124,12 @@ def _detection_timing_debug(
         text_det_inference_ms = _runtime_ms(global_text_batch_debug.get("text_det_inference_ms"))
         text_rec_inference_ms = _runtime_ms(global_text_batch_debug.get("text_rec_inference_ms"))
     siglip_inference_ms = global_image_batch_debug.get("siglip_inference_ms")
-    from app.processing.model_timing import backend_runtime_from_union, layout_runtime_from_breakdown, summarize_model_calls
+    from app.processing.model_timing import backend_runtime_from_union, summarize_model_calls
 
     model_summary = summarize_model_calls([timing, candidate_timings])
-    if "image_verification" in model_summary["inferences"]:
-        siglip_inference_ms = model_summary["inferences"]["image_verification"]
-    model_values = [value for value in (text_det_inference_ms, text_rec_inference_ms, siglip_inference_ms) if isinstance(value, (int, float))]
+    text_det_inference_ms = model_summary["inferences"].get("text_detection")
+    text_rec_inference_ms = model_summary["inferences"].get("text_recognition")
+    siglip_inference_ms = model_summary["inferences"].get("image_verification")
     waits = model_summary["waits"]
     layout_wait_ms = waits.get("layout")
     text_detection_wait_ms = waits.get("text_detection")
@@ -5141,14 +5141,10 @@ def _detection_timing_debug(
     model_intervals_overlap = model_summary["model_intervals_overlap"]
     backend_runtime_ms = backend_runtime_from_union(total_elapsed_ms, model_wait_union_ms, model_intervals_overlap)
     backend_to_model_ms = None
-    layout_runtime_ms = layout_runtime_from_breakdown(timing.get("layout_analysis_breakdown"))
-    if layout_runtime_ms is None:
-        layout_runtime_ms = _runtime_ms(timing.get("layout_runtime_ms"))
-    table_runtime_values = _candidate_runtime_values("table_runtime_ms")
-    table_runtime_ms = _runtime_ms(global_text_batch_debug.get("table_runtime_ms")) if global_text_batch_debug else None
-    if table_runtime_ms is None and table_runtime_values:
-        table_runtime_ms = round(sum(table_runtime_values), 2)
-    model_inference_total_ms = round(sum(model_values), 2) if model_values else None
+    layout_runtime_ms = model_summary["inferences"].get("layout")
+    table_runtime_ms = model_summary["inferences"].get("table")
+    model_values = list(model_summary["inferences"].values())
+    model_inference_total_ms = round(sum(model_values), 2) if model_values and all(value is not None for value in model_values) else None
     verification_breakdown = {
         key: round(sum(
             float((item.get("verification_timing") or {}).get(key))
@@ -5258,6 +5254,27 @@ def _detection_timing_debug(
             request_cache=request_cache,
         ),
     }
+    missing_reasons = {
+        "frontend_to_backend_ms": "one_way_network_not_measurable",
+        "backend_to_frontend_ms": "one_way_network_not_measurable",
+        "backend_to_model_ms": "http_duration_includes_queue_load_inference_and_serialization",
+        "frontend_render_ms": "browser_paint_not_instrumented",
+        "end_to_end_ms": "measured_by_browser_only",
+    }
+    for prefix, kind in (("layout", "layout"), ("text_detection", "text_detection"),
+                         ("text_recognition", "text_recognition"), ("image_siglip", "image_verification"),
+                         ("table", "table")):
+        for suffix, source in (("runtime_ms", "inferences"), ("wait_ms", "waits")):
+            key = f"{prefix}_{suffix}"
+            if result[key] is None:
+                missing_reasons[key] = ("incomplete_or_shared_model_call_measurement" if kind in model_summary[source]
+                                        else "no_recorded_call_cached_or_not_applicable")
+    for key in ("model_wait_union_ms", "model_wall_clock_ms", "model_intervals_overlap"):
+        if result[key] is None:
+            missing_reasons[key] = model_summary["model_timing_missing_reason"]
+    if backend_runtime_ms is None:
+        missing_reasons["backend_runtime_ms"] = model_summary["model_timing_missing_reason"] or "model_union_exceeds_detection_duration"
+    result["timing_missing_reasons"] = missing_reasons
     for key in (
         "total_detection_ms", "total_runtime_ms", "backend_runtime_ms", "backend_to_model_ms",
         "layout_runtime_ms", "text_detection_runtime_ms", "text_recognition_runtime_ms",
@@ -5265,6 +5282,8 @@ def _detection_timing_debug(
         "text_detection_wait_ms", "text_recognition_wait_ms", "image_siglip_wait_ms",
         "table_wait_ms", "model_wall_clock_ms", "model_wait_union_ms",
         "model_intervals_overlap", "model_timing_missing_reason", "model_call_count", "model_calls",
+        "timing_missing_reasons", "frontend_to_backend_ms", "backend_to_frontend_ms", "frontend_render_ms", "end_to_end_ms",
+        "siglip_inference_ms", "text_det_inference_ms", "text_rec_inference_ms", "model_inference_total_ms",
     ):
         result["benchmark"][key] = result[key]
     return result

@@ -9,6 +9,52 @@ import user_flow
 
 
 class UserFlowTests(unittest.TestCase):
+    def test_canonical_null_zero_and_backend_source_priority(self):
+        timing = {"image_siglip_runtime_ms": None, "siglip_inference_ms": 99,
+                  "total_detection_ms": 10, "backend_runtime_ms": 0,
+                  "benchmark": {"image_siglip_runtime_ms": 88}}
+        values = user_flow.timing_values([[{"metric": "backend_runtime_ms", "valueMs": 50},
+                                          {"metric": "total_runtime_ms", "valueMs": None}]], {"debug": {"timing": timing}})
+        self.assertIsNone(values["image_siglip_runtime_ms"])
+        self.assertEqual(values["backend_runtime_ms"], 0)
+        self.assertEqual(values["total_runtime_ms"], 10)
+        for invalid in (True, float("inf"), float("nan"), -1, "20"):
+            self.assertIsNone(user_flow.valid_duration(invalid))
+
+    def test_excel_all_columns_round_trip_without_shift(self):
+        from openpyxl import Workbook, load_workbook
+
+        row = {key: index + 0.25 for index, key in enumerate(user_flow.METRICS)}
+        row.update(file="a.png", run_number=2, runs_per_file=2, actual_mode="text_only",
+                   model_intervals_overlap=False, model_call_count=2,
+                   layout_runtime_ms=None, text_detection_runtime_ms=0,
+                   timing_missing_reasons={"layout_runtime_ms": "not_applicable"},
+                   _model_calls=[{"call_id": name, "kind": "text_detection", "inference_ms": 0,
+                                  "http_request_ms": 10, "model_load_ms": 0,
+                                  "model_timings": {"text_detection": {"inference_ms": 0}}} for name in ("first", "second")])
+        output = io.BytesIO()
+        original_save = Workbook.save
+        with patch.object(Path, "mkdir"), patch.object(Workbook, "save", autospec=True,
+                side_effect=lambda workbook, path: original_save(workbook, output)):
+            user_flow.save_excel(Path("results.xlsx"), [row])
+        output.seek(0)
+        workbook = load_workbook(output)
+        try:
+            summary = list(workbook["User Flow Timing"].values)
+            self.assertEqual(tuple(summary[0]), user_flow.HEADERS)
+            self.assertEqual(len(set(summary[0])), len(summary[0]))
+            for key in user_flow.HEADERS:
+                self.assertEqual(summary[1][summary[0].index(key)], user_flow.excel_value(row.get(key)), key)
+            calls = list(workbook["Model Calls"].values)
+            self.assertEqual(tuple(calls[0]), user_flow.MODEL_CALL_HEADERS)
+            self.assertEqual(len(calls), 3)
+            for exported, original in zip(calls[1:], row["_model_calls"]):
+                expected = {**original, **{key: row[key] for key in ("file", "run_number", "actual_mode", "runs_per_file")}}
+                for index, key in enumerate(calls[0]):
+                    self.assertEqual(exported[index], user_flow.excel_value(expected.get(key)), key)
+        finally:
+            workbook.close()
+
     def arguments(self):
         return SimpleNamespace(repeats=2, frontend="http://localhost:3000", timeout_seconds=1200,
                                no_ocr=False, output=Path("results.xlsx"))

@@ -22,11 +22,28 @@ def test_health_and_auth(monkeypatch):
     assert client.post("/api/v1/text-recognitions", json={"image": image_url()}).status_code == 401
 
 
+def test_layout_timing_separates_detector_without_changing_results(monkeypatch):
+    monkeypatch.setattr(main.manager, "get", lambda name: (name, 0.0))
+    monkeypatch.setattr(main, "paddle_result", lambda model, image: {"model": model})
+    for layout_only in (False, True):
+        response = main.layout(main.LayoutImage(image=image_url(), layout_only=layout_only))
+        timing = response["timing"]
+        assert response["result"]["raw"]["layout"] == [{"model": "layout"}]
+        assert timing["layout_runtime_ms"] == timing["model_timings"]["layout"]["inference_ms"]
+        assert timing["model_timings"]["layout"]["model_load_ms"] == 0
+        assert timing["inference_ms"] >= timing["layout_runtime_ms"]
+        if layout_only:
+            assert "text_detection" not in timing["model_timings"]
+        else:
+            assert response["result"]["raw"]["text_detection"] == [{"model": "det"}]
+            assert timing["model_timings"]["text_detection"]["inference_ms"] >= 0
+
+
 def test_contract_routes_with_fake_runtime(monkeypatch):
     monkeypatch.setattr(main, "settings", replace(main.settings, api_key="secret"))
     calls = []
 
-    def fake_run(name, operation):
+    def fake_run(name, operation, **kwargs):
         calls.append(name)
         return {"success": True, "model": name, "result": {}, "timing": {}}
 

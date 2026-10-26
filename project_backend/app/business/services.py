@@ -3832,10 +3832,11 @@ class VerificationService:
 
             def verify_with_timing(value: str):
                 call_timing: Dict[str, Any] = {}
-                result = verify_image_category(cropped, value, active_categories, timing=call_timing if timing is not None else None)
-                if timing is not None and call_timing:
-                    timing.setdefault("model_calls", []).append(call_timing)
-                return result
+                try:
+                    return verify_image_category(cropped, value, active_categories, timing=call_timing if timing is not None else None)
+                finally:
+                    if timing is not None and call_timing:
+                        timing.setdefault("model_calls", []).append(call_timing)
 
             results = [verify_with_timing(value) for value in (valid_category_values or category_values)]
             result = next((item for item in results if item.passed), None) or (max(results, key=lambda item: float(item.evidence_score)) if results else verify_with_timing(category_value))
