@@ -20,6 +20,19 @@ def call(call_id, kind, start, end, wait=100.0, load=0.0):
 
 
 class ModelTimingSummaryTests(unittest.TestCase):
+    def test_siglip_single_and_batch_inferences_deduplicate_by_call_id(self):
+        single = call("single", "image_verification", 1.0, 1.1)
+        batch = call("batch", "image_verification", 1.2, 1.3)
+        result = summarize_model_calls([single, {"nested": single}, batch])
+        self.assertEqual(result["inferences"]["image_verification"], 20.0)
+
+    def test_siglip_inference_requires_all_call_measurements(self):
+        complete = call("complete", "image_verification", 1.0, 1.1)
+        incomplete = call("missing", "image_verification", 1.2, 1.3)
+        del incomplete["gateway_timing"]["inference_ms"]
+        self.assertIsNone(summarize_model_calls([complete, incomplete])["inferences"]["image_verification"])
+        self.assertNotIn("image_verification", summarize_model_calls([])["inferences"])
+
     def test_sequential_single_and_batch_calls(self):
         result = summarize_model_calls([
             call("single", "layout", 1.0, 1.1),

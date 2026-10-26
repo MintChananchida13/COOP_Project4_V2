@@ -7,6 +7,7 @@
 - `model_intervals_overlap` is `null` when intervals are incomplete, `false` when complete and sequential, and `true` when complete and overlapping.
 - `backend_runtime_ms` is detection elapsed time outside complete, non-overlapping model HTTP waits. It is not CPU-active time and is `null` for overlapping or incomplete calls. `backend_to_model_ms` remains `null` because one-way network time cannot be isolated from these measurements.
 - `layout_runtime_ms`, `text_detection_runtime_ms`, `text_recognition_runtime_ms`, `table_runtime_ms`, and `image_siglip_runtime_ms` are API operation durations where available. Corresponding `*_wait_ms` values are Backend HTTP durations, not API queue waits.
+- `image_siglip_runtime_ms` also aggregates Single SigLIP calls from the collector's API `inference_ms`, deduplicated by Call ID. It is unknown if any collected SigLIP call lacks inference timing; no SigLIP call remains unmeasured rather than becoming zero. HTTP wait is not added to inference.
 - Legacy `model_inference_total_ms` remains the sum of available DET, REC, and SigLIP operation durations. It is not a complete five-model total or a wall-clock duration; use per-call records for model comparisons.
 - Frontend `uploadJobMs` is the POST-and-ack round trip, `jobPollingMs` includes poll sleeps and completed-response reading, and `end_to_end_ms` covers the browser confirmation flow until its timing log. `frontend_to_backend_ms`, `backend_to_frontend_ms`, and `frontend_render_ms` remain `null` because one-way latency and actual paint are not measured.
 

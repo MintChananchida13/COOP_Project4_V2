@@ -132,6 +132,9 @@ def _signature_debug_summary(signature: Dict[str, Any]) -> Dict[str, Any]:
         "page_aspect_ratio": round(float(signature.get("page_aspect_ratio") or 0.0), 6),
         "image_width": int(float(signature.get("image_width") or 0)),
         "image_height": int(float(signature.get("image_height") or 0)),
+        "source_image_width": signature.get("source_image_width"),
+        "source_image_height": signature.get("source_image_height"),
+        "image_fingerprint": signature.get("image_fingerprint"),
         "region_count": int(signature.get("region_count") or len(regions)),
         "label_counts": dict(signature.get("label_counts") or labels),
         "area_by_label": signature.get("area_by_label") or {},
@@ -381,6 +384,9 @@ def build_layout_signature(layout_analysis: Dict[str, Any]) -> Dict[str, Any]:
         "page_aspect_ratio": round(width / height, 6),
         "image_width": int(width),
         "image_height": int(height),
+        "source_image_width": int(width),
+        "source_image_height": int(height),
+        "image_fingerprint": layout_analysis.get("image_fingerprint"),
         "region_count": metrics["region_count"],
         "labels": list(LABELS),
         "label_counts": metrics["label_counts"],
@@ -464,10 +470,10 @@ def _spatial_similarity(query: Dict[str, Any], template: Dict[str, Any]) -> floa
             continue
         used: set[int] = set()
         label_scores = []
-        for q_region in query_regions[:20]:
+        for q_region in query_regions:
             candidates = [
                 (index, _bbox_similarity(q_region, t_region))
-                for index, t_region in enumerate(template_regions[:20])
+                for index, t_region in enumerate(template_regions)
                 if index not in used
             ]
             if not candidates:
@@ -498,6 +504,11 @@ def compare_layout_signatures(
         "query_after": query_after_normalize,
         "template_before": template_before_normalize,
         "template_after": template_after_normalize,
+        "source_pixels_identical": (
+            query_before_normalize["image_fingerprint"] == template_before_normalize["image_fingerprint"]
+            and query_before_normalize["source_image_width"] == template_before_normalize["source_image_width"]
+            and query_before_normalize["source_image_height"] == template_before_normalize["source_image_height"]
+        ) if query_before_normalize["image_fingerprint"] and template_before_normalize["image_fingerprint"] else None,
         "query_normalized_twice_safe": (query_before_normalize.get("layout_space_normalization") or {}).get("applied")
         and query_before_normalize == query_after_normalize,
         "template_normalized_twice_safe": (template_before_normalize.get("layout_space_normalization") or {}).get("applied")

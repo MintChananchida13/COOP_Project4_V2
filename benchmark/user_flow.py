@@ -2,7 +2,7 @@
 
 import argparse
 import json
-import time
+import os
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parent
 MODES = {"standard", "strict", "text_only", "text_image", "image_only", "layout_only"}
 EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".pdf"}
+UPLOAD_INPUT = 'input[type="file"][accept="image/*,application/pdf"]'
 METRICS = (
     "uploadJobMs", "jobPollingMs", "detectionJobMs", "end_to_end_ms",
     "backend_runtime_ms", "backend_to_model_ms", "layout_runtime_ms",
@@ -20,7 +21,7 @@ METRICS = (
     "model_wall_clock_ms", "model_wait_union_ms", "total_runtime_ms",
     "frontend_to_backend_ms", "backend_to_frontend_ms", "frontend_render_ms",
 )
-HEADERS = ("file", "expected_mode", "actual_mode", "status", "matched", "query_id", "ocr_status", "ocr_wall_ms", "error", "model_intervals_overlap", "model_call_count", "model_timing_missing_reason", *METRICS)
+HEADERS = ("file", "run_number", "runs_per_file", "expected_mode", "actual_mode", "status", "matched", "query_id", "ocr_status", "ocr_wall_ms", "error", "model_intervals_overlap", "model_call_count", "model_timing_missing_reason", *METRICS)
 CAPTURE_TABLES = """(() => {
   window.__ocrBenchmarkTables = [];
   const original = console.table.bind(console);
@@ -77,8 +78,10 @@ def timing_values(tables, result):
                 values[key] = row.get("valueMs", row.get("elapsedMs"))
     timing = (result.get("debug") or {}).get("timing") or {}
     for key in METRICS:
-        if key not in values and key in timing:
+        if values.get(key) is None and key in timing:
             values[key] = timing[key]
+    if values.get("image_siglip_runtime_ms") is None:
+        values["image_siglip_runtime_ms"] = timing.get("siglip_inference_ms")
     if "total_runtime_ms" not in values:
         values["total_runtime_ms"] = timing.get("total_detection_ms")
     return {key: values.get(key) for key in METRICS}
@@ -107,18 +110,34 @@ def save_excel(path, rows):
     calls_sheet = workbook.create_sheet("Model Calls")
     call_keys = ("call_id", "kind", "http_request_ms", "model_load_ms", "queue_wait_ms",
                  "inference_lock_wait_ms", "inference_ms", "serialization_ms", "service_total_runtime_ms")
-    calls_sheet.append(("file", "actual_mode", *call_keys))
+    calls_sheet.append(("file", "run_number", "actual_mode", *call_keys))
     for row in rows:
         for call in row.get("_model_calls", []):
-            calls_sheet.append([excel_value(row.get("file")), excel_value(row.get("actual_mode")),
+            calls_sheet.append([excel_value(row.get("file")), row.get("run_number"), excel_value(row.get("actual_mode")),
                                 *(excel_value(call.get(key)) for key in call_keys)])
     calls_sheet.freeze_panes = "A2"
     workbook.save(path)
 
 
-def run_case(context, frontend_url, path, expected_mode, timeout_ms, run_ocr):
-    page = context.new_page()
+def login_user(page, frontend_url):
     page.add_init_script(CAPTURE_TABLES)
+    try:
+        page.goto(frontend_url.rstrip("/") + "/login?next=/", wait_until="domcontentloaded", timeout=30000)
+        page.locator('input[type="email"]').fill(os.environ.get("BENCHMARK_EMAIL", "user@ocr.com"))
+        page.locator('input[type="password"]').fill(os.environ.get("BENCHMARK_PASSWORD", "user123"))
+        page.get_by_role("button", name="เข้าสู่ระบบ", exact=True).click()
+        page.locator(UPLOAD_INPUT).wait_for(timeout=120000)
+    except Exception:
+        raise RuntimeError("Automatic login failed. Check the local Frontend and benchmark account credentials.") from None
+
+
+def reset_document(page):
+    page.wait_for_timeout(2000)
+    page.get_by_role("button", name="เอกสารใหม่", exact=True).click(timeout=30000)
+    page.locator(UPLOAD_INPUT).wait_for(timeout=30000)
+
+
+def run_case(page, path, expected_mode, timeout_ms):
     row = {"file": str(path), "expected_mode": expected_mode, "status": "FAIL", "ocr_status": "NOT_RUN"}
     capture = {"result": None, "error": None}
 
@@ -136,10 +155,10 @@ def run_case(context, frontend_url, path, expected_mode, timeout_ms, run_ocr):
         except (ValueError, TypeError):
             return
 
-    page.on("response", on_response)
     try:
-        page.goto(frontend_url, wait_until="domcontentloaded", timeout=30000)
-        page.locator('input[type="file"][accept="image/*,application/pdf"]').set_input_files(str(path), timeout=timeout_ms)
+        page.on("response", on_response)
+        page.evaluate("window.__ocrBenchmarkTables = []")
+        page.locator(UPLOAD_INPUT).set_input_files(str(path), timeout=timeout_ms)
         page.get_by_role("button", name="ยืนยันเอกสารและค้นหา Template").click(timeout=timeout_ms)
         page.wait_for_function(
             "window.__ocrBenchmarkTables.some(rows => rows.some(row => row.metric === 'end_to_end_ms'))",
@@ -167,27 +186,35 @@ def run_case(context, frontend_url, path, expected_mode, timeout_ms, run_ocr):
         row["status"] = "PASS" if isinstance(row["matched"], bool) else "FAIL"
         if row["status"] != "PASS":
             row["error"] = "Detection response lacks matched result"
-        if run_ocr and row["matched"] is True:
-            button = page.get_by_role("button", name="อ่านข้อมูลที่เลือก")
-            if button.count() and button.is_enabled():
-                row["ocr_status"] = "RUNNING"
-                started = time.perf_counter()
-                button.click()
-                page.get_by_text("ตรวจสอบและแก้ไขผล OCR").first.wait_for(timeout=timeout_ms)
-                row["ocr_wall_ms"] = round((time.perf_counter() - started) * 1000, 2)
-                row["ocr_status"] = "PASS"
-            else:
-                row["ocr_status"] = "SKIP_NO_ENABLED_ROI"
-        elif run_ocr:
-            row["ocr_status"] = "SKIP_NO_MATCH"
     except Exception as error:
         row["status"] = "FAIL"
-        if row["ocr_status"] == "RUNNING":
-            row["ocr_status"] = "FAIL"
         row["error"] = str(error)[:500]
     finally:
-        page.close()
+        page.remove_listener("response", on_response)
     return row
+
+
+def run_cases(page, arguments, cases, rows, browser_state):
+    for path, mode in cases:
+        for run_number in range(1, arguments.repeats + 1):
+            if browser_state["closed"]:
+                print("Benchmark stopped: browser was closed. Completed results are saved; rerun the command to start again.")
+                return False
+            row = run_case(page, path, mode, arguments.timeout_seconds * 1000)
+            row.update(run_number=run_number, runs_per_file=arguments.repeats)
+            rows.append(row)
+            save_excel(arguments.output, rows)
+            outcome = "FOUND" if row.get("matched") is True else "NOT_FOUND" if row.get("matched") is False else "UNKNOWN"
+            print(f"{path.name} [{run_number}/{arguments.repeats}]: {row['status']} mode={row.get('actual_mode') or 'unknown'} Template={outcome}")
+            if browser_state["closed"]:
+                print("Benchmark stopped: browser was closed. Completed results are saved; rerun the command to start again.")
+                return False
+            try:
+                reset_document(page)
+            except Exception:
+                print("Benchmark stopped: unable to reset with New Document. Completed results are saved.")
+                return False
+    return True
 
 
 def main():
@@ -197,37 +224,41 @@ def main():
     parser.add_argument("--frontend", default="http://localhost:3000")
     parser.add_argument("--expected-mode", choices=sorted(MODES))
     parser.add_argument("--timeout-seconds", type=int, default=1200)
-    parser.add_argument("--no-ocr", action="store_true")
+    parser.add_argument("--no-ocr", action="store_true", help="Compatibility option; the benchmark always stops after Template detection")
+    parser.add_argument("--repeats", type=int, default=2, help="Runs per file (default: 2)")
     arguments = parser.parse_args()
+    if arguments.repeats < 1:
+        parser.error("--repeats must be at least 1")
     cases = input_cases(arguments.input, arguments.expected_mode)
     if not cases:
         parser.error(f"No supported images/PDFs in {arguments.input}")
     if urlparse(arguments.frontend).hostname not in {"localhost", "127.0.0.1"}:
         parser.error("Frontend must be local; use http://localhost:3000")
-    from playwright.sync_api import sync_playwright
+    from playwright.sync_api import Error, sync_playwright
 
     rows = []
+    completed = False
     try:
         with sync_playwright() as playwright:
             context = playwright.chromium.launch_persistent_context(str(ROOT / "browser-profile"), headless=False)
+            browser_state = {"closed": False}
+            context.on("close", lambda closed_context: browser_state.update(closed=True))
             try:
                 login_page = context.pages[0] if context.pages else context.new_page()
-                login_page.goto(arguments.frontend, wait_until="domcontentloaded")
-                print("If login is shown, sign in manually in this dedicated browser window; waiting for upload input...")
-                login_page.locator('input[type="file"][accept="image/*,application/pdf"]').wait_for(timeout=120000)
-                login_page.close()
-                for path, mode in cases:
-                    row = run_case(context, arguments.frontend, path, mode, arguments.timeout_seconds * 1000, not arguments.no_ocr)
-                    rows.append(row)
-                    save_excel(arguments.output, rows)
-                    print(f"{path.name}: {row['status']} mode={row.get('actual_mode') or 'unknown'} OCR={row['ocr_status']}")
+                login_user(login_page, arguments.frontend)
+                print("Logged in. Measuring Template detection only; each result waits 2 seconds before New Document.")
+                completed = run_cases(login_page, arguments, cases, rows, browser_state)
             finally:
-                context.close()
+                if not browser_state["closed"]:
+                    context.close()
+    except (Error, RuntimeError) as error:
+        completed = False
+        print(f"Browser failed: {str(error)[:500]}")
     finally:
         if rows:
             save_excel(arguments.output, rows)
             print(f"Excel: {arguments.output}")
-    return 1 if any(row["status"] == "FAIL" for row in rows) else 0
+    return 1 if not completed or any(row["status"] == "FAIL" for row in rows) else 0
 
 
 if __name__ == "__main__":

@@ -63,10 +63,10 @@ def _layout_cache_key(image: np.ndarray, source_mode: str) -> Tuple[Tuple[int, .
     return (tuple(int(item) for item in image.shape), str(image.dtype), digest, source_mode)
 
 
-def _get_cached_layout_raw_items(image: np.ndarray, source_mode: str) -> Optional[List[Dict[str, Any]]]:
+def _get_cached_layout_raw_items(image: np.ndarray, source_mode: str, cache_key=None) -> Optional[List[Dict[str, Any]]]:
     if LAYOUT_RAW_ITEMS_CACHE_SIZE <= 0:
         return None
-    key = _layout_cache_key(image, source_mode)
+    key = cache_key if cache_key is not None else _layout_cache_key(image, source_mode)
     cached = _layout_raw_items_cache.get(key)
     if cached is None:
         return None
@@ -75,10 +75,10 @@ def _get_cached_layout_raw_items(image: np.ndarray, source_mode: str) -> Optiona
     return copy.deepcopy(cached)
 
 
-def _set_cached_layout_raw_items(image: np.ndarray, raw_items: List[Dict[str, Any]], source_mode: str) -> None:
+def _set_cached_layout_raw_items(image: np.ndarray, raw_items: List[Dict[str, Any]], source_mode: str, cache_key=None) -> None:
     if LAYOUT_RAW_ITEMS_CACHE_SIZE <= 0:
         return
-    key = _layout_cache_key(image, source_mode)
+    key = cache_key if cache_key is not None else _layout_cache_key(image, source_mode)
     _layout_raw_items_cache[key] = copy.deepcopy(raw_items)
     _layout_raw_items_cache.move_to_end(key)
     while len(_layout_raw_items_cache) > LAYOUT_RAW_ITEMS_CACHE_SIZE:
@@ -1175,7 +1175,8 @@ def analyze_layout_signature(image: np.ndarray, timing: Optional[Dict[str, Any]]
     height, width = image.shape[:2]
     source_mode = _RAW_LAYOUT_ONLY_CACHE_MODE
     cache_started = time.perf_counter()
-    raw_items = _get_cached_layout_raw_items(image, source_mode)
+    cache_key = _layout_cache_key(image, source_mode)
+    raw_items = _get_cached_layout_raw_items(image, source_mode, cache_key=cache_key)
     if timing is not None:
         timing["raw_cache_lookup_ms"] = round((time.perf_counter() - cache_started) * 1000.0, 2)
         timing["raw_cache_hit"] = raw_items is not None
@@ -1214,7 +1215,7 @@ def analyze_layout_signature(image: np.ndarray, timing: Optional[Dict[str, Any]]
             _debug_item_summary(raw_items, width, height),
         )
         cache_set_started = time.perf_counter()
-        _set_cached_layout_raw_items(image, raw_items, source_mode)
+        _set_cached_layout_raw_items(image, raw_items, source_mode, cache_key=cache_key)
         if timing is not None:
             timing["raw_cache_set_ms"] = round((time.perf_counter() - cache_set_started) * 1000.0, 2)
 
@@ -1250,6 +1251,7 @@ def analyze_layout_signature(image: np.ndarray, timing: Optional[Dict[str, Any]]
     return {
         "engine": "layout_signature_runtime",
         "model": _LAYOUT_MODEL_NAME,
+        "image_fingerprint": cache_key[2],
         "image_width": width,
         "image_height": height,
         "regions": regions,

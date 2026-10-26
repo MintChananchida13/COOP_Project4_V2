@@ -5124,10 +5124,12 @@ def _detection_timing_debug(
         text_det_inference_ms = _runtime_ms(global_text_batch_debug.get("text_det_inference_ms"))
         text_rec_inference_ms = _runtime_ms(global_text_batch_debug.get("text_rec_inference_ms"))
     siglip_inference_ms = global_image_batch_debug.get("siglip_inference_ms")
-    model_values = [value for value in (text_det_inference_ms, text_rec_inference_ms, siglip_inference_ms) if isinstance(value, (int, float))]
     from app.processing.model_timing import backend_runtime_from_union, layout_runtime_from_breakdown, summarize_model_calls
 
     model_summary = summarize_model_calls([timing, candidate_timings])
+    if "image_verification" in model_summary["inferences"]:
+        siglip_inference_ms = model_summary["inferences"]["image_verification"]
+    model_values = [value for value in (text_det_inference_ms, text_rec_inference_ms, siglip_inference_ms) if isinstance(value, (int, float))]
     waits = model_summary["waits"]
     layout_wait_ms = waits.get("layout")
     text_detection_wait_ms = waits.get("text_detection")
@@ -5188,7 +5190,7 @@ def _detection_timing_debug(
         "template_matching_breakdown": _template_matching_timing_ms_list(timing.get("layout_candidate_searches")),
         "verification_ms": _ms(timing.get("verification")),
         "siglip_preprocess_ms": global_image_batch_debug.get("siglip_preprocess_ms"),
-        "siglip_inference_ms": global_image_batch_debug.get("siglip_inference_ms"),
+        "siglip_inference_ms": siglip_inference_ms,
         "siglip_postprocess_ms": global_image_batch_debug.get("siglip_postprocess_ms"),
         "image_batch_total_ms": global_image_batch_debug.get("image_batch_total_ms"),
         "siglip_batch_size": global_image_batch_debug.get("siglip_batch_size"),

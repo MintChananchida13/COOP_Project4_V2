@@ -157,20 +157,21 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
       mainPageNumber: pendingDetectionMode ? pendingMainPageNumber : bundle.template.mainPageNumber,
     });
     setSelectedTemplatePages(bundle.pages);
-    setSelectedTemplateFields((currentFields) => {
-      const mergedBundleFields = bundle.fields
-        .filter((field) => !pendingDeletedFieldIdsRef.current.has(field.id))
-        .map((field) => ({ ...field, ...(dirtyFieldPatchesRef.current.get(field.id) || {}) }));
-      const bundleFieldIds = new Set(mergedBundleFields.map((field) => field.id));
-      const pendingLocalFields = currentFields.filter(
-        (field) =>
-          field.id.startsWith("local_field_") &&
-          !bundleFieldIds.has(field.id) &&
-          pendingLocalFieldPatchesRef.current.has(field.id)
-      );
-      return pendingLocalFields.length > 0 ? [...mergedBundleFields, ...pendingLocalFields] : mergedBundleFields;
-    });
+    const mergedBundleFields = bundle.fields
+      .filter((field) => !pendingDeletedFieldIdsRef.current.has(field.id))
+      .map((field) => ({ ...field, ...(dirtyFieldPatchesRef.current.get(field.id) || {}) }));
+    const bundleFieldIds = new Set(mergedBundleFields.map((field) => field.id));
+    const pendingLocalFields = selectedTemplateFieldsRef.current.filter(
+      (field) =>
+        field.id.startsWith("local_field_") &&
+        !bundleFieldIds.has(field.id) &&
+        pendingLocalFieldPatchesRef.current.has(field.id)
+    );
+    const nextFields = pendingLocalFields.length > 0 ? [...mergedBundleFields, ...pendingLocalFields] : mergedBundleFields;
+    selectedTemplateFieldsRef.current = nextFields;
+    setSelectedTemplateFields(nextFields);
     setSelectedIgnoreRegions(bundle.ignoreRegions);
+    return nextFields;
   };
 
   const registerPendingLocalFields = (fieldsToRegister: TemplateField[]) => {

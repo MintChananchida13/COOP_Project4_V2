@@ -1,4 +1,5 @@
 from typing import Any
+import math
 
 
 def layout_runtime_from_breakdown(breakdown: Any) -> float | None:
@@ -42,10 +43,17 @@ def summarize_model_calls(value: Any) -> dict[str, Any]:
 
     visit(value)
     waits: dict[str, float] = {}
+    inferences: dict[str, float] = {}
+    missing_inferences: set[str] = set()
     intervals: list[tuple[float, float]] = []
     incomplete = False
     for call in calls.values():
         kind = str(call.get("model_kind") or "")
+        inference = (call.get("gateway_timing") or {}).get("inference_ms")
+        if isinstance(inference, (int, float)) and not isinstance(inference, bool) and math.isfinite(inference) and inference >= 0:
+            inferences[kind] = inferences.get(kind, 0.0) + float(inference)
+        else:
+            missing_inferences.add(kind)
         wait = call.get("http_request_ms")
         start = call.get("model_call_start_monotonic")
         end = call.get("model_call_end_monotonic")
@@ -75,6 +83,8 @@ def summarize_model_calls(value: Any) -> dict[str, Any]:
         wall_ms = round((max(end for _, end in intervals) - min(start for start, _ in intervals)) * 1000, 2)
     return {
         "waits": {kind: round(wait, 2) for kind, wait in waits.items()},
+        "inferences": {kind: None if kind in missing_inferences else round(inferences[kind], 2)
+                       for kind in inferences.keys() | missing_inferences},
         "model_wait_union_ms": union_ms,
         "model_wall_clock_ms": wall_ms,
         "model_intervals_overlap": overlap,
