@@ -4246,7 +4246,7 @@ class VerificationService:
                 try:
                     image_match = image_match_cache.get(str(field.get("id"))) if image_match_cache else None
                     if image_match is None:
-                        image_match = self._score_image_anchor(field, image_path, timing=timing)
+                        image_match = self._score_image_anchor(field, image_path, timing=runtime_timing)
                 except Exception as error:
                     category_values = _image_category_values(field.get("image_category"))
                     category_value = category_values[0] if category_values else ""
@@ -4477,6 +4477,7 @@ class VerificationService:
                 "candidate_verification": time.perf_counter() - verify_started,
                 "detection_batch_mode": normalize_detection_batch_mode(detection_batch_mode),
                 "image_batch": image_batch_debug,
+                **runtime_timing,
             },
         }
         logger.info(
