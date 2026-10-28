@@ -764,7 +764,10 @@ async function buildTemplateCanvasImages(
     const pageCandidate =
       page?.candidates?.find((candidate) => candidate.templateId === templateId) ||
       (page?.bestCandidate?.templateId === templateId ? page.bestCandidate : null);
-    const extractionSrc = backendPreviewSrc(selectedDetectionProcessingPreview(pageCandidate));
+    const processingPreview = page?.processingTemplateId === templateId
+      ? page.processingImagePreviewUrl
+      : null;
+    const extractionSrc = backendPreviewSrc(processingPreview || selectedDetectionProcessingPreview(pageCandidate));
     if (!extractionSrc) return sourceImage;
     try {
       return await imageUrlToCanvasSafeSrc(extractionSrc);
@@ -2708,7 +2711,7 @@ function HomeWorkspace() {
       setTemplateDetectionNotice(null);
       let bundle: Awaited<ReturnType<typeof fetchTemplateBundle>>;
       try {
-        bundle = await measureStage("templateBundleMs", () => fetchTemplateBundle(templateId));
+        bundle = await measureStage("templateBundleMs", () => fetchTemplateBundle(templateId, { context: "user" }));
         devTemplateFlowLog("bundle loaded", {
           templateId: bundle.template.id,
           fieldCount: bundle.fields.length,

@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from app.auth.auth_service import authenticate_user, create_access_token, create_user
 from app.core.db import connect as connect_db
+from app.api.detection_response import user_detection_response, without_image_payloads
 from app.api.schemas import (
     ApiResponse,
     AuthLoginRequest,
@@ -219,6 +220,8 @@ def _run_detect_dev_job(job_id: str, image_bytes: bytes, standard_top5: bool = F
             use_image_batch_for_verification=admin_context,
             **detect_kwargs,
         )
+        if not admin_context:
+            result = user_detection_response(result)
         with detect_dev_jobs_lock:
             job = detect_dev_jobs.get(job_id)
             if job is not None:
@@ -452,8 +455,9 @@ def get_detect_template_dev_job(job_id: str, request: Request) -> dict:
 
 
 @router.post("/processing-logs", response_model=ApiResponse)
-def upsert_processing_log(payload: ProcessingLogUpsertRequest) -> ApiResponse:
-    return ok(processing_logs.upsert(payload))
+def upsert_processing_log(payload: ProcessingLogUpsertRequest, request: Request) -> ApiResponse:
+    result = processing_logs.upsert(payload)
+    return ok(result if _is_admin_processing_context(request) else without_image_payloads(result))
 
 
 @router.get("/admin/processing-logs", response_model=ApiResponse)
@@ -479,7 +483,7 @@ def delete_processing_log(log_id: str) -> ApiResponse:
 
 @router.post("/template-requests", response_model=ApiResponse)
 def create_template_request(payload: TemplateRequestCreate) -> ApiResponse:
-    return ok(template_requests.create(payload.model_copy(update={"requested_by": None})))
+    return ok(without_image_payloads(template_requests.create(payload.model_copy(update={"requested_by": None}))))
 
 
 @router.get("/template-requests", response_model=ApiResponse)
@@ -507,7 +511,7 @@ def delete_template_request(request_id: str, payload: TemplateRequestDelete | No
 
 @router.post("/template-requests/{request_id}/submit", response_model=ApiResponse)
 def submit_template_request(request_id: str) -> ApiResponse:
-    return ok(template_requests.submit(request_id))
+    return ok(without_image_payloads(template_requests.submit(request_id)))
 
 
 @router.get("/template-requests/{request_id}/pages", response_model=ApiResponse)
@@ -773,8 +777,9 @@ def delete_ocr_model(kind: str, model_id: str) -> ApiResponse:
 
 
 @router.get("/admin/templates/{template_id}", response_model=ApiResponse)
-def get_template(template_id: str) -> ApiResponse:
-    return ok(admin_templates.get_template(template_id))
+def get_template(template_id: str, context: str | None = None) -> ApiResponse:
+    result = admin_templates.get_template(template_id)
+    return ok(without_image_payloads(result) if context == "user" else result)
 
 
 @router.put("/admin/templates/{template_id}", response_model=ApiResponse)

@@ -23,6 +23,7 @@ from app.core.local_env import load_local_env
 load_local_env()
 
 from app.api.routes import router as blueprint_router
+from app.api.detection_response import without_image_payloads
 from app.model_runtime.layout_analysis_service import (
     AUTO_ROI_EXPAND_BOTTOM_PX,
     AUTO_ROI_EXPAND_LEFT_PX,
@@ -1391,10 +1392,8 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
                 }
             )
 
-    return {
-        "success": True,
-        "extracted_data": results,
-    }
+    response = {"success": True, "extracted_data": results}
+    return response if str(payload.context or "").lower() == "admin" else without_image_payloads(response)
 
 
 @app.get("/")

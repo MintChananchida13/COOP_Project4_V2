@@ -797,6 +797,8 @@ export interface DetectionProjectedField {
 }
 
 export interface DetectionPageResult {
+  processingImagePreviewUrl?: string | null;
+  processingTemplateId?: string | null;
   pageIndex: number;
   matched: boolean;
   bestCandidate?: DetectionCandidate | null;
@@ -1379,6 +1381,8 @@ function mapDetectionCandidate(candidate: Record<string, unknown>): DetectionCan
 
 function mapDetectionPage(page: Record<string, unknown>): DetectionPageResult {
   return {
+    processingImagePreviewUrl: (page.processing_image_preview_url as string | null | undefined) ?? null,
+    processingTemplateId: (page.processing_template_id as string | null | undefined) ?? null,
     pageIndex: typeof page.page_index === "number" ? page.page_index : 1,
     matched: Boolean(page.matched),
     bestCandidate: page.best_candidate ? mapDetectionCandidate(page.best_candidate as Record<string, unknown>) : null,
@@ -1836,19 +1840,20 @@ export const deleteTemplateRequest = async (requestId: string, reason?: string) 
   return rejectedRequest;
 };
 
-export const fetchTemplateBundle = async (templateId: string) => {
-  const cached = templateBundleCache.get(templateId);
+export const fetchTemplateBundle = async (templateId: string, options: { context?: "user" } = {}) => {
+  const cacheKey = options.context === "user" ? `user:${templateId}` : templateId;
+  const cached = templateBundleCache.get(cacheKey);
   if (cached) {
     return cloneTemplateBundle(cached);
   }
 
-  const pending = templateBundlePromises.get(templateId);
+  const pending = templateBundlePromises.get(cacheKey);
   if (pending) {
     return cloneTemplateBundle(await pending);
   }
 
   const promise = (async () => {
-    const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/templates/${templateId}`);
+    const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/templates/${templateId}${options.context === "user" ? "?context=user" : ""}`);
     if (!response.ok) {
       throw new Error(`Template load failed with ${response.status}`);
     }
@@ -1860,15 +1865,19 @@ export const fetchTemplateBundle = async (templateId: string) => {
     }
 
     const bundle = normalizeTemplateBundle(data, templateId);
-    setTemplateBundleCache(templateId, bundle);
+    if (options.context === "user") {
+      templateBundleCache.set(cacheKey, cloneTemplateBundle(bundle));
+    } else {
+      setTemplateBundleCache(cacheKey, bundle);
+    }
     return cloneTemplateBundle(bundle);
   })();
 
-  templateBundlePromises.set(templateId, promise);
+  templateBundlePromises.set(cacheKey, promise);
   try {
     return cloneTemplateBundle(await promise);
   } finally {
-    templateBundlePromises.delete(templateId);
+    templateBundlePromises.delete(cacheKey);
   }
 };
 
