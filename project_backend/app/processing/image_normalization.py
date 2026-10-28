@@ -515,6 +515,10 @@ class ImageNormalizationService:
             gray = cv2.GaussianBlur(gray, (5, 5), 0)
             gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        side_threshold = 0.40 if enhance_faint_edges else self.PDF_CARD_CROP_STRONG_SIDE_THRESHOLD
+        min_edge_support = 0.45 if enhance_faint_edges else self.PDF_SUBDOCUMENT_MIN_EDGE_SUPPORT
+        min_strong_sides = 2 if enhance_faint_edges else self.PDF_SUBDOCUMENT_MIN_STRONG_EDGE_SIDES
+        min_rectangularity = 0.65 if enhance_faint_edges else self.PDF_SUBDOCUMENT_MIN_RECTANGULARITY
         canny_low, canny_high = (15, 45) if enhance_faint_edges else (self.PDF_CARD_CROP_CANNY_LOW, self.PDF_CARD_CROP_CANNY_HIGH)
         edges = cv2.Canny(gray, canny_low, canny_high)
         candidates: List[Dict[str, Any]] = []
@@ -549,25 +553,21 @@ class ImageNormalizationService:
                 rectangularity = min(1.0, area / max(1.0, float(box_width * box_height)))
                 sides = self._pdf_card_side_support(edges, x, y, box_width, box_height, max(2, round(min(detection_width, detection_height) * 0.004)))
                 edge_support = sum(sides) / 4.0
-                strong_sides = sum(side >= self.PDF_CARD_CROP_STRONG_SIDE_THRESHOLD for side in sides)
+                strong_sides = sum(side >= side_threshold for side in sides)
                 reasons: List[str] = []
                 if self._subdocument_shape(aspect_ratio) is None:
                     reasons.append("aspect_ratio")
                 if not self.PDF_SUBDOCUMENT_MIN_AREA_RATIO <= area_ratio <= self.PDF_SUBDOCUMENT_MAX_AREA_RATIO:
                     reasons.append("area_ratio")
-                if rectangularity < self.PDF_SUBDOCUMENT_MIN_RECTANGULARITY:
+                if rectangularity < min_rectangularity:
                     reasons.append("rectangularity")
-                if edge_support < self.PDF_SUBDOCUMENT_MIN_EDGE_SUPPORT:
+                if edge_support < min_edge_support:
                     reasons.append("edge_support")
-                if strong_sides < self.PDF_SUBDOCUMENT_MIN_STRONG_EDGE_SIDES:
+                if strong_sides < min_strong_sides:
                     reasons.append("strong_edge_sides")
-                if (enhance_faint_edges or self._subdocument_shape(aspect_ratio) != "card") and min(sides) < 0.65:
-                    reasons.append("weakest_edge_side")
                 if len(polygon) != 4:
                     reasons.append("not_quadrilateral")
                 score = 0.5 * edge_support + 0.3 * rectangularity + 0.2 * strong_sides / 4.0
-                if score < self.PDF_SUBDOCUMENT_MIN_CONFIDENCE:
-                    reasons.append("confidence")
                 original_x = round(x * scale_x)
                 original_y = round(y * scale_y)
                 original_right = min(image_width, round((x + box_width) * scale_x))
@@ -631,10 +631,10 @@ class ImageNormalizationService:
                 "passport_spread_aspect_range": list(self.PDF_PASSPORT_SPREAD_ASPECT_RANGE),
                 "min_area": self.PDF_SUBDOCUMENT_MIN_AREA_RATIO,
                 "max_area": self.PDF_SUBDOCUMENT_MAX_AREA_RATIO,
-                "min_rectangularity": self.PDF_SUBDOCUMENT_MIN_RECTANGULARITY,
-                "min_edge_support": self.PDF_SUBDOCUMENT_MIN_EDGE_SUPPORT,
-                "min_strong_sides": self.PDF_SUBDOCUMENT_MIN_STRONG_EDGE_SIDES,
-                "strong_side_threshold": self.PDF_CARD_CROP_STRONG_SIDE_THRESHOLD,
+                "min_rectangularity": min_rectangularity,
+                "min_edge_support": min_edge_support,
+                "min_strong_sides": min_strong_sides,
+                "strong_side_threshold": side_threshold,
                 "early_exit": self.PDF_CARD_CROP_EARLY_EXIT,
                 "early_exit_edge": self.PDF_CARD_CROP_EARLY_EXIT_EDGE,
                 "early_exit_rectangularity": self.PDF_CARD_CROP_EARLY_EXIT_RECTANGULARITY,
