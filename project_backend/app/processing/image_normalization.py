@@ -31,6 +31,9 @@ class ImageNormalizationService:
     PDF_SUBDOCUMENT_MIN_STRONG_EDGE_SIDES = 3
     PDF_SUBDOCUMENT_MIN_ASPECT_RATIO = 1.35
     PDF_SUBDOCUMENT_MAX_ASPECT_RATIO = 1.85
+    # Geometry hints only; these do not classify the document as a passport.
+    PDF_PASSPORT_PAGE_ASPECT_RANGE = (1.25, 1.50)
+    PDF_PASSPORT_SPREAD_ASPECT_RANGE = (1.0, 1.20)
     PDF_SUBDOCUMENT_PADDING_RATIO = 0.0
     PDF_CARD_CROP_MAX_DETECTION_DIM = 1600
     PDF_CARD_CROP_KERNEL_SIZES = (5, 9, 15)
@@ -42,6 +45,18 @@ class ImageNormalizationService:
     PDF_CARD_CROP_EARLY_EXIT_EDGE = 0.90
     PDF_CARD_CROP_EARLY_EXIT_RECTANGULARITY = 0.85
     PDF_CARD_CROP_DEBUG_CANDIDATES = 30
+
+    def _subdocument_shape(self, aspect_ratio: float) -> Optional[str]:
+        if aspect_ratio <= 0:
+            return None
+        if self.PDF_SUBDOCUMENT_MIN_ASPECT_RATIO <= aspect_ratio <= self.PDF_SUBDOCUMENT_MAX_ASPECT_RATIO:
+            return "card"
+        ratio = max(aspect_ratio, 1.0 / aspect_ratio)
+        if self.PDF_PASSPORT_PAGE_ASPECT_RANGE[0] <= ratio <= self.PDF_PASSPORT_PAGE_ASPECT_RANGE[1]:
+            return "passport_page"
+        if self.PDF_PASSPORT_SPREAD_ASPECT_RANGE[0] <= ratio <= self.PDF_PASSPORT_SPREAD_ASPECT_RANGE[1]:
+            return "passport_spread"
+        return None
 
     def normalize_document(
         self,
@@ -338,7 +353,7 @@ class ImageNormalizationService:
             return rejected("no_rectangular_subdocument_candidate", None, 0.0)
         if float(best["rectangularity"]) < self.PDF_SUBDOCUMENT_MIN_RECTANGULARITY:
             return rejected("rectangularity_below_threshold", best["crop_box"], best["confidence"])
-        if float(best.get("aspect_ratio") or 0.0) < self.PDF_SUBDOCUMENT_MIN_ASPECT_RATIO or float(best.get("aspect_ratio") or 0.0) > self.PDF_SUBDOCUMENT_MAX_ASPECT_RATIO:
+        if self._subdocument_shape(float(best.get("aspect_ratio") or 0.0)) is None:
             return rejected("aspect_ratio_outside_subdocument_range", best["crop_box"], best["confidence"])
         if float(best["edge_support"]) < self.PDF_SUBDOCUMENT_MIN_EDGE_SUPPORT:
             return rejected("edge_support_below_threshold", best["crop_box"], best["confidence"])
@@ -516,7 +531,7 @@ class ImageNormalizationService:
                 area_ratio = (box_width * box_height) / max(1.0, float(detection_width * detection_height))
                 if area_ratio < self.PDF_SUBDOCUMENT_MIN_AREA_RATIO * 0.5 or area_ratio > min(0.95, self.PDF_SUBDOCUMENT_MAX_AREA_RATIO * 1.4):
                     continue
-                if aspect_ratio < self.PDF_SUBDOCUMENT_MIN_ASPECT_RATIO * 0.75 or aspect_ratio > self.PDF_SUBDOCUMENT_MAX_ASPECT_RATIO * 1.25:
+                if self._subdocument_shape(aspect_ratio) is None:
                     continue
                 key = (round(x / 5), round(y / 5), round(box_width / 5), round(box_height / 5))
                 if key in seen:
@@ -532,7 +547,7 @@ class ImageNormalizationService:
                 edge_support = sum(sides) / 4.0
                 strong_sides = sum(side >= self.PDF_CARD_CROP_STRONG_SIDE_THRESHOLD for side in sides)
                 reasons: List[str] = []
-                if not self.PDF_SUBDOCUMENT_MIN_ASPECT_RATIO <= aspect_ratio <= self.PDF_SUBDOCUMENT_MAX_ASPECT_RATIO:
+                if self._subdocument_shape(aspect_ratio) is None:
                     reasons.append("aspect_ratio")
                 if not self.PDF_SUBDOCUMENT_MIN_AREA_RATIO <= area_ratio <= self.PDF_SUBDOCUMENT_MAX_AREA_RATIO:
                     reasons.append("area_ratio")
@@ -556,6 +571,7 @@ class ImageNormalizationService:
                     "candidate_crop_box": candidate_crop_box,
                     "bbox": [original_x, original_y, max(1, original_right - original_x), max(1, original_bottom - original_y)],
                     "aspect_ratio": round(float(aspect_ratio), 4),
+                    "shape_hint": self._subdocument_shape(aspect_ratio),
                     "area_ratio": round(float(area_ratio), 4),
                     "rectangularity": round(float(rectangularity), 4),
                     "edge_support": round(float(edge_support), 4),
@@ -602,6 +618,8 @@ class ImageNormalizationService:
                 "canny_high": self.PDF_CARD_CROP_CANNY_HIGH,
                 "min_aspect": self.PDF_SUBDOCUMENT_MIN_ASPECT_RATIO,
                 "max_aspect": self.PDF_SUBDOCUMENT_MAX_ASPECT_RATIO,
+                "passport_page_aspect_range": list(self.PDF_PASSPORT_PAGE_ASPECT_RANGE),
+                "passport_spread_aspect_range": list(self.PDF_PASSPORT_SPREAD_ASPECT_RANGE),
                 "min_area": self.PDF_SUBDOCUMENT_MIN_AREA_RATIO,
                 "max_area": self.PDF_SUBDOCUMENT_MAX_AREA_RATIO,
                 "min_rectangularity": self.PDF_SUBDOCUMENT_MIN_RECTANGULARITY,
