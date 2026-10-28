@@ -501,7 +501,7 @@ class ImageNormalizationService:
             min(image_height, bottom + pad_y),
         ]
 
-    def _detect_pdf_physical_card_crop(self, image: np.ndarray) -> Dict[str, Any]:
+    def _detect_pdf_physical_card_crop(self, image: np.ndarray, enhance_faint_edges: bool = False) -> Dict[str, Any]:
         started = time.perf_counter()
         image_height, image_width = image.shape[:2]
         scale = min(1.0, self.PDF_CARD_CROP_MAX_DETECTION_DIM / max(1, max(image_height, image_width)))
@@ -511,8 +511,12 @@ class ImageNormalizationService:
         scale_x = image_width / max(1, detection_width)
         scale_y = image_height / max(1, detection_height)
         gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        if enhance_faint_edges:
+            gray = cv2.GaussianBlur(gray, (5, 5), 0)
+            gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(gray, self.PDF_CARD_CROP_CANNY_LOW, self.PDF_CARD_CROP_CANNY_HIGH)
+        canny_low, canny_high = (15, 45) if enhance_faint_edges else (self.PDF_CARD_CROP_CANNY_LOW, self.PDF_CARD_CROP_CANNY_HIGH)
+        edges = cv2.Canny(gray, canny_low, canny_high)
         candidates: List[Dict[str, Any]] = []
         seen = set()
         kernels_tried: List[int] = []
@@ -557,9 +561,13 @@ class ImageNormalizationService:
                     reasons.append("edge_support")
                 if strong_sides < self.PDF_SUBDOCUMENT_MIN_STRONG_EDGE_SIDES:
                     reasons.append("strong_edge_sides")
+                if (enhance_faint_edges or self._subdocument_shape(aspect_ratio) != "card") and min(sides) < 0.65:
+                    reasons.append("weakest_edge_side")
                 if len(polygon) != 4:
                     reasons.append("not_quadrilateral")
                 score = 0.5 * edge_support + 0.3 * rectangularity + 0.2 * strong_sides / 4.0
+                if score < self.PDF_SUBDOCUMENT_MIN_CONFIDENCE:
+                    reasons.append("confidence")
                 original_x = round(x * scale_x)
                 original_y = round(y * scale_y)
                 original_right = min(image_width, round((x + box_width) * scale_x))
@@ -600,6 +608,7 @@ class ImageNormalizationService:
         selected = next((candidate for candidate in candidates if candidate["accepted"]), None)
         debug = {
             "method": "test_card_crop",
+            "edge_mode": "enhanced_faint_edges" if enhance_faint_edges else "standard",
             "original_size": [image_width, image_height],
             "detection_size": [detection_width, detection_height],
             "scale_x": round(float(scale_x), 6),
@@ -614,8 +623,8 @@ class ImageNormalizationService:
                 "max_detection_dim": self.PDF_CARD_CROP_MAX_DETECTION_DIM,
                 "kernel_sizes": list(self.PDF_CARD_CROP_KERNEL_SIZES),
                 "close_iterations": self.PDF_CARD_CROP_CLOSE_ITERATIONS,
-                "canny_low": self.PDF_CARD_CROP_CANNY_LOW,
-                "canny_high": self.PDF_CARD_CROP_CANNY_HIGH,
+                "canny_low": canny_low,
+                "canny_high": canny_high,
                 "min_aspect": self.PDF_SUBDOCUMENT_MIN_ASPECT_RATIO,
                 "max_aspect": self.PDF_SUBDOCUMENT_MAX_ASPECT_RATIO,
                 "passport_page_aspect_range": list(self.PDF_PASSPORT_PAGE_ASPECT_RANGE),
@@ -633,6 +642,11 @@ class ImageNormalizationService:
             },
         }
         if not selected:
+            if not enhance_faint_edges:
+                fallback = self._detect_pdf_physical_card_crop(image, enhance_faint_edges=True)
+                fallback["debug"]["standard_attempt"] = debug
+                fallback["debug"]["card_detection_ms"] = round((time.perf_counter() - started) * 1000.0, 2)
+                return fallback
             return {"passed": False, "reason": "no_card_crop_candidate_passed_guards", "crop_box": None, "confidence": 0.0, "debug": debug}
         return {"passed": True, "reason": "physical_card_crop_detected", **selected, "debug": debug}
 
