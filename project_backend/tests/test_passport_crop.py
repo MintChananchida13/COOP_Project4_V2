@@ -75,13 +75,13 @@ class PassportCropTests(unittest.TestCase):
         image = np.repeat(image, 3, axis=2)
         self.assertFalse(self.service._detect_pdf_physical_card_crop(image)['passed'])
 
-    def test_public_crop_writes_passport_image_and_blank_falls_back(self):
-        image, _ = self.page(350, 500)
+    def test_public_v8_crop_writes_landscape_card_and_blank_falls_back(self):
+        image, _ = self.page(510, 320)
         with patch('cv2.imread', return_value=image), patch('cv2.imwrite', return_value=True) as write:
             result = self.service.detect_pdf_subdocument_boundary('source.png', 'crop.png')
             self.assertTrue(result['passed'])
             cropped = write.call_args.args[1]
-            self.assertAlmostEqual(cropped.shape[1] / cropped.shape[0], 0.7, delta=0.04)
+            self.assertAlmostEqual(cropped.shape[1] / cropped.shape[0], 510 / 320, delta=0.04)
         with patch('cv2.imread', return_value=np.full_like(image, 255)):
             self.assertFalse(self.service.detect_pdf_subdocument_boundary('blank.png')['passed'])
 

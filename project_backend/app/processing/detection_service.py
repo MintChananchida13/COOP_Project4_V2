@@ -1519,17 +1519,17 @@ def _normalize_query_pages(
                 pdf_crop_area_ratio = float(transform_validation.get("area_ratio"))
             except (TypeError, ValueError):
                 pdf_crop_area_ratio = None
-            if disable_pdf_subdocument_crop:
+            if disable_pdf_subdocument_crop or len(page_paths) > 1:
                 pdf_layout_assisted_crop = {
                     "applied": False,
                     "crop_accepted": False,
-                    "reason": "pdf_subdocument_crop_disabled_for_prepublish",
-                    "rejection_reason": "pdf_subdocument_crop_disabled_for_prepublish",
+                    "reason": ("multipage_pdf" if len(page_paths) > 1 else "pdf_subdocument_crop_disabled_for_prepublish"),
+                    "rejection_reason": ("multipage_pdf" if len(page_paths) > 1 else "pdf_subdocument_crop_disabled_for_prepublish"),
                 }
                 pdf_boundary = {
                     "attempted": False,
                     "passed": False,
-                    "reason": "pdf_subdocument_crop_disabled_for_prepublish",
+                    "reason": ("multipage_pdf" if len(page_paths) > 1 else "pdf_subdocument_crop_disabled_for_prepublish"),
                 }
                 if timing is not None:
                     timing.setdefault("physical_crop_attempts", []).append(
@@ -1540,7 +1540,7 @@ def _normalize_query_pages(
                             "detector_timing": {},
                             "crop_applied": False,
                             "crop_rejected": True,
-                            "reason": "pdf_subdocument_crop_disabled_for_prepublish",
+                            "reason": ("multipage_pdf" if len(page_paths) > 1 else "pdf_subdocument_crop_disabled_for_prepublish"),
                             "confidence": None,
                             "area_ratio": None,
                             "aspect_ratio": None,
@@ -1608,7 +1608,8 @@ def _normalize_query_pages(
             matching_preview = _copy_debug_image(Path(matching_path), debug_dir / f"page_{index}_final_matching.png")
             pdf_debug = {
                 "source_type": source_type,
-                "pdf_subdocument_crop_disabled": bool(disable_pdf_subdocument_crop),
+                "pdf_subdocument_crop_disabled": bool(disable_pdf_subdocument_crop or len(page_paths) > 1),
+                "pdf_total_pages": len(page_paths),
                 "original_image_size": original_dimensions,
                 "original_aspect_ratio": _image_aspect(original_dimensions),
                 "document_detection_method": "physical_card_crop",
@@ -1680,11 +1681,12 @@ def _normalize_query_pages(
             effective_normalization.update(
                 {
                     "normalized_image_path": effective_normalized_path,
-                    "pdf_matching_path_promoted_to_normalized": not disable_pdf_subdocument_crop,
+                    "pdf_matching_path_promoted_to_normalized": not disable_pdf_subdocument_crop and len(page_paths) == 1,
                     "pdf_matching_path_source": matching_path_source,
                     "pdf_matching_reason": matching_reason,
                     "pdf_matching_crop_box": pdf_boundary_crop_box,
-                    "pdf_subdocument_crop_disabled": bool(disable_pdf_subdocument_crop),
+                    "pdf_subdocument_crop_disabled": bool(disable_pdf_subdocument_crop or len(page_paths) > 1),
+                "pdf_total_pages": len(page_paths),
                 }
             )
         normalized_pages.append(
@@ -2598,8 +2600,9 @@ def _candidate_from_result(
                 str(original_path),
                 str(physical_crop_path),
                 str(physical_debug_dir) if include_detection_diagnostics() else None,
+                total_pages=int((normalization_info or {}).get("pdf_total_pages") or 1),
             )
-            post_match_physical_crop["attempted"] = True
+            post_match_physical_crop["attempted"] = post_match_physical_crop.get("reason") != "multipage_pdf"
             post_match_physical_crop["source_image_path"] = str(original_path)
         except Exception as error:
             post_match_physical_crop = {"attempted": True, "passed": False, "reason": f"post_match_physical_crop_error: {error}"}

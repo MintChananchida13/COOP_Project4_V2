@@ -163,237 +163,52 @@ class ImageNormalizationService:
         }
 
     def detect_pdf_subdocument_boundary(
-        self,
-        image_path: str,
-        output_path: Optional[str] = None,
-        debug_dir: Optional[str] = None,
+        self, image_path: str, output_path: Optional[str] = None,
+        debug_dir: Optional[str] = None, total_pages: int = 1,
     ) -> Dict[str, Any]:
-        total_started = time.perf_counter()
+        from .pdf_card_crop import DEFAULT_CONFIG, ruled_form_evidence, detect
+        started = time.perf_counter()
+        def rejected(reason, debug=None):
+            return {"passed": False, "reason": reason, "crop_box": None,
+                    "confidence": 0.0, "debug": debug or {},
+                    "timing": {"detection_ms": round((time.perf_counter()-started)*1000, 2),
+                               "validation_ms": 0.0, "apply_ms": 0.0,
+                               "total_ms": round((time.perf_counter()-started)*1000, 2)}}
+        # v8 bypasses detection entirely for multi-page documents.
+        if total_pages > 1:
+            return rejected("multipage_pdf", {"skipped_detection": "multipage_pdf"})
         image = cv2.imread(str(image_path))
         if image is None:
-            return {
-                "passed": False,
-                "reason": "image_read_failed",
-                "crop_box": None,
-                "confidence": 0.0,
-                "timing": {
-                    "detection_ms": None,
-                    "validation_ms": None,
-                    "apply_ms": None,
-                    "total_ms": round((time.perf_counter() - total_started) * 1000.0, 2),
-                },
-            }
-        card_crop = self._detect_pdf_physical_card_crop(image)
-        if card_crop.get("passed"):
-            apply_started = time.perf_counter()
-            crop_left, crop_top, crop_right, crop_bottom = [int(value) for value in card_crop["crop_box"]]
-            crop = image[crop_top:crop_bottom, crop_left:crop_right].copy()
-            if output_path:
-                target = Path(output_path)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                cv2.imwrite(str(target), self._resize_longest_side(crop, self.LONGEST_SIDE))
-            apply_ms = round((time.perf_counter() - apply_started) * 1000.0, 2)
-            total_ms = round((time.perf_counter() - total_started) * 1000.0, 2)
-            return {
-                "passed": True,
-                "reason": "physical_card_crop_detected",
-                "crop_box": card_crop.get("candidate_crop_box"),
-                "padded_crop_box": card_crop.get("crop_box"),
-                "padding_ratio": self.PDF_SUBDOCUMENT_PADDING_RATIO,
-                "confidence": card_crop.get("confidence"),
-                "area_ratio": card_crop.get("area_ratio"),
-                "aspect_ratio": card_crop.get("aspect_ratio"),
-                "edge_support": card_crop.get("edge_support"),
-                "edge_side_support": card_crop.get("edge_side_support"),
-                "strong_edge_side_count": card_crop.get("strong_edge_side_count"),
-                "weakest_edge_support": card_crop.get("weakest_edge_support"),
-                "rectangularity": card_crop.get("rectangularity"),
-                "candidate_source": "physical_card_crop",
-                "output_path": str(output_path) if output_path else None,
-                "debug": card_crop.get("debug"),
-                "timing": {
-                    "detection_ms": (card_crop.get("debug") or {}).get("card_detection_ms"),
-                    "validation_ms": 0.0,
-                    "apply_ms": apply_ms,
-                    "total_ms": total_ms,
-                },
-            }
-        legacy_detection_started = time.perf_counter()
-        height, width = image.shape[:2]
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blurred, 45, 150)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-        closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
-        edge_contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        foreground = self._foreground_document_mask(image, blurred)
-        foreground_contours, _ = cv2.findContours(foreground, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        image_area = max(1.0, float(width * height))
-        candidates: List[Dict[str, Any]] = []
-        top_contours_by_source: Dict[str, List[Dict[str, Any]]] = {
-            "edge_morphology": [],
-            "foreground_mask": [],
-        }
-        candidate_count_by_source: Dict[str, int] = {
-            "edge_morphology": 0,
-            "foreground_mask": 0,
-        }
-        raw_contour_count_by_source: Dict[str, int] = {
-            "edge_morphology": len(edge_contours),
-            "foreground_mask": len(foreground_contours),
-        }
-        top_preview = image.copy()
-        debug_paths: Dict[str, Optional[str]] = {
-            "edge_image": None,
-            "morphology_image": None,
-            "foreground_mask": None,
-            "top_contours": None,
-        }
-        if debug_dir:
-            target_dir = Path(debug_dir)
-            target_dir.mkdir(parents=True, exist_ok=True)
-            edge_path = target_dir / "pdf_subdocument_edges.png"
-            morph_path = target_dir / "pdf_subdocument_morphology.png"
-            foreground_path = target_dir / "pdf_subdocument_foreground_mask.png"
-            if cv2.imwrite(str(edge_path), edges):
-                debug_paths["edge_image"] = str(edge_path)
-            if cv2.imwrite(str(morph_path), closed):
-                debug_paths["morphology_image"] = str(morph_path)
-            if cv2.imwrite(str(foreground_path), foreground):
-                debug_paths["foreground_mask"] = str(foreground_path)
-
-        contour_sources = [
-            ("edge_morphology", edge_contours),
-            ("foreground_mask", foreground_contours),
-        ]
-        for source_index, (candidate_source, source_contours) in enumerate(contour_sources):
-            sorted_contours = sorted(source_contours, key=cv2.contourArea, reverse=True)
-            for contour_index, contour in enumerate(sorted_contours[:40]):
-                evaluated = self._evaluate_pdf_subdocument_contour(
-                    contour=contour,
-                    edge_image=edges,
-                    image_width=width,
-                    image_height=height,
-                    image_area=image_area,
-                    candidate_source=candidate_source,
-                )
-                if contour_index < 10:
-                    top_contours_by_source[candidate_source].append(
-                        {
-                            "rank": contour_index + 1,
-                            "candidate_source": candidate_source,
-                            "contour_area": evaluated["contour_area"],
-                            "area_ratio": evaluated["area_ratio"],
-                            "perimeter": evaluated["perimeter"],
-                            "approx_vertex_count": evaluated["approx_vertex_count"],
-                            "min_area_rect_width": evaluated["min_area_rect_width"],
-                            "min_area_rect_height": evaluated["min_area_rect_height"],
-                            "rectangularity": evaluated["rectangularity"],
-                            "crop_box": evaluated["crop_box"],
-                            "reject_reason_before_scoring": evaluated["reject_reason_before_scoring"],
-                        }
-                    )
-                    color = (
-                        int((37 * (contour_index + 3 + source_index * 11)) % 255),
-                        int((91 * (contour_index + 5 + source_index * 13)) % 255),
-                        int((149 * (contour_index + 7 + source_index * 17)) % 255),
-                    )
-                    crop_left, crop_top, crop_right, crop_bottom = evaluated["crop_box"]
-                    if crop_right > crop_left and crop_bottom > crop_top:
-                        cv2.rectangle(top_preview, (crop_left, crop_top), (crop_right, crop_bottom), color, 3)
-                        label = f"{candidate_source[:2]}{contour_index + 1}"
-                        cv2.putText(top_preview, label, (crop_left, max(20, crop_top - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
-                if evaluated["reject_reason_before_scoring"] is not None:
-                    continue
-                candidate_count_by_source[candidate_source] += 1
-                candidates.append(evaluated["candidate"])
-        if debug_dir:
-            top_path = Path(debug_dir) / "pdf_subdocument_top_contours.png"
-            if cv2.imwrite(str(top_path), top_preview):
-                debug_paths["top_contours"] = str(top_path)
-        best = max(candidates, key=lambda item: float(item["confidence"]), default=None)
-        detection_ms = round((time.perf_counter() - legacy_detection_started) * 1000.0, 2)
-        debug = {
-            "attempted": True,
-            "raw_contour_count": len(edge_contours),
-            "raw_contour_count_by_source": raw_contour_count_by_source,
-            "top_contours": top_contours_by_source["edge_morphology"],
-            "top_contours_by_source": top_contours_by_source,
-            "candidate_count": len(candidates),
-            "candidate_count_by_source": candidate_count_by_source,
-            "best_candidate": best,
-            "selected_candidate_source": best.get("candidate_source") if best else None,
-            "image_size": [width, height],
-            "debug_preview_paths": debug_paths,
-        }
-        validation_started = time.perf_counter()
-        timing_base = {
-            "detection_ms": detection_ms,
-            "validation_ms": None,
-            "apply_ms": None,
-            "total_ms": None,
-        }
-
-        def rejected(reason: str, crop_box: Optional[List[int]], confidence: float) -> Dict[str, Any]:
-            timing_base["validation_ms"] = round((time.perf_counter() - validation_started) * 1000.0, 2)
-            timing_base["total_ms"] = round((time.perf_counter() - total_started) * 1000.0, 2)
-            return {
-                "passed": False,
-                "reason": reason,
-                "crop_box": crop_box,
-                "confidence": confidence,
-                "debug": debug,
-                "timing": dict(timing_base),
-            }
-
-        if not best:
-            return rejected("no_rectangular_subdocument_candidate", None, 0.0)
-        if float(best["rectangularity"]) < self.PDF_SUBDOCUMENT_MIN_RECTANGULARITY:
-            return rejected("rectangularity_below_threshold", best["crop_box"], best["confidence"])
-        if self._subdocument_shape(float(best.get("aspect_ratio") or 0.0)) is None:
-            return rejected("aspect_ratio_outside_subdocument_range", best["crop_box"], best["confidence"])
-        if float(best["edge_support"]) < self.PDF_SUBDOCUMENT_MIN_EDGE_SUPPORT:
-            return rejected("edge_support_below_threshold", best["crop_box"], best["confidence"])
-        if int(best.get("strong_edge_side_count") or 0) < self.PDF_SUBDOCUMENT_MIN_STRONG_EDGE_SIDES:
-            return rejected("insufficient_strong_edge_sides", best["crop_box"], best["confidence"])
-        if float(best["confidence"]) < self.PDF_SUBDOCUMENT_MIN_CONFIDENCE:
-            return rejected("confidence_below_threshold", best["crop_box"], best["confidence"])
-        timing_base["validation_ms"] = round((time.perf_counter() - validation_started) * 1000.0, 2)
+            return rejected("image_read_failed")
+        cfg = DEFAULT_CONFIG.copy()
+        form = ruled_form_evidence(image, cfg)
+        if form["reject"]:
+            return rejected("ruled_form_page", {"ruled_form_evidence": form})
+        selected, candidates, meta = detect(image, cfg)
+        debug = {**meta, "method": "pdf_card_crop_v8", "ruled_form_evidence": form,
+                 "top_candidates": candidates, "selected_candidate": selected, "thresholds": cfg}
+        if selected is None:
+            return rejected("no_candidate_passed_guards", debug)
+        detection_ms = round((time.perf_counter()-started)*1000, 2)
         apply_started = time.perf_counter()
-        crop_left, crop_top, crop_right, crop_bottom = [int(value) for value in best["crop_box"]]
-        padded_crop_box = self._pad_crop_box(
-            [crop_left, crop_top, crop_right, crop_bottom],
-            width,
-            height,
-            self.PDF_SUBDOCUMENT_PADDING_RATIO,
-        )
-        padded_left, padded_top, padded_right, padded_bottom = padded_crop_box
-        crop = image[padded_top:padded_bottom, padded_left:padded_right].copy()
+        x, y, w, h = selected["bbox"]
+        box = [x, y, x+w, y+h]
         if output_path:
             target = Path(output_path)
             target.parent.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(target), self._resize_longest_side(crop, self.LONGEST_SIDE))
-        timing_base["apply_ms"] = round((time.perf_counter() - apply_started) * 1000.0, 2)
-        timing_base["total_ms"] = round((time.perf_counter() - total_started) * 1000.0, 2)
-        return {
-            "passed": True,
-            "reason": "physical_rectangular_subdocument_detected",
-            "crop_box": best["crop_box"],
-            "padded_crop_box": padded_crop_box,
-            "padding_ratio": self.PDF_SUBDOCUMENT_PADDING_RATIO,
-            "confidence": best["confidence"],
-            "area_ratio": best["area_ratio"],
-            "aspect_ratio": best.get("aspect_ratio"),
-            "edge_support": best["edge_support"],
-            "edge_side_support": best.get("edge_side_support"),
-            "strong_edge_side_count": best.get("strong_edge_side_count"),
-            "weakest_edge_support": best.get("weakest_edge_support"),
-            "rectangularity": best["rectangularity"],
-            "candidate_source": best["candidate_source"],
-            "output_path": str(output_path) if output_path else None,
-            "debug": debug,
-            "timing": dict(timing_base),
-        }
+            if not cv2.imwrite(str(target), self._resize_longest_side(image[y:y+h, x:x+w], self.LONGEST_SIDE)):
+                return rejected("crop_write_failed", debug)
+        return {"passed": True, "reason": "physical_card_crop_detected", "crop_box": box,
+                "padded_crop_box": box, "padding_ratio": 0.0,
+                "confidence": selected["score"], "area_ratio": selected["area_ratio"],
+                "aspect_ratio": selected["aspect_ratio"], "edge_support": selected["edge_support"],
+                "edge_side_support": selected["edge_side_support"],
+                "strong_edge_side_count": selected["strong_edge_side_count"],
+                "rectangularity": selected["rectangularity"], "candidate_source": selected["source"],
+                "output_path": str(output_path) if output_path else None, "debug": debug,
+                "timing": {"detection_ms": detection_ms, "validation_ms": 0.0,
+                           "apply_ms": round((time.perf_counter()-apply_started)*1000, 2),
+                           "total_ms": round((time.perf_counter()-started)*1000, 2)}}
 
     def _evaluate_pdf_subdocument_contour(
         self,
