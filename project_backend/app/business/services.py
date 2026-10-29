@@ -322,6 +322,7 @@ def _clean_ocr_model_payload(payload: Any, existing_id: Optional[str] = None) ->
         "display_name": display_name,
         "single_api_path": _clean_api_path(data.get("single_api_path"), "single_api_path"),
         "batch_api_path": _clean_api_path(data.get("batch_api_path"), "batch_api_path"),
+        **{key: data[key] for key in ("model_name", "model_version", "model_dir", "runtime_model_id", "loaded", "registry_managed") if key in data},
     }
 
 
@@ -1004,9 +1005,40 @@ class GlobalSettingsService:
         except Exception:
             pass
         settings = self._active_ocr_model_settings_no_apply()
+        for models in settings["models"].values():
+            for item in models:
+                item["loaded"] = False
+        registry_error = None
+        try:
+            from app.core.model_runtime_client import fetch_ocr_registry
+            from urllib.parse import urlencode
+            registry = fetch_ocr_registry()
+            for kind, category, api in (("text_detection", "detection", "text-detection"), ("text_recognition", "recognition", "text-recognition")):
+                for entry in registry.get(category, []):
+                    if entry.get("model_id") == "default":
+                        default_id = "ocr_det_v6_medium" if kind == "text_detection" else "thai_ocr_v5_mobile"
+                        for item in settings["models"][kind]:
+                            if item["id"] == default_id:
+                                item.update(model_name=entry["model_name"], model_version=entry["version"], runtime_model_id="default", loaded=bool(entry.get("loaded")))
+                        continue
+                    query = urlencode({"version": entry["version"], "model_id": entry["model_id"]})
+                    model = {"id": entry["model_id"], "runtime_model_id": entry["model_id"],
+                             "display_name": entry["display_name"], "model_name": entry["model_name"],
+                             "model_version": entry["version"], "model_dir": entry.get("model_dir"),
+                             "loaded": bool(entry.get("loaded")), "registry_managed": True,
+                             "single_api_path": f"/api/v1/{api}s?{query}",
+                             "batch_api_path": f"/api/v1/{api}-batches?{query}"}
+                    models = settings["models"][kind]
+                    index = next((i for i, item in enumerate(models) if item["id"] == model["id"]), None)
+                    if index is None:
+                        models.append(model)
+                    else:
+                        models[index] = model
+        except Exception as error:
+            registry_error = str(error)
         pending_raw = self._load_setting_value(PENDING_OCR_MODEL_SETTINGS_KEY)
         pending_settings = normalize_ocr_model_settings(jsonb_load(pending_raw, None)) if pending_raw is not None else None
-        return {"ocr_models": settings, "pending_ocr_models": pending_settings}
+        return {"ocr_models": settings, "pending_ocr_models": pending_settings, "registry_error": registry_error}
 
     def _active_ocr_model_settings_no_apply(self) -> Dict[str, Any]:
         with _connect() as conn:
@@ -1018,7 +1050,7 @@ class GlobalSettingsService:
 
     def update_ocr_active_models(self, text_detection_model_id: str, text_recognition_model_id: str) -> Dict[str, Any]:
         defer_update = self._should_defer_admin_setting_updates()
-        settings = self._active_ocr_model_settings_no_apply() if defer_update else self.get_ocr_model_settings()["ocr_models"]
+        settings = self.get_ocr_model_settings()["ocr_models"]
         requested = {
             "text_detection": str(text_detection_model_id or "").strip(),
             "text_recognition": str(text_recognition_model_id or "").strip(),

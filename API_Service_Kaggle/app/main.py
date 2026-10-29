@@ -8,7 +8,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .config import settings
-from .models import NAMES, manager, predict, siglip_logits
+from .models import NAMES, manager, predict, siglip_logits, registry, resolve_ocr
 from .serialization import decode_image, json_safe
 from .timing import build_timing
 from .siglip_policy import POSITIVE, NEGATIVE, decide
@@ -65,7 +65,7 @@ def authenticate(request: Request):
         raise HTTPException(401, "Invalid bearer token")
 
 
-def run(name, operation, model_timings=None):
+def run(name, operation, model_timings=None, ocr_entry=None):
     started = time.perf_counter()
     if not slots.acquire(blocking=False):
         raise HTTPException(503, "Inference queue is full")
@@ -74,7 +74,7 @@ def run(name, operation, model_timings=None):
 
         def execute():
             queue_wait_ms = round((time.perf_counter() - submitted) * 1000, 2)
-            model, model_load_ms = manager.get(name)
+            model, model_load_ms = manager.get_ocr(name, ocr_entry) if ocr_entry else manager.get(name)
             lock_started = time.perf_counter()
             with manager.inference_locks[name]:
                 lock_wait_ms = round((time.perf_counter() - lock_started) * 1000, 2)
@@ -93,7 +93,7 @@ def run(name, operation, model_timings=None):
             name, queue_wait_ms, model_load_ms, lock_wait_ms, inference_ms,
             serialization_ms, round((time.perf_counter() - started) * 1000, 2), model_timings=model_timings,
         )
-        return {"success": True, "model": NAMES[name], "result": safe_result, "timing": timing}
+        return {"success": True, "model": f"{ocr_entry['model_name']}:{ocr_entry['model_id']}" if ocr_entry else NAMES[name], "result": safe_result, "timing": timing}
     except HTTPException:
         raise
     except Exception as error:
@@ -142,33 +142,67 @@ def layout(request: LayoutImage):
     return run("layout", operation, model_timings=model_timings)
 
 
-def require_v6(version: str = Query("v6")):
-    if version != "v6":
-        raise HTTPException(422, "Only version=v6 is supported")
+def selected_ocr(kind, version, model_id):
+    try:
+        return resolve_ocr(kind, version, model_id)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
 
 
-@app.post("/api/v1/text-detections", dependencies=[Depends(authenticate), Depends(require_v6)])
-def detection(request: SingleImage):
+@app.get("/api/v1/ocr-models", dependencies=[Depends(authenticate)])
+def ocr_models():
+    result = registry()
+    for category, kind in (("detection", "det"), ("recognition", "rec")):
+        for entry in result[category]:
+            key = (kind, entry["version"], entry["model_id"])
+            entry["loaded"] = kind in manager.models if entry["model_id"] == "default" else key in manager.ocr_models
+    return {"success": True, "models": result}
+
+
+class OcrModelCheck(BaseModel):
+    kind: str
+    version: str
+    model_id: str
+
+
+@app.post("/api/v1/ocr-models/check", dependencies=[Depends(authenticate)])
+def check_ocr_model(request: OcrModelCheck):
+    if request.kind not in ("det", "rec"):
+        raise HTTPException(422, "Invalid model kind")
+    entry = selected_ocr(request.kind, request.version, request.model_id)
+    try:
+        manager.get_ocr(request.kind, entry)
+    except Exception as error:
+        raise HTTPException(503, f"Model load failed: {error}") from error
+    return {"success": True, "loaded": True}
+
+
+@app.post("/api/v1/text-detections", dependencies=[Depends(authenticate)])
+def detection(request: SingleImage, version: str = "v6", model_id: str = "default"):
     image = decode_image(request.image)
-    return run("det", lambda model: paddle_result(model, image))
+    entry = selected_ocr("det", version, model_id)
+    return run("det", lambda model: paddle_result(model, image), **({} if model_id == "default" else {"ocr_entry": entry}))
 
 
-@app.post("/api/v1/text-detection-batches", dependencies=[Depends(authenticate), Depends(require_v6)])
-def detection_batch(request: BatchImages):
+@app.post("/api/v1/text-detection-batches", dependencies=[Depends(authenticate)])
+def detection_batch(request: BatchImages, version: str = "v6", model_id: str = "default"):
     images = [decode_image(item) for item in request.images]
-    return run("det", lambda model: {"results": [paddle_result(model, image) for image in images]})
+    entry = selected_ocr("det", version, model_id)
+    return run("det", lambda model: {"results": [paddle_result(model, image) for image in images]}, **({} if model_id == "default" else {"ocr_entry": entry}))
 
 
 @app.post("/api/v1/text-recognitions", dependencies=[Depends(authenticate)])
-def recognition(request: SingleImage):
+def recognition(request: SingleImage, version: str = "v5", model_id: str = "default"):
     image = decode_image(request.image)
-    return run("rec", lambda model: paddle_result(model, image))
+    entry = selected_ocr("rec", version, model_id)
+    return run("rec", lambda model: paddle_result(model, image), **({} if model_id == "default" else {"ocr_entry": entry}))
 
 
 @app.post("/api/v1/text-recognition-batches", dependencies=[Depends(authenticate)])
-def recognition_batch(request: BatchImages):
+def recognition_batch(request: BatchImages, version: str = "v5", model_id: str = "default"):
     images = [decode_image(item) for item in request.images]
-    return run("rec", lambda model: {"results": [paddle_result(model, image) for image in images]})
+    entry = selected_ocr("rec", version, model_id)
+    return run("rec", lambda model: {"results": [paddle_result(model, image) for image in images]}, **({} if model_id == "default" else {"ocr_entry": entry}))
 
 
 @app.post("/api/v1/table-model-results", dependencies=[Depends(authenticate)])

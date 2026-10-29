@@ -1,0 +1,11 @@
+{
+  "detection": [
+    {"model_id":"default","version":"v6","model_name":"PP-OCRv6_medium_det","display_name":"PP-OCRv6 Medium","requires_local_weights":false},
+    {"model_id":"thai_ft_v2","version":"v6","model_name":"PP-OCRv6_medium_det","display_name":"PP-OCRv6 Fine-tuned","model_dir":"/workspace/API_service/weights/det-v6/finetuneV/infer","requires_local_weights":true}
+  ],
+  "recognition": [
+    {"model_id":"default","version":"v5","model_name":"th_PP-OCRv5_mobile_rec","display_name":"Thai PP-OCRv5 Mobile","requires_local_weights":false},
+    {"model_id":"thai_ft_v3","version":"v5","model_name":"th_PP-OCRv5_mobile_rec","display_name":"Thai PP-OCRv5 Fine-tuned","model_dir":"/workspace/API_service/weights/rec-th/finetuneHv3/infer","requires_local_weights":true},
+    {"model_id":"thai_ft_v1","version":"v6","model_name":"PP-OCRv6_medium_rec","display_name":"PP-OCRv6 Fine-tuned","model_dir":"/workspace/API_service/weights/rec-v6/finetuneH/infer","requires_local_weights":true}
+  ]
+}

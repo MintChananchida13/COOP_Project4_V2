@@ -471,6 +471,7 @@ const cloneOcrModelSettings = (settings: OcrModelSettings): OcrModelSettings => 
   active: { ...settings.active },
   pendingActive: settings.pendingActive ? { ...settings.pendingActive } : settings.pendingActive,
   deferred: settings.deferred,
+  registryError: settings.registryError,
   models: {
     text_detection: settings.models.text_detection.map((model) => ({ ...model })),
     text_recognition: settings.models.text_recognition.map((model) => ({ ...model })),
@@ -2205,6 +2206,12 @@ export interface OcrModelConfig {
   displayName: string;
   singleApiPath: string;
   batchApiPath: string;
+  modelName?: string;
+  modelVersion?: string;
+  modelDir?: string;
+  runtimeModelId?: string;
+  loaded?: boolean;
+  registryManaged?: boolean;
 }
 
 export interface OcrModelSettings {
@@ -2212,6 +2219,7 @@ export interface OcrModelSettings {
   models: Record<OcrModelKind, OcrModelConfig[]>;
   pendingActive?: Record<OcrModelKind, string> | null;
   deferred?: boolean;
+  registryError?: string;
 }
 
 const mapOcrModel = (item: Record<string, unknown>): OcrModelConfig => ({
@@ -2219,6 +2227,12 @@ const mapOcrModel = (item: Record<string, unknown>): OcrModelConfig => ({
   displayName: String(item.display_name || item.displayName || ""),
   singleApiPath: String(item.single_api_path || item.singleApiPath || ""),
   batchApiPath: String(item.batch_api_path || item.batchApiPath || ""),
+  modelName: String(item.model_name || ""),
+  modelVersion: String(item.model_version || ""),
+  modelDir: String(item.model_dir || ""),
+  runtimeModelId: String(item.runtime_model_id || ""),
+  loaded: item.loaded === true,
+  registryManaged: item.registry_managed === true,
 });
 
 const mapOcrModelSettings = (data: Record<string, unknown>): OcrModelSettings => {
@@ -2244,7 +2258,14 @@ const mapOcrModelSettings = (data: Record<string, unknown>): OcrModelSettings =>
       };
     })(),
     deferred: Boolean(data.deferred),
+    registryError: String(data.registry_error || ""),
   };
+};
+
+export const checkOcrModel = async (kind: OcrModelKind, modelId: string): Promise<void> => {
+  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/settings/ocr-models/${kind}/${encodeURIComponent(modelId)}/check`, { method: "POST" });
+  const json = await response.json();
+  if (!response.ok || json?.success === false) throw new Error(json?.detail || json?.error?.message || "Model check failed");
 };
 
 export const fetchOcrModelSettings = async (options: { forceRefresh?: boolean } = {}): Promise<OcrModelSettings> => {

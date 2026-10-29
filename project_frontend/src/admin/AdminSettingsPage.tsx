@@ -6,6 +6,7 @@ import {
   DetectionBatchMode,
   DetectionBatchModeSettings,
   deleteOcrModel,
+  checkOcrModel,
   fetchDetectionBatchMode,
   fetchOcrModelSettings,
   fetchAdminSystemMaintenance,
@@ -93,7 +94,7 @@ const modelKindLabels: Record<OcrModelKind, string> = {
   text_recognition: "Text Recognition",
 };
 
-type ModelDraft = Omit<OcrModelConfig, "id"> & { id?: string };
+type ModelDraft = Pick<OcrModelConfig, "displayName" | "singleApiPath" | "batchApiPath"> & { id?: string };
 
 const emptyModelDraft: ModelDraft = {
   displayName: "",
@@ -457,6 +458,8 @@ export default function AdminSettingsPage() {
   const [modelFormStatus, setModelFormStatus] = useState<"idle" | "saving" | "error">("idle");
   const [modelFormError, setModelFormError] = useState("");
   const [deletingModelId, setDeletingModelId] = useState<string | null>(null);
+  const [checkingModelId, setCheckingModelId] = useState<string | null>(null);
+  const [modelCheckMessage, setModelCheckMessage] = useState("");
   const [maintenanceDraft, setMaintenanceDraft] = useState<MaintenanceDraft>(emptyMaintenanceDraft);
   const [maintenanceState, setMaintenanceState] = useState<SystemMaintenanceState | null>(null);
   const [scheduledMaintenance, setScheduledMaintenance] = useState<ScheduledMaintenance | null>(null);
@@ -940,6 +943,8 @@ export default function AdminSettingsPage() {
             ))}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-5">
+            {modelSettings.registryError && <p className="mb-3 text-xs text-amber-700">เชื่อมต่อ Model Service ไม่สำเร็จ: {modelSettings.registryError}</p>}
+            {modelCheckMessage && <p role="status" className="mb-3 text-xs text-slate-700">{modelCheckMessage}</p>}
             {editingModel ? (
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <h3 className="text-sm font-black text-slate-900">{editingModel.draft.id ? "แก้ไขโมเดล" : "เพิ่มโมเดล"} {modelKindLabels[editingModel.kind]}</h3>
@@ -993,19 +998,32 @@ export default function AdminSettingsPage() {
                           {model.id === activeModelId && <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-black text-emerald-700">ใช้งานอยู่</span>}
                         </div>
                         <div className="mt-3 grid gap-2 text-xs font-semibold text-slate-500">
+                          <div><span className="font-black text-slate-700">Model Name</span><br />{model.modelName || "—"}</div>
+                          <div><span className="font-black text-slate-700">Model ID</span><br />{model.runtimeModelId || model.id}</div>
+                          <div><span className="font-black text-slate-700">Version</span><br />{model.modelVersion || "—"}</div>
+                          <div><span className="font-black text-slate-700">Model Directory (Model Service)</span><br />{model.modelDir || "—"}</div>
+                          <div><span className="font-black text-slate-700">สถานะ</span><br />{model.loaded ? "โหลดโมเดลแล้ว" : "ยังไม่ได้ตรวจสอบหรือยังไม่โหลด"}</div>
                           <div><span className="font-black text-slate-700">Single API Path</span><br />{model.singleApiPath}</div>
                           <div><span className="font-black text-slate-700">Batch API Path</span><br />{model.batchApiPath}</div>
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-2 sm:justify-end">
-                      <button type="button" onClick={() => openEditModel(activeManagerTab, model)} className="inline-flex h-9 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 hover:bg-slate-50">
+                      <button type="button" disabled={Boolean(checkingModelId) || !model.runtimeModelId} onClick={() => {
+                        setCheckingModelId(model.id); setModelCheckMessage("กำลังตรวจสอบและโหลดโมเดล...");
+                        void checkOcrModel(activeManagerTab, model.id).then(async () => {
+                          applyOcrModelSettings(await fetchOcrModelSettings({ forceRefresh: true }));
+                          setModelCheckMessage(`โหลด ${model.displayName} สำเร็จ`);
+                        }).catch((error) => setModelCheckMessage(error instanceof Error ? error.message : "ตรวจสอบโมเดลไม่สำเร็จ"))
+                          .finally(() => setCheckingModelId(null));
+                      }} className="h-9 rounded-xl border border-indigo-200 px-3 text-xs font-bold text-indigo-700 disabled:opacity-40">ตรวจสอบโมเดล</button>
+                      <button type="button" disabled={model.registryManaged} title={model.registryManaged ? "ตั้งค่ารุ่นนี้ใน Registry ของ Model Service" : undefined} onClick={() => openEditModel(activeManagerTab, model)} className="inline-flex h-9 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 hover:bg-slate-50 disabled:opacity-40">
                         <Pencil size={14} />
                         แก้ไข
                       </button>
                       <button
                         type="button"
                         onClick={() => void handleDeleteModel(activeManagerTab, model)}
-                        disabled={deleteDisabled}
+                        disabled={deleteDisabled || model.registryManaged}
                         title={isActive ? "ไม่สามารถลบโมเดลที่ใช้งานอยู่" : isPendingActive ? "ไม่สามารถลบโมเดลที่รออัปเดต" : "ลบโมเดล OCR"}
                         className="inline-flex h-9 items-center gap-2 rounded-xl border border-rose-200 bg-white px-3 text-xs font-black text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 disabled:hover:bg-white"
                       >

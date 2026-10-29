@@ -1189,6 +1189,11 @@ return (
           <RefreshCw size={14} className="animate-spin" />
           กำลังประมวลผลเอกสาร...
         </>
+      ) : autoDetecting ? (
+        <>
+          <RefreshCw size={14} className="animate-spin" />
+          กำลังตรวจขอบเอกสาร...
+        </>
       ) : (
         <>
           <Check size={14} />

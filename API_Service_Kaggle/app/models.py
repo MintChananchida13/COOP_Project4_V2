@@ -1,6 +1,9 @@
 import logging
 import threading
 import time
+import json
+import os
+from pathlib import Path
 
 import cv2
 
@@ -9,6 +12,39 @@ from .serialization import json_safe
 
 
 logger = logging.getLogger(__name__)
+REGISTRY_PATH = Path(__file__).resolve().parent.parent / "config" / "model_registry.json"
+
+
+def registry():
+    with REGISTRY_PATH.open(encoding="utf-8") as stream:
+        return json.load(stream)
+
+
+def resolve_ocr(kind, version, model_id):
+    entries = registry()["detection" if kind == "det" else "recognition"]
+    version = version or ("v6" if kind == "det" else "v5")
+    model_id = model_id or "default"
+    matches = [item for item in entries if item["version"] == version and item["model_id"] == model_id]
+    if len(matches) != 1:
+        raise ValueError(f"Unknown {kind} model version={version} model_id={model_id}")
+    return matches[0]
+
+
+def local_weights_path(entry):
+    path = Path(entry.get("model_dir") or "")
+    root = os.getenv("MODEL_WEIGHTS_ROOT", "").strip()
+    prefix = "/workspace/API_service/weights/"
+    if root and str(path).replace("\\", "/").startswith(prefix):
+        path = Path(root) / str(path).replace("\\", "/")[len(prefix):]
+    if not path.is_dir():
+        raise FileNotFoundError(f"Model directory not found: {path}")
+    if not (path / "inference.yml").is_file():
+        raise FileNotFoundError(f"Missing inference.yml in {path}")
+    if not ((path / "inference.json").is_file() or (path / "inference.pdmodel").is_file()):
+        raise FileNotFoundError(f"Missing inference model in {path}")
+    if not (path / "inference.pdiparams").is_file():
+        raise FileNotFoundError(f"Missing inference.pdiparams in {path}")
+    return path
 NAMES = {
     "layout": "PP-DocLayoutV3",
     "det": "PP-OCRv6_medium_det",
@@ -23,6 +59,27 @@ class ModelManager:
         self.models = {}
         self.locks = {name: threading.Lock() for name in NAMES}
         self.inference_locks = {name: threading.Lock() for name in NAMES}
+        self.ocr_models = {}
+        self.ocr_lock = threading.Lock()
+
+    def get_ocr(self, kind, entry):
+        key = (kind, entry["version"], entry["model_id"])
+        if entry["model_id"] == "default":
+            return self.get(kind)
+        with self.ocr_lock:
+            if key in self.ocr_models:
+                return self.ocr_models[key], 0.0
+            model_dir = local_weights_path(entry) if entry.get("requires_local_weights") else None
+            started = time.perf_counter()
+            import paddle
+            from paddleocr import TextDetection, TextRecognition
+            paddle.set_device("cpu")
+            kwargs = {"model_name": entry["model_name"], "device": "cpu"}
+            if model_dir is not None:
+                kwargs["model_dir"] = str(model_dir)
+            model = (TextDetection if kind == "det" else TextRecognition)(**kwargs)
+            self.ocr_models[key] = model
+            return model, round((time.perf_counter() - started) * 1000, 2)
 
     def get(self, name):
         with self.locks[name]:

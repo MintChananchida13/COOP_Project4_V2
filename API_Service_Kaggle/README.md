@@ -19,6 +19,10 @@ All POST routes require `Authorization: Bearer <MODEL_GATEWAY_API_KEY>` and base
 
 `GET /health` reports status and loaded model names. It does not force a model download.
 
+OCR variants are defined in `config/model_registry.json`. Detection and recognition single and batch endpoints accept optional `version` and `model_id` query parameters. Omitting them keeps the existing v6 detection and v5 Thai recognition defaults. Unknown combinations fail rather than selecting another model. The authenticated registry and model-check APIs provide metadata and perform a real load check; loaded instances are cached until the service restarts. An unchanged directory with replaced weights requires a service restart.
+
+Fine-tuned model paths are paths on the model-service host. The registry uses `/workspace/API_service/weights/...`; for Kaggle or another mount set `MODEL_WEIGHTS_ROOT` to the actual directory containing `det-v6` and `rec-th`/`rec-v6`. Each inference directory must contain `inference.yml`, `inference.pdiparams`, and either `inference.json` or `inference.pdmodel`. Missing or incompatible files fail that model's load independently. The registry does not install or supply model weights.
+
 ## Models and setup
 
 Python 3.10 or 3.11 is recommended. The pinned requirements are an installation starting point and require validation on the target Windows or Kaggle image. Install `requirements.txt`, set `MODEL_GATEWAY_API_KEY` in the environment, then run `python start.py` or `python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers 1` from this directory. Set backend `GATEWAY_URL` to this server's base URL and use the same API key. Run tests with `pip install -r requirements-test.txt` and `pytest`.

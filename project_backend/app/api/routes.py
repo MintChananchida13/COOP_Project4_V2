@@ -772,6 +772,24 @@ def update_ocr_active_models(payload: OcrActiveModelsUpdate) -> ApiResponse:
     )
 
 
+@router.post("/admin/settings/ocr-models/{kind}/{model_id}/check", response_model=ApiResponse)
+def check_ocr_model(kind: str, model_id: str) -> ApiResponse:
+    from app.core.model_runtime_client import check_ocr_registry_model, ModelRuntimeUnavailableError
+    if kind not in ("text_detection", "text_recognition"):
+        raise HTTPException(status_code=400, detail="Invalid OCR model kind")
+    settings = global_settings.get_ocr_model_settings()["ocr_models"]
+    model = next((item for item in settings["models"][kind] if item["id"] == model_id), None)
+    if not model:
+        raise HTTPException(status_code=404, detail="OCR model not found")
+    if not model.get("runtime_model_id") or not model.get("model_version"):
+        raise HTTPException(status_code=422, detail="This model is not available in the runtime registry")
+    try:
+        check_ocr_registry_model(kind, model["model_version"], model["runtime_model_id"])
+    except ModelRuntimeUnavailableError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    return ok({"loaded": True})
+
+
 @router.post("/admin/settings/ocr-models/{kind}", response_model=ApiResponse)
 def create_ocr_model(kind: str, payload: OcrModelPayload) -> ApiResponse:
     return ok(global_settings.upsert_ocr_model(kind, payload))

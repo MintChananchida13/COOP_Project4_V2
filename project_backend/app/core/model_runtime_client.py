@@ -5,6 +5,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 from enum import Enum
 from pathlib import Path
@@ -79,8 +80,10 @@ def _active_ocr_model(kind: str) -> Dict[str, Any]:
         loaded = jsonb_load(row["value"] if row else None, None)
         if isinstance(loaded, dict):
             settings = loaded
+        elif row is not None:
+            raise ValueError("Invalid OCR model settings")
     except Exception as error:
-        logger.warning("Unable to load OCR model settings; using defaults: %s", error)
+        raise ModelRuntimeUnavailableError("Unable to load active OCR model settings") from error
 
     models = ((settings.get("models") if isinstance(settings, dict) else {}) or {}).get(kind)
     active_id = ((settings.get("active") if isinstance(settings, dict) else {}) or {}).get(kind)
@@ -88,10 +91,7 @@ def _active_ocr_model(kind: str) -> Dict[str, Any]:
         for model in models:
             if isinstance(model, dict) and model.get("id") == active_id:
                 return model
-        for model in models:
-            if isinstance(model, dict):
-                return model
-    return DEFAULT_OCR_MODEL_SETTINGS["models"][kind][0]
+    raise ModelRuntimeUnavailableError(f"Configured active {kind} model {active_id!r} was not found")
 
 
 def _active_ocr_path(kind: str, mode: str) -> str:
@@ -100,7 +100,7 @@ def _active_ocr_path(kind: str, mode: str) -> str:
     path = str(model.get(key) or "").strip()
     if path.startswith("/"):
         return path
-    return DEFAULT_OCR_MODEL_SETTINGS["models"][kind][0][key]
+    raise ModelRuntimeUnavailableError(f"Configured {kind} model {model.get('id')!r} has an invalid {key}")
 
 
 def runtime_url(kind: ModelRuntimeKind) -> Optional[str]:
@@ -124,6 +124,24 @@ def _gateway_headers() -> Dict[str, str]:
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     return headers
+
+
+def fetch_ocr_registry() -> Dict[str, Any]:
+    if not GATEWAY_URL.strip():
+        raise ModelRuntimeUnavailableError("GATEWAY_URL is not configured")
+    request = urllib.request.Request(f"{GATEWAY_URL.strip().rstrip('/')}/api/v1/ocr-models", headers=_gateway_headers())
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            data = json.load(response)
+        return data["models"]
+    except Exception as error:
+        raise ModelRuntimeUnavailableError(f"Cannot fetch OCR model registry: {error}") from error
+
+
+def check_ocr_registry_model(kind: str, version: str, model_id: str) -> Dict[str, Any]:
+    return _post_predict(ModelRuntimeKind.TEXT_DETECTION if kind == "text_detection" else ModelRuntimeKind.TEXT_RECOGNITION,
+        {"kind": "det" if kind == "text_detection" else "rec", "version": version, "model_id": model_id},
+        path_override="/api/v1/ocr-models/check")
 
 
 def _image_to_data_url(image: np.ndarray) -> str:
@@ -290,6 +308,10 @@ def _post_predict(
     if not parsed.get("success", True):
         detail = parsed.get("detail") or parsed.get("error") or "Model runtime request failed."
         raise ModelRuntimeUnavailableError(f"{kind.value} runtime failed: {detail}")
+
+    selected_id = parse_qs(urlsplit(path_override or "").query).get("model_id", [""])[0]
+    if selected_id and selected_id != "default" and not str(parsed.get("model") or "").endswith(f":{selected_id}"):
+        raise ModelRuntimeUnavailableError(f"{kind.value} runtime did not confirm selected model_id={selected_id}")
 
     logger.info(
         "Model Runtime timing: kind=%s model=%s payload_bytes=%s elapsed=%.3fs",
