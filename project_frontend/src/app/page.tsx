@@ -1745,7 +1745,6 @@ function HomeWorkspace() {
   const [uploadedSourceFileId, setUploadedSourceFileId] = useState<string>("");
   const [uploadedSourceFileName, setUploadedSourceFileName] = useState<string>("");
   const [uploadedSourceFileType, setUploadedSourceFileType] = useState<"pdf" | "image" | "">("");
-  const [uploadedSourceFile, setUploadedSourceFile] = useState<File | null>(null);
 
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const [pagesConfig, setPagesConfig] = useState<PageConfig[]>([]);
@@ -2436,7 +2435,7 @@ function HomeWorkspace() {
     };
   }, [isUserMenuOpen]);
 
-  const handleUploadSuccess = (urls: string[], sourceFileName?: string, sourceFileType?: "pdf" | "image", sourceFile?: File) => {
+  const handleUploadSuccess = (urls: string[], sourceFileName?: string, sourceFileType?: "pdf" | "image") => {
     cancelTemplateDetection();
     activeProcessingRunIdRef.current = "";
     ocrProcessingTimeMsRef.current = null;
@@ -2444,7 +2443,6 @@ function HomeWorkspace() {
     setUploadedSourceFileId(`user_file_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
     setUploadedSourceFileName(sourceFileName || "ไฟล์ต้นทาง");
     setUploadedSourceFileType(sourceFileType || (sourceFileName?.toLowerCase().endsWith(".pdf") ? "pdf" : "image"));
-    setUploadedSourceFile(sourceFile || null);
     setImagesList(urls);
     setOriginalImagesList([...urls]);
     setCurrentIndex(0);
@@ -2494,7 +2492,6 @@ function HomeWorkspace() {
     setUploadedSourceFileId("");
     setUploadedSourceFileName("");
     setUploadedSourceFileType("");
-    setUploadedSourceFile(null);
     setCurrentIndex(0);
     setPagesConfig([]);
     setPreviewUrl("");
@@ -2730,15 +2727,9 @@ function HomeWorkspace() {
       setTemplateDecisionStatus("กำลังค้นหา Template ที่ใกล้เคียงที่สุด");
       let detection: DetectionDevResult;
       try {
-        const shouldUseOriginalPdfForDetection =
-          uploadedSourceFileType === "pdf" &&
-          uploadedSourceFile &&
-          (uploadedSourceFile.type === "application/pdf" || uploadedSourceFile.name.toLowerCase().endsWith(".pdf"));
-        const detectionInput = shouldUseOriginalPdfForDetection
-          ? uploadedSourceFile
-          : await Promise.all(finalProcessedImages.map((src, index) => dataUrlToFile(src, `confirmed-document-page-${index + 1}.jpg`)));
+        const detectionInput = await Promise.all(finalProcessedImages.map((src, index) => dataUrlToFile(src, `confirmed-document-page-${index + 1}.jpg`)));
         detection = await measureStage("detectionJobMs", () =>
-          detectTemplateDev(Array.isArray(detectionInput) && detectionInput.length === 1 ? detectionInput[0] : detectionInput, { timing: detectionTransportTiming, signal })
+          detectTemplateDev(Array.isArray(detectionInput) && detectionInput.length === 1 ? detectionInput[0] : detectionInput, { timing: detectionTransportTiming, signal, confirmedImages: true })
         );
         detectionForTiming = detection;
         detectionMatchedForTiming = detection.matched;
@@ -2748,7 +2739,7 @@ function HomeWorkspace() {
           candidateCount: detection.candidates.length,
           pageCount: detection.pages.length,
           bestTemplateId: detection.bestCandidate?.templateId ?? null,
-          usedOriginalPdf: shouldUseOriginalPdfForDetection,
+          usedOriginalPdf: false,
         });
       } catch (error) {
         throw contextualTemplateError("Template detection mapping failed", error);
@@ -4770,6 +4761,7 @@ function HomeWorkspace() {
         {currentStep === "adjust" && (
           <AdjustZone
             imagesList={originalImagesList.length > 0 ? originalImagesList : imagesList}
+            sourceFileType={uploadedSourceFileType}
             currentIndex={currentIndex}
             onIndexChange={(nextIdx) => setCurrentIndex(nextIdx)}
             pagesConfig={pagesConfig}

@@ -70,3 +70,23 @@ test('an already cancelled request never uploads', async () => {
   const controller = new AbortController(); controller.abort();
   await assert.rejects(detector(() => { assert.fail('upload should not start'); })(file, { signal: controller.signal }), { name: 'AbortError' });
 });
+
+test('confirmed-image transport requires backend acknowledgement', async () => {
+  let polls = 0;
+  const detect = detector(async url => { if (url.includes('/jobs/')) polls++; return ack(); }, async () => {});
+  await assert.rejects(detect(file, { confirmedImages: true }));
+  assert.equal(polls, 0);
+});
+
+test('confirmed-image transport accepts acknowledgement and preserves page order', async () => {
+  let uploaded;
+  const second = new Blob(['second']); second.name = 'page2.png';
+  const detect = detector(async (url, options) => {
+    if (url.includes('/jobs/')) return { ok: true, json: async () => ({data:{status:'completed',result:{matched:true}}}) };
+    assert.ok(url.includes('confirmedImages=1'));
+    uploaded = options.body.getAll('file');
+    return {ok:true,json:async()=>({data:{job_id:'job',confirmed_images:true}})};
+  }, async () => {});
+  assert.deepEqual(await detect([file,second],{confirmedImages:true}),{matched:true});
+  assert.deepEqual(await Promise.all(uploaded.map(item=>item.text())),['image','second']);
+});

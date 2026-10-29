@@ -2425,7 +2425,7 @@ function mapDetectionDevResult(data: Record<string, unknown> | undefined): Detec
 
 export const detectTemplateDev = async (
   file: File | File[],
-  options: { standardTop5?: boolean; context?: "admin" | "user"; timing?: DetectionTransportTiming; signal?: AbortSignal } = {}
+  options: { standardTop5?: boolean; context?: "admin" | "user"; timing?: DetectionTransportTiming; signal?: AbortSignal; confirmedImages?: boolean } = {}
 ): Promise<DetectionDevResult> => {
   options.signal?.throwIfAborted();
   const mapResult = (data: Record<string, unknown> | undefined) => {
@@ -2448,6 +2448,7 @@ export const detectTemplateDev = async (
   });
   const queryParams = new URLSearchParams();
   if (options.standardTop5) queryParams.set("standardTop5", "1");
+  if (options.confirmedImages && options.context !== "admin") queryParams.set("confirmedImages", "1");
   if (options.context) queryParams.set("context", options.context);
   if (options.context !== "admin") queryParams.set("candidateFormat", "pool-v1");
   const query = queryParams.toString() ? `?${queryParams.toString()}` : "";
@@ -2475,6 +2476,9 @@ export const detectTemplateDev = async (
   }
 
   const initialData = json?.data as Record<string, unknown> | undefined;
+  if (options.confirmedImages && options.context !== "admin" && initialData?.confirmed_images !== true) {
+    throw new Error("Backend ยังไม่รองรับภาพที่ยืนยันแล้ว กรุณาอัปเดต Backend");
+  }
   const jobId = typeof initialData?.job_id === "string" ? initialData.job_id : "";
   if (!jobId) {
     return mapResult(initialData);

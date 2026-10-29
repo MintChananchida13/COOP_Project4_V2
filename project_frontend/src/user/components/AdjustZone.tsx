@@ -253,6 +253,7 @@ const DEFAULT_CONFIG: PageConfig = {
 
 interface AdjustZoneProps {
   imagesList: string[];
+  sourceFileType?: "pdf" | "image" | "";
   currentIndex: number;
   onIndexChange: (index: number) => void;
   pagesConfig: PageConfig[];
@@ -263,6 +264,7 @@ interface AdjustZoneProps {
 
 export default function AdjustZone({
   imagesList,
+  sourceFileType,
   currentIndex,
   onIndexChange,
   pagesConfig,
@@ -274,11 +276,8 @@ export default function AdjustZone({
   // ✨ สเตตพิเศษ: ใช้ล็อกและจำ URL รูปเอกสารแรกสุดที่ component นี้เคยได้รับ (ห้ามใครเปลี่ยน)
   const [originalBackupList, setOriginalBackupList] = useState<string[]>([]);
 
-  // ถ้าโหลดเข้ามาครั้งแรกสุด และ backup ยังว่าง ให้เซ็ตค่าจำรูปออริจินัลไว้เลย
   useEffect(() => {
-    if (imagesList.length > 0 && originalBackupList.length === 0) {
-      setOriginalBackupList([...imagesList]);
-    }
+    setOriginalBackupList([...imagesList]);
   }, [imagesList]);
 
   // สลับมาดึงจากข้อมูล Backup ดั้งเดิมแทน imagesList โดยตรง เผื่อกรณีโดนเขียนทับไปแล้ว
@@ -290,6 +289,111 @@ export default function AdjustZone({
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [activeCornerIdx, setActiveCornerIdx] = useState<number | null>(null);
   const [cropError, setCropError] = useState<string | null>(null);
+  const [autoDetecting, setAutoDetecting] = useState(false);
+  const [savedCropUrls, setSavedCropUrls] = useState<Record<number, string>>({});
+  const savedCropUrl = savedCropUrls[currentIndex] || null;
+  const setSavedCropUrl = (index: number, url: string | null) => {
+    setSavedCropUrls(previous => {
+      const next = { ...previous };
+      if (url) next[index] = url;
+      else delete next[index];
+      return next;
+    });
+  };
+  const autoWorkerRef = useRef<Worker | null>(null);
+  const autoTouchedRef = useRef(false);
+  const autoBoundsRef = useRef<number[] | null>(null);
+  const pendingAutoBoundsRef = useRef<number[] | null>(null);
+  const editingFromCroppedRef = useRef(false);
+
+  useEffect(() => {
+    // Admin has its own AdjustZone flow. Multiple-page PDFs retain full pages.
+    setSavedCropUrls({});
+    autoBoundsRef.current = null;
+    if (!sourceFileType || imagesList.length !== 1) {
+      setAutoDetecting(false);
+      return;
+    }
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let worker: Worker | null = null;
+    const source = new Image();
+    const finish = () => {
+      if (timer) clearTimeout(timer);
+      if (worker) worker.terminate();
+      if (autoWorkerRef.current === worker) autoWorkerRef.current = null;
+      if (!cancelled) setAutoDetecting(false);
+    };
+    const fail = () => {
+      if (!cancelled && !autoTouchedRef.current) {
+        setCropError("ตรวจขอบอัตโนมัติไม่สำเร็จ สามารถใช้ภาพต้นฉบับหรือ Crop ด้วยตนเองได้");
+      }
+      finish();
+    };
+    autoTouchedRef.current = false;
+    setAutoDetecting(true);
+    source.onload = () => {
+      if (cancelled || autoTouchedRef.current) return finish();
+      try {
+        const scale = Math.min(1, 1600 / Math.max(source.naturalWidth, source.naturalHeight));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(source.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(source.naturalHeight * scale));
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        if (!ctx) throw new Error("Canvas unavailable");
+        ctx.fillStyle = "white";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+        const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        worker = new Worker("/card-crop-worker.js");
+        autoWorkerRef.current = worker;
+        worker.onmessage = (event: MessageEvent<{ box?: number[] | null; error?: string }>) => {
+          if (cancelled || autoTouchedRef.current) return finish();
+          if (event.data.error) return fail();
+          try {
+            const box = event.data.box;
+            if (box && box.length === 4) {
+              const [x0, y0, x1, y1] = box;
+              const naturalBox = [x0 * source.naturalWidth / canvas.width, y0 * source.naturalHeight / canvas.height,
+                x1 * source.naturalWidth / canvas.width, y1 * source.naturalHeight / canvas.height];
+              const [left, top, right, bottom] = naturalBox;
+              const crop = extractAxisAlignedCropUrl(source, [{x:left,y:top}, {x:right,y:top}, {x:right,y:bottom}, {x:left,y:bottom}]);
+              if (crop) {
+                autoBoundsRef.current = naturalBox;
+                setSavedCropUrl(0, crop);
+                setPagesConfig(prev => {
+                  const next = [...prev];
+                  next[0] = { ...(next[0] || DEFAULT_CONFIG), isCropped: true, isCropActive: false,
+                    cropCorners: null, cropBox: null, croppedLocalUrl: crop };
+                  return next;
+                });
+              }
+            }
+            finish();
+          } catch { fail(); }
+        };
+        worker.onerror = fail;
+        timer = setTimeout(fail, 45000);
+        worker.postMessage({ id: 1, width: canvas.width, height: canvas.height,
+          pixels: pixels.data.buffer, sourceType: sourceFileType }, [pixels.data.buffer]);
+      } catch { fail(); }
+    };
+    source.onerror = fail;
+    source.src = imagesList[0];
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      if (worker) worker.terminate();
+      if (autoWorkerRef.current === worker) autoWorkerRef.current = null;
+    };
+  }, [imagesList, sourceFileType, setPagesConfig]);
+
+  const skipAutoDetection = () => {
+    autoTouchedRef.current = true;
+    autoWorkerRef.current?.terminate();
+    autoWorkerRef.current = null;
+    setAutoDetecting(false);
+  };
 
   const currentConfig = useMemo(() => {
     return pagesConfig[currentIndex] || { ...DEFAULT_CONFIG };
@@ -300,8 +404,15 @@ export default function AdjustZone({
     perspectiveV, perspectiveH, flipH, flipV,
     cropBox, isCropActive, isCropped, croppedLocalUrl 
   } = currentConfig;
+  const hasPendingCrop = Boolean(sourceFileType) && pagesConfig.some(config => config?.isCropActive);
 
   const updateCurrentConfig = (fields: Partial<PageConfig>) => {
+    autoTouchedRef.current = true;
+    if (autoWorkerRef.current) {
+      autoWorkerRef.current.terminate();
+      autoWorkerRef.current = null;
+    }
+    setAutoDetecting(false);
     setPagesConfig(prev => {
       const updated = [...prev];
       if (!updated[currentIndex]) {
@@ -392,8 +503,9 @@ export default function AdjustZone({
     const minY = Math.min(...transformedCorners.map((point) => point.y));
     const maxX = Math.max(...transformedCorners.map((point) => point.x));
     const maxY = Math.max(...transformedCorners.map((point) => point.y));
-    const finalWidth = Math.ceil(maxX - minX);
-    const finalHeight = Math.ceil(maxY - minY);
+    // Remove floating-point noise from right-angle transforms before rounding.
+    const finalWidth = Math.ceil(maxX - minX - 1e-7);
+    const finalHeight = Math.ceil(maxY - minY - 1e-7);
 
     if (finalWidth <= 0 || finalHeight <= 0 || !Number.isFinite(finalWidth) || !Number.isFinite(finalHeight)) return imgEl.src;
 
@@ -413,72 +525,89 @@ export default function AdjustZone({
   // ✨ ฟังก์ชันสลับหน้าอัจฉริยะ: เรนเดอร์และเซฟงานหน้าปัจจุบันลงหน่วยความจำแยกหน้าก่อนเปิดหน้าถัดไป
   const handleSafeIndexChange = async (nextIndex: number) => {
     if (isProcessing) return;
+    if (sourceFileType) {
+      onIndexChange(nextIndex);
+      return;
+    }
+    // Preserve the Admin editor's existing page-save behavior.
     setIsProcessing(true);
-
     try {
-      const activeImageElement = isCropped ? croppedImageRef.current : rawImageRef.current;
-      
-      // 🛡️ เช็คสถานะเอกสารบน DOM ก่อนการเซฟลงประวัติเพื่อบล็อกการสร้างรูปเอกสารดำเปล่า ๆ
-      if (activeImageElement && activeImageElement.complete && activeImageElement.naturalWidth > 0) {
-        const config = pagesConfig[currentIndex] || { ...DEFAULT_CONFIG };
-        const resultUrl = processSingleImageCanvas(activeImageElement, config, isCropped);
-        
-        if (resultUrl && !resultUrl.startsWith("data:;")) {
-          setPagesConfig(prev => {
-            const updated = [...prev];
-            if (!updated[currentIndex]) updated[currentIndex] = { ...DEFAULT_CONFIG };
-            updated[currentIndex] = { 
-              ...updated[currentIndex], 
-              croppedLocalUrl: resultUrl 
-            };
-            return updated;
+      const active = isCropped ? croppedImageRef.current : rawImageRef.current;
+      if (active && active.complete && active.naturalWidth > 0) {
+        const result = processSingleImageCanvas(active, pagesConfig[currentIndex] || { ...DEFAULT_CONFIG }, isCropped);
+        if (result && !result.startsWith("data:;")) {
+          setPagesConfig(previous => {
+            const next = [...previous];
+            next[currentIndex] = { ...(next[currentIndex] || DEFAULT_CONFIG), croppedLocalUrl: result };
+            return next;
           });
         }
       }
-    } catch (err) {
-      console.error("Error auto-saving page changes:", err);
+    } catch (error) {
+      console.error("Error auto-saving page changes:", error);
     } finally {
       setIsProcessing(false);
-      onIndexChange(nextIndex); // เปลี่ยนหน้า
+      onIndexChange(nextIndex);
     }
   };
 
-  // 🚀 รวบรวมเอกสารตกแต่งสมบูรณ์ของทุกหน้าแยกอิสระ ส่งขึ้นสู่หน้าประมวลผลกล่องข้อความใหญ่
   const handleConfirmAll = async () => {
-    if (isProcessing) return;
+    if (isProcessing || autoDetecting || hasPendingCrop) return;
     setIsProcessing(true);
-
     try {
-      let finalProcessedImages = originalBackupList.length > 0 ? [...originalBackupList] : [...imagesList];
-      const activeImageElement = isCropped ? croppedImageRef.current : rawImageRef.current;
-
-      let currentResultUrl = "";
-      if (activeImageElement && activeImageElement.complete && activeImageElement.naturalWidth > 0) {
-        const config = pagesConfig[currentIndex] || { ...DEFAULT_CONFIG };
-        currentResultUrl = processSingleImageCanvas(activeImageElement, config, isCropped);
+      const originals = originalBackupList.length > 0 ? originalBackupList : imagesList;
+      if (!sourceFileType) {
+        const active = isCropped ? croppedImageRef.current : rawImageRef.current;
+        const current = active && active.complete && active.naturalWidth > 0
+          ? processSingleImageCanvas(active, pagesConfig[currentIndex] || { ...DEFAULT_CONFIG }, isCropped)
+          : "";
+        onBatchConfirm(originals.map((raw, index) =>
+          index === currentIndex && current && !current.startsWith("data:;")
+            ? current : pagesConfig[index]?.croppedLocalUrl || raw
+        ));
+        return;
       }
-
-      // วนรอบตรวจสอบเพื่อรวบรวมข้อมูล Base64 ที่ดีที่สุดของแต่ละหน้าส่งออก
-      const allPagesFinalArray = finalProcessedImages.map((rawUrl, idx) => {
-        if (idx === currentIndex && currentResultUrl && !currentResultUrl.startsWith("data:;")) {
-          return currentResultUrl;
-        }
-        return pagesConfig[idx]?.croppedLocalUrl || rawUrl;
-      });
-
-      onBatchConfirm(allPagesFinalArray);
-
+      const results = await Promise.all(originals.map(async (rawUrl, index) => {
+        const config = pagesConfig[index] || { ...DEFAULT_CONFIG };
+        const cropped = Boolean(config.isCropped && config.croppedLocalUrl);
+        const src = cropped ? config.croppedLocalUrl! : rawUrl;
+        const unchanged = !config.rotation && config.brightness === 100 && config.contrast === 100 &&
+          !config.sharpness && !config.perspectiveV && !config.perspectiveH && !config.flipH && !config.flipV &&
+          !config.cropBox;
+        if (unchanged) return src;
+        const loaded = new Image();
+        await new Promise<void>((resolve, reject) => {
+          loaded.onload = () => resolve();
+          loaded.onerror = () => reject(new Error("Unable to load the selected page"));
+          loaded.src = src;
+        });
+        const result = processSingleImageCanvas(loaded, config, cropped);
+        if (!result || result.startsWith("data:;")) throw new Error("Unable to prepare the selected page");
+        return result;
+      }));
+      onBatchConfirm(results);
     } catch (error) {
       console.error("Error processing final images:", error);
+      setCropError("ไม่สามารถเตรียมภาพที่เลือกได้ กรุณาลองอีกครั้ง");
     } finally {
       setIsProcessing(false);
+    }
+  };
+
+  const toggleOriginal = () => {
+    if (isCropped && croppedLocalUrl) {
+      setSavedCropUrl(currentIndex, croppedLocalUrl);
+      updateCurrentConfig({ isCropped: false, isCropActive: false, cropBox: null });
+    } else if (savedCropUrl) {
+      updateCurrentConfig({ isCropped: true, isCropActive: false, croppedLocalUrl: savedCropUrl, cropBox: null });
     }
   };
 
   const handleResetToDefault = () => {
     setLiveCropPreviewUrl(null);
     setCropError(null);
-    
+    setSavedCropUrl(currentIndex, null);
+    autoBoundsRef.current = null;
     updateCurrentConfig({ 
       ...DEFAULT_CONFIG,
       isCropped: false,
@@ -532,6 +661,8 @@ export default function AdjustZone({
         setCropError("ไม่สามารถ Crop เอกสารจากกรอบนี้ได้ กรุณาปรับมุมทั้ง 4 จุดให้ครอบคลุมเอกสารอีกครั้ง");
         return;
       }
+      setSavedCropUrl(currentIndex, croppedUrl);
+      autoBoundsRef.current = null;
       updateCurrentConfig({ 
         isCropped: true, 
         isCropActive: false,
@@ -544,11 +675,14 @@ export default function AdjustZone({
 
   const handleModifyCrop = () => {
     setCropError(null);
+    editingFromCroppedRef.current = true;
+    if (!currentConfig.cropCorners && autoBoundsRef.current) pendingAutoBoundsRef.current = autoBoundsRef.current;
     updateCurrentConfig({ isCropped: false, isCropActive: true });
   };
 
   const handleCancelCrop = () => {
     setLiveCropPreviewUrl(null);
+    setSavedCropUrl(currentIndex, null);
     setCropError(null);
     updateCurrentConfig({
       isCropped: false,
@@ -559,8 +693,20 @@ export default function AdjustZone({
     });
   };
 
+  const handleCancelEdit = () => {
+    pendingAutoBoundsRef.current = null;
+    if (editingFromCroppedRef.current && savedCropUrl) {
+      updateCurrentConfig({ isCropped: true, isCropActive: false, croppedLocalUrl: savedCropUrl });
+    } else {
+      updateCurrentConfig({ isCropped: false, isCropActive: false, cropCorners: null, cropBox: null });
+    }
+    editingFromCroppedRef.current = false;
+    setCropError(null);
+  };
+
   const handleActivateCrop = () => {
     setCropError(null);
+    editingFromCroppedRef.current = false;
     const imgEl = rawImageRef.current;
     if (!imgEl) return;
     
@@ -599,21 +745,15 @@ export default function AdjustZone({
   };
 
   const dynamicPreviewStyle = useMemo(() => {
-    let transforms = [];
-    if (flipH) transforms.push("scaleX(-1)");
-    if (flipV) transforms.push("scaleY(-1)");
-    if (rotation !== 0) transforms.push(`rotate(${rotation}deg)`);
-    
-    if (perspectiveH !== 0) transforms.push(`skewX(${perspectiveH}deg)`);
-    if (perspectiveV !== 0) transforms.push(`skewY(${perspectiveV}deg)`);
+    const matrix = buildImageTransform(currentConfig);
 
     return {
-      transform: transforms.join(" "),
+      transform: `matrix(${matrix.a}, ${matrix.b}, ${matrix.c}, ${matrix.d}, 0, 0)`,
       transformOrigin: "center center",
       filter: `brightness(${brightness}%) contrast(${contrast + sharpness}%)`,
       transition: "transform 0.15s ease-out, filter 0.1s ease"
     };
-  }, [rotation, perspectiveV, perspectiveH, flipH, flipV, brightness, contrast, sharpness]);
+  }, [currentConfig, brightness, contrast, sharpness]);
 
 return (
   <div className="max-w-7xl mx-auto rounded-2xl border border-slate-200 bg-[#f8fafc] p-4 md:p-6">
@@ -634,6 +774,17 @@ return (
               <div className="relative inline-block max-h-[380px] md:max-h-[480px] max-w-full">
                 <img
                   ref={rawImageRef}
+                  onLoad={(event) => {
+                    const bounds = pendingAutoBoundsRef.current;
+                    if (!bounds) return;
+                    pendingAutoBoundsRef.current = null;
+                    const img = event.currentTarget;
+                    const [left, top, right, bottom] = bounds;
+                    const sx = img.clientWidth / img.naturalWidth;
+                    const sy = img.clientHeight / img.naturalHeight;
+                    updateCurrentConfig({ cropCorners: [{x:left*sx,y:top*sy},{x:right*sx,y:top*sy},
+                      {x:right*sx,y:bottom*sy},{x:left*sx,y:bottom*sy}] });
+                  }}
                   src={currentRawUrl}
                   alt="Document Preview"
                   className="max-h-[380px] md:max-h-[480px] max-w-full block border border-slate-200 shadow-xl bg-white rounded-lg select-none object-contain"
@@ -685,6 +836,13 @@ return (
         </div>
 
         <div className="flex shrink-0 flex-col items-center justify-between gap-4 rounded-xl border border-slate-200 bg-[#edf2f7] p-3 sm:flex-row">
+          {sourceFileType && (savedCropUrl || autoDetecting) && (
+            <button type="button" onClick={autoDetecting ? skipAutoDetection : toggleOriginal}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700">
+              {autoDetecting ? "ใช้ภาพต้นฉบับ" : isCropped ? "ดูต้นฉบับ" : "ดูภาพที่ตัด"}
+            </button>
+          )}
+          {autoDetecting && <span className="text-xs text-slate-500">กำลังตรวจขอบเอกสาร...</span>}
           <div className="text-slate-600 text-xs font-semibold px-2 shrink-0">
             เอกสาร :
             <span className="text-blue-600 font-mono font-bold ml-1">
@@ -721,7 +879,7 @@ return (
                   }`}
                 >
                   <img
-                    src={pagesConfig[idx]?.croppedLocalUrl || originalBackupList[idx] || url}
+                    src={(pagesConfig[idx]?.isCropped ? pagesConfig[idx]?.croppedLocalUrl : null) || originalBackupList[idx] || url}
                     className="w-full h-full object-cover"
                     alt=""
                   />
@@ -785,13 +943,13 @@ return (
       <div className="mt-3">
         {!isCropped ? (
           isCropActive ? (
-            <button
+            <div className="grid grid-cols-2 gap-2"><button
               type="button"
               onClick={handleInstantLocalCrop}
               className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5"
             >
               <Scissors size={13} /> Crop หน้าปัจจุบัน
-            </button>
+            </button><button type="button" onClick={handleCancelEdit} className="rounded-lg border border-slate-200 bg-white py-2 text-xs font-bold text-slate-700">ยกเลิก</button></div>
           ) : (
             <button
               type="button"
@@ -1017,9 +1175,12 @@ return (
   </div>
 
   <div className="-mt-px shrink-0 rounded-b-xl border border-t-0 border-slate-200 bg-white p-4 shadow-sm">
+    {hasPendingCrop && (
+      <p className="mb-2 text-xs text-slate-600">กรุณา Crop หรือยกเลิกกรอบที่กำลังปรับก่อนยืนยัน</p>
+    )}
     <button
       type="button"
-      disabled={isProcessing}
+      disabled={isProcessing || autoDetecting || hasPendingCrop}
       onClick={handleConfirmAll}
       className="w-full px-6 bg-[#0052cc] hover:bg-[#0043a4] disabled:bg-slate-400 text-white py-3.5 rounded-xl text-xs font-bold tracking-wider uppercase shadow-md active:scale-98 transition-all flex items-center justify-center gap-2"
     >

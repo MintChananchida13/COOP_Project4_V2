@@ -1259,7 +1259,7 @@ def _detection_preview_url(path_value: Optional[str]) -> Optional[str]:
         return None
 
 
-def _save_query_image(query_id: str, image_bytes: bytes, page_index: int = 1) -> Path:
+def _save_query_image(query_id: str, image_bytes: bytes, page_index: int = 1, *, confirmed: bool = False) -> Path:
     Image = _load_pillow()
     if Image is None:
         raise HTTPException(status_code=400, detail="Image validation is unavailable because Pillow is not installed")
@@ -1268,6 +1268,13 @@ def _save_query_image(query_id: str, image_bytes: bytes, page_index: int = 1) ->
 
     try:
         image = Image.open(io.BytesIO(image_bytes))
+        if confirmed:
+            # Match the browser preview's EXIF orientation and white backdrop.
+            from PIL import ImageOps
+            image = ImageOps.exif_transpose(image)
+            if "A" in image.getbands() or "transparency" in image.info:
+                rgba = image.convert("RGBA")
+                image = Image.alpha_composite(Image.new("RGBA", rgba.size, "white"), rgba).convert("RGB")
         if image.mode != "RGB":
             image = image.convert("RGB")
     except Exception as error:
@@ -1316,8 +1323,15 @@ def _convert_pdf_to_page_images(query_id: str, pdf_bytes: bytes) -> List[Path]:
     return page_paths
 
 
-def _prepare_query_pages(query_id: str, file_bytes: bytes, timing: Optional[Dict[str, float]] = None) -> List[Path]:
+def _prepare_query_pages(query_id: str, file_bytes: bytes | List[bytes], timing: Optional[Dict[str, float]] = None) -> List[Path]:
     step_started = time.perf_counter()
+    if isinstance(file_bytes, list):
+        if not file_bytes:
+            raise HTTPException(status_code=400, detail="No confirmed pages")
+        pages = [_save_query_image(query_id, page, index, confirmed=True) for index, page in enumerate(file_bytes, start=1)]
+        if timing is not None:
+            timing["prepare_image_save"] = timing.get("prepare_image_save", 0.0) + (time.perf_counter() - step_started)
+        return pages
     if file_bytes.lstrip().startswith(b"%PDF"):
         pages = _convert_pdf_to_page_images(query_id, file_bytes)
         if timing is not None:
@@ -5331,7 +5345,7 @@ def _finish_detection_result(result: Dict[str, Any]) -> Dict[str, Any]:
 
 @detection_work_scope
 def detect_template_dev(
-    file_bytes: bytes,
+    file_bytes: bytes | List[bytes],
     include_template_id: Optional[str] = None,
     cleanup_generated: bool = True,
     prepublish_timing: bool = False,
@@ -5354,7 +5368,7 @@ def detect_template_dev(
     total_started = prepublish_total_started or time.perf_counter()
     try:
         step_started = time.perf_counter()
-        source_type = "pdf" if file_bytes.lstrip().startswith(b"%PDF") else "image"
+        source_type = "pdf" if isinstance(file_bytes, bytes) and file_bytes.lstrip().startswith(b"%PDF") else "image"
         timing["source_type_detection"] = time.perf_counter() - step_started
         step_started = time.perf_counter()
         page_paths = _prepare_query_pages(query_id, file_bytes, timing=timing)

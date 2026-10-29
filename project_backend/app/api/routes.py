@@ -199,7 +199,7 @@ def _run_prepublish_detection_job(job_id: str, template_id: str, file_bytes: byt
         clear_layout_analysis_cache()
 
 
-def _run_detect_dev_job(job_id: str, image_bytes: bytes, standard_top5: bool = False, admin_context: bool = False, compact_candidates: bool = False) -> None:
+def _run_detect_dev_job(job_id: str, image_bytes: bytes | list[bytes], standard_top5: bool = False, admin_context: bool = False, compact_candidates: bool = False, confirmed_images: bool = False) -> None:
     started_at = time.perf_counter()
     with detect_dev_jobs_lock:
         job = detect_dev_jobs.get(job_id)
@@ -220,6 +220,7 @@ def _run_detect_dev_job(job_id: str, image_bytes: bytes, standard_top5: bool = F
             use_image_batch_for_verification=admin_context,
             user_context=not admin_context,
             compact_candidates=compact_candidates and not admin_context,
+            skip_query_normalization=confirmed_images,
             **detect_kwargs,
         )
         with detect_dev_jobs_lock:
@@ -367,7 +368,7 @@ def _images_to_pdf_bytes(files: list[bytes]) -> bytes:
     return output.getvalue()
 
 
-def _extract_multipart_file(content_type: str, body: bytes) -> bytes:
+def _extract_multipart_file(content_type: str, body: bytes, confirmed_images: bool = False):
     boundary_token = "boundary="
     if boundary_token not in content_type:
         raise HTTPException(status_code=400, detail="Multipart upload is missing boundary")
@@ -384,18 +385,20 @@ def _extract_multipart_file(content_type: str, body: bytes) -> bytes:
             continue
         _, data = part.split(b"\r\n\r\n", 1)
         data = data.rsplit(b"\r\n", 1)[0]
-        if data.endswith(b"--"):
-            data = data[:-2]
         if data:
             files.append(data)
     if not files:
         raise HTTPException(status_code=400, detail="No uploaded image file found")
+    if confirmed_images:
+        if any(item.lstrip().startswith(b"%PDF") for item in files):
+            raise HTTPException(status_code=400, detail="Confirmed pages must be images")
+        return files
     if len(files) == 1:
         return files[0]
     return _images_to_pdf_bytes(files)
 
 
-async def _read_dev_detection_image(request: Request) -> bytes:
+async def _read_dev_detection_image(request: Request, confirmed_images: bool = False):
     body = await request.body()
     if not body:
         raise HTTPException(status_code=400, detail="Uploaded image is empty")
@@ -403,7 +406,7 @@ async def _read_dev_detection_image(request: Request) -> bytes:
     content_type = request.headers.get("content-type", "")
     content_type_lower = content_type.lower()
     if "multipart/form-data" in content_type_lower:
-        return _extract_multipart_file(content_type, body)
+        return _extract_multipart_file(content_type, body, confirmed_images=confirmed_images)
     if content_type_lower.startswith("image/") or content_type_lower.startswith("application/pdf") or content_type_lower in {"application/octet-stream", ""}:
         return body
     raise HTTPException(status_code=400, detail="Upload must be multipart/form-data, image, or PDF")
@@ -416,7 +419,10 @@ async def detect_template_dev_route(
     response: Response,
 ) -> dict:
     _ensure_processing_available_for_request(request)
-    image_bytes = await _read_dev_detection_image(request)
+    confirmed_images = request.query_params.get("confirmedImages") == "1" and not _is_admin_processing_context(request)
+    image_bytes = await _read_dev_detection_image(request, confirmed_images=confirmed_images)
+    if confirmed_images and not isinstance(image_bytes, list):
+        raise HTTPException(status_code=400, detail="Confirmed pages must use multipart image uploads")
     standard_top5 = request.query_params.get("standardTop5") in {"1", "true", "yes"}
     admin_context = _is_admin_processing_context(request)
     job_id = f"detectdev_{uuid4().hex}"
@@ -428,9 +434,13 @@ async def detect_template_dev_route(
             "error": None,
         }
     compact_candidates = request.query_params.get("candidateFormat") == "pool-v1" and not admin_context
-    background_tasks.add_task(_run_detect_dev_job, job_id, image_bytes, standard_top5, admin_context, compact_candidates)
+    background_tasks.add_task(_run_detect_dev_job, job_id, image_bytes, standard_top5, admin_context, compact_candidates, confirmed_images)
     response.status_code = 202
-    return {"status": "success", "data": {"job_id": job_id, "status": "processing"}}
+    return {"status": "success", "data": {
+        "job_id": job_id,
+        "status": "processing",
+        **({"confirmed_images": True} if confirmed_images else {}),
+    }}
 
 
 @router.get("/api/templates/detect-dev/jobs/{job_id}")
