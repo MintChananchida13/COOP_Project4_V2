@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { ArrowLeft, ZoomIn, ZoomOut, Maximize2, CheckCircle, Edit3, ChevronLeft, ChevronRight, Table, Image as ImageIcon, FileText, Eye, EyeOff, Undo2, Redo2, Columns3 } from 'lucide-react';
+import { createImageCropCache, roiCropKey } from '../../shared/imageCropCache';
 import { ROI, OCRResult, StructuredTableResult, TableMergedCell } from '../../types/ocr';
 
 const renderTypeIcon = (type?: 'text' | 'table' | 'image', size = 11) => {
@@ -561,8 +562,9 @@ const EditableTableResult = ({
     },
     [sourceRows, structured, value, mergedCells]
   );
-  const sourceKey = snapshotToKey(sourceSnapshot);
+  const sourceKey = useMemo(() => snapshotToKey(sourceSnapshot), [sourceSnapshot]);
   const [snapshot, setSnapshot] = useState<TableEditorSnapshot>(sourceSnapshot);
+  const snapshotKey = useMemo(() => snapshotToKey(snapshot), [snapshot]);
   const [history, setHistory] = useState<TableEditorSnapshot[]>([sourceSnapshot]);
   const [historyIndex, setHistoryIndex] = useState(0);
   const [selection, setSelection] = useState<TableSelection | null>(null);
@@ -573,7 +575,7 @@ const EditableTableResult = ({
   const editorRootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (sourceKey === snapshotToKey(snapshot)) return;
+    if (sourceKey === snapshotKey) return;
     setSnapshot(sourceSnapshot);
     setHistory([sourceSnapshot]);
     setHistoryIndex(0);
@@ -1110,10 +1112,12 @@ const EditableTableResult = ({
 
 const CroppedRoiPreview = ({
   previewUrl,
+  cache,
   roi,
   maxWidth = 140
 }: {
   previewUrl: string;
+  cache: ReturnType<typeof createImageCropCache>;
   roi: ROI;
   maxWidth?: number;
 }) => {
@@ -1123,62 +1127,61 @@ const CroppedRoiPreview = ({
     let cancelled = false;
 
     const renderCrop = async () => {
-      const img = await loadCanvasSafeImage(previewUrl);
-      if (cancelled) return;
+      const cropped = await cache.getCrop(previewUrl, roiCropKey(roi), (img) => {
 
-      const scaleX = img.naturalWidth / 750;
-      const scaleY = img.naturalHeight / ((img.naturalHeight / img.naturalWidth) * 750);
+        const scaleX = img.naturalWidth / 750;
+        const scaleY = img.naturalHeight / ((img.naturalHeight / img.naturalWidth) * 750);
       
-      const realX = roi.x * scaleX;
-      const realY = roi.y * scaleY;
-      const realW = roi.width * scaleX;
-      const realH = roi.height * scaleY;
+        const realX = roi.x * scaleX;
+        const realY = roi.y * scaleY;
+        const realW = roi.width * scaleX;
+        const realH = roi.height * scaleY;
 
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, Math.round(realW));
-      canvas.height = Math.max(1, Math.round(realH));
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(realW));
+        canvas.height = Math.max(1, Math.round(realH));
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return null;
 
-      const polygonPoints = roi.points && roi.points.length > 2 ? roi.points : null;
-      const hasPolygonMask = Boolean(polygonPoints);
-      if (!hasPolygonMask) {
-        ctx.fillStyle = "#ffffff";
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-      }
+        const polygonPoints = roi.points && roi.points.length > 2 ? roi.points : null;
+        const hasPolygonMask = Boolean(polygonPoints);
+        if (!hasPolygonMask) {
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
 
-      ctx.save();
-      if (polygonPoints) {
-        ctx.beginPath();
-        polygonPoints.forEach((p, idx) => {
-          const px = p.x * scaleX - realX;
-          const py = p.y * scaleY - realY;
-          if (idx === 0) {
-            ctx.moveTo(px, py);
-          } else {
-            ctx.lineTo(px, py);
-          }
-        });
-        ctx.closePath();
-        ctx.clip();
-      }
+        ctx.save();
+        if (polygonPoints) {
+          ctx.beginPath();
+          polygonPoints.forEach((p, idx) => {
+            const px = p.x * scaleX - realX;
+            const py = p.y * scaleY - realY;
+            if (idx === 0) {
+              ctx.moveTo(px, py);
+            } else {
+              ctx.lineTo(px, py);
+            }
+          });
+          ctx.closePath();
+          ctx.clip();
+        }
 
-      ctx.drawImage(
-        img,
-        Math.max(0, realX),
-        Math.max(0, realY),
-        Math.max(1, realW),
-        Math.max(1, realH),
-        0,
-        0,
-        Math.max(1, realW),
-        Math.max(1, realH)
-      );
-      ctx.restore();
+        ctx.drawImage(
+          img,
+          Math.max(0, realX),
+          Math.max(0, realY),
+          Math.max(1, realW),
+          Math.max(1, realH),
+          0,
+          0,
+          Math.max(1, realW),
+          Math.max(1, realH)
+        );
+        ctx.restore();
 
-      if (!cancelled) {
-        setCropSrc(polygonPoints ? canvas.toDataURL("image/png") : canvas.toDataURL("image/jpeg", 0.9));
-      }
+        return polygonPoints ? canvas.toDataURL("image/png") : canvas.toDataURL("image/jpeg", 0.9);
+      });
+      if (!cancelled && cropped) setCropSrc(cropped);
     };
 
     renderCrop().catch((error) => {
@@ -1189,7 +1192,7 @@ const CroppedRoiPreview = ({
     return () => {
       cancelled = true;
     };
-  }, [previewUrl, roi]);
+  }, [previewUrl, roi, cache]);
 
   if (!cropSrc) {
     return <div className="animate-pulse bg-slate-100 rounded-lg" style={{ width: `${maxWidth}px`, height: `${maxWidth * 0.7}px` }} />;
@@ -1229,6 +1232,8 @@ export default function GroundTruthEditorZone({
   onImageIndexChange,
 }: GroundTruthEditorZoneProps) {
   
+  const [roiPreviewCache] = useState(() => createImageCropCache(loadCanvasSafeImage));
+
   const [activeFieldId, setActiveFieldId] = useState<number | null>(null);
   const [showLabels, setShowLabels] = useState<boolean>(true);
   const [showEditedOnly, setShowEditedOnly] = useState<boolean>(false);
@@ -1955,7 +1960,7 @@ export default function GroundTruthEditorZone({
 
                             {matchedRoi ? (
                               <div className="w-fit rounded-xl border border-slate-200 bg-white p-2 shadow-inner">
-                                <CroppedRoiPreview previewUrl={previewUrl} roi={matchedRoi} maxWidth={220} />
+                                <CroppedRoiPreview cache={roiPreviewCache} previewUrl={previewUrl} roi={matchedRoi} maxWidth={220} />
                               </div>
                             ) : (
                               <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-xs font-bold text-slate-400">

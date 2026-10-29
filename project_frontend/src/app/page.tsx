@@ -21,6 +21,7 @@ import {
   type SystemMaintenanceState,
   type UserNotification,
 } from "../admin/adminApi";
+import { createImageCropCache, roiCropKey } from "../shared/imageCropCache";
 import AuthGate from "../auth/AuthGate";
 import { AuthSession, authHeaders, clearAuthSession, readAuthSession } from "../auth/session";
 import { AppHeader } from "../shared/ui";
@@ -1687,7 +1688,7 @@ async function runAiProcessJob(
   }
 
   for (;;) {
-    await wait(2500);
+    await wait(1000);
     const pollResponse = await fetch(`${ADMIN_API_BASE_URL}/api/ai/jobs/${created.job_id}`, {
       headers: authHeaders(),
     });
@@ -1715,6 +1716,7 @@ function HomeWorkspace() {
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
   const [currentStep, setCurrentStep] = useState<UserFlowStepKey>("upload");
   const [imagesList, setImagesList] = useState<string[]>([]);
+  const [exportCropCache] = useState(() => createImageCropCache(loadImageElement));
   const [originalImagesList, setOriginalImagesList] = useState<string[]>([]);
   const [uploadedSourceFileId, setUploadedSourceFileId] = useState<string>("");
   const [uploadedSourceFileName, setUploadedSourceFileName] = useState<string>("");
@@ -3298,13 +3300,27 @@ function HomeWorkspace() {
     }
   };
 
-  const getIncludedExportResults = (content: ExportContentOptions = exportContent) =>
+  const getResultFieldType = useCallback((result: OCRResult & { pageIndex?: number }) => {
+    const matchedRoi = findRoiForOcrResult(rois, result);
+    const markers = [
+      result.type,
+      result.dataType,
+      matchedRoi?.type,
+      matchedRoi?.dataType,
+      matchedRoi?.extractionMethod,
+    ].map((value) => String(value || "").toLowerCase());
+    if (markers.some((value) => value === "image" || value === "extract_image")) return "image";
+    if (markers.some((value) => value === "table" || value === "table_recognition_v2" || value === "ocr_table")) return "table";
+    return "text";
+  }, [rois]);
+
+  const getIncludedExportResults = useCallback((content: ExportContentOptions = exportContent) =>
     ocrResults.filter((result) => {
       const fieldType = getResultFieldType(result);
       if (fieldType === "table") return content.tables;
       if (fieldType === "image") return content.images;
       return content.text;
-    });
+    }), [ocrResults, exportContent, getResultFieldType]);
 
   const buildExportPayload = (
     content: ExportContentOptions = exportContent,
@@ -3407,19 +3423,6 @@ function HomeWorkspace() {
     options: ExportDisplayOptions = exportOptions
   ) => buildExportPayload(content, options, await buildImageFieldCrops(content));
 
-  const getResultFieldType = (result: OCRResult & { pageIndex?: number }) => {
-    const matchedRoi = findRoiForOcrResult(rois, result);
-    const markers = [
-      result.type,
-      result.dataType,
-      matchedRoi?.type,
-      matchedRoi?.dataType,
-      matchedRoi?.extractionMethod,
-    ].map((value) => String(value || "").toLowerCase());
-    if (markers.some((value) => value === "image" || value === "extract_image")) return "image";
-    if (markers.some((value) => value === "table" || value === "table_recognition_v2" || value === "ocr_table")) return "table";
-    return "text";
-  };
 
   const getStructuredTableForExport = (result: OCRResult & { pageIndex?: number }): StructuredTableResult | null => {
     if (result.tableStructured?.cells?.length) return result.tableStructured;
@@ -3504,7 +3507,7 @@ function HomeWorkspace() {
     return `<table>${rowsHtml}</table>`;
   };
 
-  const buildImageFieldPreviewList = (content: ExportContentOptions = exportContent) => {
+  const buildImageFieldPreviewList = useCallback((content: ExportContentOptions = exportContent) => {
     if (!content.images) return [];
     const imageResults = getIncludedExportResults(content).filter((result) => getResultFieldType(result) === "image");
     const usedNames = new Map<string, number>();
@@ -3520,7 +3523,7 @@ function HomeWorkspace() {
         page: Math.max(0, result.pageIndex ?? matchedRoi?.pageIndex ?? 0) + 1,
       };
     });
-  };
+  }, [exportContent, getIncludedExportResults, getResultFieldType, rois]);
 
   const buildImageFieldCrops = async (content: ExportContentOptions = exportContent) => {
     if (!content.images) return [];
@@ -3533,12 +3536,13 @@ function HomeWorkspace() {
       const pageIndex = Math.max(0, result.pageIndex ?? matchedRoi?.pageIndex ?? 0);
       const sourceImage = imagesList[pageIndex] || imagesList[0] || previewUrl;
       if (!matchedRoi || !sourceImage) continue;
-      const img = await loadImageElement(sourceImage);
+      const img = await exportCropCache.getImage(sourceImage);
       const displayWidth = 750;
       const displayHeight = img.naturalWidth > 0 ? (img.naturalHeight / img.naturalWidth) * displayWidth : 1000;
       const scaleX = img.naturalWidth / displayWidth;
       const scaleY = img.naturalHeight / displayHeight;
-      const cropped = cropRoiToImage(img, matchedRoi, scaleX, scaleY);
+      const cropped = await exportCropCache.getCrop(sourceImage, roiCropKey(matchedRoi),
+        (image) => cropRoiToImage(image, matchedRoi, scaleX, scaleY));
       if (!cropped) continue;
       const baseName = safeFilename(result.fieldName || matchedRoi.fieldName || "image");
       const nextCount = (usedNames.get(baseName) || 0) + 1;
@@ -3968,8 +3972,14 @@ function HomeWorkspace() {
     return true;
   });
   const visibleExportFormats = exportFormats.filter((format) => format.key !== "images" || availableExportContent.images);
-  const exportPreviewImages = buildImageFieldPreviewList(exportContent);
-  const exportPreviewResults = getIncludedExportResults(exportContent);
+  const exportPreviewImages = useMemo(
+    () => isExportMenuOpen ? buildImageFieldPreviewList(exportContent) : [],
+    [isExportMenuOpen, exportContent, buildImageFieldPreviewList],
+  );
+  const exportPreviewResults = useMemo(
+    () => isExportMenuOpen ? getIncludedExportResults(exportContent) : [],
+    [isExportMenuOpen, exportContent, getIncludedExportResults],
+  );
   const hasSelectedExportContent = exportPreviewResults.length > 0;
   useEffect(() => {
     if (!availableExportContent.images && exportFormat === "images") {
