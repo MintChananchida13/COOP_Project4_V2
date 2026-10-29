@@ -33,7 +33,6 @@ class ImageNormalizationService:
     PDF_SUBDOCUMENT_MAX_ASPECT_RATIO = 1.85
     # Geometry hints only; these do not classify the document as a passport.
     PDF_PASSPORT_PAGE_ASPECT_RANGE = (1.25, 1.50)
-    PDF_PASSPORT_SPREAD_ASPECT_RANGE = (1.0, 1.20)
     PDF_SUBDOCUMENT_PADDING_RATIO = 0.0
     PDF_CARD_CROP_MAX_DETECTION_DIM = 1600
     PDF_CARD_CROP_KERNEL_SIZES = (5, 9, 15)
@@ -54,8 +53,6 @@ class ImageNormalizationService:
         ratio = max(aspect_ratio, 1.0 / aspect_ratio)
         if self.PDF_PASSPORT_PAGE_ASPECT_RANGE[0] <= ratio <= self.PDF_PASSPORT_PAGE_ASPECT_RANGE[1]:
             return "passport_page"
-        if self.PDF_PASSPORT_SPREAD_ASPECT_RANGE[0] <= ratio <= self.PDF_PASSPORT_SPREAD_ASPECT_RANGE[1]:
-            return "passport_spread"
         return None
 
     def normalize_document(
@@ -628,7 +625,6 @@ class ImageNormalizationService:
                 "min_aspect": self.PDF_SUBDOCUMENT_MIN_ASPECT_RATIO,
                 "max_aspect": self.PDF_SUBDOCUMENT_MAX_ASPECT_RATIO,
                 "passport_page_aspect_range": list(self.PDF_PASSPORT_PAGE_ASPECT_RANGE),
-                "passport_spread_aspect_range": list(self.PDF_PASSPORT_SPREAD_ASPECT_RANGE),
                 "min_area": self.PDF_SUBDOCUMENT_MIN_AREA_RATIO,
                 "max_area": self.PDF_SUBDOCUMENT_MAX_AREA_RATIO,
                 "min_rectangularity": min_rectangularity,

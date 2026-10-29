@@ -21,7 +21,7 @@ class PassportCropTests(unittest.TestCase):
         return image, [x, y, x + width, y + height]
 
     def test_card_and_passport_boundaries(self):
-        for width, height in [(510, 320), (500, 350), (350, 500), (500, 460), (460, 500)]:
+        for width, height in [(510, 320), (500, 350), (350, 500)]:
             with self.subTest(size=(width, height)):
                 image, expected = self.page(width, height)
                 result = self.service._detect_pdf_physical_card_crop(image)
@@ -34,6 +34,14 @@ class PassportCropTests(unittest.TestCase):
         long_rectangle, _ = self.page(700, 200)
         for image in (blank, long_rectangle):
             self.assertFalse(self.service._detect_pdf_physical_card_crop(image)['passed'])
+
+    def test_open_passport_spread_is_rejected(self):
+        for width, height in [(500, 460), (460, 500)]:
+            with self.subTest(size=(width, height)):
+                image, _ = self.page(width, height)
+                self.assertFalse(self.service._detect_pdf_physical_card_crop(image)['passed'])
+                with patch('cv2.imread', return_value=image):
+                    self.assertFalse(self.service.detect_pdf_subdocument_boundary('spread.png')['passed'])
 
     def test_faint_card_edges(self):
         image = np.full((1400, 1000, 3), 255, dtype=np.uint8)
