@@ -493,9 +493,10 @@ async function templateFieldsToWorkspaceRois(
   imageList: string[],
   detection?: DetectionDevResult | null,
   templateId?: string,
-  options?: { templatePageToImageIndex?: Record<number, number> }
+  options?: { templatePageToImageIndex?: Record<number, number> },
+  loadPageImage: typeof loadImageElement = loadImageElement
 ) {
-  const pageImages = await Promise.all(imageList.map((src) => loadImageElement(src).catch(() => null)));
+  const pageImages = await Promise.all(imageList.map((src) => loadPageImage(src).catch(() => null)));
   const extractionFields = fields
     .filter((field) => !field.useForVerification)
     .sort(compareTemplateFieldsForWorkspace);
@@ -583,7 +584,8 @@ function isCountableWorkspaceField(roi: ROI & { pageIndex?: number }) {
 async function buildWholePageAutoRois(
   sourceImages: string[],
   existingRois: (ROI & { pageIndex?: number })[],
-  excludedPageIndexes: Set<number>
+  excludedPageIndexes: Set<number>,
+  loadPageImage: typeof loadImageElement = loadImageElement
 ): Promise<(ROI & { pageIndex?: number; roiCoordinateSource?: string })[]> {
   const autoRois: (ROI & { pageIndex?: number; roiCoordinateSource?: string })[] = [];
   let nextFieldNumber = existingRois.filter(isCountableWorkspaceField).length + 1;
@@ -591,7 +593,7 @@ async function buildWholePageAutoRois(
     if (excludedPageIndexes.has(pageIndex) || !sourceImage) continue;
     let img: HTMLImageElement;
     try {
-      img = await loadImageElement(sourceImage);
+      img = await loadPageImage(sourceImage);
     } catch (error) {
       console.warn("Unable to load page image for whole-page auto ROI.", error);
       continue;
@@ -640,12 +642,13 @@ async function buildWholePageAutoRois(
 async function buildDetectionAutoRois(
   sourceImages: string[],
   existingRois: (ROI & { pageIndex?: number })[],
-  autoPages?: Record<string, unknown>[]
+  autoPages?: Record<string, unknown>[],
+  loadPageImage: typeof loadImageElement = loadImageElement
 ): Promise<(ROI & { pageIndex?: number; roiCoordinateSource?: string })[]> {
   if (!Array.isArray(autoPages) || autoPages.length === 0) return [];
   const autoRois: (ROI & { pageIndex?: number; roiCoordinateSource?: string })[] = [];
   let nextFieldNumber = existingRois.filter(isCountableWorkspaceField).length + 1;
-  const pageImages = await Promise.all(sourceImages.map((src) => loadImageElement(src).catch(() => null)));
+  const pageImages = await Promise.all(sourceImages.map((src) => loadPageImage(src).catch(() => null)));
 
   for (const autoPage of autoPages) {
     const pageNumber = Number(autoPage.page_number ?? autoPage.pageNumber ?? autoPage.page_index ?? 1);
@@ -1203,7 +1206,8 @@ const createResolvedBlockDisplayRois = (
 
 async function buildFlexibleResolvedDisplayRois(
   sourceImages: string[],
-  sourceRois: (ROI & { pageIndex?: number })[]
+  sourceRois: (ROI & { pageIndex?: number })[],
+  loadPageImage: typeof loadImageElement = loadImageElement
 ): Promise<(ROI & { pageIndex?: number })[]> {
   const byPageImage = new Map<number, HTMLImageElement>();
   const resolved: (ROI & { pageIndex?: number })[] = [];
@@ -1215,7 +1219,7 @@ async function buildFlexibleResolvedDisplayRois(
     if (!sourceImage) continue;
     let img = byPageImage.get(pageIndex);
     if (!img) {
-      img = await loadImageElement(sourceImage);
+      img = await loadPageImage(sourceImage);
       byPageImage.set(pageIndex, img);
     }
     const renderedWidth = 750;
@@ -2517,6 +2521,17 @@ function HomeWorkspace() {
   };
 
   const handleBatchConfirm = async (finalProcessedImages: string[]) => {
+    // This cache belongs to one detection run; changed image sources load anew.
+    const loadPageImage = createImageCropCache(
+      loadImageElement, Math.max(finalProcessedImages.length, 1),
+    ).getImage;
+    let workspaceImages = finalProcessedImages;
+    let preserveMaintenanceReset = false;
+    const commitWorkspaceImages = () => {
+      setImagesList(workspaceImages);
+      setPreviewUrl(workspaceImages[currentIndex] || workspaceImages[0] || "");
+      setImage(workspaceImages[currentIndex] || workspaceImages[0] || null);
+    };
     const userWaitStartedAt = performance.now();
     visibilityAbortRef.current?.abort();
     const runToken = ++detectionTimingRunRef.current;
@@ -2638,9 +2653,6 @@ function HomeWorkspace() {
     activeProcessingRunIdRef.current = "";
     ocrProcessingTimeMsRef.current = null;
     originalProcessingLogOcrResultsRef.current = [];
-    setImagesList(finalProcessedImages);
-    setPreviewUrl(finalProcessedImages[currentIndex] || finalProcessedImages[0] || "");
-    setImage(finalProcessedImages[currentIndex] || finalProcessedImages[0] || null);
     setRois([]);
     setSelectedId(null);
     updateOcrResults([]);
@@ -2662,6 +2674,7 @@ function HomeWorkspace() {
       });
       detectionMatchedForTiming = false;
       logTemplateDetectionTiming("failed");
+      commitWorkspaceImages();
       setIsTemplateDecisionOpen(false);
       setTemplateDecisionStatus("");
       return;
@@ -2739,9 +2752,7 @@ function HomeWorkspace() {
         throw contextualTemplateError("Template canvas preparation failed", error);
       }
 
-      setImagesList(templateCanvasImages);
-      setPreviewUrl(templateCanvasImages[currentIndex] || templateCanvasImages[0] || "");
-      setImage(templateCanvasImages[currentIndex] || templateCanvasImages[0] || null);
+      workspaceImages = templateCanvasImages;
 
       let detectedRois: (ROI & { pageIndex?: number; roiCoordinateSource?: string })[];
       try {
@@ -2757,10 +2768,10 @@ function HomeWorkspace() {
         detectedRois = await measureStage("roiMappingMs", () =>
           templateFieldsToWorkspaceRois(bundle.fields, templateCanvasImages, detection, templateId, {
             templatePageToImageIndex: isMainPageDetection ? { 1: matchedQueryPageIndex } : undefined,
-          })
+          }, loadPageImage)
         );
         const flexibleResolvedRois = await measureStage("flexibleRoiMs", () =>
-          buildFlexibleResolvedDisplayRois(templateCanvasImages, detectedRois)
+          buildFlexibleResolvedDisplayRois(templateCanvasImages, detectedRois, loadPageImage)
         );
         if (flexibleResolvedRois.length > 0) {
           const resolvedParentIds = new Set(flexibleResolvedRois.map((roi) => roi.parentRoiId).filter((id): id is number => typeof id === "number"));
@@ -2791,16 +2802,15 @@ function HomeWorkspace() {
             }
             if (replacedAutoRoiPageImage) {
               templateCanvasImages = nextTemplateCanvasImages;
-              setImagesList(templateCanvasImages);
-              setPreviewUrl(templateCanvasImages[currentIndex] || templateCanvasImages[0] || "");
-              setImage(templateCanvasImages[currentIndex] || templateCanvasImages[0] || null);
+              workspaceImages = templateCanvasImages;
             }
           }
           let extraPageAutoRois = await measureStage("detectionAutoRoiMs", () =>
             buildDetectionAutoRois(
               templateCanvasImages,
               detectedRois,
-              detectionAutoRoiPages
+              detectionAutoRoiPages,
+              loadPageImage
             )
           );
           if (extraPageAutoRois.length === 0) {
@@ -2808,7 +2818,8 @@ function HomeWorkspace() {
               buildWholePageAutoRois(
                 templateCanvasImages,
                 detectedRois,
-                new Set([matchedQueryPageIndex])
+                new Set([matchedQueryPageIndex]),
+                loadPageImage
               )
             );
           }
@@ -2885,7 +2896,10 @@ function HomeWorkspace() {
       setClassificationStatus(`ตรวจพบ Template: ${matchedTemplateDisplayName} และโหลด ROI สำหรับ OCR แล้ว`);
       logTemplateDetectionTiming("matched");
     } catch (error) {
-      if (await handleSystemMaintenanceError(error)) return;
+      if (await handleSystemMaintenanceError(error)) {
+        preserveMaintenanceReset = true;
+        return;
+      }
       console.warn("Document classification after boundary confirmation failed.", error);
       setClassificationStatus("ตรวจจับ Template ไม่สำเร็จ ระบบเปิด Custom OCR ให้ใช้งานต่อ");
       setTemplateDetectionNotice({
@@ -2895,6 +2909,7 @@ function HomeWorkspace() {
       });
       logTemplateDetectionTiming("failed");
     } finally {
+      if (!preserveMaintenanceReset) commitWorkspaceImages();
       if (!timingLogged) logTemplateDetectionTiming("failed");
       setIsTemplateDecisionOpen(false);
       setTemplateDecisionStatus("");
@@ -4711,7 +4726,7 @@ function HomeWorkspace() {
           />
         )}
 
-        {currentStep === "studio" && (
+        {currentStep === "studio" && !isTemplateDecisionOpen && (
           <>
             {matchedTemplate ? (
               <MatchedTemplateWorkspaceZone
