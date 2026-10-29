@@ -1,3 +1,4 @@
+import { abortableDelay } from "../shared/abortableDelay";
 ﻿import {
   AdminTemplateRequest,
   IgnoreRegion,
@@ -2422,11 +2423,13 @@ function mapDetectionDevResult(data: Record<string, unknown> | undefined): Detec
 
 export const detectTemplateDev = async (
   file: File | File[],
-  options: { standardTop5?: boolean; context?: "admin" | "user"; timing?: DetectionTransportTiming } = {}
+  options: { standardTop5?: boolean; context?: "admin" | "user"; timing?: DetectionTransportTiming; signal?: AbortSignal } = {}
 ): Promise<DetectionDevResult> => {
+  options.signal?.throwIfAborted();
   const mapResult = (data: Record<string, unknown> | undefined) => {
     const startedAt = performance.now();
     try {
+      options.signal?.throwIfAborted();
       return mapDetectionDevResult(data);
     } finally {
       if (options.timing) {
@@ -2449,8 +2452,10 @@ export const detectTemplateDev = async (
   const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/api/templates/detect-dev${query}`, {
     method: "POST",
     body: formData,
+    signal: options.signal,
   });
   const json = await response.json().catch(() => null);
+  options.signal?.throwIfAborted();
   if (options.timing) options.timing.uploadJobMs = Math.round((performance.now() - uploadStartedAt) * 100) / 100;
   if (!response.ok) {
     const detail = json?.detail || json?.error?.message || json?.error || `Detection failed with ${response.status}`;
@@ -2474,13 +2479,15 @@ export const detectTemplateDev = async (
 
   const pollingStartedAt = performance.now();
   while (true) {
-    await sleep(1000);
+    await abortableDelay(1000, options.signal);
     const pollResponse = await fetchWithAuth(`${ADMIN_API_BASE_URL}/api/templates/detect-dev/jobs/${jobId}`, {
       method: "GET",
       cache: "no-store",
+      signal: options.signal,
     });
     const responseHeadersAt = performance.now();
     const pollJson = await pollResponse.json().catch(() => null);
+    options.signal?.throwIfAborted();
     const responseParsedAt = performance.now();
     if (!pollResponse.ok) {
       const detail = pollJson?.detail || pollJson?.error?.message || pollJson?.error || `Detection job failed with ${pollResponse.status}`;

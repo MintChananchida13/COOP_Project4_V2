@@ -8,6 +8,7 @@ import AdjustZone from "../user/components/AdjustZone";
 import WorkspaceZone from "../user/components/WorkspaceZone";
 import MatchedTemplateWorkspaceZone from "../user/components/MatchedTemplateWorkspaceZone";
 import GroundTruthEditorZone from "../user/components/GroundTruthEditorZone";
+import TemplateDecisionLoading, { createTemplateDecisionStatus } from "../user/components/TemplateDecisionLoading";
 import TemplateRequestPanel from "../user/components/TemplateRequestPanel";
 import { ROI, OCRResult, StructuredTableResult, TableExportConfig, TemplateField } from "../types/ocr";
 import {
@@ -439,16 +440,19 @@ function blobToDataUrl(blob: Blob) {
   });
 }
 
-async function imageUrlToCanvasSafeSrc(src: string) {
+async function imageUrlToCanvasSafeSrc(src: string, signal?: AbortSignal) {
+  signal?.throwIfAborted();
   if (!src || src.startsWith("data:") || src.startsWith("blob:")) return src;
-  const response = await fetch(src, { mode: "cors" });
+  const response = await fetch(src, { mode: "cors", signal });
   if (!response.ok) throw new Error(`Unable to load extraction image: ${response.status}`);
   return blobToDataUrl(await response.blob());
 }
 
-async function analyzeLayoutForUserImage(imageDataUrl: string) {
+async function analyzeLayoutForUserImage(imageDataUrl: string, signal?: AbortSignal) {
+  signal?.throwIfAborted();
   const response = await fetch(`${ADMIN_API_BASE_URL}/api/layout/analyze`, {
     method: "POST",
+    signal,
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({
       auto_roi_mode: "text_line",
@@ -457,6 +461,7 @@ async function analyzeLayoutForUserImage(imageDataUrl: string) {
     }),
   });
   const data = await response.json().catch(() => null);
+  signal?.throwIfAborted();
   if (!response.ok) {
     throwIfMaintenanceResponse(data);
     throw new Error(data?.detail || data?.message || "Layout analysis failed.");
@@ -496,16 +501,21 @@ async function templateFieldsToWorkspaceRois(
   options?: { templatePageToImageIndex?: Record<number, number> },
   loadPageImage: typeof loadImageElement = loadImageElement
 ) {
-  const pageImages = await Promise.all(imageList.map((src) => loadPageImage(src).catch(() => null)));
   const extractionFields = fields
     .filter((field) => !field.useForVerification)
     .sort(compareTemplateFieldsForWorkspace);
+  const requiredPages = new Set(extractionFields.map(field =>
+    Math.max(0, options?.templatePageToImageIndex?.[field.roi.pageNumber] ?? field.roi.pageNumber - 1)
+  ));
+  const pageImages = new Map(await Promise.all([...requiredPages].map(async index =>
+    [index, imageList[index] ? await loadPageImage(imageList[index]).catch(() => null) : null] as const
+  )));
   const workspaceRois: (ROI & { pageIndex?: number; roiCoordinateSource?: string })[] = [];
 
   for (const field of extractionFields) {
     const roi = field.roi;
     const pageIndex = Math.max(0, options?.templatePageToImageIndex?.[roi.pageNumber] ?? roi.pageNumber - 1);
-    const pageImage = pageImages[pageIndex];
+    const pageImage = pageImages.get(pageIndex);
     const displayWidth = 750;
     const displayHeight = pageImage?.naturalWidth
       ? (pageImage.naturalHeight / pageImage.naturalWidth) * displayWidth
@@ -585,7 +595,8 @@ async function buildWholePageAutoRois(
   sourceImages: string[],
   existingRois: (ROI & { pageIndex?: number })[],
   excludedPageIndexes: Set<number>,
-  loadPageImage: typeof loadImageElement = loadImageElement
+  loadPageImage: typeof loadImageElement = loadImageElement,
+  signal?: AbortSignal
 ): Promise<(ROI & { pageIndex?: number; roiCoordinateSource?: string })[]> {
   const autoRois: (ROI & { pageIndex?: number; roiCoordinateSource?: string })[] = [];
   let nextFieldNumber = existingRois.filter(isCountableWorkspaceField).length + 1;
@@ -595,6 +606,7 @@ async function buildWholePageAutoRois(
     try {
       img = await loadPageImage(sourceImage);
     } catch (error) {
+      signal?.throwIfAborted();
       console.warn("Unable to load page image for whole-page auto ROI.", error);
       continue;
     }
@@ -604,8 +616,9 @@ async function buildWholePageAutoRois(
     const scaleY = img.naturalHeight / renderedHeight;
     let regions: Record<string, any>[] = [];
     try {
-      regions = await analyzeLayoutForUserImage(sourceImage);
+      regions = await analyzeLayoutForUserImage(sourceImage, signal);
     } catch (error) {
+      signal?.throwIfAborted();
       console.warn("Whole-page auto ROI analysis failed.", error);
       continue;
     }
@@ -648,12 +661,17 @@ async function buildDetectionAutoRois(
   if (!Array.isArray(autoPages) || autoPages.length === 0) return [];
   const autoRois: (ROI & { pageIndex?: number; roiCoordinateSource?: string })[] = [];
   let nextFieldNumber = existingRois.filter(isCountableWorkspaceField).length + 1;
-  const pageImages = await Promise.all(sourceImages.map((src) => loadPageImage(src).catch(() => null)));
+  const requiredPages = new Set(autoPages
+    .filter(page => Array.isArray(page.regions) && page.regions.length > 0)
+    .map(page => Math.max(0, Number(page.page_number ?? page.pageNumber ?? page.page_index ?? 1) - 1)));
+  const pageImages = new Map(await Promise.all([...requiredPages].map(async index =>
+    [index, sourceImages[index] ? await loadPageImage(sourceImages[index]).catch(() => null) : null] as const
+  )));
 
   for (const autoPage of autoPages) {
     const pageNumber = Number(autoPage.page_number ?? autoPage.pageNumber ?? autoPage.page_index ?? 1);
     const pageIndex = Math.max(0, pageNumber - 1);
-    const pageImage = pageImages[pageIndex];
+    const pageImage = pageImages.get(pageIndex);
     if (!pageImage) continue;
     const renderedWidth = 750;
     const renderedHeight = (pageImage.naturalHeight / pageImage.naturalWidth) * renderedWidth;
@@ -759,7 +777,7 @@ async function buildTemplateCanvasImages(
   sourceImages: string[],
   detection: DetectionDevResult,
   templateId: string,
-  options?: { keepOriginalImages?: boolean }
+  options?: { keepOriginalImages?: boolean; signal?: AbortSignal }
 ) {
   if (options?.keepOriginalImages) return [...sourceImages];
   const pages = detection.pages || [];
@@ -774,8 +792,9 @@ async function buildTemplateCanvasImages(
     const extractionSrc = backendPreviewSrc(processingPreview || selectedDetectionProcessingPreview(pageCandidate));
     if (!extractionSrc) return sourceImage;
     try {
-      return await imageUrlToCanvasSafeSrc(extractionSrc);
+      return await imageUrlToCanvasSafeSrc(extractionSrc, options?.signal);
     } catch (error) {
+      options?.signal?.throwIfAborted();
       console.warn("Unable to convert extraction image to canvas-safe data URL.", error);
       return sourceImage;
     }
@@ -1207,7 +1226,8 @@ const createResolvedBlockDisplayRois = (
 async function buildFlexibleResolvedDisplayRois(
   sourceImages: string[],
   sourceRois: (ROI & { pageIndex?: number })[],
-  loadPageImage: typeof loadImageElement = loadImageElement
+  loadPageImage: typeof loadImageElement = loadImageElement,
+  signal?: AbortSignal
 ): Promise<(ROI & { pageIndex?: number })[]> {
   const byPageImage = new Map<number, HTMLImageElement>();
   const resolved: (ROI & { pageIndex?: number })[] = [];
@@ -1228,7 +1248,7 @@ async function buildFlexibleResolvedDisplayRois(
     const scaleY = img.naturalHeight / renderedHeight;
     const boundaryCrop = cropRoiToImage(img, roi, scaleX, scaleY);
     if (!boundaryCrop) continue;
-    const regions = await analyzeLayoutForUserImage(boundaryCrop);
+    const regions = await analyzeLayoutForUserImage(boundaryCrop, signal);
     const blocks = regions.length > 0
       ? regions
       : [
@@ -1751,7 +1771,14 @@ function HomeWorkspace() {
   const detectionTimingRunRef = useRef(0);
   const [detectionTimingRun, setDetectionTimingRun] = useState(0);
   const visibilityAbortRef = useRef<AbortController | null>(null);
-  useEffect(() => () => visibilityAbortRef.current?.abort(), []);
+  const detectionAbortRef = useRef<AbortController | null>(null);
+  const cancelTemplateDetection = useCallback(() => {
+    detectionTimingRunRef.current++;
+    detectionAbortRef.current?.abort();
+    visibilityAbortRef.current?.abort();
+    pendingDetectionCommitRef.current = null;
+  }, []);
+  useEffect(() => () => cancelTemplateDetection(), [cancelTemplateDetection]);
   useLayoutEffect(() => {
     if (isTemplateDecisionOpen || !pendingDetectionCommitRef.current) return;
     const emit = pendingDetectionCommitRef.current;
@@ -1759,7 +1786,8 @@ function HomeWorkspace() {
     const committedAt = performance.now();
     queueMicrotask(() => emit(committedAt));
   });
-  const [templateDecisionStatus, setTemplateDecisionStatus] = useState<string>("");
+  const [templateDecisionStatusStore] = useState(createTemplateDecisionStatus);
+  const setTemplateDecisionStatus = templateDecisionStatusStore.set;
   const [exportJson, setExportJson] = useState<string>("");
   const [exportPreviewJsonText, setExportPreviewJsonText] = useState<string>("");
   const [exportText, setExportText] = useState<string>("");
@@ -1904,7 +1932,7 @@ function HomeWorkspace() {
     refreshMaintenanceState,
   ]);
 
-  const handleSystemMaintenanceError = async (error: unknown) => {
+  const handleSystemMaintenanceError = async (error: unknown, isCurrent: () => boolean = () => true) => {
     let currentError = error as
       | (Error & {
           code?: string;
@@ -1926,7 +1954,9 @@ function HomeWorkspace() {
     if (!(error instanceof SystemMaintenanceError) && errorWithMaintenance?.code !== "SYSTEM_MAINTENANCE") {
       return false;
     }
+    if (!isCurrent()) return true;
     const state = await refreshMaintenanceState();
+    if (!isCurrent()) return true;
     setMaintenanceState((current) => ({
       enforcementEnabled: true,
       status: "active",
@@ -2350,6 +2380,7 @@ function HomeWorkspace() {
 
   const handleLogout = () => {
     queueProcessingLogSave("logout");
+    cancelTemplateDetection();
     clearAuthSession();
     router.replace("/login");
   };
@@ -2406,6 +2437,7 @@ function HomeWorkspace() {
   }, [isUserMenuOpen]);
 
   const handleUploadSuccess = (urls: string[], sourceFileName?: string, sourceFileType?: "pdf" | "image", sourceFile?: File) => {
+    cancelTemplateDetection();
     activeProcessingRunIdRef.current = "";
     ocrProcessingTimeMsRef.current = null;
     originalProcessingLogOcrResultsRef.current = [];
@@ -2449,9 +2481,7 @@ function HomeWorkspace() {
   };
 
   const handleClearAndUploadNew = () => {
-    detectionTimingRunRef.current++;
-    visibilityAbortRef.current?.abort();
-    pendingDetectionCommitRef.current = null;
+    cancelTemplateDetection();
     queueProcessingLogSave("change_document");
     ocrRunIdRef.current += 1;
     activeProcessingRunIdRef.current = "";
@@ -2522,7 +2552,7 @@ function HomeWorkspace() {
 
   const handleBatchConfirm = async (finalProcessedImages: string[]) => {
     // This cache belongs to one detection run; changed image sources load anew.
-    const loadPageImage = createImageCropCache(
+    const cachedPageImage = createImageCropCache(
       loadImageElement, Math.max(finalProcessedImages.length, 1),
     ).getImage;
     let workspaceImages = finalProcessedImages;
@@ -2533,8 +2563,21 @@ function HomeWorkspace() {
       setImage(workspaceImages[currentIndex] || workspaceImages[0] || null);
     };
     const userWaitStartedAt = performance.now();
-    visibilityAbortRef.current?.abort();
-    const runToken = ++detectionTimingRunRef.current;
+    cancelTemplateDetection();
+    const runToken = detectionTimingRunRef.current;
+    const detectionController = new AbortController();
+    detectionAbortRef.current = detectionController;
+    const signal = detectionController.signal;
+    const isCurrentDetection = () => detectionTimingRunRef.current === runToken && !signal.aborted;
+    const assertCurrentDetection = () => {
+      if (!isCurrentDetection()) throw new DOMException("Detection superseded", "AbortError");
+    };
+    const loadPageImage: typeof loadImageElement = async (src) => {
+      assertCurrentDetection();
+      const image = await cachedPageImage(src);
+      assertCurrentDetection();
+      return image;
+    };
     setDetectionTimingRun(runToken);
     const visibilityController = new AbortController();
     visibilityAbortRef.current = visibilityController;
@@ -2559,7 +2602,10 @@ function HomeWorkspace() {
     const measureStage = async <T,>(key: keyof typeof timingBreakdown, operation: () => Promise<T>): Promise<T> => {
       const startedAt = performance.now();
       try {
-        return await operation();
+        assertCurrentDetection();
+        const result = await operation();
+        assertCurrentDetection();
+        return result;
       } finally {
         timingBreakdown[key] = Math.round((performance.now() - startedAt) * 100) / 100;
       }
@@ -2692,7 +2738,7 @@ function HomeWorkspace() {
           ? uploadedSourceFile
           : await Promise.all(finalProcessedImages.map((src, index) => dataUrlToFile(src, `confirmed-document-page-${index + 1}.jpg`)));
         detection = await measureStage("detectionJobMs", () =>
-          detectTemplateDev(Array.isArray(detectionInput) && detectionInput.length === 1 ? detectionInput[0] : detectionInput, { timing: detectionTransportTiming })
+          detectTemplateDev(Array.isArray(detectionInput) && detectionInput.length === 1 ? detectionInput[0] : detectionInput, { timing: detectionTransportTiming, signal })
         );
         detectionForTiming = detection;
         detectionMatchedForTiming = detection.matched;
@@ -2742,7 +2788,7 @@ function HomeWorkspace() {
       let templateCanvasImages: string[];
       try {
         templateCanvasImages = await measureStage("canvasPreparationMs", () =>
-          buildTemplateCanvasImages(finalProcessedImages, detection, templateId)
+          buildTemplateCanvasImages(finalProcessedImages, detection, templateId, { signal })
         );
         devTemplateFlowLog("canvas images prepared", {
           pageCount: templateCanvasImages.length,
@@ -2771,7 +2817,7 @@ function HomeWorkspace() {
           }, loadPageImage)
         );
         const flexibleResolvedRois = await measureStage("flexibleRoiMs", () =>
-          buildFlexibleResolvedDisplayRois(templateCanvasImages, detectedRois, loadPageImage)
+          buildFlexibleResolvedDisplayRois(templateCanvasImages, detectedRois, loadPageImage, signal)
         );
         if (flexibleResolvedRois.length > 0) {
           const resolvedParentIds = new Set(flexibleResolvedRois.map((roi) => roi.parentRoiId).filter((id): id is number => typeof id === "number"));
@@ -2794,9 +2840,10 @@ function HomeWorkspace() {
               const previewSrc = String(autoPage.image_preview_data_url || autoPage.imagePreviewDataUrl || "");
               if (!previewSrc || pageIndex < 0 || pageIndex >= nextTemplateCanvasImages.length) continue;
               try {
-                nextTemplateCanvasImages[pageIndex] = await imageUrlToCanvasSafeSrc(previewSrc);
+                nextTemplateCanvasImages[pageIndex] = await imageUrlToCanvasSafeSrc(previewSrc, signal);
                 replacedAutoRoiPageImage = true;
               } catch (error) {
+                assertCurrentDetection();
                 console.warn("Unable to use backend auto ROI page preview.", error);
               }
             }
@@ -2819,7 +2866,8 @@ function HomeWorkspace() {
                 templateCanvasImages,
                 detectedRois,
                 new Set([matchedQueryPageIndex]),
-                loadPageImage
+                loadPageImage,
+                signal
               )
             );
           }
@@ -2896,10 +2944,12 @@ function HomeWorkspace() {
       setClassificationStatus(`ตรวจพบ Template: ${matchedTemplateDisplayName} และโหลด ROI สำหรับ OCR แล้ว`);
       logTemplateDetectionTiming("matched");
     } catch (error) {
-      if (await handleSystemMaintenanceError(error)) {
+      if (!isCurrentDetection()) return;
+      if (await handleSystemMaintenanceError(error, isCurrentDetection)) {
         preserveMaintenanceReset = true;
         return;
       }
+      if (!isCurrentDetection()) return;
       console.warn("Document classification after boundary confirmation failed.", error);
       setClassificationStatus("ตรวจจับ Template ไม่สำเร็จ ระบบเปิด Custom OCR ให้ใช้งานต่อ");
       setTemplateDetectionNotice({
@@ -2909,10 +2959,12 @@ function HomeWorkspace() {
       });
       logTemplateDetectionTiming("failed");
     } finally {
-      if (!preserveMaintenanceReset) commitWorkspaceImages();
-      if (!timingLogged) logTemplateDetectionTiming("failed");
-      setIsTemplateDecisionOpen(false);
-      setTemplateDecisionStatus("");
+      if (isCurrentDetection()) {
+        if (!preserveMaintenanceReset) commitWorkspaceImages();
+        if (!timingLogged) logTemplateDetectionTiming("failed");
+        setIsTemplateDecisionOpen(false);
+        setTemplateDecisionStatus("");
+      }
     }
   };
 
@@ -5195,20 +5247,7 @@ function HomeWorkspace() {
         )}
 
         {isTemplateDecisionOpen && (
-          <div data-detection-loading="true" className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/45 px-4 backdrop-blur-sm">
-            <section className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-2xl">
-              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-indigo-50">
-                <div className="h-8 w-8 animate-spin rounded-full border-4 border-indigo-200 border-t-indigo-600" />
-              </div>
-              <h2 className="mt-5 text-base font-black text-slate-950">กำลังค้นหา Template</h2>
-              <p className="mt-2 text-sm font-semibold leading-relaxed text-slate-500">
-                ระบบกำลังวิเคราะห์เอกสารและเลือก Template ที่เหมาะสมที่สุด
-              </p>
-              <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 text-xs font-bold text-slate-700">
-                {templateDecisionStatus || "กำลังประมวลผล..."}
-              </div>
-            </section>
-          </div>
+          <TemplateDecisionLoading status={templateDecisionStatusStore} />
         )}
       </div>
     </main>

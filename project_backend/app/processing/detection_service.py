@@ -19,6 +19,7 @@ from app.processing.alignment_service import AlignmentService
 from app.processing.anchor_projection_service import AnchorProjectionService
 from app.core.db import connect as connect_db
 from app.processing.image_normalization import ImageNormalizationService
+from app.processing.detection_requirements import verification_anchor_types
 from app.model_runtime.layout_analysis_service import analyze_layout, analyze_layout_signature
 from app.processing.layout_alignment_service import LayoutAlignmentService
 from app.processing.layout_signature_service import build_layout_signature
@@ -73,7 +74,7 @@ class DetectionRequestCache:
     def __init__(self) -> None:
         self.templates: Dict[str, Optional[Dict[str, Any]]] = {}
         self.field_counts: Dict[str, Optional[int]] = {}
-        self.verification_fields: Dict[str, List[Dict[str, Any]]] = {}
+        self.verification_fields: Dict[Any, List[Dict[str, Any]]] = {}
         self.verification_runtime: Dict[str, Dict[str, Any]] = {}
         self.stats: Dict[str, int] = {
             "template_cache_hits": 0,
@@ -378,19 +379,22 @@ def _fetch_field_count_cached(template_id: str, request_cache: Optional[Detectio
     return count, False, db_timing
 
 
-def _fetch_verification_fields_cached(template_id: str, request_cache: Optional[DetectionRequestCache]) -> tuple[List[Dict[str, Any]], bool, Dict[str, Any]]:
-    if request_cache is not None and template_id in request_cache.verification_fields:
+def _fetch_verification_fields_cached(template_id: str, request_cache: Optional[DetectionRequestCache], anchor_types: Optional[set[str]] = None) -> tuple[List[Dict[str, Any]], bool, Dict[str, Any]]:
+    if anchor_types is not None and not anchor_types:
+        return [], False, {}
+    cache_key = template_id if anchor_types is None else (template_id, tuple(sorted(anchor_types)))
+    if request_cache is not None and cache_key in request_cache.verification_fields:
         request_cache.stats["verification_fields_cache_hits"] += 1
-        return request_cache.verification_fields[template_id], True, {}
-    cached_fields = published_template_cache.get_verification_fields(template_id)
+        return request_cache.verification_fields[cache_key], True, {}
+    cached_fields = published_template_cache.get_verification_fields(template_id, anchor_types=anchor_types)
     if cached_fields is not None:
         if request_cache is not None:
-            request_cache.verification_fields[template_id] = cached_fields
+            request_cache.verification_fields[cache_key] = cached_fields
             request_cache.stats["published_verification_fields_cache_hits"] += 1
         return cached_fields, True, {}
-    fields, db_timing = verification_service.load_verification_fields_with_db_timing(template_id)
+    fields, db_timing = verification_service.load_verification_fields_with_db_timing(template_id, anchor_types=anchor_types)
     if request_cache is not None:
-        request_cache.verification_fields[template_id] = fields
+        request_cache.verification_fields[cache_key] = fields
         request_cache.stats["verification_fields_db_fetches"] += 1
     return fields, False, db_timing
 
@@ -436,10 +440,15 @@ def _fetch_template_page_image_source(
     return row["normalized_image_url"] or row["sample_image_url"]
 
 
-def _fetch_template_fields(template_id: str) -> List[Dict[str, Any]]:
+def _fetch_template_fields(template_id: str, anchor_types: Optional[set[str]] = None) -> List[Dict[str, Any]]:
+    anchor_filter = ""
+    anchor_params = ()
+    if anchor_types is not None:
+        anchor_params = tuple(sorted(anchor_types))
+        anchor_filter = (" AND va.anchor_type IN (" + ",".join("?" for _ in anchor_params) + ")") if anchor_params else " AND FALSE"
     with _connect() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT
                 ef.id,
                 tp.template_version_id AS template_id,
@@ -494,10 +503,10 @@ def _fetch_template_fields(template_id: str) -> List[Dict[str, Any]]:
                 va.created_at
             FROM verification_anchors va
             JOIN template_pages tp ON tp.id = va.template_page_id
-            WHERE tp.template_version_id = ?
+            WHERE tp.template_version_id = ?{anchor_filter}
             ORDER BY page_number ASC, sort_order ASC, created_at ASC
             """,
-            (template_id, template_id),
+            (template_id, template_id, *anchor_params),
         ).fetchall()
 
     fields: List[Dict[str, Any]] = []
@@ -2304,6 +2313,7 @@ def _candidate_from_result(
     query_image_source: str = "normalized",
     use_image_batch_for_verification: bool = False,
 ) -> Optional[Dict[str, Any]]:
+    anchor_types = set(verification_anchor_types(verification_strategy))
     metadata = result.get("metadata") or {}
     template_signature = result.get("_layout_signature")
     if not isinstance(template_signature, dict):
@@ -2462,7 +2472,7 @@ def _candidate_from_result(
         )
         if template_id:
             step_started = time.perf_counter()
-            verification_fields, verification_fields_cache_hit, verification_fields_db_timing = _fetch_verification_fields_cached(template_id, request_cache)
+            verification_fields, verification_fields_cache_hit, verification_fields_db_timing = _fetch_verification_fields_cached(template_id, request_cache, anchor_types=anchor_types)
             candidate_cache_debug["verification_fields_cache_hit"] = verification_fields_cache_hit
             candidate_cache_debug["verification_fields_preloaded"] = True
             candidate_db_debug["verification_fields"] = _db_timing_ms(verification_fields_db_timing)
@@ -2550,7 +2560,7 @@ def _candidate_from_result(
         if template_id:
             try:
                 post_match_template_roi_bounds = _template_field_roi_bounds_ratio(
-                    _fetch_template_fields(template_id),
+                    _fetch_template_fields(template_id, anchor_types=anchor_types),
                     template_page_number,
                 )
             except Exception:
@@ -2881,7 +2891,7 @@ def _candidate_from_result(
     }
     if template_id and decision["final_passed"]:
         step_started = time.perf_counter()
-        template_fields = _fetch_template_fields(template_id)
+        template_fields = _fetch_template_fields(template_id, anchor_types=anchor_types)
         candidate_timing["roi_field_load"] = time.perf_counter() - step_started
         step_started = time.perf_counter()
         template_rois = _template_roi_items(template_fields, template_page_number)
@@ -2928,14 +2938,19 @@ def _candidate_from_result(
                 }
         candidate_timing["projection"] = time.perf_counter() - step_started
         step_started = time.perf_counter()
-        extraction_test = _run_extraction_test(
-            template_id,
-            template_fields,
-            projection.get("projected_fields", []),
-            extraction_image_path,
-            template_page_number,
-            str(projection.get("roi_coordinate_space") or roi_coordinate_space),
-        )
+        if verification_strategy == VERIFICATION_STRATEGY_LAYOUT_ONLY:
+            extraction_test = {"template_id": template_id, "status": "skipped", "fields": [],
+                               "reason": "layout_only_strategy", "tested_count": 0,
+                               "passed_count": 0, "failed_count": 0}
+        else:
+            extraction_test = _run_extraction_test(
+                template_id,
+                template_fields,
+                projection.get("projected_fields", []),
+                extraction_image_path,
+                template_page_number,
+                str(projection.get("roi_coordinate_space") or roi_coordinate_space),
+            )
         candidate_timing["extraction_test"] = time.perf_counter() - step_started
 
     step_started = time.perf_counter()
@@ -3744,16 +3759,19 @@ def _detection_engine(pages: List[Dict[str, Any]]) -> str:
     return "layout_signature"
 
 
-def _load_text_only_template_anchors(request_cache: Optional[DetectionRequestCache] = None) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def _load_text_only_template_anchors(request_cache: Optional[DetectionRequestCache] = None, anchor_types: Optional[set[str]] = None) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    anchor_types = {"text"} if anchor_types is None else set(anchor_types)
+    if not anchor_types:
+        return [], {"source": "not_required", "anchor_types": [], "anchor_count": 0, "template_count": 0}
     total_started = time.perf_counter()
     cache_lookup_started = time.perf_counter()
-    cached_templates = published_template_cache.get_text_only_template_anchors()
+    cached_templates = published_template_cache.get_verification_anchor_templates(anchor_types)
     cache_lookup_elapsed = time.perf_counter() - cache_lookup_started
     if cached_templates is not None:
         anchor_processing_started = time.perf_counter()
         templates = list(cached_templates)
         template_count = len(templates)
-        anchor_count = sum(len(template.get("text_anchors") or []) for template in templates)
+        anchor_count = sum(len(template.get("verification_anchors") or template.get("text_anchors") or []) for template in templates)
         anchor_processing_elapsed = time.perf_counter() - anchor_processing_started
         if request_cache is not None:
             request_cache.stats["published_template_cache_hits"] += template_count
@@ -3761,6 +3779,7 @@ def _load_text_only_template_anchors(request_cache: Optional[DetectionRequestCac
         return templates, {
             "source": "published_template_cache",
             "cache_hit": True,
+            "anchor_types": sorted(anchor_types),
             "status_filter": ["active", "published"],
             "cache_lookup_ms": _ms(cache_lookup_elapsed),
             "db_connect_ms": None,
@@ -3780,8 +3799,12 @@ def _load_text_only_template_anchors(request_cache: Optional[DetectionRequestCac
     connect_elapsed = time.perf_counter() - connect_started
     with conn:
         query_started = time.perf_counter()
+        anchor_params = tuple(sorted(anchor_types))
+        anchor_placeholders = ",".join("?" for _ in anchor_params)
+        category_join = "LEFT JOIN image_verification_categories ivc ON ivc.id = va.image_category_id" if "image" in anchor_types else ""
+        category_column = "COALESCE(ivc.value, va.image_category_id)" if "image" in anchor_types else "NULL"
         cursor, execute_timing = conn.execute_timed(
-            """
+            f"""
             SELECT
                 tv.id AS template_id,
                 tg.name AS template_name,
@@ -3808,6 +3831,8 @@ def _load_text_only_template_anchors(request_cache: Optional[DetectionRequestCac
                     WHERE tp_fields.template_version_id = tv.id
                 ) AS field_count,
                 va.id AS anchor_id,
+                va.anchor_type AS data_type,
+                {category_column} AS image_category,
                 va.template_page_id,
                 tp.page_number,
                 va.anchor_name AS field_name,
@@ -3826,10 +3851,12 @@ def _load_text_only_template_anchors(request_cache: Optional[DetectionRequestCac
             FROM template_versions tv
             JOIN template_groups tg ON tg.id = tv.template_group_id
             LEFT JOIN template_pages tp ON tp.template_version_id = tv.id
-            LEFT JOIN verification_anchors va ON va.template_page_id = tp.id AND va.anchor_type = 'text'
+            LEFT JOIN verification_anchors va ON va.template_page_id = tp.id AND va.anchor_type IN ({anchor_placeholders})
+            {category_join}
             WHERE tv.status IN ('active', 'published')
             ORDER BY tv.updated_at DESC, tv.id ASC, tp.page_number ASC, va.sort_order ASC, va.created_at ASC
-            """
+            """,
+            anchor_params,
         )
         fetch_started = time.perf_counter()
         rows = cursor.fetchall()
@@ -3858,6 +3885,7 @@ def _load_text_only_template_anchors(request_cache: Optional[DetectionRequestCac
                 "page_count": row["page_count"],
                 "field_count": row["field_count"],
                 "text_anchors": [],
+                "verification_anchors": [],
             }
         if row["anchor_id"] is None:
             continue
@@ -3876,7 +3904,7 @@ def _load_text_only_template_anchors(request_cache: Optional[DetectionRequestCac
                     roi["points"] = points
             except Exception:
                 pass
-        templates_by_id[template_id]["text_anchors"].append(
+        templates_by_id[template_id]["verification_anchors"].append(
             {
                 "id": row["anchor_id"],
                 "template_id": template_id,
@@ -3885,20 +3913,25 @@ def _load_text_only_template_anchors(request_cache: Optional[DetectionRequestCac
                 "field_name": row["field_name"],
                 "display_label": row["display_label"],
                 "roi": roi,
-                "data_type": "text",
+                "data_type": row["data_type"],
+                "image_category": row["image_category"],
                 "expected_text": row["expected_text"],
                 "match_type": row["match_type"],
                 "required_for_verification": bool(row["required_for_verification"]),
                 "verification_weight": row["verification_weight"],
             }
         )
+    for template in templates_by_id.values():
+        template["text_anchors"] = [field for field in template["verification_anchors"]
+                                    if field["data_type"] == "text" and field.get("expected_text")]
     anchor_processing_elapsed = time.perf_counter() - anchor_processing_started
-    anchor_count = sum(len(template.get("text_anchors") or []) for template in templates_by_id.values())
+    anchor_count = sum(len(template.get("verification_anchors") or template.get("text_anchors") or []) for template in templates_by_id.values())
     if request_cache is not None:
         request_cache.stats["verification_fields_db_fetches"] += len(templates_by_id)
 
     return list(templates_by_id.values()), {
         "source": "database",
+        "anchor_types": sorted(anchor_types),
         "cache_hit": False,
         "status_filter": ["active", "published"],
         "cache_lookup_ms": _ms(cache_lookup_elapsed),
@@ -3917,29 +3950,7 @@ def _load_text_only_template_anchors(request_cache: Optional[DetectionRequestCac
 
 
 def _load_anchor_strategy_templates(anchor_types: set[str], request_cache: Optional[DetectionRequestCache] = None) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    total_started = time.perf_counter()
-    cache_lookup_started = time.perf_counter()
-    cached_templates = published_template_cache.get_verification_anchor_templates(anchor_types)
-    cache_lookup_elapsed = time.perf_counter() - cache_lookup_started
-    if cached_templates is not None:
-        if request_cache is not None:
-            request_cache.stats["published_template_cache_hits"] += len(cached_templates)
-            request_cache.stats["published_verification_fields_cache_hits"] += len(cached_templates)
-        return cached_templates, {
-            "source": "published_template_cache",
-            "cache_hit": True,
-            "anchor_types": sorted(anchor_types),
-            "cache_lookup_ms": _ms(cache_lookup_elapsed),
-            "db_connect_ms": None,
-            "db_query_ms": None,
-            "anchor_processing_ms": 0.0,
-            "total_ms": _ms(time.perf_counter() - total_started),
-            "template_count": len(cached_templates),
-            "anchor_count": sum(len(template.get("verification_anchors") or []) for template in cached_templates),
-            "db_fallback": False,
-        }
-    templates, debug = _load_text_only_template_anchors(request_cache)
-    return templates, {**debug, "anchor_types": sorted(anchor_types), "fallback_note": "cache_unavailable_text_only_db_fallback"}
+    return _load_text_only_template_anchors(request_cache, anchor_types=anchor_types)
 
 
 def _candidate_from_anchor_strategy(
@@ -4174,12 +4185,7 @@ def _detect_template_anchor_strategy(
 ) -> Dict[str, Any]:
     started = time.perf_counter()
     page_image_paths = {int(page["page_index"]): page["normalized_path"] for page in normalized_pages}
-    if strategy == VERIFICATION_STRATEGY_IMAGE_ONLY:
-        anchor_types = {"image"}
-    elif strategy == VERIFICATION_STRATEGY_TEXT_ONLY:
-        anchor_types = {"text"}
-    else:
-        anchor_types = {"text", "image"}
+    anchor_types = set(verification_anchor_types(strategy))
     load_started = time.perf_counter()
     templates, load_debug = _load_anchor_strategy_templates(anchor_types, request_cache)
     timing["anchor_strategy_template_load"] = time.perf_counter() - load_started
@@ -4388,9 +4394,6 @@ def _detect_template_text_only(
     text_only_started = time.perf_counter()
     page_image_paths = {int(page["page_index"]): page["normalized_path"] for page in normalized_pages}
 
-    load_started = time.perf_counter()
-    templates, load_debug = _load_text_only_template_anchors(request_cache)
-    timing["text_only_template_anchor_load"] = time.perf_counter() - load_started
     if detection_batch_mode != DETECTION_BATCH_MODE_GLOBAL:
         return _detect_template_anchor_strategy(
             query_id,
@@ -4402,6 +4405,10 @@ def _detect_template_text_only(
             VERIFICATION_STRATEGY_TEXT_ONLY,
             detection_batch_mode,
         )
+
+    load_started = time.perf_counter()
+    templates, load_debug = _load_text_only_template_anchors(request_cache)
+    timing["text_only_template_anchor_load"] = time.perf_counter() - load_started
 
     crop_started = time.perf_counter()
     roi_items_by_page: Dict[int, List[Dict[str, Any]]] = {}

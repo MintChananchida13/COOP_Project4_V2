@@ -3604,11 +3604,18 @@ class VerificationService:
         fields, _ = self.load_verification_fields_with_db_timing(template_id)
         return fields
 
-    def load_verification_fields_with_db_timing(self, template_id: str) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    def load_verification_fields_with_db_timing(self, template_id: str, anchor_types: Optional[set[str]] = None) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
         total_started = time.perf_counter()
         connect_started = time.perf_counter()
         conn = _connect()
         connect_elapsed = time.perf_counter() - connect_started
+        anchor_params = tuple(sorted(anchor_types)) if anchor_types is not None else ()
+        anchor_filter = ""
+        if anchor_types is not None:
+            anchor_filter = (" AND va.anchor_type IN (" + ",".join("?" for _ in anchor_params) + ")") if anchor_params else " AND FALSE"
+        include_image = anchor_types is None or "image" in anchor_types
+        category_join = "LEFT JOIN image_verification_categories ivc ON ivc.id = va.image_category_id" if include_image else ""
+        category_column = "COALESCE(ivc.value, va.image_category_id)" if include_image else "NULL"
         with conn:
             cursor, existence_execute_timing = conn.execute_timed("SELECT id FROM template_versions WHERE id = ?", (template_id,))
             fetch_started = time.perf_counter()
@@ -3618,7 +3625,7 @@ class VerificationService:
                 raise HTTPException(status_code=404, detail="Template not found")
 
             cursor, anchors_execute_timing = conn.execute_timed(
-                """
+                f"""
                 SELECT
                     va.id,
                     tp.template_version_id AS template_id,
@@ -3645,17 +3652,17 @@ class VerificationService:
                     va.regex_pattern,
                     NULL AS roi_padding,
                     va.weight AS verification_weight,
-                    COALESCE(ivc.value, va.image_category_id) AS image_category,
+                    {category_column} AS image_category,
                     va.sort_order,
                     va.created_at,
                     va.updated_at
                 FROM verification_anchors va
                 JOIN template_pages tp ON tp.id = va.template_page_id
-                LEFT JOIN image_verification_categories ivc ON ivc.id = va.image_category_id
-                WHERE tp.template_version_id = ?
+                {category_join}
+                WHERE tp.template_version_id = ?{anchor_filter}
                 ORDER BY tp.page_number ASC, va.sort_order ASC, va.created_at ASC
                 """,
-                (template_id,),
+                (template_id, *anchor_params),
             )
             fetch_started = time.perf_counter()
             rows = cursor.fetchall()

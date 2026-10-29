@@ -372,10 +372,13 @@ def get_field_count(template_id: str) -> Optional[int]:
         return int(entry.field_count) if entry else None
 
 
-def get_verification_fields(template_id: str) -> Optional[List[Dict[str, Any]]]:
+def get_verification_fields(template_id: str, anchor_types: Optional[set[str]] = None) -> Optional[List[Dict[str, Any]]]:
     with _LOCK:
         entry = _ENTRIES.get(template_id)
-        return copy.deepcopy(entry.verification_fields) if entry else None
+        if entry is None:
+            return None
+        return [copy.deepcopy(field) for field in entry.verification_fields
+                if anchor_types is None or str(field.get("data_type") or "").lower() in anchor_types]
 
 
 def get_verification_anchor_templates(anchor_types: Optional[set[str]] = None) -> Optional[List[Dict[str, Any]]]:
@@ -389,7 +392,7 @@ def get_verification_anchor_templates(anchor_types: Optional[set[str]] = None) -
             anchors = [
                 copy.deepcopy(field)
                 for field in entry.verification_fields
-                if not normalized_types or str(field.get("data_type") or "").lower() in normalized_types
+                if anchor_types is None or str(field.get("data_type") or "").lower() in normalized_types
             ]
             templates.append(
                 {
