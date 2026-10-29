@@ -11,15 +11,43 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT.parent / "API_Service_Kaggle/kaggle"))
 
 
+
+def configure_gateway(gateway_url):
+    """Reuse the local Backend credential without printing or persisting it."""
+    from urllib.parse import urlparse
+    from kaggle_secrets_loader import load_secrets
+    token = None
+    origin = "environment/Kaggle Secrets"
+    if urlparse(gateway_url).hostname in {"127.0.0.1", "localhost", "::1"}:
+        try:
+            from manage import live_pid
+            pid = live_pid("backend")
+            if pid:
+                entries = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+                for entry in entries:
+                    if entry.startswith(b"MODEL_GATEWAY_API_KEY="):
+                        token = entry.split(b"=", 1)[1].decode()
+                        if token:
+                            origin = "running local Backend"
+                        break
+        except (OSError, ValueError, ImportError):
+            pass
+    if not token:
+        token = load_secrets(("MODEL_GATEWAY_API_KEY",)).get("MODEL_GATEWAY_API_KEY")
+    if not token or not token.strip():
+        raise RuntimeError("Model API credential unavailable. Run from the Kaggle notebook with MODEL_GATEWAY_API_KEY passed in the subprocess environment.")
+    os.environ["MODEL_GATEWAY_API_KEY"] = token
+    os.environ["GATEWAY_URL"] = gateway_url.rstrip("/")
+    print("AUTH_SOURCE:", origin, flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("template_id")
     parser.add_argument("--backend-url", default="http://127.0.0.1:18081")
     parser.add_argument("--gateway-url", default="http://127.0.0.1:8080")
     args = parser.parse_args()
-    from kaggle_secrets_loader import load_secrets
-    os.environ.update(load_secrets(("MODEL_GATEWAY_API_KEY",)))
-    os.environ["GATEWAY_URL"] = args.gateway_url.rstrip("/")
+    configure_gateway(args.gateway_url)
     from app.business.services import _load_image_source, _image_to_bgr_array
     from app.model_runtime import layout_analysis_service as layout
     from app.processing.layout_signature_service import build_layout_signature
