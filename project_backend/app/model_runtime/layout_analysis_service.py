@@ -37,7 +37,7 @@ class LayoutRegion:
 
 
 _LAYOUT_MODEL_NAME = "PP-DocLayoutV3"
-_TEXT_DETECTION_MODEL_NAME = "PP-OCRv5_server_det"
+_TEXT_DETECTION_MODEL_NAME = "PP-OCRv6_medium_det"
 AUTO_ROI_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_EXPAND_TOP_PX", "6"))
 AUTO_ROI_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_EXPAND_BOTTOM_PX", "6"))
 AUTO_ROI_EXPAND_LEFT_PX = float(os.getenv("AUTO_ROI_EXPAND_LEFT_PX", "6"))
@@ -1173,7 +1173,7 @@ def analyze_layout_signature(image: np.ndarray, timing: Optional[Dict[str, Any]]
         raise ValueError("Invalid image for layout signature analysis.")
 
     height, width = image.shape[:2]
-    source_mode = _RAW_LAYOUT_ONLY_CACHE_MODE
+    source_mode = "layout_signature_layout_det_v6"
     cache_started = time.perf_counter()
     cache_key = _layout_cache_key(image, source_mode)
     raw_items = _get_cached_layout_raw_items(image, source_mode, cache_key=cache_key)
@@ -1182,10 +1182,10 @@ def analyze_layout_signature(image: np.ndarray, timing: Optional[Dict[str, Any]]
         timing["raw_cache_hit"] = raw_items is not None
     if raw_items is None:
         _require_runtime(ModelRuntimeKind.LAYOUT)
-        logger.info("Using remote Layout runtime for layout signature")
+        logger.info("Using remote Layout + TextDetection runtime for layout signature")
         try:
             runtime_timing: Dict[str, Any] = {}
-            layout_result = remote_analyze_layout(image, timing=runtime_timing)
+            layout_result = remote_analyze_layout(image, timing=runtime_timing, layout_only=False)
             if timing is not None:
                 timing["runtime_client"] = runtime_timing
                 gateway_timing = runtime_timing.get("gateway_timing")
@@ -1200,15 +1200,24 @@ def analyze_layout_signature(image: np.ndarray, timing: Optional[Dict[str, Any]]
         if not isinstance(layout_result, dict):
             raise LayoutAnalysisUnavailableError("Layout runtime returned an invalid response.")
         postprocess_started = time.perf_counter()
-        raw_layout_items = _walk_layout_items(layout_result.get("result", layout_result))
-        layout_items = _layout_detection_items_from_response(layout_result.get("result", layout_result))
-        raw_items = [{**item, "source": "layout"} for item in layout_items]
+        # Parse each branch separately: treating DET output as layout would
+        # duplicate text boxes, while parsing only layout drops the DET boxes.
+        result = layout_result.get("result", layout_result)
+        raw = result.get("raw") if isinstance(result, dict) else None
+        if not isinstance(raw, dict) or "layout" not in raw or "text_detection" not in raw:
+            raise LayoutAnalysisUnavailableError("Layout signature requires both Layout and TextDetection results.")
+        raw_layout_items = _walk_layout_items(raw["layout"])
+        layout_items = _layout_detection_items_from_response(raw["layout"])
+        text_items = _text_detection_items_from_response(raw["text_detection"])
+        raw_items = [*[{**item, "source": "layout"} for item in layout_items],
+                     *[{**item, "source": "text_detection"} for item in text_items]]
         if timing is not None:
             timing["response_postprocess_ms"] = round((time.perf_counter() - postprocess_started) * 1000.0, 2)
             timing["raw_model_item_count"] = len(raw_layout_items)
-            timing["layout_item_count"] = len(raw_items)
+            timing["layout_item_count"] = len(layout_items)
+            timing["text_detection_item_count"] = len(text_items)
         logger.info(
-            "Layout signature-only trace: raw_model_items=%s layout_items=%s raw_summary=%s filtered_summary=%s",
+            "Layout+DET signature trace: raw_model_items=%s combined_items=%s raw_summary=%s filtered_summary=%s",
             len(raw_layout_items),
             len(raw_items),
             _debug_item_summary(raw_layout_items, width, height),
@@ -1234,7 +1243,7 @@ def analyze_layout_signature(image: np.ndarray, timing: Optional[Dict[str, Any]]
             {
                 "type": _normalize_region_type(_extract_label(item)),
                 "confidence": float(_extract_score(item)),
-                "source": "layout_signature",
+                "source": item.get("source", "layout_signature"),
                 "roi": {
                     "x_ratio": _clamp_ratio(left / max(width, 1)),
                     "y_ratio": _clamp_ratio(top / max(height, 1)),
@@ -1250,7 +1259,7 @@ def analyze_layout_signature(image: np.ndarray, timing: Optional[Dict[str, Any]]
         timing["region_count"] = len(regions)
     return {
         "engine": "layout_signature_runtime",
-        "model": _LAYOUT_MODEL_NAME,
+        "model": f"{_LAYOUT_MODEL_NAME}+{_TEXT_DETECTION_MODEL_NAME}",
         "image_fingerprint": cache_key[2],
         "image_width": width,
         "image_height": height,

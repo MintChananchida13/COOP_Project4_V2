@@ -192,3 +192,18 @@ Known performance-sensitive paths:
 - Alignment image loading and signature comparison
 
 Published Template Cache and request-scoped caches are backend concerns, not model runtime concerns.
+
+
+### Matching layout signatures
+
+`analyze_layout_signature` requests `layout_only=false` and consumes both
+`result.raw.layout` and `result.raw.text_detection` from the same gateway call.
+The runtime uses PP-DocLayoutV3 and PP-OCRv6_medium_det; no recognition is added.
+Layout and DET branches are parsed separately to avoid losing DET polygons or
+interpreting them twice. Raw signature caching has its own combined-model key.
+A missing response branch raises an explicit unavailable error.
+
+After deploying this change, regenerate stored Template Layout Signatures
+(including published references) before comparing new signatures with them.
+For a draft, Run Simulation regenerates the stored signature. This change does
+not automatically rewrite existing database signatures or alter matching thresholds.

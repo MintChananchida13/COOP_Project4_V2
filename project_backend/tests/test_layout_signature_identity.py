@@ -28,7 +28,7 @@ def signature(count, fingerprint=None):
 class LayoutSignatureIdentityTests(unittest.TestCase):
     def test_pixel_fingerprint_survives_cache_without_extra_model_calls(self):
         image = np.zeros((8, 12, 3), dtype=np.uint8)
-        with patch.object(layout_analysis_service, "_layout_raw_items_cache", layout_analysis_service.OrderedDict()), patch.object(layout_analysis_service, "LAYOUT_RAW_ITEMS_CACHE_SIZE", 16), patch.object(layout_analysis_service, "_require_runtime"), patch.object(layout_analysis_service, "remote_analyze_layout", return_value={"result": {"raw": {"layout": []}}}) as remote:
+        with patch.object(layout_analysis_service, "_layout_raw_items_cache", layout_analysis_service.OrderedDict()), patch.object(layout_analysis_service, "LAYOUT_RAW_ITEMS_CACHE_SIZE", 16), patch.object(layout_analysis_service, "_require_runtime"), patch.object(layout_analysis_service, "remote_analyze_layout", return_value={"result": {"raw": {"layout": [], "text_detection": []}}}) as remote:
             first = layout_analysis_service.analyze_layout_signature(image)
             cached = layout_analysis_service.analyze_layout_signature(image.copy())
             self.assertEqual(first["image_fingerprint"], cached["image_fingerprint"])
