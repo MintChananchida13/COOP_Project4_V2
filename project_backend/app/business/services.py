@@ -36,9 +36,9 @@ from app.model_runtime.layout_analysis_service import (
     AUTO_ROI_EXPAND_RIGHT_PX,
     AUTO_ROI_EXPAND_TOP_PX,
     analyze_layout,
-    analyze_layout_signature,
     detect_text_boxes,
 )
+from app.model_runtime import layout_analysis_service as layout_runtime
 from app.processing.layout_signature_service import build_layout_signature, compare_layout_signatures, signature_from_json, signature_to_json
 from app.processing.layout_template_matcher import search_layout_candidates
 from app.processing import published_template_cache
@@ -2199,8 +2199,13 @@ def _generate_layout_signature_for_source(source: Optional[str]) -> Optional[Dic
     opencv_img = _image_to_bgr_array(image)
     if opencv_img is None:
         return None
-    analysis = analyze_layout_signature(opencv_img)
-    return build_layout_signature(analysis)
+    analysis = layout_runtime.analyze_layout_signature(opencv_img)
+    if analysis.get("model") != layout_runtime.LAYOUT_SIGNATURE_MODEL:
+        raise HTTPException(status_code=503, detail="Template signature requires Layout + Text Detection; received an incompatible analyzer result.")
+    signature = build_layout_signature(analysis)
+    logger.info("Template signature generated model=%s region_sources=%s region_count=%s",
+                signature.get("model"), signature.get("region_sources"), signature.get("region_count"))
+    return signature
 
 
 def _ensure_template_pages_have_layout_signatures(conn: Any, template_id: str) -> None:
@@ -2246,6 +2251,7 @@ def _refresh_template_layout_signatures(conn: Any, template_id: str) -> List[Dic
                 "page_number": row["page_number"],
                 "status": "generated",
                 "region_count": signature.get("region_count", 0),
+                "region_sources": signature.get("region_sources") or {},
                 "model": signature.get("model"),
             }
         )
@@ -6500,7 +6506,13 @@ class AdminTemplateService:
         with _connect() as conn:
             pages = _refresh_template_layout_signatures(conn, template_id)
             conn.commit()
-        return {"template_id": template_id, "status": "completed", "passed": bool(pages), "layout_signature_pages": pages, "page_count": len(draft.get("pages") or []), "timestamp": _now()}
+        _refresh_published_template_cache(template_id)
+        passed = bool(pages) and all(
+            page.get("status") == "generated" and int(page.get("region_count") or 0) > 0
+            for page in pages
+        )
+        return {"template_id": template_id, "status": "completed", "passed": passed,
+                "layout_signature_pages": pages, "page_count": len(draft.get("pages") or []), "timestamp": _now()}
 
     def _prepublish_detection_page_paths(self, detection: Dict[str, Any]) -> Dict[int, str]:
         page_paths: Dict[int, str] = {}

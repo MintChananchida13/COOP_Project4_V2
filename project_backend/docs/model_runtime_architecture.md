@@ -207,3 +207,23 @@ After deploying this change, regenerate stored Template Layout Signatures
 (including published references) before comparing new signatures with them.
 For a draft, Run Simulation regenerates the stored signature. This change does
 not automatically rewrite existing database signatures or alter matching thresholds.
+
+
+Simulation consistency:
+- Template generation calls the analyzer through the shared runtime module and
+  rejects a Layout-only result instead of persisting it as a combined signature.
+- `region_sources` records accepted source-region counts (`layout`,
+  `text_detection`) in the stored signature and generated-page summary. These
+  are source counts, distinct from the final count if masks filter regions.
+- Simulation passes only when all pages generate nonempty signatures.
+- After commit, invalidate Admin detail caches and refresh the published-template
+  cache. Frontend simulation also discards cached Admin/User template bundles
+  after any in-flight loads finish, before retrieving the new page data.
+
+The real-model diagnostic runs in a separate process. Its successful output
+proves that process generated combined regions; it does not prove that an
+already-running web process uses the same loaded function. Validate the actual
+Simulation response after deploying: `model` must be the combined model name,
+`region_sources` must be present, and a subsequent template GET must contain the
+same stored model and region count. Existing templates still require signature
+regeneration; do not lower thresholds to compensate for mixed signature versions.

@@ -38,6 +38,7 @@ class LayoutRegion:
 
 _LAYOUT_MODEL_NAME = "PP-DocLayoutV3"
 _TEXT_DETECTION_MODEL_NAME = "PP-OCRv6_medium_det"
+LAYOUT_SIGNATURE_MODEL = f"{_LAYOUT_MODEL_NAME}+{_TEXT_DETECTION_MODEL_NAME}"
 AUTO_ROI_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_EXPAND_TOP_PX", "6"))
 AUTO_ROI_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_EXPAND_BOTTOM_PX", "6"))
 AUTO_ROI_EXPAND_LEFT_PX = float(os.getenv("AUTO_ROI_EXPAND_LEFT_PX", "6"))
@@ -1259,7 +1260,11 @@ def analyze_layout_signature(image: np.ndarray, timing: Optional[Dict[str, Any]]
         timing["region_count"] = len(regions)
     return {
         "engine": "layout_signature_runtime",
-        "model": f"{_LAYOUT_MODEL_NAME}+{_TEXT_DETECTION_MODEL_NAME}",
+        "model": LAYOUT_SIGNATURE_MODEL,
+        "region_sources": {
+            source: sum(region["source"] == source for region in regions)
+            for source in ("layout", "text_detection")
+        },
         "image_fingerprint": cache_key[2],
         "image_width": width,
         "image_height": height,

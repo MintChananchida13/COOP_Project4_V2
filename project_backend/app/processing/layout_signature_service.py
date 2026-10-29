@@ -387,6 +387,7 @@ def build_layout_signature(layout_analysis: Dict[str, Any]) -> Dict[str, Any]:
         "source_image_width": int(width),
         "source_image_height": int(height),
         "image_fingerprint": layout_analysis.get("image_fingerprint"),
+        "region_sources": dict(layout_analysis.get("region_sources") or {}),
         "region_count": metrics["region_count"],
         "labels": list(LABELS),
         "label_counts": metrics["label_counts"],

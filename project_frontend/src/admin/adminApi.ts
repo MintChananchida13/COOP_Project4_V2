@@ -2634,6 +2634,11 @@ export const runPrepublishSimulation = async (templateId: string): Promise<Prepu
   }
 
   const data = asRecord(json?.data);
+  // Simulation rewrites page signatures; discard pre-simulation bundles.
+  // Drain existing loads first so they cannot repopulate the cache afterwards.
+  await Promise.allSettled([templateBundlePromises.get(templateId), templateBundlePromises.get(`user:${templateId}`)]);
+  templateBundleCache.delete(templateId);
+  templateBundleCache.delete(`user:${templateId}`);
   debugPrepublishPagesAccess("runPrepublishSimulation:data", data);
   const summary = asRecord(data.draft_summary);
   const temp = asRecord(data.temporary_embedding);
