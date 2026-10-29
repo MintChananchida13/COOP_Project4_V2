@@ -58,11 +58,19 @@ def _trim(value: Any) -> Any:
 
 def user_detection_response(value: dict) -> dict:
     result = without_image_payloads(_trim(value))
-    selected_template = (value.get("best_candidate") or {}).get("template_id")
+    best = value.get("best_candidate") or {}
+    selected_template = best.get("template_id") if value.get("matched") and best.get("final_passed") else None
     for page, output in zip(value.get("pages") or [], result.get("pages") or []):
+        if not selected_template:
+            continue
         candidate = next((item for item in page.get("candidates", [])
-                          if item.get("template_id") == selected_template), None)
-        candidate = candidate or page.get("best_candidate") or {}
+                          if item.get("template_id") == selected_template and item.get("final_passed")), None)
+        if candidate is None:
+            page_best = page.get("best_candidate") or {}
+            if page_best.get("template_id") == selected_template and page_best.get("final_passed"):
+                candidate = page_best
+        if candidate is None:
+            continue
         image = candidate.get("extraction_image_preview_url")
         image_path = candidate.get("extraction_image_path")
         if candidate.get("selected_processing_source") == "aligned":

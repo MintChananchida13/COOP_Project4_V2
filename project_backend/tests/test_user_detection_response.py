@@ -9,6 +9,25 @@ from app.api.detection_response import user_detection_response, without_image_pa
 
 
 class UserDetectionResponseTests(unittest.TestCase):
+    def test_unmatched_response_never_returns_processing_preview(self):
+        failed = {'template_id': 'card', 'final_passed': False,
+                  'extraction_image_preview_url': 'data:image/png;base64,failed'}
+        for best in (None, failed):
+            source = {'matched': False, 'best_candidate': best, 'candidates': [failed],
+                      'pages': [{'best_candidate': failed, 'candidates': [failed]}]}
+            result = user_detection_response(source)
+            self.assertNotIn('processing_image_preview_url', result['pages'][0])
+            self.assertNotIn('data:image/', str(result))
+
+    def test_failed_or_different_template_page_has_no_preview(self):
+        best = {'template_id': 'chosen', 'final_passed': True}
+        for candidate in ({'template_id': 'chosen', 'final_passed': False},
+                          {'template_id': 'other', 'final_passed': True}):
+            candidate['extraction_image_preview_url'] = 'unnecessary'
+            source = {'matched': True, 'best_candidate': best, 'pages': [
+                {'best_candidate': candidate, 'candidates': [candidate]}]}
+            self.assertNotIn('processing_image_preview_url', user_detection_response(source)['pages'][0])
+
     def test_template_endpoint_preserves_admin_and_filters_user(self):
         # Execute the actual route body with a stub storage service, without
         # connecting to production DB/model services during transport tests.
@@ -60,9 +79,9 @@ class UserDetectionResponseTests(unittest.TestCase):
     def test_original_image_is_not_sent_again(self):
         for same_path in (True, False):
             with self.subTest(same_path=same_path):
-                candidate = {'template_id': 'card', 'extraction_image_preview_url': 'same-image',
+                candidate = {'template_id': 'card', 'final_passed': True, 'extraction_image_preview_url': 'same-image',
                              'extraction_image_path': 'original.png' if same_path else 'copy.png'}
-                source = {'best_candidate': candidate, 'pages': [{
+                source = {'matched': True, 'best_candidate': candidate, 'pages': [{
                     'original_image_path': 'original.png',
                     'original_image_preview_url': 'other-url' if same_path else 'same-image',
                     'candidates': [candidate],
@@ -89,7 +108,7 @@ class UserDetectionResponseTests(unittest.TestCase):
             'metadata': {'version_name': 'v1', 'layout_signature': [1, 2]},
         }
         source = {
-            'best_candidate': candidate, 'candidates': [candidate],
+            'matched': True, 'best_candidate': candidate, 'candidates': [candidate],
             'pages': [{'candidates': [candidate], 'normalization': {'debug': 'large'}}],
             'debug': {'verification_strategy': 'standard', 'query_page_paths': ['server'],
                       'timing': {'total_runtime_ms': 123, 'breakdown': {'large': []}}},
@@ -110,11 +129,11 @@ class UserDetectionResponseTests(unittest.TestCase):
         self.assertEqual(result['pages'][0]['processing_template_id'], 'card')
 
     def test_aligned_selection_and_multiple_pages(self):
-        source = {'best_candidate': {'template_id': 'chosen'}, 'pages': []}
+        source = {'matched': True, 'best_candidate': {'template_id': 'chosen', 'final_passed': True}, 'pages': []}
         for index in range(2):
             source['pages'].append({'page_index': index + 1, 'candidates': [
                 {'template_id': 'other', 'extraction_image_preview_url': 'unused'},
-                {'template_id': 'chosen', 'selected_processing_source': 'aligned',
+                {'template_id': 'chosen', 'final_passed': True, 'selected_processing_source': 'aligned',
                  'extraction_image_preview_url': 'duplicate',
                  'aligned_image_preview_url': f'aligned-{index}'},
             ]})
