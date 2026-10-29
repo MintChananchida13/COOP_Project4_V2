@@ -20,6 +20,7 @@ from app.processing.anchor_projection_service import AnchorProjectionService
 from app.core.db import connect as connect_db
 from app.processing.image_normalization import ImageNormalizationService
 from app.processing.detection_requirements import verification_anchor_types
+from app.processing.detection_work_policy import detection_work_scope, include_detection_diagnostics, compact_detection_candidates
 from app.model_runtime.layout_analysis_service import analyze_layout, analyze_layout_signature
 from app.processing.layout_alignment_service import LayoutAlignmentService
 from app.processing.layout_signature_service import build_layout_signature
@@ -550,7 +551,9 @@ def _fetch_template_fields(template_id: str, anchor_types: Optional[set[str]] = 
     return fields
 
 
-def _image_to_data_url(path: Path) -> str:
+def _image_to_data_url(path: Path, *, required: bool = False) -> Optional[str]:
+    if not required and not include_detection_diagnostics():
+        return None
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:image/png;base64,{encoded}"
 
@@ -603,6 +606,8 @@ def _image_aspect(dimensions: Optional[List[int]]) -> Optional[float]:
 
 
 def _copy_debug_image(source: Path, target: Path) -> Optional[str]:
+    if not include_detection_diagnostics():
+        return None
     try:
         if not source.exists():
             return None
@@ -614,6 +619,8 @@ def _copy_debug_image(source: Path, target: Path) -> Optional[str]:
 
 
 def _save_debug_crop(source: Path, crop_box: Any, target: Path) -> Optional[str]:
+    if not include_detection_diagnostics():
+        return None
     if not isinstance(crop_box, list) or len(crop_box) != 4:
         return None
     image = cv2.imread(str(source))
@@ -968,6 +975,8 @@ def _save_layout_bounds_crop(
 
 
 def _save_debug_boundary_preview(source: Path, crop_box: Any, target: Path) -> Optional[str]:
+    if not include_detection_diagnostics():
+        return None
     if not isinstance(crop_box, list) or len(crop_box) != 4:
         return None
     image = cv2.imread(str(source))
@@ -1234,6 +1243,8 @@ def _detection_debug_url(path_value: Optional[str]) -> Optional[str]:
 
 
 def _detection_preview_url(path_value: Optional[str]) -> Optional[str]:
+    if not include_detection_diagnostics():
+        return None
     debug_url = _detection_debug_url(path_value)
     if debug_url:
         return debug_url
@@ -1545,7 +1556,7 @@ def _normalize_query_pages(
                 }
                 pdf_boundary_path = normalized_dir / f"page_{index}_pdf_subdocument.png"
                 physical_crop_started = time.perf_counter()
-                pdf_boundary = normalization_service.detect_pdf_subdocument_boundary(str(page_path), str(pdf_boundary_path), str(debug_dir))
+                pdf_boundary = normalization_service.detect_pdf_subdocument_boundary(str(page_path), str(pdf_boundary_path), str(debug_dir) if include_detection_diagnostics() else None)
                 physical_crop_elapsed = time.perf_counter() - physical_crop_started
                 if timing is not None:
                     timing["physical_crop_total"] = timing.get("physical_crop_total", 0.0) + physical_crop_elapsed
@@ -1896,6 +1907,10 @@ def _run_extraction_test(
     page_number: int,
     roi_coordinate_space: str,
 ) -> Dict[str, Any]:
+    if not include_detection_diagnostics():
+        return {"template_id": template_id, "status": "skipped", "fields": [],
+                "reason": "user_detection_does_not_consume_extraction_test", "tested_count": 0,
+                "passed_count": 0, "failed_count": 0}
     timing: Dict[str, Any] = {
         "field_index": 0.0,
         "roi_item_build": 0.0,
@@ -2582,7 +2597,7 @@ def _candidate_from_result(
             post_match_physical_crop = normalization_service.detect_pdf_subdocument_boundary(
                 str(original_path),
                 str(physical_crop_path),
-                str(physical_debug_dir),
+                str(physical_debug_dir) if include_detection_diagnostics() else None,
             )
             post_match_physical_crop["attempted"] = True
             post_match_physical_crop["source_image_path"] = str(original_path)
@@ -5296,6 +5311,22 @@ def _detection_timing_debug(
     return result
 
 
+def _finish_detection_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    if include_detection_diagnostics():
+        return result
+    from app.api.detection_response import user_detection_response
+    def preview(path):
+        try:
+            return _image_to_data_url(Path(path), required=True)
+        except OSError:
+            return None
+    return user_detection_response(
+        result, preview_loader=preview,
+        compact_candidates=compact_detection_candidates(),
+    )
+
+
+@detection_work_scope
 def detect_template_dev(
     file_bytes: bytes,
     include_template_id: Optional[str] = None,
@@ -5310,6 +5341,8 @@ def detect_template_dev(
     disable_pdf_subdocument_crop: bool = False,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     use_image_batch_for_verification: bool = False,
+    user_context: bool = False,
+    compact_candidates: bool = False,
 ) -> Dict[str, Any]:
     query_id = f"detq_{uuid4().hex[:12]}"
     timing: Dict[str, float] = {}
@@ -5366,7 +5399,7 @@ def detect_template_dev(
         detection_batch_mode = normalize_detection_batch_mode(detection_batch_mode_setting.get("detection_batch_processing_mode"))
         timing["detection_batch_mode_load"] = time.perf_counter() - step_started
         if verification_strategy == VERIFICATION_STRATEGY_TEXT_ONLY:
-            return _detect_template_text_only(
+            return _finish_detection_result(_detect_template_text_only(
                 query_id,
                 normalized_pages,
                 timing,
@@ -5374,9 +5407,9 @@ def detect_template_dev(
                 total_started,
                 source_type,
                 detection_batch_mode,
-            )
+            ))
         if verification_strategy in {VERIFICATION_STRATEGY_TEXT_IMAGE, VERIFICATION_STRATEGY_IMAGE_ONLY}:
-            return _detect_template_anchor_strategy(
+            return _finish_detection_result(_detect_template_anchor_strategy(
                 query_id,
                 normalized_pages,
                 timing,
@@ -5385,7 +5418,7 @@ def detect_template_dev(
                 source_type,
                 verification_strategy,
                 detection_batch_mode,
-            )
+            ))
         pages: List[Dict[str, Any]] = []
         confirmed_main_page_candidate: Optional[Dict[str, Any]] = None
         step_started = time.perf_counter()
@@ -5503,7 +5536,7 @@ def detect_template_dev(
                         page["best_candidate"] = page_candidate
         timing["best_candidate_patch"] = time.perf_counter() - step_started
 
-        return {
+        return _finish_detection_result({
             "query_id": query_id,
             "engine": _detection_engine(pages),
             "version": DETECTION_VERSION,
@@ -5536,7 +5569,7 @@ def detect_template_dev(
                 "disable_pdf_subdocument_crop": disable_pdf_subdocument_crop,
                 "timing": _detection_timing_debug(timing, pages, total_started, request_cache=request_cache),
             },
-        }
+        })
     finally:
         if cleanup_generated and not SAVE_DEBUG_ARTIFACTS:
             _cleanup_query_artifacts(query_id)

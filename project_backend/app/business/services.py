@@ -1,3 +1,5 @@
+from app.processing.detection_work_policy import include_detection_diagnostics
+
 import base64
 import io
 import logging
@@ -2312,6 +2314,8 @@ def _crop_anchor_roi_to_temp(image_path_or_source: str, roi: Dict[str, Any], pad
 
 
 def _image_path_to_data_url(path_value: Optional[str]) -> Optional[str]:
+    if not include_detection_diagnostics():
+        return None
     if not path_value:
         return None
     path = Path(path_value)
@@ -2398,6 +2402,8 @@ def _crop_template_field_image(image_source: Optional[str], roi: Dict[str, Any])
 
 
 def _pil_image_to_data_url(image: Any) -> Optional[str]:
+    if not include_detection_diagnostics():
+        return None
     if image is None:
         return None
     output = io.BytesIO()
@@ -2853,7 +2859,7 @@ def _ocr_flexible_regions(boundary_image_path: str, regions: List[Dict[str, Any]
     image = _load_image_source(boundary_image_path)
     image_width, image_height = image.size if image is not None else (1, 1)
     overlay_preview_data_url = None
-    if image is not None:
+    if image is not None and include_detection_diagnostics():
         overlay = image.copy()
         try:
             from PIL import ImageDraw, ImageFont
@@ -2905,7 +2911,7 @@ def _ocr_flexible_regions(boundary_image_path: str, regions: List[Dict[str, Any]
         if block_roi["width_ratio"] <= 0 or block_roi["height_ratio"] <= 0:
             continue
         crop_preview_data_url = None
-        if image is not None:
+        if image is not None and include_detection_diagnostics():
             left = max(0, int(round(block_roi["x_ratio"] * image_width)))
             top = max(0, int(round(block_roi["y_ratio"] * image_height)))
             right = min(image_width, int(round((block_roi["x_ratio"] + block_roi["width_ratio"]) * image_width)))
@@ -4370,10 +4376,11 @@ class VerificationService:
 
             if image_path:
                 try:
-                    cropped = _crop_anchor_roi_to_temp(image_path, field["roi"], field.get("roi_padding") or 0)
-                    current_crop_preview_data_url = _image_path_to_data_url(cropped)
-                    if cropped:
-                        Path(cropped).unlink(missing_ok=True)
+                    if include_detection_diagnostics():
+                        cropped = _crop_anchor_roi_to_temp(image_path, field["roi"], field.get("roi_padding") or 0)
+                        current_crop_preview_data_url = _image_path_to_data_url(cropped)
+                        if cropped:
+                            Path(cropped).unlink(missing_ok=True)
                     if field["id"] in text_ocr_errors:
                         raise OcrUnavailableError(text_ocr_errors[field["id"]])
                     ocr_result = text_ocr_cache.get(field["id"])
@@ -4546,10 +4553,11 @@ class VerificationService:
         current_crop_preview_data_url = None
         if image_path:
             try:
-                cropped = _crop_anchor_roi_to_temp(image_path, field["roi"], field.get("roi_padding") or 0)
-                current_crop_preview_data_url = _image_path_to_data_url(cropped)
-                if cropped:
-                    Path(cropped).unlink(missing_ok=True)
+                if include_detection_diagnostics():
+                    cropped = _crop_anchor_roi_to_temp(image_path, field["roi"], field.get("roi_padding") or 0)
+                    current_crop_preview_data_url = _image_path_to_data_url(cropped)
+                    if cropped:
+                        Path(cropped).unlink(missing_ok=True)
                 cache_key = _verification_roi_cache_key(image_path, field["roi"], 0, "text_ocr")
                 text_cache = runtime_cache.setdefault("text_ocr", {}) if runtime_cache is not None else None
                 if text_cache is not None and cache_key in text_cache:

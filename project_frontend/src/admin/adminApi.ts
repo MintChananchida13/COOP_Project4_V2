@@ -1,3 +1,4 @@
+import { createDetectionCandidateResolver } from "../shared/detectionCandidateResolver";
 import { abortableDelay } from "../shared/abortableDelay";
 ﻿import {
   AdminTemplateRequest,
@@ -1380,14 +1381,14 @@ function mapDetectionCandidate(candidate: Record<string, unknown>): DetectionCan
   };
 }
 
-function mapDetectionPage(page: Record<string, unknown>): DetectionPageResult {
+function mapDetectionPage(page: Record<string, unknown>, mapCandidate = mapDetectionCandidate): DetectionPageResult {
   return {
     processingImagePreviewUrl: (page.processing_image_preview_url as string | null | undefined) ?? null,
     processingTemplateId: (page.processing_template_id as string | null | undefined) ?? null,
     pageIndex: typeof page.page_index === "number" ? page.page_index : 1,
     matched: Boolean(page.matched),
-    bestCandidate: page.best_candidate ? mapDetectionCandidate(page.best_candidate as Record<string, unknown>) : null,
-    candidates: Array.isArray(page.candidates) ? (page.candidates as Record<string, unknown>[]).map(mapDetectionCandidate) : [],
+    bestCandidate: page.best_candidate ? mapCandidate(page.best_candidate as Record<string, unknown>) : null,
+    candidates: Array.isArray(page.candidates) ? (page.candidates as Record<string, unknown>[]).map(mapCandidate) : [],
     imagePreviewDataUrl: (page.image_preview_data_url as string | null | undefined) ?? null,
     originalImagePreviewUrl: (page.original_image_preview_url as string | null | undefined) ?? null,
     normalizedImagePreviewUrl: (page.normalized_image_preview_url as string | null | undefined) ?? null,
@@ -2400,15 +2401,16 @@ export const failEmbeddingJobDev = async (jobId: string) =>
   );
 
 function mapDetectionDevResult(data: Record<string, unknown> | undefined): DetectionDevResult {
-  const candidates = Array.isArray(data?.candidates) ? (data.candidates as Record<string, unknown>[]).map(mapDetectionCandidate) : [];
-  const pages = Array.isArray(data?.pages) ? (data.pages as Record<string, unknown>[]).map(mapDetectionPage) : [];
+  const resolveCandidate = createDetectionCandidateResolver(data?.candidate_pool, mapDetectionCandidate);
+  const candidates = Array.isArray(data?.candidates) ? (data.candidates as Record<string, unknown>[]).map(resolveCandidate) : [];
+  const pages = Array.isArray(data?.pages) ? (data.pages as Record<string, unknown>[]).map(page => mapDetectionPage(page, resolveCandidate)) : [];
   return {
     queryId: String(data?.query_id || ""),
     engine: String(data?.engine || "stub"),
     version: String(data?.version || "phase7.0"),
     threshold: typeof data?.threshold === "number" ? data.threshold : 0.75,
     matched: Boolean(data?.matched),
-    bestCandidate: data?.best_candidate ? mapDetectionCandidate(data.best_candidate as Record<string, unknown>) : null,
+    bestCandidate: data?.best_candidate ? resolveCandidate(data.best_candidate as Record<string, unknown>) : null,
     candidates,
     pages,
     mainPageAutoRoiPages: Array.isArray(data?.main_page_auto_roi_pages)
@@ -2447,6 +2449,7 @@ export const detectTemplateDev = async (
   const queryParams = new URLSearchParams();
   if (options.standardTop5) queryParams.set("standardTop5", "1");
   if (options.context) queryParams.set("context", options.context);
+  if (options.context !== "admin") queryParams.set("candidateFormat", "pool-v1");
   const query = queryParams.toString() ? `?${queryParams.toString()}` : "";
   const uploadStartedAt = performance.now();
   const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/api/templates/detect-dev${query}`, {
@@ -2724,7 +2727,7 @@ function mapPrepublishDetectionTestResult(data: Record<string, unknown>, templat
     ? (data.candidates as Record<string, unknown>[]).map(mapPrepublishCandidate)
     : [];
   const pages = Array.isArray(data.pages)
-    ? (data.pages as Record<string, unknown>[]).map(mapDetectionPage)
+    ? (data.pages as Record<string, unknown>[]).map(page => mapDetectionPage(page))
     : [];
   const separation = (data.separation_result as Record<string, unknown> | undefined) || {};
   return {

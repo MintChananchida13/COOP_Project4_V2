@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from app.auth.auth_service import authenticate_user, create_access_token, create_user
 from app.core.db import connect as connect_db
-from app.api.detection_response import user_detection_response, without_image_payloads
+from app.api.detection_response import without_image_payloads
 from app.api.schemas import (
     ApiResponse,
     AuthLoginRequest,
@@ -199,7 +199,7 @@ def _run_prepublish_detection_job(job_id: str, template_id: str, file_bytes: byt
         clear_layout_analysis_cache()
 
 
-def _run_detect_dev_job(job_id: str, image_bytes: bytes, standard_top5: bool = False, admin_context: bool = False) -> None:
+def _run_detect_dev_job(job_id: str, image_bytes: bytes, standard_top5: bool = False, admin_context: bool = False, compact_candidates: bool = False) -> None:
     started_at = time.perf_counter()
     with detect_dev_jobs_lock:
         job = detect_dev_jobs.get(job_id)
@@ -218,10 +218,10 @@ def _run_detect_dev_job(job_id: str, image_bytes: bytes, standard_top5: bool = F
         result = detect_template_dev(
             image_bytes,
             use_image_batch_for_verification=admin_context,
+            user_context=not admin_context,
+            compact_candidates=compact_candidates and not admin_context,
             **detect_kwargs,
         )
-        if not admin_context:
-            result = user_detection_response(result)
         with detect_dev_jobs_lock:
             job = detect_dev_jobs.get(job_id)
             if job is not None:
@@ -427,7 +427,8 @@ async def detect_template_dev_route(
             "result": None,
             "error": None,
         }
-    background_tasks.add_task(_run_detect_dev_job, job_id, image_bytes, standard_top5, admin_context)
+    compact_candidates = request.query_params.get("candidateFormat") == "pool-v1" and not admin_context
+    background_tasks.add_task(_run_detect_dev_job, job_id, image_bytes, standard_top5, admin_context, compact_candidates)
     response.status_code = 202
     return {"status": "success", "data": {"job_id": job_id, "status": "processing"}}
 

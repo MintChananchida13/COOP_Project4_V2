@@ -1508,8 +1508,8 @@ async def analyze_document_layout(payload: LayoutAnalysisPayload):
 
         return {
             "success": True,
-            "engine": "layout_model_runtime",
-            "model": "PP-DocLayoutV3+PP-OCRv5",
+            "engine": pages[0]["engine"],
+            "model": pages[0]["model"],
             "auto_roi_mode": "text_line",
             "pages": pages,
         }

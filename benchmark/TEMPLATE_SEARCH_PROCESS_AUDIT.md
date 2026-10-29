@@ -11,7 +11,7 @@ behavior remain unverified.
 
 | Case | Path and assessment |
 | --- | --- |
-| standard / strict | Layout retrieval and candidate evaluation. Passing candidates also run extraction tests. Their OCR results are not consumed by the user workspace. |
+| standard / strict | Layout retrieval and anchor verification remain. User detection skips unused extraction tests; Admin keeps diagnostic extraction tests. |
 | layout_only | Layout retrieval and decision; no verification anchors loaded. Extraction ROI metadata remains, but extraction-test OCR is skipped. |
 | text_only, global batch | Loads template anchors, batches text OCR and evaluates candidates. Upfront OCR across templates is a batch strategy tradeoff, not automatically redundant work. |
 | text_only, other batch modes | Delegates to the shared anchor-strategy path. Removed the unused anchor load before delegation. |
@@ -40,19 +40,23 @@ behavior remain unverified.
 
 ## Remaining confirmed opportunities
 
-- **Extraction OCR during search:** the layout candidate path calls
-  `_run_extraction_test` after a successful final decision. That function calls
-  `ocr_rois` for extraction fields. The frontend maps `extraction_test`, but
-  `src/app/page.tsx` does not consume it; the user subsequently runs OCR through
-  `/api/ai/process`. This is distinct from required text-anchor verification.
-  Admin test screens may need extraction-test results. A future change should
-  gate this work by consumer, rather than globally remove it.
-- **Preview generation before response filtering:** the backend still constructs
-  candidate/page previews (including base64) before the user filter discards
-  them. Response size is reduced, but server-side encoding work remains.
-- **Repeated candidate objects:** root best-candidate, candidates and page
-  candidates are still independently mapped. They also duplicate non-image
-  transport data. Consumers and processing logs must be preserved if compacted.
+The three previously confirmed unnecessary User-path costs are now addressed:
+
+- User detection skips `_run_extraction_test` work but retains anchor OCR and
+  image verification required to decide the match. Admin diagnostics retain
+  their original behavior by default.
+- A request-local `ContextVar` policy prevents diagnostic base64 encoding,
+  preview-only text crops and debug-image copies. Only a selected, passing,
+  changed page is encoded for the User workspace. Finalization runs before
+  query-artifact cleanup in all six modes. The scope resets on success/error
+  and is isolated across concurrent User/Admin requests.
+- User clients request `candidateFormat=pool-v1`; candidate variants are interned
+  without merging page-specific and aggregate scores. The frontend resolves and
+  maps each record once, restoring the prior UI/log object contract. Legacy
+  clients receive the legacy shape and new clients accept either shape.
+
+The following are remaining functional work / separate review areas:
+
 - **Repeated PDF boundary detection:** PDF preparation and some post-match paths
   both detect physical boundaries on the original page. Post-match processing
   expands the crop to retain layout content, so removing that stage outright is
@@ -105,3 +109,15 @@ Follow-up verification: 8 loading-policy tests (including executable in-memory
 SQL), Text Only dispatch, 2 timing-output tests, image timing scope, 8 user
 response tests, 17 SigLIP v2.4 tests and 8 SigLIP v2.3 tests passed (45 total).
 No live model or production PostgreSQL session was exercised.
+
+
+## User-only diagnostic and transport follow-up
+
+Regression checks passed: 53 Backend tests and 28 Frontend tests, including
+concurrent User/Admin isolation, extraction-test skipping versus Admin retention,
+lazy final-image encoding, candidate round-trip equality (ROI/verification/log
+metadata), old/new transport compatibility, all-six-mode finalization before
+cleanup, cancellation and existing SigLIP policies. TypeScript, Python compilation,
+new-helper ESLint and whitespace validation passed. Live inference and real browser
+end-to-end performance remain unverified. No matching formula, required-anchor
+rule, threshold or user-triggered OCR behavior was changed.
