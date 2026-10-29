@@ -136,7 +136,6 @@ class LayoutImagePayload(BaseModel):
 class LayoutAnalysisPayload(BaseModel):
     images: List[LayoutImagePayload]
     auto_roi_mode: str = "text_line"
-    timing_details: bool = False
     context: str | None = None
 
 
@@ -1465,9 +1464,7 @@ async def analyze_document_layout(payload: LayoutAnalysisPayload):
     try:
         for page in payload.images:
             _, opencv_img = decode_base64_image(page.image)
-            from app.processing.model_timing import summarize_model_calls
-            layout_timing = {} if payload.timing_details else None
-            analysis = analyze_layout(opencv_img, expand_text_rois=True, auto_roi_mode="text_line", use_text_detection=False, **({"timing": layout_timing} if layout_timing is not None else {}))
+            analysis = analyze_layout(opencv_img, expand_text_rois=True, auto_roi_mode="text_line", use_text_detection=False)
             analysis_regions = analysis.get("regions", [])
             analysis_regions = _dedupe_overlapping_auto_roi_regions(analysis_regions)
             regions = []
@@ -1500,7 +1497,6 @@ async def analyze_document_layout(payload: LayoutAnalysisPayload):
                 {
                     "page_index": page.page_index,
                     "page_number": int(page.page_index) + 1,
-                    **({"timing": summarize_model_calls(layout_timing), "cache_hit": layout_timing.get("cache_hit", False)} if layout_timing is not None else {}),
                     "image_width": analysis["image_width"],
                     "image_height": analysis["image_height"],
                     "engine": analysis["engine"],

@@ -1462,7 +1462,7 @@ def _normalize_query_pages(
                     "matching_path": str(page_path),
                     "normalization": {
                         "normalization_status": "skipped",
-                        "reason": "pdf_rendered_page_used_without_image_normalization",
+                        "reason": "query_page_used_without_image_normalization",
                         "normalized_image_path": str(page_path),
                         "perspective_applied": False,
                         "crop_applied": False,
@@ -5346,7 +5346,7 @@ def detect_template_dev(
     use_image_batch_for_verification: bool = False,
     user_context: bool = False,
     compact_candidates: bool = False,
-    timing_details: bool = False,
+    skip_query_normalization: bool = False,
 ) -> Dict[str, Any]:
     query_id = f"detq_{uuid4().hex[:12]}"
     timing: Dict[str, float] = {}
@@ -5358,7 +5358,7 @@ def detect_template_dev(
         timing["source_type_detection"] = time.perf_counter() - step_started
         step_started = time.perf_counter()
         page_paths = _prepare_query_pages(query_id, file_bytes, timing=timing)
-        skip_normalization = False
+        skip_normalization = skip_query_normalization
         normalized_pages = _normalize_query_pages(
             query_id,
             page_paths,

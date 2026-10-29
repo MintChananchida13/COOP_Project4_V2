@@ -94,21 +94,3 @@ Timing still comes from frontend console measurements and the terminal Backend
 result. Browser end-to-end excludes Excel save/reset. Fetch-clone observation has
 some CPU/RAM instrumentation overhead; no synthetic duration or additional model
 call is added. Model Calls and repeat metadata retain their existing mapping.
-
-
-### Opt-in detailed timing
-
-The browser benchmark requests `timingDetails=1` for detection and
-`timing_details: true` for layout preparation. Normal User requests retain
-summary-only timing; image diagnostics and OCR behavior are unchanged.
-Deploy the updated Backend before rerunning the benchmark. Older Backends may
-return no detailed calls; existing reports cannot reconstruct omitted records.
-
-The main timing sheet appends `templateBundleMs`, `canvasPreparationMs`,
-`roiMappingMs`, `flexibleRoiMs`, `detectionAutoRoiMs`, and `wholePageAutoRoiMs`.
-Model Calls labels detection versus ROI preparation calls with `phase`.
-Layout Requests records each preparation request, browser round-trip duration,
-page cache status, and call count. Cache hits do not fabricate model calls.
-Browser request duration includes response transfer/parsing and is not model
-inference time. Detection summary totals still describe detection only; do not
-add nested stage durations or individual HTTP waits to E2E.

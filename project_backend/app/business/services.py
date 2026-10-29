@@ -6718,6 +6718,7 @@ class AdminTemplateService:
                 full_evaluation_limit_override=5,
                 prepublish_full_evaluation=True,
                 disable_pdf_subdocument_crop=True,
+                skip_query_normalization=True,
                 progress_callback=progress_callback,
                 use_image_batch_for_verification=True,
             )

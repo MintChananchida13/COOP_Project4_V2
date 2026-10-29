@@ -3,11 +3,6 @@
 from contextvars import ContextVar
 from functools import wraps
 
-_TIMING_DETAILS = ContextVar('detection_timing_details', default=False)
-
-def include_timing_details():
-    return _TIMING_DETAILS.get()
-
 _USER_DETECTION = ContextVar('user_detection', default=False)
 _COMPACT_CANDIDATES = ContextVar('compact_detection_candidates', default=False)
 
@@ -23,13 +18,11 @@ def compact_detection_candidates() -> bool:
 def detection_work_scope(function):
     @wraps(function)
     def wrapped(*args, **kwargs):
-        details_token = _TIMING_DETAILS.set(bool(kwargs.get('timing_details', False)))
         token = _USER_DETECTION.set(bool(kwargs.get('user_context', False)))
         compact_token = _COMPACT_CANDIDATES.set(bool(kwargs.get('compact_candidates', False)))
         try:
             return function(*args, **kwargs)
         finally:
-            _TIMING_DETAILS.reset(details_token)
             _COMPACT_CANDIDATES.reset(compact_token)
             _USER_DETECTION.reset(token)
     return wrapped

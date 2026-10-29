@@ -1,7 +1,6 @@
 ﻿"use client";
 
 import { ArrowLeft, GripVertical, Loader2, ScanSearch } from "lucide-react";
-import SiglipDecisionDetails from "../../shared/SiglipDecisionDetails";
 import { DragEvent, SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WorkspacePage } from "../../shared/workspace/BaseWorkspace";
 import { authHeaders } from "../../auth/session";
@@ -1353,7 +1352,6 @@ export default function WorkspaceTemplateEditorV2({
                 {item.siglipTargetRank !== null && item.siglipTargetRank !== undefined && (
                   <span className="rounded bg-indigo-100 px-1.5 py-0.5 text-indigo-700">Raw Rank {item.siglipTargetRank}</span>
                 )}
-                <SiglipDecisionDetails decision={item.siglipDecision} verificationPassed={Boolean(item.passed)} />
                 {item.failureReason && !item.passed && (
                   <span className="rounded bg-red-100 px-1.5 py-0.5 text-red-700">{item.failureReason}</span>
                 )}

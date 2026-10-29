@@ -4,8 +4,6 @@ const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
 const ts = require('typescript');
-const React = require('react');
-const { renderToStaticMarkup } = require('react-dom/server');
 
 const trace = {
   scoring_version: 'siglip-single-prompt-v2.4', raw_top1_category: 'thai_garuda', raw_top1_logit: 8.1,
@@ -35,21 +33,4 @@ test('frontend maps final decision without selecting prediction from UI percenta
   assert.equal(item.siglipDecision.decision_reason, 'negative_category_won');
   assert.equal(item.siglipTargetRank, 1);
   assert.equal(context.map({}).siglipDecision, null);
-});
-
-test('server-rendered diagnostic UI separates ranking, prediction, reason, gates and verification', () => {
-  const filename = path.resolve(__dirname, '../src/shared/SiglipDecisionDetails.tsx');
-  const code = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
-    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
-  }).outputText;
-  const exports = {};
-  vm.runInNewContext(code, { exports, require });
-  const html = renderToStaticMarkup(React.createElement(exports.default, { decision: trace, verificationPassed: true }));
-  for (const label of ['Raw Positive Ranking', 'Final Prediction', 'Decision Reason', 'Verification Result',
-    'not_applied', 'not probability', 'raw logits', 'siglip-single-prompt-v2.4', 'disabled']) {
-    assert.ok(html.includes(label), label);
-  }
-  assert.equal(renderToStaticMarkup(React.createElement(exports.default, { verificationPassed: false })), '');
-  const parent = fs.readFileSync(path.resolve(__dirname, '../src/admin/workspace/WorkspaceTemplateEditorV2.tsx'), 'utf8');
-  assert.ok(parent.includes('<SiglipDecisionDetails decision={item.siglipDecision}'));
 });

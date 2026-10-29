@@ -968,7 +968,6 @@ def analyze_layout(
     expand_text_rois: bool = False,
     auto_roi_mode: AutoRoiMode = "text_line",
     use_text_detection: bool = True,
-    timing: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if image is None or image.size == 0:
         raise ValueError("Invalid image for layout analysis.")
@@ -977,8 +976,6 @@ def analyze_layout(
     height, width = image.shape[:2]
     source_mode = "layout_text_detection" if use_text_detection else _RAW_LAYOUT_ONLY_CACHE_MODE
     raw_items = _get_cached_layout_raw_items(image, source_mode)
-    if timing is not None:
-        timing["cache_hit"] = raw_items is not None
     if raw_items is None:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
             temp_path = temp_file.name
@@ -992,7 +989,7 @@ def analyze_layout(
                 " and TextDetection" if use_text_detection else "",
             )
             try:
-                layout_result = remote_analyze_layout(image, timing=timing) if timing is not None else remote_analyze_layout(image)
+                layout_result = remote_analyze_layout(image)
             except ModelRuntimeUnavailableError as error:
                 raise LayoutAnalysisUnavailableError(str(error)) from error
             except Exception as error:

@@ -129,9 +129,6 @@ def user_detection_response(value: dict, *, preview_loader=None, compact_candida
             if isinstance(item, (int, float, bool)) or item is None
         },
     }
-    from app.processing.detection_work_policy import include_timing_details
-    if include_timing_details():
-        result["debug"]["timing"]["model_calls"] = timing.get("model_calls") or []
     return compact_user_candidates(result) if compact_candidates else result
 
 
