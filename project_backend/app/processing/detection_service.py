@@ -5343,6 +5343,7 @@ def detect_template_dev(
     use_image_batch_for_verification: bool = False,
     user_context: bool = False,
     compact_candidates: bool = False,
+    timing_details: bool = False,
 ) -> Dict[str, Any]:
     query_id = f"detq_{uuid4().hex[:12]}"
     timing: Dict[str, float] = {}

@@ -28,13 +28,14 @@ LEGACY_METRICS = (
 FRONTEND_METRICS = ("frontend_response_json_ms", "frontend_response_processing_ms", "frontend_result_preparation_ms",
                     "frontend_state_to_commit_ms", "frontend_response_to_commit_ms", "frontend_flow_complete_ms",
                     "frontend_result_visible_ms", "frontend_preview_ready_ms", "frontend_ui_ready_ms", "frontend_commit_end_to_end_ms")
-METRICS = (*LEGACY_METRICS, *FRONTEND_METRICS)
+PREPARATION_METRICS = ("templateBundleMs", "canvasPreparationMs", "roiMappingMs", "flexibleRoiMs", "detectionAutoRoiMs", "wholePageAutoRoiMs")
+METRICS = (*LEGACY_METRICS, *FRONTEND_METRICS, *PREPARATION_METRICS)
 HEADERS = ("file", "run_number", "runs_per_file", "expected_mode", "actual_mode", "status", "matched", "query_id", "ocr_status", "ocr_wall_ms", "error", "model_intervals_overlap", "model_call_count", "model_timing_missing_reason", *LEGACY_METRICS, "timing_missing_reasons", "job_id", "error_type", "job_status", "capture_errors", *FRONTEND_METRICS,
-           "frontend_visibility_status", "frontend_visibility_reason", "frontend_timing_kind", "frontend_run_token", "benchmark_run_token")
+           "frontend_visibility_status", "frontend_visibility_reason", "frontend_timing_kind", "frontend_run_token", "benchmark_run_token", *PREPARATION_METRICS)
 CALL_KEYS = ("call_id", "kind", "http_request_ms", "model_load_ms", "queue_wait_ms",
              "inference_lock_wait_ms", "inference_ms", "serialization_ms", "service_total_runtime_ms",
              "runs_per_file", "endpoint", "model_call_start_monotonic", "model_call_end_monotonic", "model_timings", "conflicting_record")
-MODEL_CALL_HEADERS = ("file", "run_number", "actual_mode", *CALL_KEYS)
+MODEL_CALL_HEADERS = ("file", "run_number", "actual_mode", *CALL_KEYS, "phase", "layout_request_index", "browser_request_ms", "cache_hit")
 UNMEASURABLE = {
     "frontend_to_backend_ms": "one_way_network_not_measurable",
     "backend_to_frontend_ms": "one_way_network_not_measurable",
@@ -60,8 +61,29 @@ CAPTURE_FETCH = r"""(() => {
     const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url, location.href);
     const method = (options?.method || input?.method || 'GET').toUpperCase();
     const post = method === 'POST' && url.pathname === '/api/templates/detect-dev';
+    const layout = method === 'POST' && url.pathname === '/api/layout/analyze';
     const poll = method === 'GET' && url.pathname.match(/^\/api\/templates\/detect-dev\/jobs\/([^/]+)$/);
-    if (!state || (!post && !poll)) return original(input, options);
+    if (!state || (!post && !poll && !layout)) return original(input, options);
+    if (post) {
+      url.searchParams.set('timingDetails', '1');
+      input = typeof Request !== 'undefined' && input instanceof Request ? new Request(url, input) : url.toString();
+    }
+    if (layout) {
+      const started = performance.now();
+      const index = (state.layoutRequestCount = (state.layoutRequestCount || 0) + 1);
+      state.pending++;
+      const finishLayout = () => { state.pending--; };
+      try {
+        const body = typeof options?.body === 'string' ? options.body : await input.clone().text();
+        options = {...options, body: JSON.stringify({...JSON.parse(body), timing_details: true})};
+        const response = await original(input, options);
+        response.clone().json().then(data => {
+          const requests = state.layoutRequests || (state.layoutRequests = []);
+          requests.push({index, browser_request_ms: performance.now() - started, pages: data.pages || [], ok: response.ok});
+        }).catch(() => state.errors.push('Layout timing capture failed')).finally(finishLayout);
+        return response;
+      } catch (error) { finishLayout(); throw error; }
+    }
     state.pending++;
     if (post && ++state.posts > 1) state.errors.push('Multiple detection submissions in one run');
     const finish = () => { state.pending--; };
@@ -101,7 +123,7 @@ CAPTURE_FETCH = r"""(() => {
 RUN_SNAPSHOT = """() => {
   const state = window.__ocrBenchmarkRun;
   return state ? {token: state.token, job_id: state.job_id, pending: state.pending,
-    posts: state.posts, errors: state.errors, job: state.jobs[state.job_id] || null,
+    posts: state.posts, errors: state.errors, layoutRequests: state.layoutRequests || [], job: state.jobs[state.job_id] || null,
     tables: window.__ocrBenchmarkTables || []} : null;
 }"""
 
@@ -146,6 +168,16 @@ def actual_mode(result):
     debug = debug if isinstance(debug, dict) else {}
     return (candidate.get("verification_strategy") or candidate.get("verificationStrategy")
             or debug.get("verification_strategy") or result.get("verification_strategy"))
+
+
+def collect_model_calls(timing, snapshot):
+    calls = [{**call, "phase": "template_detection"} for call in timing.get("model_calls") or []]
+    for request in snapshot.get("layoutRequests") or []:
+        for page in request.get("pages") or []:
+            for call in (page.get("timing") or {}).get("model_calls") or []:
+                calls.append({**call, "phase": "roi_preparation_layout", "layout_request_index": request.get("index"),
+                              "browser_request_ms": request.get("browser_request_ms"), "cache_hit": page.get("cache_hit")})
+    return calls
 
 
 def valid_duration(value):
@@ -208,6 +240,15 @@ def save_excel(path, rows):
         for call in row.get("_model_calls", []):
             record = {**call, **{key: row.get(key) for key in ("file", "run_number", "actual_mode", "runs_per_file")}}
             calls_sheet.append([excel_value(valid_duration(record.get(key)) if key.endswith("_ms") else record.get(key)) for key in MODEL_CALL_HEADERS])
+    layout_sheet = workbook.create_sheet("Layout Requests")
+    layout_sheet.append(("file", "run_number", "request_index", "browser_request_ms", "ok", "page_index", "cache_hit", "model_call_count"))
+    for row in rows:
+        for request in row.get("_layout_requests", []):
+            for page in request.get("pages") or [{}]:
+                layout_sheet.append([excel_value(value) for value in (row.get("file"), row.get("run_number"), request.get("index"),
+                    request.get("browser_request_ms"), request.get("ok"), page.get("page_index"), page.get("cache_hit"),
+                    (page.get("timing") or {}).get("model_call_count"))])
+    layout_sheet.freeze_panes = "A2"
     calls_sheet.freeze_panes = "A2"
     calls_sheet.auto_filter.ref = calls_sheet.dimensions
     try:
@@ -340,7 +381,8 @@ def run_case(page, path, expected_mode, timeout_ms):
         if row["end_to_end_ms"] is not None:
             reasons.pop("end_to_end_ms", None)
         row["timing_missing_reasons"] = {key: reasons.get(key, "measurement_missing_or_invalid") for key in METRICS if row[key] is None}
-        row["_model_calls"] = timing.get("model_calls") or []
+        row["_model_calls"] = collect_model_calls(timing, snapshot or {})
+        row["_layout_requests"] = (snapshot or {}).get("layoutRequests") or []
         row["actual_mode"] = actual_mode(result)
         row["matched"] = result.get("matched")
         row["query_id"] = result.get("query_id") or result.get("queryId")
