@@ -431,12 +431,14 @@ async def detect_template_dev_route(
     response: Response,
 ) -> dict:
     _ensure_processing_available_for_request(request)
-    confirmed_images = request.query_params.get("confirmedImages") == "1" and not _is_admin_processing_context(request)
+    admin_context = _is_admin_processing_context(request)
+    confirmed_images = request.query_params.get("confirmedImages") == "1" and not admin_context
+    if not admin_context and not confirmed_images:
+        raise HTTPException(status_code=400, detail="Template search requires confirmed image pages from AdjustZone")
     image_bytes = await _read_dev_detection_image(request, confirmed_images=confirmed_images)
     if confirmed_images and not isinstance(image_bytes, list):
         raise HTTPException(status_code=400, detail="Confirmed pages must use multipart image uploads")
     standard_top5 = request.query_params.get("standardTop5") in {"1", "true", "yes"}
-    admin_context = _is_admin_processing_context(request)
     trace_id = request.query_params.get("benchmark_trace_id")
     if trace_id and (len(trace_id) != 32 or any(c not in "0123456789abcdef" for c in trace_id)):
         raise HTTPException(status_code=400, detail="Invalid benchmark trace ID")

@@ -15,6 +15,51 @@ class Request:
     async def body(self): return self._body
 
 class ConfirmedPagesTests(unittest.TestCase):
+    def test_admin_worker_keeps_boundary_detection_enabled(self):
+        key = "test-admin-boundary"
+        routes.detect_dev_jobs[key] = {}
+        try:
+            with patch.object(routes, "detect_template_dev", return_value={"matched": False}) as call:
+                routes._run_detect_dev_job(key, b"image", admin_context=True)
+            self.assertFalse(call.call_args.kwargs["skip_query_normalization"])
+            self.assertFalse(call.call_args.kwargs["user_context"])
+        finally:
+            routes.detect_dev_jobs.pop(key, None)
+
+    def test_admin_pdf_one_page_checks_boundary_but_multiple_pages_do_not(self):
+        from pathlib import Path
+        with patch.object(Path, "mkdir"), patch.object(detection, "_storage_path", return_value=Path("test")), \
+                patch.object(detection, "_image_dimensions", return_value=(800, 1100)), \
+                patch.object(detection, "_copy_debug_image", return_value=None), \
+                patch.object(detection, "_save_debug_crop", return_value=None), \
+                patch.object(detection.normalization_service, "detect_pdf_subdocument_boundary", return_value={"passed": False, "reason": "none"}) as boundary:
+            detection._normalize_query_pages("q", [Path("page.png")], source_type="pdf")
+            self.assertEqual(boundary.call_count, 1)
+            boundary.reset_mock()
+            detection._normalize_query_pages("q", [Path("p1.png"), Path("p2.png")], source_type="pdf")
+            boundary.assert_not_called()
+
+    def test_admin_image_checks_boundary_but_confirmed_user_image_does_not(self):
+        from pathlib import Path
+        info = {"normalized_image_path": "normal.png", "normalization_status": "skipped", "crop_applied": False}
+        with patch.object(Path, "mkdir"), patch.object(detection, "_storage_path", return_value=Path("test")), \
+                patch.object(detection, "_image_dimensions", return_value=(800, 600)), \
+                patch.object(detection.normalization_service, "normalize_document", return_value=info) as normalize:
+            detection._normalize_query_pages("q", [Path("page.png")], source_type="image")
+            normalize.assert_called_once()
+            normalize.reset_mock()
+            pages = detection._normalize_query_pages("q", [Path("page.png")], source_type="image", skip_normalization=True)
+            normalize.assert_not_called()
+            self.assertEqual(pages[0]["matching_path"], "page.png")
+
+    def test_user_search_rejects_unconfirmed_upload(self):
+        request = Request(multipart(b"page"), {})
+        with patch.object(routes, "_ensure_processing_available_for_request"):
+            with self.assertRaises(HTTPException) as error:
+                asyncio.run(routes.detect_template_dev_route(request, BackgroundTasks(), Response()))
+        self.assertEqual(error.exception.status_code, 400)
+        self.assertIn("confirmed image pages", error.exception.detail)
+
     def test_confirmed_pages_remain_separate_and_in_order(self):
         data=multipart(b'page-one',b'page-two')
         with patch.object(routes,"_images_to_pdf_bytes") as convert:
