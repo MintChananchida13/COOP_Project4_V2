@@ -199,8 +199,10 @@ def _run_prepublish_detection_job(job_id: str, template_id: str, file_bytes: byt
         clear_layout_analysis_cache()
 
 
-def _run_detect_dev_job(job_id: str, image_bytes: bytes | list[bytes], standard_top5: bool = False, admin_context: bool = False, compact_candidates: bool = False, confirmed_images: bool = False) -> None:
+def _run_detect_dev_job(job_id: str, image_bytes: bytes | list[bytes], standard_top5: bool = False, admin_context: bool = False, compact_candidates: bool = False, confirmed_images: bool = False, benchmark_trace_id: str | None = None) -> None:
     started_at = time.perf_counter()
+    from app.processing import search_benchmark
+    benchmark_state, benchmark_token = search_benchmark.begin(benchmark_trace_id) if benchmark_trace_id else (None, None)
     with detect_dev_jobs_lock:
         job = detect_dev_jobs.get(job_id)
         if job is not None:
@@ -226,6 +228,10 @@ def _run_detect_dev_job(job_id: str, image_bytes: bytes | list[bytes], standard_
         with detect_dev_jobs_lock:
             job = detect_dev_jobs.get(job_id)
             if job is not None:
+                if benchmark_state is not None:
+                    benchmark_ended = time.perf_counter()
+                    search_benchmark.record_span(benchmark_trace_id, "search", started_at, benchmark_ended)
+                    job["benchmark_timing"] = search_benchmark.metrics(benchmark_state, (benchmark_ended - started_at) * 1000)
                 job["status"] = "completed"
                 job["result"] = result
         matched = bool(result.get("matched")) if isinstance(result, dict) else False
@@ -239,6 +245,10 @@ def _run_detect_dev_job(job_id: str, image_bytes: bytes | list[bytes], standard_
         with detect_dev_jobs_lock:
             job = detect_dev_jobs.get(job_id)
             if job is not None:
+                if benchmark_state is not None:
+                    benchmark_ended = time.perf_counter()
+                    search_benchmark.record_span(benchmark_trace_id, "search", started_at, benchmark_ended)
+                    job["benchmark_timing"] = search_benchmark.metrics(benchmark_state, (benchmark_ended - started_at) * 1000)
                 job["status"] = "failed"
                 job["error"] = str(error)
         reason = " ".join(str(error).split())[:240]
@@ -249,6 +259,8 @@ def _run_detect_dev_job(job_id: str, image_bytes: bytes | list[bytes], standard_
             reason,
         )
     finally:
+        if benchmark_token is not None:
+            search_benchmark.end(benchmark_token)
         clear_layout_analysis_cache()
 
 
@@ -425,6 +437,9 @@ async def detect_template_dev_route(
         raise HTTPException(status_code=400, detail="Confirmed pages must use multipart image uploads")
     standard_top5 = request.query_params.get("standardTop5") in {"1", "true", "yes"}
     admin_context = _is_admin_processing_context(request)
+    trace_id = request.query_params.get("benchmark_trace_id")
+    if trace_id and (len(trace_id) != 32 or any(c not in "0123456789abcdef" for c in trace_id)):
+        raise HTTPException(status_code=400, detail="Invalid benchmark trace ID")
     job_id = f"detectdev_{uuid4().hex}"
     with detect_dev_jobs_lock:
         detect_dev_jobs[job_id] = {
@@ -434,7 +449,8 @@ async def detect_template_dev_route(
             "error": None,
         }
     compact_candidates = request.query_params.get("candidateFormat") == "pool-v1" and not admin_context
-    background_tasks.add_task(_run_detect_dev_job, job_id, image_bytes, standard_top5, admin_context, compact_candidates, confirmed_images)
+    args = (job_id, image_bytes, standard_top5, admin_context, compact_candidates, confirmed_images)
+    background_tasks.add_task(_run_detect_dev_job, *args, **({"benchmark_trace_id": trace_id} if trace_id else {}))
     response.status_code = 202
     return {"status": "success", "data": {
         "job_id": job_id,
@@ -457,12 +473,22 @@ def get_detect_template_dev_job(job_id: str, request: Request) -> dict:
             response["result"] = job.get("result")
         if job.get("status") == "failed":
             response["error"] = job.get("error") or "Detection job failed."
+        if job.get("benchmark_timing") is not None:
+            response["benchmark_timing"] = job["benchmark_timing"]
         logger.info(
             "[Polling] GET %s 200 OK status=%s",
             request.url.path,
             response["status"],
         )
         return {"status": "success", "data": response}
+
+
+@router.get("/api/benchmark/template-search/{trace_id}")
+def get_template_search_benchmark(trace_id: str, expected_post_requests: int = Query(0, ge=0, le=10000)) -> dict:
+    from app.processing.search_benchmark import span_metrics
+    if len(trace_id) != 32 or any(c not in "0123456789abcdef" for c in trace_id):
+        raise HTTPException(status_code=400, detail="Invalid benchmark trace ID")
+    return {"status": "success", "data": span_metrics(trace_id, expected_post_requests)}
 
 
 @router.post("/processing-logs", response_model=ApiResponse)

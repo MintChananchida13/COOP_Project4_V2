@@ -23,7 +23,7 @@ test('real polling function measures only terminal response JSON and synchronous
   const context = vm.createContext({ URLSearchParams, FormData: class { append() {} },
     performance: { now: () => clock++ }, ADMIN_API_BASE_URL: 'http://backend',
     fetchWithAuth: async () => ({ ok: true, json: async () => { clock += 5; return responses.shift(); } }),
-    sleep: async () => { clock += 1000; }, asRecord: value => value,
+    abortableDelay: async () => { clock += 1000; }, asRecord: value => value,
     mapDetectionDevResult: value => { mapped++; clock += 3; return value; } });
   vm.runInContext(code, context);
   const timing = {};

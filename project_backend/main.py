@@ -44,6 +44,7 @@ from app.core.model_runtime_client import configured_runtimes
 from app.business.image_verification_category_service import ensure_image_verification_categories_table
 from app.business.services import GlobalSettingsService
 from app.processing import published_template_cache
+from app.processing.search_benchmark_middleware import SearchBenchmarkMiddleware
 
 # Force UTF-8 console output on Windows.
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
@@ -137,6 +138,7 @@ class LayoutAnalysisPayload(BaseModel):
     images: List[LayoutImagePayload]
     auto_roi_mode: str = "text_line"
     context: str | None = None
+    benchmark_trace_id: str | None = None
 
 
 app = FastAPI(title="OCR AI Engine")
@@ -159,6 +161,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SearchBenchmarkMiddleware)
 
 app.mount(
     "/debug/detection-queries",
@@ -1460,6 +1463,12 @@ async def analyze_document_layout(payload: LayoutAnalysisPayload):
     if not payload.images:
         raise HTTPException(status_code=400, detail="At least one page image is required.")
 
+    from app.processing import search_benchmark
+    trace_id = payload.benchmark_trace_id
+    if trace_id and (len(trace_id) != 32 or any(c not in "0123456789abcdef" for c in trace_id)):
+        raise HTTPException(status_code=400, detail="Invalid benchmark trace ID")
+    benchmark_started = time.perf_counter()
+    benchmark_state, benchmark_token = search_benchmark.begin(trace_id) if trace_id else (None, None)
     pages: List[Dict[str, Any]] = []
     try:
         for page in payload.images:
@@ -1512,6 +1521,7 @@ async def analyze_document_layout(payload: LayoutAnalysisPayload):
             "model": pages[0]["model"],
             "auto_roi_mode": "text_line",
             "pages": pages,
+            **({"benchmark_timing": search_benchmark.metrics(benchmark_state, (time.perf_counter() - benchmark_started) * 1000)} if benchmark_state is not None else {}),
         }
     except LayoutAnalysisUnavailableError as err:
         raise HTTPException(status_code=503, detail=str(err))
@@ -1521,3 +1531,6 @@ async def analyze_document_layout(payload: LayoutAnalysisPayload):
 
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(err))
+    finally:
+        if benchmark_token is not None:
+            search_benchmark.end(benchmark_token)

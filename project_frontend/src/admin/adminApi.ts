@@ -2476,8 +2476,10 @@ export const detectTemplateDev = async (
   if (options.confirmedImages && options.context !== "admin") queryParams.set("confirmedImages", "1");
   if (options.context) queryParams.set("context", options.context);
   if (options.context !== "admin") queryParams.set("candidateFormat", "pool-v1");
+  if (options.timing?.traceId) queryParams.set("benchmark_trace_id", options.timing.traceId);
   const query = queryParams.toString() ? `?${queryParams.toString()}` : "";
   const uploadStartedAt = performance.now();
+  if (options.timing?.startedAt !== undefined) options.timing.frontendPreparationMs = Math.round((uploadStartedAt - options.timing.startedAt) * 100) / 100;
   const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/api/templates/detect-dev${query}`, {
     method: "POST",
     body: formData,
@@ -2486,6 +2488,7 @@ export const detectTemplateDev = async (
   const json = await response.json().catch(() => null);
   options.signal?.throwIfAborted();
   if (options.timing) options.timing.uploadJobMs = Math.round((performance.now() - uploadStartedAt) * 100) / 100;
+  if (options.timing) options.timing.requestRoundTripMs = options.timing.uploadJobMs;
   if (!response.ok) {
     const detail = json?.detail || json?.error?.message || json?.error || `Detection failed with ${response.status}`;
     const maintenanceError = typeof detail === "object" ? detail?.error : null;
@@ -2505,13 +2508,18 @@ export const detectTemplateDev = async (
     throw new Error("Backend ยังไม่รองรับภาพที่ยืนยันแล้ว กรุณาอัปเดต Backend");
   }
   const jobId = typeof initialData?.job_id === "string" ? initialData.job_id : "";
+  if (options.timing) options.timing.jobId = jobId || undefined;
   if (!jobId) {
     return mapResult(initialData);
   }
 
   const pollingStartedAt = performance.now();
+  let pollingWaitMs = 0;
   while (true) {
+    const delayStartedAt = performance.now();
     await abortableDelay(1000, options.signal);
+    pollingWaitMs += performance.now() - delayStartedAt;
+    const pollStartedAt = performance.now();
     const pollResponse = await fetchWithAuth(`${ADMIN_API_BASE_URL}/api/templates/detect-dev/jobs/${jobId}`, {
       method: "GET",
       cache: "no-store",
@@ -2526,6 +2534,16 @@ export const detectTemplateDev = async (
       throw new Error(typeof detail === "string" ? detail : `Detection job failed with ${pollResponse.status}`);
     }
     const job = pollJson?.data as Record<string, unknown> | undefined;
+    if (options.timing) {
+      options.timing.pollingWaitMs = Math.round(pollingWaitMs * 100) / 100;
+      if (job?.status === "completed" || job?.status === "failed") {
+        options.timing.resultFetchMs = Math.round((responseParsedAt - pollStartedAt) * 100) / 100;
+        options.timing.benchmarkTiming = asRecord(job?.benchmark_timing);
+      } else {
+        pollingWaitMs += responseParsedAt - pollStartedAt;
+        options.timing.pollingWaitMs = Math.round(pollingWaitMs * 100) / 100;
+      }
+    }
     if (job?.status === "completed") {
       if (options.timing) {
         options.timing.frontendResponseHeadersAt = responseHeadersAt;

@@ -26,7 +26,7 @@ import { createImageCropCache, roiCropKey } from "../shared/imageCropCache";
 import AuthGate from "../auth/AuthGate";
 import { AuthSession, authHeaders, clearAuthSession, readAuthSession } from "../auth/session";
 import { AppHeader } from "../shared/ui";
-import { backendTimingMetric, browserTiming, frontendCompletionTiming, type DetectionTransportTiming } from "../shared/browserTiming";
+import { backendTimingMetric, browserTiming, frontendCompletionTiming, summarizeLayoutCalls, type DetectionTransportTiming } from "../shared/browserTiming";
 import { elementReady, observeResultVisibility, visibilityMetrics } from "../shared/resultVisibility";
 
 interface PageConfig {
@@ -448,8 +448,9 @@ async function imageUrlToCanvasSafeSrc(src: string, signal?: AbortSignal) {
   return blobToDataUrl(await response.blob());
 }
 
-async function analyzeLayoutForUserImage(imageDataUrl: string, signal?: AbortSignal) {
+async function analyzeLayoutForUserImage(imageDataUrl: string, signal?: AbortSignal, timing?: DetectionTransportTiming) {
   signal?.throwIfAborted();
+  try {
   const response = await fetch(`${ADMIN_API_BASE_URL}/api/layout/analyze`, {
     method: "POST",
     signal,
@@ -457,10 +458,16 @@ async function analyzeLayoutForUserImage(imageDataUrl: string, signal?: AbortSig
     body: JSON.stringify({
       auto_roi_mode: "text_line",
       context: "flexible",
+      ...(timing?.traceId ? { benchmark_trace_id: timing.traceId } : {}),
       images: [{ page_index: 0, image: imageDataUrl }],
     }),
   });
   const data = await response.json().catch(() => null);
+  if (timing?.traceId && data?.benchmark_timing?.trace_id === timing.traceId) {
+    (timing.layoutRequests ??= []).push(data.benchmark_timing);
+  } else if (timing?.traceId) {
+    timing.layoutTelemetryIncomplete = true;
+  }
   signal?.throwIfAborted();
   if (!response.ok) {
     throwIfMaintenanceResponse(data);
@@ -468,6 +475,10 @@ async function analyzeLayoutForUserImage(imageDataUrl: string, signal?: AbortSig
   }
   const regions = data?.pages?.[0]?.regions;
   return Array.isArray(regions) ? (regions as Record<string, any>[]) : [];
+  } catch (error) {
+    if (timing?.traceId) timing.layoutTelemetryIncomplete = true;
+    throw error;
+  }
 }
 
 function backendPreviewSrc(value?: string | null) {
@@ -596,7 +607,8 @@ async function buildWholePageAutoRois(
   existingRois: (ROI & { pageIndex?: number })[],
   excludedPageIndexes: Set<number>,
   loadPageImage: typeof loadImageElement = loadImageElement,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  timing?: DetectionTransportTiming
 ): Promise<(ROI & { pageIndex?: number; roiCoordinateSource?: string })[]> {
   const autoRois: (ROI & { pageIndex?: number; roiCoordinateSource?: string })[] = [];
   let nextFieldNumber = existingRois.filter(isCountableWorkspaceField).length + 1;
@@ -616,7 +628,7 @@ async function buildWholePageAutoRois(
     const scaleY = img.naturalHeight / renderedHeight;
     let regions: Record<string, any>[] = [];
     try {
-      regions = await analyzeLayoutForUserImage(sourceImage, signal);
+      regions = await analyzeLayoutForUserImage(sourceImage, signal, timing);
     } catch (error) {
       signal?.throwIfAborted();
       console.warn("Whole-page auto ROI analysis failed.", error);
@@ -1227,7 +1239,8 @@ async function buildFlexibleResolvedDisplayRois(
   sourceImages: string[],
   sourceRois: (ROI & { pageIndex?: number })[],
   loadPageImage: typeof loadImageElement = loadImageElement,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  timing?: DetectionTransportTiming
 ): Promise<(ROI & { pageIndex?: number })[]> {
   const byPageImage = new Map<number, HTMLImageElement>();
   const resolved: (ROI & { pageIndex?: number })[] = [];
@@ -1248,7 +1261,7 @@ async function buildFlexibleResolvedDisplayRois(
     const scaleY = img.naturalHeight / renderedHeight;
     const boundaryCrop = cropRoiToImage(img, roi, scaleX, scaleY);
     if (!boundaryCrop) continue;
-    const regions = await analyzeLayoutForUserImage(boundaryCrop, signal);
+    const regions = await analyzeLayoutForUserImage(boundaryCrop, signal, timing);
     const blocks = regions.length > 0
       ? regions
       : [
@@ -2547,7 +2560,7 @@ function HomeWorkspace() {
     setOcrResults(next);
   };
 
-  const handleBatchConfirm = async (finalProcessedImages: string[]) => {
+  const handleBatchConfirm = async (finalProcessedImages: string[], confirmedAt?: number) => {
     // This cache belongs to one detection run; changed image sources load anew.
     const cachedPageImage = createImageCropCache(
       loadImageElement, Math.max(finalProcessedImages.length, 1),
@@ -2559,7 +2572,7 @@ function HomeWorkspace() {
       setPreviewUrl(workspaceImages[currentIndex] || workspaceImages[0] || "");
       setImage(workspaceImages[currentIndex] || workspaceImages[0] || null);
     };
-    const userWaitStartedAt = performance.now();
+    const userWaitStartedAt = confirmedAt ?? performance.now();
     cancelTemplateDetection();
     const runToken = detectionTimingRunRef.current;
     const detectionController = new AbortController();
@@ -2594,7 +2607,7 @@ function HomeWorkspace() {
     };
     let detectionMatchedForTiming: boolean | null = null;
     let detectionForTiming: DetectionDevResult | null = null;
-    const detectionTransportTiming: DetectionTransportTiming = {};
+    const detectionTransportTiming: DetectionTransportTiming = { startedAt: userWaitStartedAt, traceId: benchmarkRunToken ?? undefined };
     let timingLogged = false;
     const measureStage = async <T,>(key: keyof typeof timingBreakdown, operation: () => Promise<T>): Promise<T> => {
       const startedAt = performance.now();
@@ -2617,9 +2630,11 @@ function HomeWorkspace() {
         const root = document.querySelector<HTMLElement>(`[data-detection-run="${runToken}"]`);
         const preview = root?.querySelector<HTMLImageElement>("[data-detection-preview]") ?? null;
         const summary = root?.querySelector<HTMLElement>("[data-detection-summary]") ?? null;
+        const hasUsableControl = Array.from(root?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? [])
+          .some(elementReady);
         return {
           current: detectionTimingRunRef.current === runToken,
-          domReady: elementReady(root) && elementReady(summary),
+          domReady: elementReady(root) && elementReady(summary) && hasUsableControl,
           overlay: Boolean(document.querySelector("[data-detection-loading]")),
           previewRequired: root?.dataset.previewRequired === "true",
           image: preview,
@@ -2631,7 +2646,8 @@ function HomeWorkspace() {
       const completionMetrics = frontendCompletionTiming(userWaitStartedAt, flowCompleteAt, committedAt, detectionTransportTiming);
       const readinessMetrics = visibilityMetrics(userWaitStartedAt, committedAt, detectionTransportTiming.frontendResponseHeadersAt, visibility);
       timingBreakdown.totalUserWaitMs = readinessMetrics.end_to_end_ms;
-      const backendTiming = detectionForTiming?.debug?.timing as Record<string, unknown> | undefined;
+      const backendTiming = detectionTransportTiming.benchmarkTiming ?? detectionForTiming?.debug?.timing as Record<string, unknown> | undefined;
+      const layoutSummary = summarizeLayoutCalls(backendTiming, detectionTransportTiming.layoutRequests ?? []);
       const backendMetric = (key: string, alias?: string): number | null => backendTimingMetric(backendTiming, key, alias);
       timingBreakdown.uploadJobMs = detectionTransportTiming.uploadJobMs ?? null;
       timingBreakdown.jobPollingMs = detectionTransportTiming.jobPollingMs ?? null;
@@ -2639,7 +2655,12 @@ function HomeWorkspace() {
         frontend_to_backend_ms: browserMetrics.frontend_to_backend_ms,
         backend_runtime_ms: backendMetric("backend_runtime_ms"),
         backend_to_model_ms: backendMetric("backend_to_model_ms"),
-        layout_runtime_ms: backendMetric("layout_runtime_ms"),
+        layout_runtime_ms: detectionTransportTiming.layoutTelemetryIncomplete ? null : layoutSummary.inference_ms,
+        layout_queue_wait_ms: detectionTransportTiming.layoutTelemetryIncomplete ? null : layoutSummary.queue_wait_ms,
+        layout_inference_ms: detectionTransportTiming.layoutTelemetryIncomplete ? null : layoutSummary.inference_ms,
+        layout_total_ms: detectionTransportTiming.layoutTelemetryIncomplete ? null : layoutSummary.total_ms,
+        layout_model_calls: layoutSummary.calls,
+        layout_telemetry_incomplete: detectionTransportTiming.layoutTelemetryIncomplete ?? false,
         text_detection_runtime_ms: backendMetric("text_detection_runtime_ms", "text_det_inference_ms"),
         text_recognition_runtime_ms: backendMetric("text_recognition_runtime_ms", "text_rec_inference_ms"),
         image_siglip_runtime_ms: backendMetric("image_siglip_runtime_ms", "siglip_inference_ms"),
@@ -2658,6 +2679,29 @@ function HomeWorkspace() {
         backend_to_frontend_ms: browserMetrics.backend_to_frontend_ms,
         ...completionMetrics,
         ...readinessMetrics,
+        frontend_render_ms: completionMetrics.frontend_state_to_commit_ms,
+        result_ready_ms: readinessMetrics.frontend_render_ms,
+        frontend_preparation_ms: detectionTransportTiming.frontendPreparationMs ?? null,
+        request_network_ms: null,
+        request_round_trip_ms: detectionTransportTiming.requestRoundTripMs ?? null,
+        polling_wait_ms: detectionTransportTiming.pollingWaitMs ?? null,
+        result_fetch_ms: detectionTransportTiming.resultFetchMs ?? null,
+        template_search_ms: backendMetric("template_search_ms"),
+        model_queue_wait_ms: (detectionTransportTiming.layoutRequests?.some(item => Array.isArray(item.model_calls) && item.model_calls.length > 0) || detectionTransportTiming.layoutTelemetryIncomplete)
+          ? null : backendMetric("model_queue_wait_ms"),
+        search_model_queue_wait_ms: backendMetric("model_queue_wait_ms"),
+        result_processing_ms: backendMetric("result_processing_ms"),
+        text_detection_queue_wait_ms: backendMetric("text_detection_queue_wait_ms"),
+        text_detection_inference_ms: backendMetric("text_detection_inference_ms"),
+        text_detection_total_ms: backendMetric("text_detection_total_ms"),
+        text_recognition_queue_wait_ms: backendMetric("text_recognition_queue_wait_ms"),
+        text_recognition_inference_ms: backendMetric("text_recognition_inference_ms"),
+        text_recognition_total_ms: backendMetric("text_recognition_total_ms"),
+        siglip_queue_wait_ms: backendMetric("siglip_queue_wait_ms"),
+        siglip_inference_ms: backendMetric("siglip_inference_ms"),
+        siglip_total_ms: backendMetric("siglip_total_ms"),
+        trace_id: benchmarkRunToken,
+        job_id: detectionTransportTiming.jobId ?? null,
         frontend_visibility_status: visibility.status,
         frontend_visibility_reason: visibility.reason,
         frontend_timing_kind: "paint-ready estimate; not actual paint",
@@ -2733,6 +2777,8 @@ function HomeWorkspace() {
         );
         detectionForTiming = detection;
         detectionMatchedForTiming = detection.matched;
+        const benchmarkRun = (window as Window & { __ocrBenchmarkRun?: { token: string; postSearchStarted?: boolean } }).__ocrBenchmarkRun;
+        if (benchmarkRun?.token === benchmarkRunToken) benchmarkRun.postSearchStarted = true;
         setTemplateDetectionSnapshot(buildTemplateDetectionSnapshot(detection));
         devTemplateFlowLog("detection completed", {
           matched: detection.matched,
@@ -2808,7 +2854,7 @@ function HomeWorkspace() {
           }, loadPageImage)
         );
         const flexibleResolvedRois = await measureStage("flexibleRoiMs", () =>
-          buildFlexibleResolvedDisplayRois(templateCanvasImages, detectedRois, loadPageImage, signal)
+          buildFlexibleResolvedDisplayRois(templateCanvasImages, detectedRois, loadPageImage, signal, detectionTransportTiming)
         );
         if (flexibleResolvedRois.length > 0) {
           const resolvedParentIds = new Set(flexibleResolvedRois.map((roi) => roi.parentRoiId).filter((id): id is number => typeof id === "number"));
@@ -2858,7 +2904,8 @@ function HomeWorkspace() {
                 detectedRois,
                 new Set([matchedQueryPageIndex]),
                 loadPageImage,
-                signal
+                signal,
+                detectionTransportTiming
               )
             );
           }

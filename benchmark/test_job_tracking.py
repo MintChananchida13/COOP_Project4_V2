@@ -9,6 +9,17 @@ import user_flow
 
 
 class JobTrackingTests(unittest.TestCase):
+    def test_layout_calls_from_result_preparation_are_merged_without_duplicates(self):
+        snapshot = self.completed()
+        snapshot["tables"][0].extend([
+            {"metric": "layout_inference_ms", "valueMs": 12},
+            {"metric": "layout_model_calls", "value": [{"call_id": "layout-flex", "kind": "layout", "inference_ms": 12},
+                                                        {"call_id": "layout-flex", "kind": "layout", "inference_ms": 12}]},
+        ])
+        row, _ = self.run_snapshots([snapshot])
+        self.assertEqual(row["layout_inference_ms"], 12)
+        self.assertEqual([call["call_id"] for call in row["_model_calls"]].count("layout-flex"), 1)
+
     def run_snapshots(self, snapshots, timeout=1000):
         page = Mock()
         state = {"index": 0}
@@ -22,6 +33,8 @@ class JobTrackingTests(unittest.TestCase):
                 if snapshot is None:
                     return None
                 snapshot = dict(snapshot)
+                if isinstance(snapshot.get("job"), dict):
+                    snapshot["job"] = {**snapshot["job"], "benchmark_timing": {"trace_id": state["token"]}}
                 snapshot["tables"] = [list(table) for table in snapshot.get("tables", [])]
                 if snapshot["tables"] and not any(item.get("metric") == "benchmark_run_token" for table in snapshot["tables"] for item in table):
                     snapshot["tables"][0].append({"metric": "benchmark_run_token", "value": state["token"]})

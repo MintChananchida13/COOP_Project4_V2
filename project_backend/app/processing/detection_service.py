@@ -5329,6 +5329,9 @@ def _detection_timing_debug(
 
 
 def _finish_detection_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    from time import perf_counter
+    from app.processing.search_benchmark import capture_result, record_result_processing
+    capture_result(result)
     if include_detection_diagnostics():
         return result
     from app.api.detection_response import user_detection_response
@@ -5337,10 +5340,13 @@ def _finish_detection_result(result: Dict[str, Any]) -> Dict[str, Any]:
             return _image_to_data_url(Path(path), required=True)
         except OSError:
             return None
-    return user_detection_response(
+    result_processing_started = perf_counter()
+    response = user_detection_response(
         result, preview_loader=preview,
         compact_candidates=compact_detection_candidates(),
     )
+    record_result_processing((perf_counter() - result_processing_started) * 1000)
+    return response
 
 
 @detection_work_scope

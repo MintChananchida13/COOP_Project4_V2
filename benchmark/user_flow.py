@@ -28,14 +28,23 @@ LEGACY_METRICS = (
 FRONTEND_METRICS = ("frontend_response_json_ms", "frontend_response_processing_ms", "frontend_result_preparation_ms",
                     "frontend_state_to_commit_ms", "frontend_response_to_commit_ms", "frontend_flow_complete_ms",
                     "frontend_result_visible_ms", "frontend_preview_ready_ms", "frontend_ui_ready_ms", "frontend_commit_end_to_end_ms")
-METRICS = (*LEGACY_METRICS, *FRONTEND_METRICS)
-HEADERS = ("file", "run_number", "runs_per_file", "expected_mode", "actual_mode", "status", "matched", "query_id", "ocr_status", "ocr_wall_ms", "error", "model_intervals_overlap", "model_call_count", "model_timing_missing_reason", *LEGACY_METRICS, "timing_missing_reasons", "job_id", "error_type", "job_status", "capture_errors", *FRONTEND_METRICS,
-           "frontend_visibility_status", "frontend_visibility_reason", "frontend_timing_kind", "frontend_run_token", "benchmark_run_token")
+SEARCH_METRICS = ("frontend_preparation_ms", "request_network_ms", "request_round_trip_ms", "template_search_ms", "model_queue_wait_ms", "search_model_queue_wait_ms",
+                  "backend_search_ms", "backend_post_search_ms", "backend_total_active_ms",
+                  "result_processing_ms", "polling_wait_ms", "result_fetch_ms", "result_ready_ms",
+                  "layout_queue_wait_ms", "layout_inference_ms", "layout_total_ms",
+                  "text_detection_queue_wait_ms", "text_detection_inference_ms", "text_detection_total_ms",
+                  "text_recognition_queue_wait_ms", "text_recognition_inference_ms", "text_recognition_total_ms",
+                  "siglip_queue_wait_ms", "siglip_inference_ms", "siglip_total_ms")
+METRICS = (*LEGACY_METRICS, *FRONTEND_METRICS, *SEARCH_METRICS)
+HEADERS = ("file", "run_number", "runs_per_file", "expected_mode", "actual_mode", "status", "matched", "query_id", "ocr_status", "ocr_wall_ms", "error", "model_intervals_overlap", "model_call_count", "model_timing_missing_reason", *(key for key in LEGACY_METRICS if key != "backend_runtime_ms"), "timing_missing_reasons", "job_id", "error_type", "job_status", "capture_errors", *FRONTEND_METRICS,
+           "frontend_visibility_status", "frontend_visibility_reason", "frontend_timing_kind", "frontend_run_token", "benchmark_run_token", *SEARCH_METRICS,
+           "trace_id", "template_id", "matching_score", "expected_template_id", "matching_correctness", "layout_telemetry_incomplete")
 CALL_KEYS = ("call_id", "kind", "http_request_ms", "model_load_ms", "queue_wait_ms",
              "inference_lock_wait_ms", "inference_ms", "serialization_ms", "service_total_runtime_ms",
              "runs_per_file", "endpoint", "model_call_start_monotonic", "model_call_end_monotonic", "model_timings", "conflicting_record")
-MODEL_CALL_HEADERS = ("file", "run_number", "actual_mode", *CALL_KEYS)
+MODEL_CALL_HEADERS = ("file", "run_number", "actual_mode", "trace_id", "job_id", *CALL_KEYS)
 UNMEASURABLE = {
+    "request_network_ms": "one_way_network_cannot_be_isolated_request_round_trip_includes_server_work",
     "frontend_to_backend_ms": "one_way_network_not_measurable",
     "backend_to_frontend_ms": "one_way_network_not_measurable",
     "backend_to_model_ms": "http_duration_is_not_network_only",
@@ -61,6 +70,18 @@ CAPTURE_FETCH = r"""(() => {
     const method = (options?.method || input?.method || 'GET').toUpperCase();
     const post = method === 'POST' && url.pathname === '/api/templates/detect-dev';
     const poll = method === 'GET' && url.pathname.match(/^\/api\/templates\/detect-dev\/jobs\/([^/]+)$/);
+    if (state && post) state.backend_origin = url.origin;
+    const postSearch = state && state.postSearchStarted && state.backend_origin === url.origin &&
+      (url.pathname === '/api/layout/analyze' || /^\/admin\/templates\/[^/]+$/.test(url.pathname) || url.pathname.startsWith('/debug/detection-queries/'));
+    if (postSearch) {
+      if (typeof input !== 'string' && !(input instanceof URL)) {
+        state.post_tracking_incomplete = true;
+        return original(input, options);
+      }
+      url.searchParams.set('benchmark_trace_id', state.token);
+      state.post_requests++;
+      return original(url.toString(), options);
+    }
     if (!state || (!post && !poll)) return original(input, options);
     state.pending++;
     if (post && ++state.posts > 1) state.errors.push('Multiple detection submissions in one run');
@@ -102,6 +123,8 @@ RUN_SNAPSHOT = """() => {
   const state = window.__ocrBenchmarkRun;
   return state ? {token: state.token, job_id: state.job_id, pending: state.pending,
     posts: state.posts, errors: state.errors, job: state.jobs[state.job_id] || null,
+    backend_origin: state.backend_origin, post_requests: state.post_requests,
+    post_tracking_incomplete: state.post_tracking_incomplete,
     tables: window.__ocrBenchmarkTables || []} : null;
 }"""
 
@@ -160,15 +183,17 @@ def response_timing(result):
     return {**(benchmark if isinstance(benchmark, dict) else {}), **timing}
 
 
-def timing_values(tables, result):
+def timing_values(tables, result, benchmark_timing=None):
     values = {}
     for rows in tables:
         for row in rows:
             key = row.get("metric") or row.get("stage")
             if key in METRICS:
                 values[key] = row.get("valueMs", row.get("elapsedMs"))
-    timing = response_timing(result)
-    browser_keys = {"uploadJobMs", "jobPollingMs", "detectionJobMs", "end_to_end_ms", "frontend_render_ms", *FRONTEND_METRICS}
+    timing = {**response_timing(result), **(benchmark_timing or {})}
+    browser_keys = {"uploadJobMs", "jobPollingMs", "detectionJobMs", "end_to_end_ms", "frontend_render_ms", "layout_runtime_ms", *FRONTEND_METRICS,
+                    "frontend_preparation_ms", "request_network_ms", "request_round_trip_ms", "polling_wait_ms", "result_fetch_ms", "result_ready_ms",
+                    "layout_queue_wait_ms", "layout_inference_ms", "layout_total_ms", "model_queue_wait_ms", "search_model_queue_wait_ms"}
     for key in METRICS:
         if key not in browser_keys and key in timing:
             values[key] = timing[key]
@@ -206,7 +231,7 @@ def save_excel(path, rows):
     calls_sheet.append(MODEL_CALL_HEADERS)
     for row in rows:
         for call in row.get("_model_calls", []):
-            record = {**call, **{key: row.get(key) for key in ("file", "run_number", "actual_mode", "runs_per_file")}}
+            record = {**call, **{key: row.get(key) for key in ("file", "run_number", "actual_mode", "runs_per_file", "trace_id", "job_id")}}
             calls_sheet.append([excel_value(valid_duration(record.get(key)) if key.endswith("_ms") else record.get(key)) for key in MODEL_CALL_HEADERS])
     calls_sheet.freeze_panes = "A2"
     calls_sheet.auto_filter.ref = calls_sheet.dimensions
@@ -269,7 +294,7 @@ def run_case(page, path, expected_mode, timeout_ms):
     row["_ready_for_next"] = False
     try:
         page.evaluate(CAPTURE_FETCH)
-        page.evaluate("token => { window.__ocrBenchmarkTables = []; window.__ocrBenchmarkRun = {token, pending: 0, posts: 0, job_id: null, jobs: {}, errors: []}; }", token)
+        page.evaluate("token => { window.__ocrBenchmarkTables = []; window.__ocrBenchmarkRun = {token, pending: 0, posts: 0, post_requests: 0, post_tracking_incomplete: false, job_id: null, jobs: {}, errors: []}; }", token)
         page.locator(UPLOAD_INPUT).set_input_files(str(path), timeout=timeout_ms)
         deadline = time.monotonic() + timeout_ms / 1000
         page.get_by_role("button", name="ยืนยันเอกสารและค้นหา Template").click(timeout=timeout_ms)
@@ -287,6 +312,8 @@ def run_case(page, path, expected_mode, timeout_ms):
                 row[key] = frontend.get(key)
             if frontend_status is not None and row.get("benchmark_run_token") != token:
                 raise CaptureFailure("RESPONSE_CAPTURE_ERROR", "Frontend visibility belongs to another benchmark run")
+            if frontend_status == "PREPARATION_ERROR":
+                raise CaptureFailure("PREPARATION_ERROR", "Frontend could not prepare the confirmed images")
             frontend_done = "end_to_end_ms" in frontend and frontend_status in ("READY", "PREVIEW_ERROR", "VISIBILITY_TIMEOUT", "VISIBILITY_ERROR")
             if job.get("status") == "completed":
                 result = job.get("result") if isinstance(job.get("result"), dict) else {}
@@ -295,6 +322,8 @@ def run_case(page, path, expected_mode, timeout_ms):
                 if snapshot.get("posts") != 1:
                     raise CaptureFailure("RESPONSE_CAPTURE_ERROR", "Ambiguous detection submission count")
                 row["_ready_for_next"] = True
+                if not isinstance(job.get("benchmark_timing"), dict) or job["benchmark_timing"].get("trace_id") != token:
+                    raise CaptureFailure("RESPONSE_CAPTURE_ERROR", "Backend benchmark trace missing or mismatched; update Backend")
                 if job["status"] == "failed":
                     raise CaptureFailure("DETECTION_FAILED", str(job.get("error") or "Detection job failed"))
                 if frontend_status != "READY":
@@ -318,9 +347,10 @@ def run_case(page, path, expected_mode, timeout_ms):
             raise CaptureFailure("RESPONSE_CAPTURE_ERROR", "Detection response lacks boolean matched result")
         if any(item.get("status") == "failed" for table in tables for item in table):
             raise CaptureFailure("BENCHMARK_ERROR", "Frontend reported failed Template detection/preparation")
-        if expected_mode and actual_mode(result) != expected_mode:
+        measured_mode = ((snapshot or {}).get("job") or {}).get("benchmark_timing", {}).get("processing_mode") or actual_mode(result)
+        if expected_mode and measured_mode != expected_mode:
             row["status"] = "SKIP"
-            row["error"] = f"Active mode is {actual_mode(result) or 'unknown'}, expected {expected_mode}; global setting was not changed"
+            row["error"] = f"Active mode is {measured_mode or 'unknown'}, expected {expected_mode}; global setting was not changed"
         else:
             row["status"] = "PASS"
     except Exception as error:
@@ -328,8 +358,23 @@ def run_case(page, path, expected_mode, timeout_ms):
         row["error_type"] = error.kind if isinstance(error, CaptureFailure) else "BENCHMARK_ERROR"
         row["error"] = str(error)[:500]
     finally:
-        row.update(timing_values(tables, result))
-        timing = response_timing(result)
+        job_data = (snapshot or {}).get("job") or {}
+        benchmark_timing = job_data.get("benchmark_timing") or {}
+        row.update(timing_values(tables, result, benchmark_timing))
+        row["backend_search_ms"] = valid_duration(benchmark_timing.get("backend_runtime_ms"))
+        if (snapshot or {}).get("backend_origin") and not snapshot.get("post_tracking_incomplete"):
+            try:
+                spans = page.evaluate("""async ({origin, trace, expected}) => {
+                  const response = await fetch(`${origin}/api/benchmark/template-search/${trace}?expected_post_requests=${expected}`, {cache:'no-store'});
+                  if (!response.ok) return null;
+                  return (await response.json()).data;
+                }""", {"origin": snapshot["backend_origin"], "trace": token, "expected": snapshot.get("post_requests") or 0})
+                if isinstance(spans, dict) and spans.get("trace_id") == token:
+                    for key in ("backend_search_ms", "backend_post_search_ms", "backend_total_active_ms"):
+                        row[key] = valid_duration(spans.get(key))
+            except Exception:
+                pass
+        timing = {**response_timing(result), **benchmark_timing}
         row.update({key: timing.get(key) for key in ("model_intervals_overlap", "model_call_count", "model_timing_missing_reason")})
         reasons = dict(timing.get("timing_missing_reasons") or {})
         for table in tables:
@@ -340,10 +385,26 @@ def run_case(page, path, expected_mode, timeout_ms):
         if row["end_to_end_ms"] is not None:
             reasons.pop("end_to_end_ms", None)
         row["timing_missing_reasons"] = {key: reasons.get(key, "measurement_missing_or_invalid") for key in METRICS if row[key] is None}
-        row["_model_calls"] = timing.get("model_calls") or []
-        row["actual_mode"] = actual_mode(result)
+        row["_model_calls"] = list(timing.get("model_calls") or [])
+        known_calls = {call.get("call_id") for call in row["_model_calls"] if isinstance(call, dict)}
+        for table in tables:
+            for item in table:
+                if item.get("metric") == "layout_telemetry_incomplete":
+                    row["layout_telemetry_incomplete"] = item.get("value")
+                if item.get("metric") == "layout_model_calls" and isinstance(item.get("value"), list):
+                    for call in item["value"]:
+                        if isinstance(call, dict) and call.get("call_id") and call["call_id"] not in known_calls:
+                            row["_model_calls"].append(call)
+                            known_calls.add(call["call_id"])
+        row["actual_mode"] = benchmark_timing.get("processing_mode") or actual_mode(result)
         row["matched"] = result.get("matched")
         row["query_id"] = result.get("query_id") or result.get("queryId")
+        row["trace_id"] = token
+        best = result.get("best_candidate") or result.get("bestCandidate") or {}
+        row["template_id"] = best.get("template_id") or best.get("templateId") if isinstance(best, dict) else None
+        if result.get("matched") is False:
+            row["template_id"] = None
+        row["matching_score"] = (best.get("final_score") if best.get("final_score") is not None else best.get("score")) if isinstance(best, dict) else None
     return row
 
 
@@ -355,6 +416,13 @@ def run_cases(page, arguments, cases, rows, browser_state):
                 return False
             row = run_case(page, path, mode, arguments.timeout_seconds * 1000)
             row.update(run_number=run_number, runs_per_file=arguments.repeats)
+            truth = getattr(arguments, "ground_truth", {})
+            if isinstance(truth, dict) and truth:
+                relative = str(path.relative_to(arguments.input)).replace("\\", "/")
+                if relative in truth:
+                    row["expected_template_id"] = truth[relative]
+                    if row.get("matched") is not None:
+                        row["matching_correctness"] = row.get("template_id") == truth[relative]
             rows.append(row)
             if not save_results(arguments, rows):
                 return False
@@ -383,7 +451,11 @@ def main():
     parser.add_argument("--timeout-seconds", type=int, default=1200)
     parser.add_argument("--no-ocr", action="store_true", help="Compatibility option; the benchmark always stops after Template detection")
     parser.add_argument("--repeats", type=int, default=2, help="Runs per file (default: 2)")
+    parser.add_argument("--ground-truth", type=Path, help="JSON mapping input-relative filenames to expected Template IDs (null for no match)")
     arguments = parser.parse_args()
+    arguments.ground_truth = json.loads(arguments.ground_truth.read_text(encoding="utf-8")) if arguments.ground_truth else {}
+    if not isinstance(arguments.ground_truth, dict) or any(value is not None and not isinstance(value, str) for value in arguments.ground_truth.values()):
+        parser.error("--ground-truth must map filenames to template IDs or null")
     if arguments.repeats < 1:
         parser.error("--repeats must be at least 1")
     cases = input_cases(arguments.input, arguments.expected_mode)

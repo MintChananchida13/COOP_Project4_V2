@@ -234,6 +234,10 @@ def _extract_gateway_timing(parsed: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return selected or None
 
 
+from app.processing.search_benchmark import instrument_runtime
+
+
+@instrument_runtime
 def _post_predict(
     kind: ModelRuntimeKind,
     payload: Dict[str, Any],

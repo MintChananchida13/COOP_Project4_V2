@@ -1,6 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { backendTimingMetric, browserTiming, frontendCompletionTiming } from "../src/shared/browserTiming.ts";
+import { backendTimingMetric, browserTiming, frontendCompletionTiming, summarizeLayoutCalls } from "../src/shared/browserTiming.ts";
+
+test("layout calls include search and flexible ROI exactly once", () => {
+  const search = { call_id: "one", kind: "layout", queue_wait_ms: 2, inference_ms: 99,
+    service_total_runtime_ms: 20, model_timings: { layout: { inference_ms: 10 } } };
+  const flexible = { call_id: "two", kind: "layout", queue_wait_ms: 3, inference_ms: 7,
+    service_total_runtime_ms: 14, model_timings: { layout: { inference_ms: 7 } } };
+  const summary = summarizeLayoutCalls({ model_calls: [search] }, [{ model_calls: [search, flexible] }]);
+  assert.equal(summary.calls.length, 2);
+  assert.equal(summary.queue_wait_ms, 5);
+  assert.equal(summary.inference_ms, 17);
+  assert.equal(summary.total_ms, 34);
+  assert.equal(summarizeLayoutCalls({}, []).inference_ms, null);
+});
+
+test("layout total is unavailable for shared layout and detector calls", () => {
+  const summary = summarizeLayoutCalls({ model_calls: [{ call_id: "one", kind: "layout", queue_wait_ms: 1,
+    inference_ms: 20, service_total_runtime_ms: 30,
+    model_timings: { layout: { inference_ms: 10 }, text_detection: { inference_ms: 9 } } }] }, []);
+  assert.equal(summary.inference_ms, 10);
+  assert.equal(summary.total_ms, null);
+});
 
 test("browser elapsed is measured while one-way and render times remain unknown", () => {
   assert.deepEqual(browserTiming(100.05, 250.07), {

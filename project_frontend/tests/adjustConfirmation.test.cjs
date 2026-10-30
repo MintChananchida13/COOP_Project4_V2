@@ -16,7 +16,7 @@ function make(configs,overrides={}){
   let confirmed, error;const renders=[];
   class ImageStub {set src(value){this.value=value;queueMicrotask(()=>this.onload());}}
   const ctx={isProcessing:false,autoDetecting:false,hasPendingCrop:false,sourceFileType:'image',originalBackupList:['original-1','original-2'],imagesList:['original-1','original-2'],pagesConfig:configs,DEFAULT_CONFIG:defaults,
-    Image:ImageStub,setIsProcessing:()=>{},setCropError:v=>{error=v},console,onBatchConfirm:pages=>{confirmed=Array.from(pages)},
+    Image:ImageStub,performance:{now:()=>123},setIsProcessing:()=>{},setCropError:v=>{error=v},console,onBatchConfirm:pages=>{confirmed=Array.from(pages)},
     processSingleImageCanvas:(image,config,cropped)=>{renders.push({src:image.value,rotation:config.rotation,cropped});return `adjusted:${image.value}:${config.rotation}`},...overrides};
   vm.runInNewContext(code,ctx);return {ctx,renders,get confirmed(){return confirmed},get error(){return error}};
 }

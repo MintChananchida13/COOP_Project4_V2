@@ -9,6 +9,20 @@ import user_flow
 
 
 class UserFlowTests(unittest.TestCase):
+    def test_ground_truth_records_match_and_expected_no_match(self):
+        arguments = self.arguments()
+        arguments.input = Path("input")
+        arguments.ground_truth = {"card.png": "tpl_a", "unknown.png": None}
+        outcomes = [{"status": "PASS", "matched": True, "template_id": "tpl_a"},
+                    {"status": "PASS", "matched": False, "template_id": None}]
+        arguments.repeats = 1
+        rows = []
+        with patch.object(user_flow, "run_case", side_effect=outcomes), \
+                patch.object(user_flow, "save_results", return_value=True), patch.object(user_flow, "reset_document"):
+            self.assertTrue(user_flow.run_cases(Mock(), arguments, [(Path("input/card.png"), None), (Path("input/unknown.png"), None)], rows, {"closed": False}))
+        self.assertIs(rows[0]["matching_correctness"], True)
+        self.assertIs(rows[1]["matching_correctness"], True)
+
     def test_frontend_metrics_are_appended_and_browser_authoritative(self):
         start = user_flow.HEADERS.index(user_flow.FRONTEND_METRICS[0])
         self.assertEqual(user_flow.HEADERS[start:start + len(user_flow.FRONTEND_METRICS)], user_flow.FRONTEND_METRICS)
@@ -220,7 +234,7 @@ class UserFlowTests(unittest.TestCase):
                         page.run_token = token
                     if script == user_flow.RUN_SNAPSHOT:
                         return {"token": page.run_token, "job_id": "test-job", "posts": 1, "pending": 0,
-                                "job": {"status": "completed", "result": result},
+                                "job": {"status": "completed", "result": result, "benchmark_timing": {"trace_id": page.run_token}},
                                 "tables": [[{"metric": "end_to_end_ms", "valueMs": 123},
                                             {"metric": "frontend_visibility_status", "value": "READY"},
                                             {"metric": "benchmark_run_token", "value": page.run_token}]]}

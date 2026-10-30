@@ -258,7 +258,7 @@ interface AdjustZoneProps {
   onIndexChange: (index: number) => void;
   pagesConfig: PageConfig[];
   setPagesConfig: React.Dispatch<React.SetStateAction<PageConfig[]>>;
-  onBatchConfirm: (finalImages: string[]) => void;
+  onBatchConfirm: (finalImages: string[], startedAt?: number) => void;
   confirmLabel?: string;
 }
 
@@ -553,6 +553,7 @@ export default function AdjustZone({
 
   const handleConfirmAll = async () => {
     if (isProcessing || autoDetecting || hasPendingCrop) return;
+    const startedAt = performance.now();
     setIsProcessing(true);
     try {
       const originals = originalBackupList.length > 0 ? originalBackupList : imagesList;
@@ -564,7 +565,7 @@ export default function AdjustZone({
         onBatchConfirm(originals.map((raw, index) =>
           index === currentIndex && current && !current.startsWith("data:;")
             ? current : pagesConfig[index]?.croppedLocalUrl || raw
-        ));
+        ), startedAt);
         return;
       }
       const results = await Promise.all(originals.map(async (rawUrl, index) => {
@@ -585,9 +586,16 @@ export default function AdjustZone({
         if (!result || result.startsWith("data:;")) throw new Error("Unable to prepare the selected page");
         return result;
       }));
-      onBatchConfirm(results);
+      onBatchConfirm(results, startedAt);
     } catch (error) {
       console.error("Error processing final images:", error);
+      const token = (window as Window & { __ocrBenchmarkRun?: { token: string } }).__ocrBenchmarkRun?.token;
+      if (token) console.table([
+        { stage: "detectionJobMs", elapsedMs: null, status: "failed" },
+        { metric: "benchmark_run_token", value: token },
+        { metric: "frontend_visibility_status", value: "PREPARATION_ERROR" },
+        { metric: "frontend_preparation_ms", valueMs: Math.round((performance.now() - startedAt) * 100) / 100 },
+      ]);
       setCropError("ไม่สามารถเตรียมภาพที่เลือกได้ กรุณาลองอีกครั้ง");
     } finally {
       setIsProcessing(false);

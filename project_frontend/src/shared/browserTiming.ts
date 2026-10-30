@@ -8,6 +8,16 @@ export function browserTiming(startedAt: number, endedAt: number) {
 }
 
 export interface DetectionTransportTiming {
+  frontendPreparationMs?: number;
+  startedAt?: number;
+  traceId?: string;
+  jobId?: string;
+  requestRoundTripMs?: number;
+  pollingWaitMs?: number;
+  resultFetchMs?: number;
+  benchmarkTiming?: Record<string, unknown>;
+  layoutRequests?: Record<string, unknown>[];
+  layoutTelemetryIncomplete?: boolean;
   uploadJobMs?: number;
   jobPollingMs?: number;
   frontendResponseHeadersAt?: number;
@@ -42,4 +52,27 @@ export function backendTimingMetric(timing: Record<string, unknown> | undefined,
     }
   }
   return alias ? backendTimingMetric(timing, alias) : null;
+}
+
+export function summarizeLayoutCalls(job: Record<string, unknown> | undefined, requests: Record<string, unknown>[]) {
+  const all = [job, ...requests].flatMap(item => Array.isArray(item?.model_calls) ? item.model_calls as Record<string, unknown>[] : []);
+  const seen = new Set<string>();
+  const calls = all.filter(call => {
+    if (call.kind !== "layout" || typeof call.call_id !== "string" || seen.has(call.call_id)) return false;
+    seen.add(call.call_id);
+    return true;
+  });
+  const total = (field: string, inference = false): number | null => {
+    if (!calls.length) return null;
+    const values = calls.map(call => {
+      const components = call.model_timings as Record<string, Record<string, unknown>> | undefined;
+      if (inference && components?.layout) return components.layout.inference_ms;
+      if (!inference && components && Object.keys(components).length > 1) return null;
+      return call[field];
+    });
+    return values.every(value => typeof value === "number" && Number.isFinite(value) && value >= 0)
+      ? Math.round((values as number[]).reduce((sum, value) => sum + value, 0) * 100) / 100 : null;
+  };
+  return { calls, queue_wait_ms: total("queue_wait_ms"), inference_ms: total("inference_ms", true),
+    total_ms: total("service_total_runtime_ms") };
 }

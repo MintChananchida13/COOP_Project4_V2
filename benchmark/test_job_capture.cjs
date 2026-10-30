@@ -6,7 +6,7 @@ const window = {
   fetch: (input, options) => new Promise((resolve, reject) => requests.push({ input, options, resolve, reject })),
 };
 vm.runInNewContext(source, { window, URL, location: { href: 'http://localhost:3000/' } });
-const fresh = token => window.__ocrBenchmarkRun = { token, pending: 0, posts: 0, job_id: null, jobs: {}, errors: [] };
+const fresh = token => window.__ocrBenchmarkRun = { token, pending: 0, posts: 0, post_requests: 0, job_id: null, jobs: {}, errors: [] };
 const response = data => ({ ok: true, clone: () => ({ json: async () => ({ data }) }),
   json: () => { throw new Error('CDP response body evicted: must never read original'); } });
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -62,5 +62,11 @@ const poll = id => window.fetch(`http://backend/api/templates/detect-dev/jobs/${
   await settle();
   assert.equal(next.jobs.failed.status, 'failed');
   assert.equal(next.pending, 0);
+  next.postSearchStarted = true;
+  const layout = window.fetch('http://backend/api/layout/analyze', { method: 'POST' });
+  assert.equal(new URL(requests[8].input).searchParams.get('benchmark_trace_id'), 'second');
+  assert.equal(next.post_requests, 1);
+  requests[8].resolve(response({}));
+  await layout;
   console.log('Fetch capture: out-of-order, stale-run, eviction, failed and mismatched jobs passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });
