@@ -7,20 +7,35 @@ Place `project_backend/` and `API_Service_Kaggle/` side by side in a writable Ka
 Enable Notebook Internet and configure the two required Kaggle Secrets below. Run this **single Python cell**; do not paste secrets into it:
 
 ```python
-import pathlib
+import os
 import subprocess
 import sys
+from pathlib import Path
 
-repo = pathlib.Path("/kaggle/working/COOP_Project4_Kaggle")
+repo = Path("/kaggle/working/COOP_Project4_Kaggle")
 if not repo.exists():
     subprocess.run([
         "git", "clone", "--branch", "kaggle-cpu-runtime", "--single-branch",
         "https://github.com/MintChananchida13/COOP_Project4_V2.git", str(repo),
     ], check=True)
-subprocess.run([sys.executable, str(repo / "API_Service_Kaggle/kaggle/bootstrap.py")], check=True)
+os.environ["MODEL_WEIGHTS_ROOT"] = str(repo / "API_Service_Kaggle/weights")
+kaggle_dir = repo / "API_Service_Kaggle/kaggle"
+subprocess.run([sys.executable, str(kaggle_dir / "manage.py"), "stop"], check=True)
+subprocess.run([sys.executable, str(kaggle_dir / "bootstrap.py")], check=True)
 ```
 
 `bootstrap.py` also clones the requested branch when invoked from an existing copy of the script and the Kaggle checkout is absent. It checks the repository origin and branch, verifies both virtual environments with Python/pip, `pip check`, OCR/Backend/SigLIP smoke tests, retrieves secrets, runs `manage.py start`, `status`, and `check`, and starts a Cloudflare quick tunnel. It downloads a SHA256-verified, pinned Linux amd64 `cloudflared` binary into `/kaggle/working/ocr_runtime` only when needed. It waits for a newly emitted tunnel URL and verifies public `/health` before marking the tunnel ready. Network policy or model/database startup can still prevent success; the summary then shows the failed stage and log paths. Existing healthy services and tunnel are reused, not duplicated.
+
+Alternatively, run the standalone `start_finetuned_models.py` from the notebook or shell. It clones the repository when needed and checks local fine-tuned weights before startup:
+
+```python
+import subprocess, sys
+from pathlib import Path
+repo = Path('/kaggle/working/COOP_Project4_Kaggle')
+subprocess.run([sys.executable, str(repo / 'API_Service_Kaggle/kaggle/start_finetuned_models.py')], check=True)
+```
+
+This checks for the three sets of files, sets `MODEL_WEIGHTS_ROOT` for the child processes, stops the API and backend, and runs the normal bootstrap. Missing files are reported without preventing other models from starting. The file check does not load a model: use the Admin model check after startup. Set `MODEL_WEIGHTS_ROOT` in the notebook environment before the cell if weights are stored outside the checkout. Stopping the services interrupts ongoing jobs.
 
 The clone cell can use `bootstrap.py` only **after these local changes are pushed** to the named branch. This task does not commit or push them.
 

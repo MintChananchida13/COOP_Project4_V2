@@ -21,6 +21,8 @@ All POST routes require `Authorization: Bearer <MODEL_GATEWAY_API_KEY>` and base
 
 OCR variants are defined in `config/model_registry.json`. Detection and recognition single and batch endpoints accept optional `version` and `model_id` query parameters. Omitting them keeps the existing v6 detection and v5 Thai recognition defaults. Unknown combinations fail rather than selecting another model. The authenticated registry and model-check APIs provide metadata and perform a real load check; loaded instances are cached until the service restarts. An unchanged directory with replaced weights requires a service restart.
 
+Recognition batches use Paddle's `predict` with `OCR_RECOGNITION_BATCH_SIZE` images per call (default 4, positive integer). Set it to 1 before restarting the service to disable multi-image inference. The separate `BATCH_CHUNK_SIZE` applies to SigLIP. To compare single-image and batch recognition on the target machine, run `python kaggle/benchmark_recognition_batch.py --version v5 --model-id thai_ft_v3 crop1.png crop2.png` with representative text crops and `MODEL_WEIGHTS_ROOT` set; timings and text/score comparisons are printed without storing image data. Test other recognition variants with the matching version and model ID.
+
 Fine-tuned model paths are paths on the model-service host. The registry uses `/workspace/API_service/weights/...`; for Kaggle or another mount set `MODEL_WEIGHTS_ROOT` to the actual directory containing `det-v6` and `rec-th`/`rec-v6`. Each inference directory must contain `inference.yml`, `inference.pdiparams`, and either `inference.json` or `inference.pdmodel`. Missing or incompatible files fail that model's load independently. The registry does not install or supply model weights.
 
 ## Models and setup

@@ -110,6 +110,18 @@ def paddle_result(model, image):
     return output[0]
 
 
+def paddle_recognition_batch(model, images):
+    results = []
+    size = settings.recognition_batch_size
+    for start in range(0, len(images), size):
+        chunk = images[start:start + size]
+        output = json_safe(list(model.predict(chunk, batch_size=len(chunk))))
+        if len(output) != len(chunk) or any(not isinstance(item, dict) for item in output):
+            raise RuntimeError("Unexpected Paddle recognition batch result count or shape")
+        results.extend(output)
+    return {"results": results}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "device": settings.device, "loaded_models": list(manager.models), "authentication_configured": bool(settings.api_key)}
@@ -202,7 +214,7 @@ def recognition(request: SingleImage, version: str = "v5", model_id: str = "defa
 def recognition_batch(request: BatchImages, version: str = "v5", model_id: str = "default"):
     images = [decode_image(item) for item in request.images]
     entry = selected_ocr("rec", version, model_id)
-    return run("rec", lambda model: {"results": [paddle_result(model, image) for image in images]}, **({} if model_id == "default" else {"ocr_entry": entry}))
+    return run("rec", lambda model: paddle_recognition_batch(model, images), **({} if model_id == "default" else {"ocr_entry": entry}))
 
 
 @app.post("/api/v1/table-model-results", dependencies=[Depends(authenticate)])

@@ -990,7 +990,7 @@ def analyze_layout(
                 " and TextDetection" if use_text_detection else "",
             )
             try:
-                layout_result = remote_analyze_layout(image)
+                layout_result = remote_analyze_layout(image, layout_only=not use_text_detection)
             except ModelRuntimeUnavailableError as error:
                 raise LayoutAnalysisUnavailableError(str(error)) from error
             except Exception as error:

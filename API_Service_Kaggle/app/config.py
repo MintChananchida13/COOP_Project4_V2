@@ -12,10 +12,11 @@ class Settings:
     max_image_bytes: int = int(os.getenv("MAX_IMAGE_BYTES", "15000000"))
     max_image_pixels: int = int(os.getenv("MAX_IMAGE_PIXELS", "25000000"))
     batch_chunk_size: int = int(os.getenv("BATCH_CHUNK_SIZE", "16"))
+    recognition_batch_size: int = int(os.getenv("OCR_RECOGNITION_BATCH_SIZE", "4"))
 
 
 settings = Settings()
 if settings.device != "cpu":
     raise ValueError("This service supports MODEL_DEVICE=cpu only")
-if min(settings.cpu_threads, settings.max_concurrent, settings.queue_limit, settings.batch_chunk_size) < 1:
+if min(settings.cpu_threads, settings.max_concurrent, settings.queue_limit, settings.batch_chunk_size, settings.recognition_batch_size) < 1:
     raise ValueError("CPU threads, concurrency, queue and chunk size must be positive")
