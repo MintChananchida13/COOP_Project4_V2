@@ -8,7 +8,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .config import settings
-from .models import NAMES, manager, predict, siglip_logits, registry, resolve_ocr
+from .models import NAMES, manager, predict, siglip_logits, registry, resolve_ocr, register_ocr_model
 from .serialization import decode_image, json_safe
 from .timing import build_timing
 from .siglip_policy import POSITIVE, NEGATIVE, decide
@@ -175,6 +175,37 @@ class OcrModelCheck(BaseModel):
     kind: str
     version: str
     model_id: str
+
+
+class OcrModelRegistration(BaseModel):
+    kind: str
+    version: str
+    model_id: str
+    model_name: str
+    display_name: str
+    model_dir: str
+
+
+@app.post("/api/v1/ocr-models", dependencies=[Depends(authenticate)])
+def register_model(request: OcrModelRegistration):
+    import re
+    from pathlib import PurePosixPath
+    if request.kind not in ("det", "rec") or not re.fullmatch(r"v[0-9]+", request.version):
+        raise HTTPException(422, "Invalid model kind or version")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request.model_id) or request.model_id == "default":
+        raise HTTPException(422, "Invalid model ID")
+    if not request.model_name.strip() or not request.display_name.strip():
+        raise HTTPException(422, "Model name and display name are required")
+    path = PurePosixPath(request.model_dir)
+    if not path.is_absolute() or ".." in path.parts:
+        raise HTTPException(422, "Model directory must be an absolute service path without ..")
+    entry = {"model_id": request.model_id, "version": request.version, "model_name": request.model_name.strip(),
+             "display_name": request.display_name.strip(), "model_dir": str(path), "requires_local_weights": True}
+    try:
+        register_ocr_model(request.kind, entry)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    return {"success": True, "model": entry}
 
 
 @app.post("/api/v1/ocr-models/check", dependencies=[Depends(authenticate)])

@@ -198,6 +198,10 @@ class OcrModelPayload(BaseModel):
     display_name: str = Field(validation_alias=AliasChoices("display_name", "displayName"))
     single_api_path: str = Field(validation_alias=AliasChoices("single_api_path", "singleApiPath"))
     batch_api_path: str = Field(validation_alias=AliasChoices("batch_api_path", "batchApiPath"))
+    model_name: Optional[str] = Field(default=None, validation_alias=AliasChoices("model_name", "modelName"))
+    model_version: Optional[str] = Field(default=None, validation_alias=AliasChoices("model_version", "modelVersion"))
+    model_dir: Optional[str] = Field(default=None, validation_alias=AliasChoices("model_dir", "modelDir"))
+    runtime_model_id: Optional[str] = Field(default=None, validation_alias=AliasChoices("runtime_model_id", "runtimeModelId"))
 
 
 class OcrActiveModelsUpdate(BaseModel):

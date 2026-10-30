@@ -312,7 +312,7 @@ def _clean_api_path(value: Any, field_name: str) -> str:
 
 
 def _clean_ocr_model_payload(payload: Any, existing_id: Optional[str] = None) -> Dict[str, Any]:
-    data = payload.model_dump(by_alias=False) if hasattr(payload, "model_dump") else dict(payload or {})
+    data = payload.model_dump(by_alias=False, exclude_none=True) if hasattr(payload, "model_dump") else dict(payload or {})
     display_name = str(data.get("display_name") or "").strip()
     if not display_name:
         raise HTTPException(status_code=400, detail="display_name is required")
@@ -1073,6 +1073,26 @@ class GlobalSettingsService:
         settings = self.get_ocr_model_settings()["ocr_models"]
         cleaned = _clean_ocr_model_payload(payload, existing_id=model_id)
         models = settings["models"][normalized_kind]
+        runtime_id = str(cleaned.get("runtime_model_id") or "").strip()
+        if runtime_id and not model_id:
+            from urllib.parse import urlencode
+            from app.core.model_runtime_client import register_ocr_registry_model, ModelRuntimeUnavailableError
+            for key in ("model_name", "model_version", "model_dir"):
+                if not str(cleaned.get(key) or "").strip():
+                    raise HTTPException(status_code=400, detail=f"{key} is required")
+            if any(item["id"] == runtime_id for item in models):
+                raise HTTPException(status_code=409, detail="Model ID already exists")
+            cleaned["id"] = runtime_id
+            api = "text-detection" if normalized_kind == "text_detection" else "text-recognition"
+            query = urlencode({"version": cleaned["model_version"], "model_id": runtime_id})
+            cleaned["single_api_path"] = f"/api/v1/{api}s?{query}"
+            cleaned["batch_api_path"] = f"/api/v1/{api}-batches?{query}"
+            try:
+                register_ocr_registry_model(normalized_kind, cleaned)
+            except ModelRuntimeUnavailableError as error:
+                raise HTTPException(status_code=503, detail=str(error)) from error
+            cleaned["registry_managed"] = True
+            cleaned["loaded"] = False
         index = next((item_index for item_index, item in enumerate(models) if item["id"] == cleaned["id"]), -1)
         if index >= 0:
             models[index] = cleaned

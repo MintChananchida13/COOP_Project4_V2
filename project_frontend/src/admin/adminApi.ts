@@ -2324,6 +2324,10 @@ export const saveOcrModel = async (
         display_name: model.displayName,
         single_api_path: model.singleApiPath,
         batch_api_path: model.batchApiPath,
+        model_name: model.modelName,
+        model_version: model.modelVersion,
+        model_dir: model.modelDir,
+        runtime_model_id: model.runtimeModelId,
       }),
     }
   );

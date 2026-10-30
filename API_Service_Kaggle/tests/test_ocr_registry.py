@@ -18,6 +18,9 @@ class RegistryTests(unittest.TestCase):
     def test_versions_and_unknown_models(self):
         self.assertEqual(resolve_ocr("det", "v6", "thai_ft_v2")["model_name"], "PP-OCRv6_medium_det")
         self.assertEqual(resolve_ocr("rec", "v5", "thai_ft_v3")["model_name"], "th_PP-OCRv5_mobile_rec")
+        latest = resolve_ocr("rec", "v5", "thai_ft_v4")
+        self.assertEqual(latest["model_dir"], "/workspace/API_service/weights/testdataset6_best")
+        self.assertTrue(latest["requires_local_weights"])
         self.assertEqual(resolve_ocr("rec", "v6", "thai_ft_v1")["model_name"], "PP-OCRv6_medium_rec")
         with self.assertRaises(ValueError):
             resolve_ocr("rec", "v5", "thai_ft_v1")
@@ -44,7 +47,7 @@ class RegistryTests(unittest.TestCase):
         with patch.object(main, "settings", replace(main.settings, api_key="secret")), patch.object(main, "run", fake_run):
             client = TestClient(main.app)
             headers = {"Authorization": "Bearer secret"}
-            for route, version, model_id in (("text-detections", "v6", "thai_ft_v2"), ("text-recognitions", "v5", "thai_ft_v3"), ("text-recognitions", "v6", "thai_ft_v1")):
+            for route, version, model_id in (("text-detections", "v6", "thai_ft_v2"), ("text-recognitions", "v5", "thai_ft_v3"), ("text-recognitions", "v5", "thai_ft_v4"), ("text-recognitions", "v6", "thai_ft_v1")):
                 for batch in (False, True):
                     path = route if not batch else route.replace("detections", "detection-batches").replace("recognitions", "recognition-batches")
                     response = client.post(f"/api/v1/{path}?version={version}&model_id={model_id}", headers=headers, json={"images": [data]} if batch else {"image": data})

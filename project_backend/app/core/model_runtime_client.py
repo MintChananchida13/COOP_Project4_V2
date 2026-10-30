@@ -144,6 +144,14 @@ def check_ocr_registry_model(kind: str, version: str, model_id: str) -> Dict[str
         path_override="/api/v1/ocr-models/check")
 
 
+def register_ocr_registry_model(kind: str, model: Dict[str, Any]) -> Dict[str, Any]:
+    return _post_predict(ModelRuntimeKind.TEXT_DETECTION if kind == "text_detection" else ModelRuntimeKind.TEXT_RECOGNITION,
+        {"kind": "det" if kind == "text_detection" else "rec", "version": model["model_version"],
+         "model_id": model["runtime_model_id"], "model_name": model["model_name"],
+         "model_dir": model["model_dir"], "display_name": model["display_name"]},
+        path_override="/api/v1/ocr-models")
+
+
 def _image_to_data_url(image: np.ndarray) -> str:
     if image is None or image.size == 0:
         raise ValueError("Invalid image for model runtime request.")

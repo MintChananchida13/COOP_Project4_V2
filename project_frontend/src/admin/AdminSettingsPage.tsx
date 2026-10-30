@@ -94,7 +94,7 @@ const modelKindLabels: Record<OcrModelKind, string> = {
   text_recognition: "Text Recognition",
 };
 
-type ModelDraft = Pick<OcrModelConfig, "displayName" | "singleApiPath" | "batchApiPath"> & { id?: string };
+type ModelDraft = Pick<OcrModelConfig, "displayName" | "singleApiPath" | "batchApiPath"> & Pick<OcrModelConfig, "modelName" | "modelVersion" | "modelDir" | "runtimeModelId"> & { id?: string };
 
 const emptyModelDraft: ModelDraft = {
   displayName: "",
@@ -135,7 +135,7 @@ const emptyMaintenanceDraft: MaintenanceDraft = {
   message: maintenanceMessageOptions[0],
 };
 
-const modelFormPlaceholders: Record<OcrModelKind, Record<keyof Omit<ModelDraft, "id">, string>> = {
+const modelFormPlaceholders: Record<OcrModelKind, Record<string, string>> = {
   text_detection: {
     displayName: "PP-OCRv6 Medium",
     singleApiPath: "/api/v1/text-detections?version=v6",
@@ -715,7 +715,9 @@ export default function AdminSettingsPage() {
   };
 
   const openAddModel = (kind: OcrModelKind) => {
-    setEditingModel({ kind, draft: emptyModelDraft });
+    setEditingModel({ kind, draft: { ...emptyModelDraft,
+      singleApiPath: kind === "text_detection" ? "/api/v1/text-detections" : "/api/v1/text-recognitions",
+      batchApiPath: kind === "text_detection" ? "/api/v1/text-detection-batches" : "/api/v1/text-recognition-batches" } });
     setModelFormStatus("idle");
     setModelFormError("");
   };
@@ -728,6 +730,11 @@ export default function AdminSettingsPage() {
 
   const handleSaveModelForm = async () => {
     if (!editingModel || modelFormStatus === "saving") return;
+    if (!editingModel.draft.id && ![editingModel.draft.displayName, editingModel.draft.modelName, editingModel.draft.runtimeModelId, editingModel.draft.modelVersion, editingModel.draft.modelDir].every(value => value?.trim())) {
+      setModelFormStatus("error");
+      setModelFormError("กรุณากรอกชื่อ Model Name, Model ID, Version และ Model Directory ให้ครบ");
+      return;
+    }
     setModelFormStatus("saving");
     setModelFormError("");
     try {
@@ -951,6 +958,7 @@ export default function AdminSettingsPage() {
                 <div className="mt-4 grid gap-3">
                   {[
                     ["Display Name", "displayName"],
+                    ...(!editingModel.draft.id ? [["Model Name", "modelName"], ["Model ID", "runtimeModelId"], ["Version", "modelVersion"], ["Model Directory (Model Service)", "modelDir"]] : []),
                     ["Single API Path", "singleApiPath"],
                     ["Batch API Path", "batchApiPath"],
                   ].map(([label, key]) => (
@@ -958,6 +966,7 @@ export default function AdminSettingsPage() {
                       <span className="text-[11px] font-black uppercase tracking-wide text-slate-500">{label}</span>
                       <input
                         type="text"
+                        readOnly={!editingModel.draft.id && (key === "singleApiPath" || key === "batchApiPath")}
                         value={String(editingModel.draft[key as keyof ModelDraft] || "")}
                         placeholder={modelFormPlaceholders[editingModel.kind][key as keyof Omit<ModelDraft, "id">]}
                         onChange={(event) => setEditingModel((current) => current ? { ...current, draft: { ...current.draft, [key]: event.target.value } } : current)}

@@ -13,11 +13,33 @@ from .serialization import json_safe
 
 logger = logging.getLogger(__name__)
 REGISTRY_PATH = Path(__file__).resolve().parent.parent / "config" / "model_registry.json"
+registry_lock = threading.RLock()
 
 
 def registry():
-    with REGISTRY_PATH.open(encoding="utf-8") as stream:
-        return json.load(stream)
+    with registry_lock:
+        with REGISTRY_PATH.open(encoding="utf-8") as stream:
+            return json.load(stream)
+
+
+def register_ocr_model(kind, entry):
+    category = "detection" if kind == "det" else "recognition"
+    with registry_lock:
+        data = registry()
+        if any(item.get("model_id") == entry["model_id"] for item in data[category]):
+            raise ValueError("Model ID already exists")
+        data[category].append(entry)
+        import tempfile
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=REGISTRY_PATH.parent, delete=False) as output:
+                temporary = Path(output.name)
+                json.dump(data, output, ensure_ascii=False, indent=2)
+                output.write("\n")
+            os.replace(temporary, REGISTRY_PATH)
+        finally:
+            if temporary is not None and temporary.exists():
+                temporary.unlink()
 
 
 def resolve_ocr(kind, version, model_id):
