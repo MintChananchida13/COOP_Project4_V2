@@ -101,6 +101,11 @@ def metrics(state: dict, elapsed_ms: float) -> dict:
     output["model_queue_wait_ms"] = (round(sum(queues), 2) if queues and summary["model_intervals_overlap"] is False
                                       and all(duration(item) for item in queues) else None)
     if output["template_search_ms"] is None:
+        for key in ("anchor_strategy_matching_ms", "text_only_matching_ms"):
+            if duration(timing.get(key)):
+                output["template_search_ms"] = timing[key]
+                break
+    if output["template_search_ms"] is None:
         breakdown = timing.get("benchmark") or {}
         output["template_search_ms"] = ((breakdown.get("steps") or {}).get("matching") or {}).get("elapsed_ms")
     for label, kind in (("layout", "layout"), ("text_detection", "text_detection"), ("text_recognition", "text_recognition"), ("siglip", "image_verification")):

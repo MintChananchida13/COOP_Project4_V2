@@ -6,6 +6,11 @@ import unittest
 
 
 class DetectionTimingOutputTests(unittest.TestCase):
+    def test_anchor_matching_timings_are_available_for_search_benchmark(self):
+        result = self.collect({"anchor_strategy_matching": 1.23, "text_only_matching": 0.0}, [])
+        self.assertEqual(result["anchor_strategy_matching_ms"], 1230)
+        self.assertEqual(result["text_only_matching_ms"], 0)
+
     def collect(self, timing, pages):
         source = Path(__file__).parents[1] / "app/processing/detection_service.py"
         tree = ast.parse(source.read_text(encoding="utf-8-sig"))

@@ -6,6 +6,18 @@ from app.api import routes
 
 
 class SearchBenchmarkTests(unittest.TestCase):
+    def test_template_search_uses_matching_in_all_modes_and_preserves_zero(self):
+        for timing, expected in (({"template_matching_ms": 12}, 12),
+                                 ({"anchor_strategy_matching_ms": 23}, 23),
+                                 ({"text_only_matching_ms": 34}, 34),
+                                 ({"anchor_strategy_matching_ms": 0}, 0), ({}, None)):
+            state, token = search_benchmark.begin("1" * 32)
+            try:
+                state["timing"] = timing
+                self.assertEqual(search_benchmark.metrics(state, 50)["template_search_ms"], expected)
+            finally:
+                search_benchmark.end(token)
+
     def test_backend_union_avoids_double_counting_and_rejects_missing_spans(self):
         trace = "e" * 32
         search_benchmark.record_span(trace, "search", 1, 3)

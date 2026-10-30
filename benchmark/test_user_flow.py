@@ -23,6 +23,21 @@ class UserFlowTests(unittest.TestCase):
         self.assertIs(rows[0]["matching_correctness"], True)
         self.assertIs(rows[1]["matching_correctness"], True)
 
+    def test_boolean_ground_truth_checks_matched_without_claiming_template_correctness(self):
+        arguments = self.arguments()
+        arguments.input = Path("input")
+        arguments.ground_truth = {"card.png": True, "unknown.png": False}
+        arguments.repeats = 1
+        rows = []
+        outcomes = [{"status": "PASS", "matched": True, "template_id": "tpl_any"},
+                    {"status": "PASS", "matched": True, "template_id": "tpl_wrong"}]
+        with patch.object(user_flow, "run_case", side_effect=outcomes), \
+                patch.object(user_flow, "save_results", return_value=True), patch.object(user_flow, "reset_document"):
+            self.assertTrue(user_flow.run_cases(Mock(), arguments, [(Path("input/card.png"), None), (Path("input/unknown.png"), None)], rows, {"closed": False}))
+        self.assertTrue(rows[0]["match_correctness"])
+        self.assertFalse(rows[1]["match_correctness"])
+        self.assertNotIn("matching_correctness", rows[0])
+
     def test_frontend_metrics_are_appended_and_browser_authoritative(self):
         start = user_flow.HEADERS.index(user_flow.FRONTEND_METRICS[0])
         self.assertEqual(user_flow.HEADERS[start:start + len(user_flow.FRONTEND_METRICS)], user_flow.FRONTEND_METRICS)

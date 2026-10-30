@@ -5222,6 +5222,8 @@ def _detection_timing_debug(
         "layout_analysis_breakdown": _debug_timing_value(timing.get("layout_analysis_breakdown") or []),
         "signature_build_ms": _ms(timing.get("signature_build")),
         "template_matching_ms": _ms(timing.get("template_matching")),
+        "anchor_strategy_matching_ms": _ms(timing.get("anchor_strategy_matching")),
+        "text_only_matching_ms": _ms(timing.get("text_only_matching")),
         "template_matching_breakdown": _template_matching_timing_ms_list(timing.get("layout_candidate_searches")),
         "verification_ms": _ms(timing.get("verification")),
         "siglip_preprocess_ms": global_image_batch_debug.get("siglip_preprocess_ms"),

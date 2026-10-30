@@ -38,7 +38,7 @@ SEARCH_METRICS = ("frontend_preparation_ms", "request_network_ms", "request_roun
 METRICS = (*LEGACY_METRICS, *FRONTEND_METRICS, *SEARCH_METRICS)
 HEADERS = ("file", "run_number", "runs_per_file", "expected_mode", "actual_mode", "status", "matched", "query_id", "ocr_status", "ocr_wall_ms", "error", "model_intervals_overlap", "model_call_count", "model_timing_missing_reason", *(key for key in LEGACY_METRICS if key != "backend_runtime_ms"), "timing_missing_reasons", "job_id", "error_type", "job_status", "capture_errors", *FRONTEND_METRICS,
            "frontend_visibility_status", "frontend_visibility_reason", "frontend_timing_kind", "frontend_run_token", "benchmark_run_token", *SEARCH_METRICS,
-           "trace_id", "template_id", "matching_score", "expected_template_id", "matching_correctness", "layout_telemetry_incomplete")
+           "trace_id", "template_id", "matching_score", "expected_matched", "match_correctness", "expected_template_id", "matching_correctness", "layout_telemetry_incomplete")
 CALL_KEYS = ("call_id", "kind", "http_request_ms", "model_load_ms", "queue_wait_ms",
              "inference_lock_wait_ms", "inference_ms", "serialization_ms", "service_total_runtime_ms",
              "runs_per_file", "endpoint", "model_call_start_monotonic", "model_call_end_monotonic", "model_timings", "conflicting_record")
@@ -418,11 +418,19 @@ def run_cases(page, arguments, cases, rows, browser_state):
             row.update(run_number=run_number, runs_per_file=arguments.repeats)
             truth = getattr(arguments, "ground_truth", {})
             if isinstance(truth, dict) and truth:
-                relative = str(path.relative_to(arguments.input)).replace("\\", "/")
+                try:
+                    relative = str(path.relative_to(arguments.input)).replace("\\", "/")
+                except ValueError:
+                    relative = ""
                 if relative in truth:
-                    row["expected_template_id"] = truth[relative]
-                    if row.get("matched") is not None:
-                        row["matching_correctness"] = row.get("template_id") == truth[relative]
+                    expected = truth[relative]
+                    row["expected_matched"] = expected if isinstance(expected, bool) else expected is not None
+                    if isinstance(row.get("matched"), bool):
+                        row["match_correctness"] = row["matched"] == row["expected_matched"]
+                    if not isinstance(expected, bool):
+                        row["expected_template_id"] = expected
+                        if isinstance(row.get("matched"), bool):
+                            row["matching_correctness"] = row.get("template_id") == expected
             rows.append(row)
             if not save_results(arguments, rows):
                 return False
@@ -451,11 +459,18 @@ def main():
     parser.add_argument("--timeout-seconds", type=int, default=1200)
     parser.add_argument("--no-ocr", action="store_true", help="Compatibility option; the benchmark always stops after Template detection")
     parser.add_argument("--repeats", type=int, default=2, help="Runs per file (default: 2)")
-    parser.add_argument("--ground-truth", type=Path, help="JSON mapping input-relative filenames to expected Template IDs (null for no match)")
+    parser.add_argument("--ground-truth", type=Path, default=ROOT / "ground_truth.json", help="JSON mapping filenames to expected matched booleans or Template IDs (null for no match)")
     arguments = parser.parse_args()
-    arguments.ground_truth = json.loads(arguments.ground_truth.read_text(encoding="utf-8")) if arguments.ground_truth else {}
-    if not isinstance(arguments.ground_truth, dict) or any(value is not None and not isinstance(value, str) for value in arguments.ground_truth.values()):
-        parser.error("--ground-truth must map filenames to template IDs or null")
+    if arguments.ground_truth is None:
+        arguments.ground_truth = {}
+    elif arguments.ground_truth.exists():
+        arguments.ground_truth = json.loads(arguments.ground_truth.read_text(encoding="utf-8"))
+    elif arguments.ground_truth == ROOT / "ground_truth.json":
+        arguments.ground_truth = {}
+    else:
+        parser.error(f"Ground truth file not found: {arguments.ground_truth}")
+    if not isinstance(arguments.ground_truth, dict) or any(value is not None and not isinstance(value, (str, bool)) for value in arguments.ground_truth.values()):
+        parser.error("--ground-truth must map filenames to booleans, template IDs or null")
     if arguments.repeats < 1:
         parser.error("--repeats must be at least 1")
     cases = input_cases(arguments.input, arguments.expected_mode)
