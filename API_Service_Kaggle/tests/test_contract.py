@@ -77,7 +77,7 @@ def test_siglip_single_and_batch_responses_include_measured_runtime(monkeypatch)
 
 def test_layout_timing_separates_detector_without_changing_results(monkeypatch):
     monkeypatch.setattr(main.manager, "get", lambda name: (name, 0.0))
-    monkeypatch.setattr(main, "paddle_result", lambda model, image: {"model": model})
+    monkeypatch.setattr(main, "paddle_result", lambda model, image, **kwargs: {"model": model})
     for layout_only in (False, True):
         response = main.layout(main.LayoutImage(image=image_url(), layout_only=layout_only))
         timing = response["timing"]

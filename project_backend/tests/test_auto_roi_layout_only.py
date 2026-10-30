@@ -8,6 +8,13 @@ from app.model_runtime import layout_analysis_service as service
 
 
 class AutoRoiLayoutOnlyTests(unittest.TestCase):
+    def test_layout_boxes_unchanged_when_input_image_is_omitted(self):
+        item = {"input_img": [[[255, 255, 255]]],
+                "boxes": [{"label": "text", "coordinate": [10, 20, 80, 40], "score": 0.9}]}
+        before = service._layout_detection_items_from_response({"raw": {"layout": [item]}})
+        after = service._layout_detection_items_from_response({"raw": {"layout": [{"boxes": item["boxes"]}]}})
+        self.assertEqual(before, after)
+
     def test_auto_roi_requests_layout_only_and_preserves_regions(self):
         image = np.zeros((100, 100, 3), dtype=np.uint8)
         layout = [{"boxes": [{"label": "image", "coordinate": [5, 5, 35, 70], "score": .9}]}]

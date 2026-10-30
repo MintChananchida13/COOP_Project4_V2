@@ -148,6 +148,11 @@ manager = ModelManager()
 
 def predict(name, image, model):
     output = model.predict(image)
+    if name == "layout":
+        # PaddleX result objects inherit dict and retain the original image.
+        # Omit it before json_safe expands the pixel array into JSON lists.
+        output = [{key: value for key, value in item.items() if key != "input_img"}
+                  if isinstance(item, dict) else item for item in output]
     return json_safe(list(output))
 
 

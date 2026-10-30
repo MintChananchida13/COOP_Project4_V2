@@ -103,8 +103,8 @@ def run(name, operation, model_timings=None, ocr_entry=None):
         slots.release()
 
 
-def paddle_result(model, image):
-    output = predict("", image, model)
+def paddle_result(model, image, *, layout=False):
+    output = predict("layout" if layout else "", image, model)
     if len(output) != 1 or not isinstance(output[0], dict):
         raise RuntimeError("Unexpected Paddle result count or shape")
     return output[0]
@@ -134,7 +134,7 @@ def layout(request: LayoutImage):
 
     def operation(model):
         layout_started = time.perf_counter()
-        layout_raw = paddle_result(model, image)
+        layout_raw = paddle_result(model, image, layout=True)
         model_timings["layout"] = {"inference_ms": round((time.perf_counter() - layout_started) * 1000, 2)}
         if request.layout_only:
             return {"raw": {"layout": [layout_raw]}}
