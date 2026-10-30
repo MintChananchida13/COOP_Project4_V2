@@ -40,7 +40,6 @@ from app.business.services import (
     VERIFICATION_STRATEGY_LAYOUT_ONLY,
     DETECTION_BATCH_MODE_GLOBAL,
     normalize_verification_strategy,
-    normalize_detection_batch_mode,
 )
 
 
@@ -5415,15 +5414,7 @@ def detect_template_dev(
             timing["verification_strategy_load_breakdown"] = verification_strategy_timing
         verification_strategy = normalize_verification_strategy(verification_strategy_setting.get("verification_strategy"))
         timing["verification_strategy_load"] = time.perf_counter() - step_started
-        step_started = time.perf_counter()
-        if verification_strategy_override is not None:
-            detection_batch_mode_setting = {"detection_batch_processing_mode": DETECTION_BATCH_MODE_GLOBAL}
-            timing["detection_batch_mode_load_breakdown"] = {"source": "default_for_override"}
-        else:
-            detection_batch_mode_setting, detection_batch_mode_timing = global_settings_service.get_detection_batch_mode_with_timing()
-            timing["detection_batch_mode_load_breakdown"] = detection_batch_mode_timing
-        detection_batch_mode = normalize_detection_batch_mode(detection_batch_mode_setting.get("detection_batch_processing_mode"))
-        timing["detection_batch_mode_load"] = time.perf_counter() - step_started
+        detection_batch_mode = DETECTION_BATCH_MODE_GLOBAL
         if verification_strategy == VERIFICATION_STRATEGY_TEXT_ONLY:
             return _finish_detection_result(_detect_template_text_only(
                 query_id,

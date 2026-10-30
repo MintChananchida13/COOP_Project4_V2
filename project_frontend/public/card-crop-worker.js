@@ -16,8 +16,8 @@
     const dst=new cv.Mat(); try {cv.morphologyEx(src,dst,cv.MORPH_OPEN,kernel);const cs=contours(cv,dst);return cs.map(c=>{c.points.delete();return c.box;});}finally{kernel.delete();dst.delete();}
   };
   const close=(cv,src,size)=>{const dst=new cv.Mat(), k=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(size,size));try{cv.morphologyEx(src,dst,cv.MORPH_CLOSE,k,new cv.Point(-1,-1),2);return dst;}finally{k.delete();}};
-  function hsupport(m,y,x0,x1,band){let hits=0;const lo=Math.max(0,y-band),hi=Math.min(m.rows,y+band+1);for(let x=Math.max(0,x0);x<Math.min(m.cols,x1);x++){for(let yy=lo;yy<hi;yy++)if(val(m,x,yy)){hits++;break;}}return hits/Math.max(1,Math.min(m.cols,x1)-Math.max(0,x0));}
-  function vsupport(m,x,y0,y1,band){let hits=0;const lo=Math.max(0,x-band),hi=Math.min(m.cols,x+band+1);for(let y=Math.max(0,y0);y<Math.min(m.rows,y1);y++){for(let xx=lo;xx<hi;xx++)if(val(m,xx,y)){hits++;break;}}return hits/Math.max(1,Math.min(m.rows,y1)-Math.max(0,y0));}
+  function hsupport(m,y,x0,x1,band){let hits=0;const data=m.data,cols=m.cols,lo=Math.max(0,y-band),hi=Math.min(m.rows,y+band+1);for(let x=Math.max(0,x0);x<Math.min(cols,x1);x++){for(let yy=lo;yy<hi;yy++)if(data[yy*cols+x]){hits++;break;}}return hits/Math.max(1,Math.min(cols,x1)-Math.max(0,x0));}
+  function vsupport(m,x,y0,y1,band){let hits=0;const data=m.data,cols=m.cols,lo=Math.max(0,x-band),hi=Math.min(cols,x+band+1);for(let y=Math.max(0,y0);y<Math.min(m.rows,y1);y++){for(let xx=lo;xx<hi;xx++)if(data[y*cols+xx]){hits++;break;}}return hits/Math.max(1,Math.min(m.rows,y1)-Math.max(0,y0));}
   function sides(m,b,band){return [hsupport(m,b.y,b.x,b.x+b.width,band),hsupport(m,b.y+b.height-1,b.x,b.x+b.width,band),vsupport(m,b.x,b.y,b.y+b.height,band),vsupport(m,b.x+b.width-1,b.y,b.y+b.height,band)];}
   function formEvidence(cv,image){
     const scale=Math.min(1,1200/Math.max(image.rows,image.cols));
@@ -143,32 +143,59 @@
             if(normalizedAspect<1.25||normalizedAspect>1.85)continue;
             const cx=ordered.reduce((n,q)=>n+q.x,0)/4,cy=ordered.reduce((n,q)=>n+q.y,0)/4;
             const centerScore=1-Math.min(1,Math.hypot(cx-w/2,cy-h/2)/Math.max(1,Math.hypot(w/2,h/2)));
-            const score=.65*Math.min(1,areaRatio/.75)+.35*centerScore;
             const expanded=ordered.map(q=>({x:Math.max(0,Math.min(w-1,cx+(q.x-cx)*1.024)),y:Math.max(0,Math.min(h-1,cy+(q.y-cy)*1.024))}));
             const x0=Math.floor(Math.min(...expanded.map(q=>q.x))),y0=Math.floor(Math.min(...expanded.map(q=>q.y))),x1=Math.ceil(Math.max(...expanded.map(q=>q.x))),y1=Math.ceil(Math.max(...expanded.map(q=>q.y)));
             const bw=x1-x0,bh=y1-y0,boxArea=bw*bh/(w*h),imageAspect=w/h,boxAspect=bw/Math.max(1,bh);
             if(bw<80||bh<80||boxArea<.03||boxAspect>8||boxAspect<.125||Math.max(boxAspect/imageAspect,imageAspect/boxAspect)>1.35)continue;
             // A full-frame card must not be reduced to a photo/text section.
             if(imageAspect>=1.25&&imageAspect<=1.85&&boxArea<.30)continue;
-            const b={x:x0,y:y0,width:bw,height:bh};const evidence=sides(edge,b,Math.max(2,Math.round(Math.min(w,h)*.004)));
-            if(evidence.filter(v=>v>=.5).length<2||evidence.reduce((a,b)=>a+b,0)/4<.35)continue;
-            candidates.push({box:[Math.max(0,Math.round(x0*width/w)),Math.max(0,Math.round(y0*height/h)),Math.min(width,Math.round(x1*width/w)),Math.min(height,Math.round(y1*height/h))],score,source:'image_'+source});
+            // Measure contours at their unpadded bounds: checking the
+            // expanded crop can miss faint edges just inside that rectangle.
+            const b={
+              x:Math.floor(Math.min(...ordered.map(q=>q.x))), y:Math.floor(Math.min(...ordered.map(q=>q.y))),
+              width:Math.ceil(Math.max(...ordered.map(q=>q.x)))-Math.floor(Math.min(...ordered.map(q=>q.x))),
+              height:Math.ceil(Math.max(...ordered.map(q=>q.y)))-Math.floor(Math.min(...ordered.map(q=>q.y)))
+            };
+            const evidence=sides(edge,b,Math.max(2,Math.round(Math.min(w,h)*.012)));
+            const strongSides=evidence.filter(v=>v>=.5).length,meanEdge=evidence.reduce((a,b)=>a+b,0)/4;
+            if(strongSides<2||meanEdge<.35)continue;
+            const score=.35*Math.min(1,areaRatio/.75)+.20*centerScore+.30*meanEdge+.15*strongSides/4;
+            candidates.push({box:[Math.max(0,Math.round(x0*width/w)),Math.max(0,Math.round(y0*height/h)),Math.min(width,Math.round(x1*width/w)),Math.min(height,Math.round(y1*height/h))],score,source:'image_'+source,suggested:strongSides<3});
           }
         } finally {for(const c of cs)c.points.delete();}
       }
-      candidates.sort((a,b)=>b.score-a.score);return candidates[0]||null;
+      candidates.sort((a,b)=>Number(a.suggested)-Number(b.suggested)||b.score-a.score);return candidates[0]||null;
     } finally {for(const value of owned)value.delete();}
   }
+  function hasContentOutsideBox(cv, rgba, box) {
+    const gray=new cv.Mat(),blur=new cv.Mat(),edges=new cv.Mat();
+    try {
+      cv.cvtColor(rgba,gray,cv.COLOR_RGBA2GRAY);
+      cv.GaussianBlur(gray,blur,new cv.Size(5,5),0);
+      cv.Canny(blur,edges,35,110);
+      const [x0,y0,x1,y1]=box, pad=Math.max(3,Math.round(Math.min(rgba.cols,rgba.rows)*.01));
+      const left=Math.max(0,x0-pad),right=Math.min(rgba.cols,x1+pad);
+      const top=Math.max(0,y0-pad),bottom=Math.min(rgba.rows,y1+pad);
+      let hits=0,total=0;
+      for(const [x,y,w,h] of [[0,0,rgba.cols,top],[0,bottom,rgba.cols,rgba.rows-bottom],
+        [0,top,left,bottom-top],[right,top,rgba.cols-right,bottom-top]]) {
+        if(w<=0||h<=0)continue;
+        const region=edges.roi(new cv.Rect(x,y,w,h));
+        try { hits+=cv.countNonZero(region);total+=w*h; } finally { region.delete(); }
+      }
+      return total>0&&hits/total>=.06;
+    } finally {gray.delete();blur.delete();edges.delete();}
+  }
   function detectImage(cv,rgba){
-    const photo=detectPhoto(cv,rgba);if(photo)return photo;
+    const photo=detectPhoto(cv,rgba);if(photo&&!photo.suggested)return photo;
     const result=detect(cv,rgba);
     if(result.box){const [x0,y0,x1,y1]=result.box,aspect=rgba.cols/rgba.rows,area=(x1-x0)*(y1-y0)/(rgba.cols*rgba.rows);
-      // On a card-shaped image, faint internal lines can form a convincing
-      // Hough rectangle even when the card already fills the whole image.
-      // Do not automatically discard the surrounding content in that case.
-      if(aspect>=1.25&&aspect<=1.85&&(area<.30||(result.source==='hough_faint'&&area<.75)))return {box:null,reason:'already_full_frame_or_ambiguous'};
+      // Faint internal lines may form a rectangle. Content outside that
+      // rectangle is evidence that automatically cropping it is unsafe.
+      if(result.source==='hough_faint'&&hasContentOutsideBox(cv,rgba,result.box))return {box:null,reason:'content_outside_candidate'};
+      if(aspect>=1.25&&aspect<=1.85&&area<.30)return {box:null,reason:'already_full_frame_or_ambiguous'};
     }
-    return result;
+    return result.box?result:photo?{box:null,reason:'weak_boundary'}:result;
   }
   function detect(cv,rgba){
     const garbage=[];const mat=()=>{const m=new cv.Mat();garbage.push(m);return m;};
@@ -207,6 +234,6 @@
   if(typeof root.importScripts==='function'){
     let cvPromise;
     function load(){if(!cvPromise)cvPromise=new Promise((resolve,reject)=>{try{root.importScripts('/opencv.js');const cv=root.cv;if(!cv)return reject(new Error('OpenCV unavailable'));if(cv.Mat)resolve({cv});else if(typeof cv.then==='function')cv.then(v=>resolve({cv:v}));else cv.onRuntimeInitialized=()=>resolve({cv});}catch(e){reject(e);}});return cvPromise;}
-    root.onmessage=async event=>{const {id,width,height,pixels,sourceType}=event.data;try{const {cv}=await load();const rgba=cv.matFromArray(height,width,cv.CV_8UC4,new Uint8ClampedArray(pixels));try{root.postMessage({id,...(sourceType==='image'?detectImage(cv,rgba):detect(cv,rgba))});}finally{rgba.delete();}}catch(e){root.postMessage({id,error:String(e&&e.message||e)});}};
+    root.onmessage=async event=>{const {id,type,width,height,pixels,sourceType}=event.data;try{const {cv}=await load();if(type==='preload')return;const rgba=cv.matFromArray(height,width,cv.CV_8UC4,new Uint8ClampedArray(pixels));try{root.postMessage({id,...(sourceType==='image'?detectImage(cv,rgba):detect(cv,rgba))});}finally{rgba.delete();}}catch(e){if(type!=='preload')root.postMessage({id,error:String(e&&e.message||e)});}};
   }
 })(typeof self==='undefined'?globalThis:self);

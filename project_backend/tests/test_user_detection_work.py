@@ -184,13 +184,17 @@ class UserDetectionWorkTests(unittest.TestCase):
                     self.assertNotIn('cleanup', events)
                     events.append('finish')
                     return value
+                batch_modes = []
+                def record_batch(*args):
+                    batch_modes.append(args[-1])
+                    return result
                 namespace = dict(time=time, uuid4=lambda: SimpleNamespace(hex='query'),
                     DetectionRequestCache=lambda: None, _prepare_query_pages=lambda *args, **kwargs: [Path('original.png')],
                     _normalize_query_pages=lambda *args, **kwargs: [{'page_index': 1, 'normalized_path': 'processed.png'}],
                     DETECTION_RETRIEVAL_LIMIT=3, USER_DETECTION_RETRIEVAL_LIMIT=3, DETECTION_VERIFICATION_CANDIDATE_LIMIT=3,
                     DETECTION_BATCH_MODE_GLOBAL='global', normalize_verification_strategy=lambda value: value,
-                    normalize_detection_batch_mode=lambda value: value, _detect_template_text_only=lambda *args: result,
-                    _detect_template_anchor_strategy=lambda *args: result,
+                    _detect_template_text_only=record_batch,
+                    _detect_template_anchor_strategy=record_batch,
                     _fetch_template_cached=lambda *args: (None, False, {}), _detect_page=lambda *args, **kwargs: page,
                     _is_confirmed_main_page_candidate=lambda value: False, _aggregate_candidates=lambda value: [candidate],
                     _persist_selected_processing_pages=lambda *args: [], _detection_engine=lambda value: mode,
@@ -203,6 +207,8 @@ class UserDetectionWorkTests(unittest.TestCase):
                 returned = namespace['detect_template_dev'](b'image', verification_strategy_override=mode)
                 self.assertTrue(returned['matched'])
                 self.assertEqual(events, ['finish', 'cleanup'])
+                if mode in ('text_only', 'text_image', 'image_only'):
+                    self.assertEqual(batch_modes, ['global'])
 
 
 if __name__ == '__main__':

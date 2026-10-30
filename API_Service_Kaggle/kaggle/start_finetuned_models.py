@@ -29,6 +29,7 @@ def main():
         "detection thai_ft_v2": weights_root / "det-v6/finetuneV/infer",
         "recognition thai_ft_v3": weights_root / "rec-th/finetuneHv3/infer",
         "recognition thai_ft_v4": weights_root / "testdataset6_best",
+        "recognition thai_ft_v5": weights_root / "testdataset9",
         "recognition thai_ft_v1": weights_root / "rec-v6/finetuneH/infer",
     }
     for name, directory in models.items():

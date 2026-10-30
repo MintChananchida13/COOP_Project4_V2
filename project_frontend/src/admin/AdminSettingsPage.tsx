@@ -3,11 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CalendarDays, Check, ChevronLeft, ChevronRight, Clock, Loader2, Pencil, Plus, RefreshCw, Save, Settings, Trash2, X } from "lucide-react";
 import {
-  DetectionBatchMode,
-  DetectionBatchModeSettings,
   deleteOcrModel,
   checkOcrModel,
-  fetchDetectionBatchMode,
   fetchOcrModelSettings,
   fetchAdminSystemMaintenance,
   fetchVerificationStrategy,
@@ -16,7 +13,6 @@ import {
   OcrModelSettings,
   saveOcrModel,
   SystemMaintenanceState,
-  updateDetectionBatchMode,
   updateActiveOcrModels,
   updateAdminSystemMaintenance,
   updateVerificationStrategy,
@@ -61,21 +57,6 @@ const verificationStrategyOptions: { value: VerificationStrategy; label: string;
     badge: "ทดลอง",
   },
 ];
-
-const detectionBatchModeOptions: { value: DetectionBatchMode; label: string; description: string }[] = [
-  {
-    value: "global",
-    label: "Global Batch",
-    description: "รวม ROI จากทุก Template ก่อนส่งประมวลผล เพื่อลดจำนวน Model Request",
-  },
-  {
-    value: "per_template",
-    label: "Per-Template Batch",
-    description: "แยกประมวลผล ROI เป็น Batch ตามแต่ละ Template เหมาะกับการเทียบผลเชิงวิเคราะห์",
-  },
-];
-
-const strategyUsesAnchorBatch = (strategy: VerificationStrategy) => strategy !== "layout_only";
 
 const verificationStrategyLabel = (strategy: VerificationStrategy) =>
   strategy === "strict"
@@ -441,9 +422,6 @@ export default function AdminSettingsPage() {
   const [savedStrategy, setSavedStrategy] = useState<VerificationStrategy>("standard");
   const [pendingStrategy, setPendingStrategy] = useState<VerificationStrategy | null>(null);
   const [draftStrategy, setDraftStrategy] = useState<VerificationStrategy>("standard");
-  const [savedBatchMode, setSavedBatchMode] = useState<DetectionBatchMode>("global");
-  const [pendingBatchMode, setPendingBatchMode] = useState<DetectionBatchMode | null>(null);
-  const [draftBatchMode, setDraftBatchMode] = useState<DetectionBatchMode>("global");
   const [modelSettings, setModelSettings] = useState<OcrModelSettings>(emptyModelSettings);
   const [draftDetectionModelId, setDraftDetectionModelId] = useState("");
   const [draftRecognitionModelId, setDraftRecognitionModelId] = useState("");
@@ -514,12 +492,6 @@ export default function AdminSettingsPage() {
     setDraftStrategy(settings.pending || settings.active);
   };
 
-  const applyDetectionBatchModeSettings = (settings: DetectionBatchModeSettings) => {
-    setSavedBatchMode(settings.active);
-    setPendingBatchMode(settings.pending);
-    setDraftBatchMode(settings.pending || settings.active);
-  };
-
   const applyOcrModelSettings = (settings: OcrModelSettings) => {
     setModelSettings(settings);
     setDraftDetectionModelId(settings.pendingActive?.text_detection || settings.active.text_detection);
@@ -542,17 +514,6 @@ export default function AdminSettingsPage() {
           if (cancelled) return;
           setStrategySaveStatus("error");
           setStrategyFeedback(error instanceof Error ? error.message : "โหลดการตั้งค่า Verification ไม่สำเร็จ");
-        });
-      fetchDetectionBatchMode()
-        .then((mode) => {
-          if (cancelled) return;
-          applyDetectionBatchModeSettings(mode);
-        })
-        .catch((error) => {
-          console.warn("Detection batch mode settings load failed.", error);
-          if (cancelled) return;
-          setStrategySaveStatus("error");
-          setStrategyFeedback(error instanceof Error ? error.message : "โหลดการตั้งค่า Batch Processing ไม่สำเร็จ");
         });
       fetchOcrModelSettings()
         .then((ocrSettings) => {
@@ -593,11 +554,6 @@ export default function AdminSettingsPage() {
         setStrategySaveStatus("error");
         setStrategyFeedback(error instanceof Error ? error.message : "โหลดการตั้งค่า Verification ไม่สำเร็จ");
       }),
-      fetchDetectionBatchMode({ forceRefresh: true }).then(applyDetectionBatchModeSettings).catch((error) => {
-        console.warn("Detection batch mode settings refresh failed.", error);
-        setStrategySaveStatus("error");
-        setStrategyFeedback(error instanceof Error ? error.message : "โหลดการตั้งค่า Batch Processing ไม่สำเร็จ");
-      }),
       fetchOcrModelSettings({ forceRefresh: true }).then(applyOcrModelSettings).catch((error) => {
         console.warn("OCR model settings refresh failed.", error);
         setModelSaveStatus("error");
@@ -628,13 +584,11 @@ export default function AdminSettingsPage() {
   }, [maintenanceNow, scheduledMaintenance]);
 
   const effectiveDraftStrategy = pendingStrategy || savedStrategy;
-  const effectiveDraftBatchMode = pendingBatchMode || savedBatchMode;
   const hasStrategyChanges = draftStrategy !== effectiveDraftStrategy;
-  const hasBatchModeChanges = draftBatchMode !== effectiveDraftBatchMode;
   const hasModelChanges =
     draftDetectionModelId !== (modelSettings.pendingActive?.text_detection || modelSettings.active.text_detection) ||
     draftRecognitionModelId !== (modelSettings.pendingActive?.text_recognition || modelSettings.active.text_recognition);
-  const hasUnsavedChanges = hasStrategyChanges || hasBatchModeChanges || hasModelChanges;
+  const hasUnsavedChanges = hasStrategyChanges || hasModelChanges;
   const selectedOption = useMemo(
     () => verificationStrategyOptions.find((option) => option.value === draftStrategy) || verificationStrategyOptions[0],
     [draftStrategy]
@@ -670,20 +624,12 @@ export default function AdminSettingsPage() {
   }, [hasUnsavedChanges]);
 
   const handleSaveStrategy = async () => {
-    if ((!hasStrategyChanges && !hasBatchModeChanges) || strategySaveStatus === "saving") return;
+    if (!hasStrategyChanges || strategySaveStatus === "saving") return;
     setStrategySaveStatus("saving");
     setStrategyFeedback("");
     try {
-      let persistedStrategy = { deferred: false };
-      if (hasStrategyChanges) {
-        const persistedStrategy = await updateVerificationStrategy(draftStrategy);
-        applyVerificationStrategySettings(persistedStrategy);
-      }
-      if (hasBatchModeChanges) {
-        const persistedBatchMode = await updateDetectionBatchMode(draftBatchMode);
-        applyDetectionBatchModeSettings(persistedBatchMode);
-        persistedStrategy.deferred = persistedStrategy.deferred || persistedBatchMode.deferred;
-      }
+      const persistedStrategy = await updateVerificationStrategy(draftStrategy);
+      applyVerificationStrategySettings(persistedStrategy);
       setStrategySaveStatus("saved");
       setStrategyFeedback(persistedStrategy.deferred ? "บันทึกเป็นค่ารออัปเดตแล้ว จะมีผลเมื่อเริ่มช่วงปิดปรับปรุง" : "บันทึกการตั้งค่าเรียบร้อยแล้ว");
       window.setTimeout(() => setStrategySaveStatus((current) => (current === "saved" ? "idle" : current)), 1800);
@@ -1302,38 +1248,6 @@ export default function AdminSettingsPage() {
                 );
               })}
             </div>
-            {strategyUsesAnchorBatch(draftStrategy) && (
-              <div className="mt-5 border-t border-slate-100 pt-5">
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <h4 className="text-xs font-black text-slate-900">Batch Processing</h4>
-                    <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">กำหนดวิธีรวม ROI สำหรับ Text/Image Anchor โดยไม่เปลี่ยน Verification Strategy</p>
-                  </div>
-                  <div className="rounded-full bg-slate-50 px-3 py-1 text-[11px] font-black text-slate-500">
-                    ปัจจุบัน: {savedBatchMode === "per_template" ? "Per-Template Batch" : "Global Batch"}
-                  </div>
-                </div>
-                <div className="mt-3 grid gap-3 lg:grid-cols-2">
-                  {detectionBatchModeOptions.map((option) => {
-                    const checked = draftBatchMode === option.value;
-                    return (
-                      <label key={option.value} className={`flex cursor-pointer gap-3 rounded-xl border p-4 transition-colors ${checked ? "border-emerald-300 bg-emerald-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}>
-                        <input type="radio" name="detectionBatchMode" value={option.value} checked={checked} onChange={() => { setDraftBatchMode(option.value); setStrategySaveStatus("idle"); setStrategyFeedback(""); }} className="mt-1" />
-                        <span className="min-w-0">
-                          <span className="text-sm font-black text-slate-900">{option.label}</span>
-                          <span className="mt-1 block text-xs font-semibold leading-5 text-slate-500">{option.description}</span>
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-                {(pendingBatchMode || hasBatchModeChanges) && (
-                  <p className="mt-3 text-xs font-bold text-amber-700">
-                    รออัปเดต: {draftBatchMode === "per_template" ? "Per-Template Batch" : "Global Batch"}
-                  </p>
-                )}
-              </div>
-            )}
             <p className="mt-4 text-xs font-semibold leading-5 text-slate-500">
               {hasStrategyChanges
                 ? `เลือกไว้: ${selectedOption.label} ระบบยังใช้งานจริงเป็น ${savedOption.label} จนกว่าจะกดบันทึกการตั้งค่า`
@@ -1344,7 +1258,7 @@ export default function AdminSettingsPage() {
             {strategySaveStatus === "saved" && strategyFeedback && <div className="mt-4"><InlineState tone="success" message={strategyFeedback} /></div>}
             {strategySaveStatus === "error" && strategyFeedback && <div className="mt-4"><InlineState tone="danger" message={strategyFeedback} /></div>}
             <div className="mt-5 flex justify-end">
-              <button type="button" onClick={() => void handleSaveStrategy()} disabled={(!hasStrategyChanges && !hasBatchModeChanges) || strategySaveStatus === "saving"} className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 text-xs font-black text-white shadow-sm transition-colors hover:bg-indigo-700 disabled:bg-slate-300 disabled:text-slate-500">
+              <button type="button" onClick={() => void handleSaveStrategy()} disabled={!hasStrategyChanges || strategySaveStatus === "saving"} className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 text-xs font-black text-white shadow-sm transition-colors hover:bg-indigo-700 disabled:bg-slate-300 disabled:text-slate-500">
                 {strategySaveStatus === "saving" ? <Loader2 size={15} className="animate-spin" /> : strategySaveStatus === "saved" ? <Check size={15} /> : <Save size={15} />}
                 {strategySaveStatus === "saving" ? "กำลังบันทึก..." : "บันทึกการตั้งค่า"}
               </button>

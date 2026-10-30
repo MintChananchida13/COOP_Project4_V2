@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, Bell, LogOut, UserRound } from "lucide-react";
 import AdjustZone from "../user/components/AdjustZone";
+import { disposeCardCropWorker, getCardCropWorker } from "../user/cardCropWorker";
 import WorkspaceZone from "../user/components/WorkspaceZone";
 import MatchedTemplateWorkspaceZone from "../user/components/MatchedTemplateWorkspaceZone";
 import GroundTruthEditorZone from "../user/components/GroundTruthEditorZone";
@@ -1752,6 +1753,12 @@ function HomeWorkspace() {
   const router = useRouter();
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
   const [currentStep, setCurrentStep] = useState<UserFlowStepKey>("upload");
+  useEffect(() => {
+    if (currentStep === "upload") {
+      try { getCardCropWorker(); } catch { /* Detection can retry when needed. */ }
+    }
+  }, [currentStep]);
+  useEffect(() => () => disposeCardCropWorker(), []);
   const [imagesList, setImagesList] = useState<string[]>([]);
   const [exportCropCache] = useState(() => createImageCropCache(loadImageElement));
   const [originalImagesList, setOriginalImagesList] = useState<string[]>([]);

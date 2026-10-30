@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import React, { useRef, useMemo, useEffect, useState } from 'react';
+import { disposeCardCropWorker, getCardCropWorker } from '../cardCropWorker';
 import { 
   RotateCw, Crop, Check, RefreshCw, Minus, Plus, Scissors, 
   ChevronLeft, ChevronRight, Maximize2, Sparkles, FlipHorizontal, FlipVertical,
@@ -320,14 +321,16 @@ export default function AdjustZone({
     const source = new Image();
     const finish = () => {
       if (timer) clearTimeout(timer);
-      if (worker) worker.terminate();
+      if (worker) { worker.onmessage = null; worker.onerror = null; }
       if (autoWorkerRef.current === worker) autoWorkerRef.current = null;
+      worker = null;
       if (!cancelled) setAutoDetecting(false);
     };
     const fail = () => {
       if (!cancelled && !autoTouchedRef.current) {
         setCropError("ตรวจขอบอัตโนมัติไม่สำเร็จ สามารถใช้ภาพต้นฉบับหรือ Crop ด้วยตนเองได้");
       }
+      disposeCardCropWorker(worker);
       finish();
     };
     autoTouchedRef.current = false;
@@ -345,7 +348,7 @@ export default function AdjustZone({
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
         const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        worker = new Worker("/card-crop-worker.js");
+        worker = getCardCropWorker();
         autoWorkerRef.current = worker;
         worker.onmessage = (event: MessageEvent<{ box?: number[] | null; error?: string }>) => {
           if (cancelled || autoTouchedRef.current) return finish();
@@ -383,14 +386,14 @@ export default function AdjustZone({
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
-      if (worker) worker.terminate();
+      if (worker) disposeCardCropWorker(worker);
       if (autoWorkerRef.current === worker) autoWorkerRef.current = null;
     };
   }, [imagesList, sourceFileType, setPagesConfig]);
 
   const skipAutoDetection = () => {
     autoTouchedRef.current = true;
-    autoWorkerRef.current?.terminate();
+    if (autoWorkerRef.current) disposeCardCropWorker(autoWorkerRef.current);
     autoWorkerRef.current = null;
     setAutoDetecting(false);
   };
@@ -409,7 +412,7 @@ export default function AdjustZone({
   const updateCurrentConfig = (fields: Partial<PageConfig>) => {
     autoTouchedRef.current = true;
     if (autoWorkerRef.current) {
-      autoWorkerRef.current.terminate();
+      disposeCardCropWorker(autoWorkerRef.current);
       autoWorkerRef.current = null;
     }
     setAutoDetecting(false);

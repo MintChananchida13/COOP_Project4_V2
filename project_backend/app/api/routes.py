@@ -750,12 +750,14 @@ def update_verification_strategy(payload: VerificationStrategyUpdate) -> ApiResp
 
 @router.get("/admin/settings/detection-batch-mode", response_model=ApiResponse)
 def get_detection_batch_mode() -> ApiResponse:
-    return ok(global_settings.get_detection_batch_mode())
+    return ok({"detection_batch_processing_mode": "global"})
 
 
 @router.put("/admin/settings/detection-batch-mode", response_model=ApiResponse)
 def update_detection_batch_mode(payload: DetectionBatchModeUpdate) -> ApiResponse:
-    return ok(global_settings.update_detection_batch_mode(payload.detection_batch_processing_mode))
+    if payload.detection_batch_processing_mode.strip().lower() != "global":
+        raise HTTPException(status_code=400, detail="Only global batch processing is supported")
+    return ok({"detection_batch_processing_mode": "global", "pending_detection_batch_processing_mode": None, "deferred": False})
 
 
 @router.get("/admin/system/maintenance", response_model=ApiResponse)
