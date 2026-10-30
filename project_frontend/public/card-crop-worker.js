@@ -163,7 +163,10 @@
     const photo=detectPhoto(cv,rgba);if(photo)return photo;
     const result=detect(cv,rgba);
     if(result.box){const [x0,y0,x1,y1]=result.box,aspect=rgba.cols/rgba.rows,area=(x1-x0)*(y1-y0)/(rgba.cols*rgba.rows);
-      if(aspect>=1.25&&aspect<=1.85&&area<.30)return {box:null,reason:'already_full_frame_or_ambiguous'};
+      // On a card-shaped image, faint internal lines can form a convincing
+      // Hough rectangle even when the card already fills the whole image.
+      // Do not automatically discard the surrounding content in that case.
+      if(aspect>=1.25&&aspect<=1.85&&(area<.30||(result.source==='hough_faint'&&area<.75)))return {box:null,reason:'already_full_frame_or_ambiguous'};
     }
     return result;
   }
