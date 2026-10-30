@@ -93,7 +93,7 @@ class BootstrapTests(unittest.TestCase):
     def test_full_startup_checks_services_before_tunnel(self):
         with patch.object(bootstrap, "REPOSITORY", Path("fake_repo")):
             values = {"DATABASE_URL": "postgresql://user:password@host/db", "MODEL_GATEWAY_API_KEY": "secret-key"}
-            installer = SimpleNamespace(WORK_ROOT=Path("fake_work"))
+            installer = SimpleNamespace(WORK_ROOT=Path("fake_work"), python_path=lambda path: path / "python")
             management = SimpleNamespace(
                 API_URL="http://127.0.0.1:8080", BACKEND_URL="http://127.0.0.1:18081",
                 validate_config=Mock(), live_pid=Mock(return_value=123),
@@ -116,7 +116,7 @@ class BootstrapTests(unittest.TestCase):
                     patch.object(bootstrap, "public_health", return_value=True), \
                     patch("sys.stdout", output):
                 self.assertTrue(bootstrap.bootstrap())
-            self.assertEqual(events, ["start", "status", "check", "start"])
+            self.assertEqual(events, ["start", "status", "check", str(Path("fake_repo") / "API_Service_Kaggle/kaggle/warmup_models.py"), "start"])
             self.assertIn("NEXT_PUBLIC_API_URL=https://real.trycloudflare.com", output.getvalue())
             self.assertNotIn("password", output.getvalue())
             self.assertNotIn("secret-key", output.getvalue())
@@ -131,7 +131,7 @@ class BootstrapTests(unittest.TestCase):
             loader = SimpleNamespace(load_secrets=Mock(return_value={"DATABASE_URL": "postgresql://host/db", "MODEL_GATEWAY_API_KEY": "secret-key"}))
             output = io.StringIO()
             with patch.object(bootstrap, "ensure_repository", return_value=bootstrap.BRANCH), \
-                    patch.object(bootstrap, "modules", return_value=(SimpleNamespace(WORK_ROOT=Path("fake_work")), management, tunnel, loader)), \
+                    patch.object(bootstrap, "modules", return_value=(SimpleNamespace(WORK_ROOT=Path("fake_work"), python_path=lambda path: path / "python"), management, tunnel, loader)), \
                     patch.object(bootstrap, "ensure_environments"), \
                     patch.object(bootstrap, "ensure_cloudflared"), \
                     patch.object(bootstrap, "run", return_value=""), \

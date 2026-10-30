@@ -218,6 +218,14 @@ def bootstrap(update=False):
         summary["API Service"] = "healthy"
         summary["Backend"] = "healthy"
         summary["Database"] = "healthy (Neon SELECT 1)"
+        try:
+            warmup_output = run([installer.python_path(installer.WORK_ROOT / "api_env"), directory / "warmup_models.py"],
+                                cwd=directory, environment=environment, secrets=secrets,
+                                log=installer.WORK_ROOT / "warmup_models.log", timeout=3600)
+            print(redact(warmup_output, secrets))
+        except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
+            print(f"Model warmup failed: {redact(str(error), secrets)}", file=sys.stderr)
+        health(management.API_URL + "/health")
         ensure_cloudflared(installer.WORK_ROOT, tunnel)
         tunnel_log = installer.WORK_ROOT / "bootstrap_tunnel.log"
         tunnel_environment = {name: value for name, value in os.environ.items() if name not in REQUIRED_SECRETS}

@@ -26,6 +26,8 @@ subprocess.run([sys.executable, str(kaggle_dir / "bootstrap.py")], check=True)
 
 `bootstrap.py` also clones the requested branch when invoked from an existing copy of the script and the Kaggle checkout is absent. It checks the repository origin and branch, verifies both virtual environments with Python/pip, `pip check`, OCR/Backend/SigLIP smoke tests, retrieves secrets, runs `manage.py start`, `status`, and `check`, and starts a Cloudflare quick tunnel. It downloads a SHA256-verified, pinned Linux amd64 `cloudflared` binary into `/kaggle/working/ocr_runtime` only when needed. It waits for a newly emitted tunnel URL and verifies public `/health` before marking the tunnel ready. Network policy or model/database startup can still prevent success; the summary then shows the failed stage and log paths. Existing healthy services and tunnel are reused, not duplicated.
 
+After services start, bootstrap sends warmup inference to the running Model Service for Layout, every Detection and Recognition entry in the current registry, Table, and SigLIP. It reports success or failure per model in the output and `warmup_models.log`; one model failure does not prevent the others from being attempted. Startup can take substantially longer and these models occupy RAM until the API process stops. A `ready` result means the warmup request succeeded, not that OCR accuracy was validated. If the API process exits during warmup, bootstrap reports failure rather than claiming a healthy service.
+
 Alternatively, run the standalone `start_finetuned_models.py` from the notebook or shell. It clones the repository when needed and checks local fine-tuned weights before startup:
 
 ```python
