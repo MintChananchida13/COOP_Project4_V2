@@ -2396,10 +2396,7 @@ def _refresh_template_layout_reference_signatures(conn: Any, template_id: str) -
     return _refresh_template_layout_signatures(conn, template_id)
 
 
-def _crop_anchor_roi(image_path_or_source: str, roi: Dict[str, Any], output_path: Path, padding: float = 0) -> Optional[str]:
-    image = _load_image_source(image_path_or_source)
-    if image is None:
-        return None
+def _crop_anchor_roi_from_image(image, roi: Dict[str, Any], padding: float = 0):
     width, height = image.size
     x = float(roi["x_ratio"]) * width
     y = float(roi["y_ratio"]) * height
@@ -2412,7 +2409,6 @@ def _crop_anchor_roi(image_path_or_source: str, roi: Dict[str, Any], output_path
     bottom = min(height, int(round(y + h + pad)))
     if right <= left or bottom <= top:
         return None
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     crop = image.crop((left, top, right, bottom)).convert("RGB")
     points = _normalize_roi_points(roi.get("points"))
     if points:
@@ -2433,6 +2429,17 @@ def _crop_anchor_roi(image_path_or_source: str, roi: Dict[str, Any], output_path
             crop = background
         except Exception:
             pass
+    return crop
+
+
+def _crop_anchor_roi(image_path_or_source: str, roi: Dict[str, Any], output_path: Path, padding: float = 0) -> Optional[str]:
+    image = _load_image_source(image_path_or_source)
+    if image is None:
+        return None
+    crop = _crop_anchor_roi_from_image(image, roi, padding)
+    if crop is None:
+        return None
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     crop.save(output_path, format="PNG")
     return str(output_path)
 
@@ -3666,9 +3673,9 @@ def _active_image_category_payloads() -> List[Dict[str, Any]]:
     return categories_to_runtime_payload(list_image_verification_categories(enabled_only=True))
 
 
-def _image_category_api(value: Optional[str]) -> Dict[str, Any]:
+def _image_category_api(value: Optional[str], category_by_value: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     raw_value = str(value or "").strip()
-    category = get_image_verification_category(raw_value)
+    category = category_by_value.get(raw_value) if category_by_value is not None else get_image_verification_category(raw_value)
     if category is None:
         return {
             "value": raw_value,
@@ -4073,136 +4080,141 @@ class VerificationService:
         page_image_paths: Dict[int, str],
     ) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Any]]:
         started = time.perf_counter()
-        active_categories = _active_image_category_payloads()
+        categories = list_image_verification_categories(enabled_only=False) if any(field.get("data_type") == "image" for field in fields) else []
+        category_by_value = {category.value: category for category in categories}
+        active_categories = categories_to_runtime_payload(categories)
+        page_images: Dict[str, Any] = {}
         matches: Dict[str, Dict[str, Any]] = {}
-        crop_paths: List[str] = []
+        crop_sources: List[str] = []
         target_categories: List[List[str]] = []
         request_field_ids: List[str] = []
         crop_preview_by_field: Dict[str, Optional[str]] = {}
         errors: List[Dict[str, Any]] = []
 
-        try:
-            for field in fields:
-                if field.get("data_type") != "image":
-                    continue
-                field_id = str(field.get("id") or "")
-                page_number = int(field.get("page_number") or 1)
-                image_path = page_image_paths.get(page_number)
-                category_values = _image_category_values(field.get("image_category"))
-                category_infos = [_image_category_api(value) for value in category_values]
-                valid_category_values = [
-                    value for value, info in zip(category_values, category_infos) if not info.get("error")
-                ]
-                category_value = category_values[0] if category_values else ""
-                category_info = category_infos[0] if category_infos else _image_category_api(category_value)
-                category_error = category_info.get("error") if not valid_category_values else None
-                if not image_path:
-                    errors.append({"field_id": field_id, "reason": "query_page_missing"})
-                    continue
-                if category_error:
-                    matches[field_id] = {
-                        "score": 0.0,
-                        "field_score": 0.0,
-                        "evidence_score": 0.0,
-                        "passed": False,
-                        "status": "error",
-                        "failure_reason": category_error,
-                        "verification_threshold": category_info.get("match_threshold", 0.0),
-                        "margin_threshold": category_info.get("margin_threshold", 0.0),
-                        "image_category": ", ".join(category_values) or category_value,
-                        "image_category_label": _image_category_display(category_values) or category_info.get("label") or category_value,
-                        "image_category_prompt": " | ".join(str(info.get("prompt") or "") for info in category_infos if info.get("prompt")),
-                        "predicted_image_category": "",
-                        "predicted_image_category_label": "",
-                        "predicted_image_category_prompt": "",
-                        "reference_crop_preview_data_url": None,
-                        "current_crop_preview_data_url": None,
-                        "siglip_similarity_score": 0.0,
-                        "image_category_score": 0.0,
-                        "raw_logit": 0.0,
-                        "raw_pair_score": 0.0,
-                        "relative_percentage": 0.0,
-                        "siglip_target_rank": 0,
-                        "siglip_score_margin": 0.0,
-                        "siglip_labels": [],
-                        "siglip_ui_percentages": [],
-                    }
-                    continue
-                cropped = _crop_anchor_roi_to_temp(image_path, field["roi"], field.get("roi_padding") or 6)
-                if not cropped:
-                    errors.append({"field_id": field_id, "reason": "roi_crop_failed"})
-                    continue
-                crop_paths.append(cropped)
-                request_field_ids.append(field_id)
-                target_categories.append(valid_category_values or category_values)
-                crop_preview_by_field[field_id] = _image_path_to_data_url(cropped)
+        for field in fields:
+            if field.get("data_type") != "image":
+                continue
+            field_id = str(field.get("id") or "")
+            page_number = int(field.get("page_number") or 1)
+            image_path = page_image_paths.get(page_number)
+            category_values = _image_category_values(field.get("image_category"))
+            category_infos = [_image_category_api(value, category_by_value) for value in category_values]
+            valid_category_values = [
+                value for value, info in zip(category_values, category_infos) if not info.get("error")
+            ]
+            category_value = category_values[0] if category_values else ""
+            category_info = category_infos[0] if category_infos else _image_category_api(category_value, category_by_value)
+            category_error = category_info.get("error") if not valid_category_values else None
+            if not image_path:
+                errors.append({"field_id": field_id, "reason": "query_page_missing"})
+                continue
+            if category_error:
+                matches[field_id] = {
+                    "score": 0.0,
+                    "field_score": 0.0,
+                    "evidence_score": 0.0,
+                    "passed": False,
+                    "status": "error",
+                    "failure_reason": category_error,
+                    "verification_threshold": category_info.get("match_threshold", 0.0),
+                    "margin_threshold": category_info.get("margin_threshold", 0.0),
+                    "image_category": ", ".join(category_values) or category_value,
+                    "image_category_label": ", ".join(str(info.get("label") or value) for value, info in zip(category_values, category_infos)) or category_info.get("label") or category_value,
+                    "image_category_prompt": " | ".join(str(info.get("prompt") or "") for info in category_infos if info.get("prompt")),
+                    "predicted_image_category": "",
+                    "predicted_image_category_label": "",
+                    "predicted_image_category_prompt": "",
+                    "reference_crop_preview_data_url": None,
+                    "current_crop_preview_data_url": None,
+                    "siglip_similarity_score": 0.0,
+                    "image_category_score": 0.0,
+                    "raw_logit": 0.0,
+                    "raw_pair_score": 0.0,
+                    "relative_percentage": 0.0,
+                    "siglip_target_rank": 0,
+                    "siglip_score_margin": 0.0,
+                    "siglip_labels": [],
+                    "siglip_ui_percentages": [],
+                }
+                continue
+            if image_path not in page_images:
+                page_images[image_path] = _load_image_source(image_path)
+            source_image = page_images[image_path]
+            cropped = _crop_anchor_roi_from_image(source_image, field["roi"], field.get("roi_padding") or 6) if source_image is not None else None
+            if cropped is None:
+                errors.append({"field_id": field_id, "reason": "roi_crop_failed"})
+                continue
+            crop_buffer = io.BytesIO()
+            cropped.save(crop_buffer, format="PNG")
+            crop_data_url = "data:image/png;base64," + base64.b64encode(crop_buffer.getvalue()).decode("ascii")
+            crop_sources.append(crop_data_url)
+            request_field_ids.append(field_id)
+            target_categories.append(valid_category_values or category_values)
+            crop_preview_by_field[field_id] = crop_data_url if include_detection_diagnostics() else None
 
-            runtime_timing: Dict[str, Any] = {}
-            batch_results: List[List[SiglipImageVerificationResult]] = []
-            batch_limit = max(1, int(os.getenv("IMAGE_CLASSIFICATION_BATCH_LIMIT", "64")))
-            image_batch_total_ms = 0.0
-            siglip_preprocess_ms: Optional[float] = None
-            siglip_inference_ms: Optional[float] = None
-            siglip_postprocess_ms: Optional[float] = None
-            if crop_paths:
-                for start_index in range(0, len(crop_paths), batch_limit):
-                    batch_started = time.perf_counter()
-                    chunk_timing: Dict[str, Any] = {}
-                    chunk_results = verify_image_categories_batch(
-                        crop_paths[start_index:start_index + batch_limit],
-                        target_categories[start_index:start_index + batch_limit],
-                        active_categories,
-                        timing=chunk_timing,
-                    )
-                    batch_results.extend(chunk_results)
-                    runtime_timing.setdefault("chunks", []).append(chunk_timing)
-                    image_batch_total_ms += float(chunk_timing.get("total_runtime_client_ms") or ((time.perf_counter() - batch_started) * 1000.0))
-                    gateway_timing = chunk_timing.get("gateway_timing") if isinstance(chunk_timing.get("gateway_timing"), dict) else {}
-                    preprocess_value = gateway_timing.get("siglip_preprocess_ms", gateway_timing.get("preprocess_ms"))
-                    inference_value = gateway_timing.get("siglip_inference_ms", gateway_timing.get("model_forward_ms", gateway_timing.get("inference_ms")))
-                    postprocess_value = gateway_timing.get("siglip_postprocess_ms", gateway_timing.get("postprocess_ms"))
-                    if isinstance(preprocess_value, (int, float)):
-                        siglip_preprocess_ms = (siglip_preprocess_ms or 0.0) + float(preprocess_value)
-                    if isinstance(inference_value, (int, float)):
-                        siglip_inference_ms = (siglip_inference_ms or 0.0) + float(inference_value)
-                    if isinstance(postprocess_value, (int, float)):
-                        siglip_postprocess_ms = (siglip_postprocess_ms or 0.0) + float(postprocess_value)
-            for field_id, results in zip(request_field_ids, batch_results):
-                result = next((item for item in results if item.passed), None) or (
-                    max(results, key=lambda item: float(item.evidence_score)) if results else None
+        runtime_timing: Dict[str, Any] = {}
+        batch_results: List[List[SiglipImageVerificationResult]] = []
+        batch_limit = max(1, int(os.getenv("IMAGE_CLASSIFICATION_BATCH_LIMIT", "64")))
+        image_batch_total_ms = 0.0
+        siglip_preprocess_ms: Optional[float] = None
+        siglip_inference_ms: Optional[float] = None
+        siglip_postprocess_ms: Optional[float] = None
+        if crop_sources:
+            for start_index in range(0, len(crop_sources), batch_limit):
+                batch_started = time.perf_counter()
+                chunk_timing: Dict[str, Any] = {}
+                chunk_results = verify_image_categories_batch(
+                    crop_sources[start_index:start_index + batch_limit],
+                    target_categories[start_index:start_index + batch_limit],
+                    active_categories,
+                    timing=chunk_timing,
                 )
-                if result is None:
-                    matches[field_id] = {
-                        "score": 0.0,
-                        "field_score": 0.0,
-                        "evidence_score": 0.0,
-                        "passed": False,
-                        "status": "error",
-                        "failure_reason": "missing_batch_result",
-                        "reference_crop_preview_data_url": None,
-                        "current_crop_preview_data_url": crop_preview_by_field.get(field_id),
-                    }
-                else:
-                    matches[field_id] = self._image_match_from_siglip_result(result, crop_preview_by_field.get(field_id))
-            return matches, {
-                "image_roi_count": len(request_field_ids),
-                "image_batch_limit": batch_limit,
-                "image_batch_count": math.ceil(len(request_field_ids) / batch_limit) if request_field_ids else 0,
-                "image_model_request_count": math.ceil(len(request_field_ids) / batch_limit) if request_field_ids else 0,
-                "result_count": len(batch_results),
-                "error_count": len(errors),
-                "errors": errors[:10],
-                "runtime_timing": runtime_timing,
-                "image_batch_total_ms": round(image_batch_total_ms, 2),
-                "siglip_batch_size": len(request_field_ids),
-                "siglip_preprocess_ms": round(siglip_preprocess_ms, 2) if siglip_preprocess_ms is not None else None,
-                "siglip_inference_ms": round(siglip_inference_ms, 2) if siglip_inference_ms is not None else None,
-                "siglip_postprocess_ms": round(siglip_postprocess_ms, 2) if siglip_postprocess_ms is not None else None,
-                "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 2),
-            }
-        finally:
-            for crop_path in crop_paths:
-                Path(crop_path).unlink(missing_ok=True)
+                batch_results.extend(chunk_results)
+                runtime_timing.setdefault("chunks", []).append(chunk_timing)
+                image_batch_total_ms += float(chunk_timing.get("total_runtime_client_ms") or ((time.perf_counter() - batch_started) * 1000.0))
+                gateway_timing = chunk_timing.get("gateway_timing") if isinstance(chunk_timing.get("gateway_timing"), dict) else {}
+                preprocess_value = gateway_timing.get("siglip_preprocess_ms", gateway_timing.get("preprocess_ms"))
+                inference_value = gateway_timing.get("siglip_inference_ms", gateway_timing.get("model_forward_ms", gateway_timing.get("inference_ms")))
+                postprocess_value = gateway_timing.get("siglip_postprocess_ms", gateway_timing.get("postprocess_ms"))
+                if isinstance(preprocess_value, (int, float)):
+                    siglip_preprocess_ms = (siglip_preprocess_ms or 0.0) + float(preprocess_value)
+                if isinstance(inference_value, (int, float)):
+                    siglip_inference_ms = (siglip_inference_ms or 0.0) + float(inference_value)
+                if isinstance(postprocess_value, (int, float)):
+                    siglip_postprocess_ms = (siglip_postprocess_ms or 0.0) + float(postprocess_value)
+        for field_id, results in zip(request_field_ids, batch_results):
+            result = next((item for item in results if item.passed), None) or (
+                max(results, key=lambda item: float(item.evidence_score)) if results else None
+            )
+            if result is None:
+                matches[field_id] = {
+                    "score": 0.0,
+                    "field_score": 0.0,
+                    "evidence_score": 0.0,
+                    "passed": False,
+                    "status": "error",
+                    "failure_reason": "missing_batch_result",
+                    "reference_crop_preview_data_url": None,
+                    "current_crop_preview_data_url": crop_preview_by_field.get(field_id),
+                }
+            else:
+                matches[field_id] = self._image_match_from_siglip_result(result, crop_preview_by_field.get(field_id))
+        return matches, {
+            "image_roi_count": len(request_field_ids),
+            "image_batch_limit": batch_limit,
+            "image_batch_count": math.ceil(len(request_field_ids) / batch_limit) if request_field_ids else 0,
+            "image_model_request_count": math.ceil(len(request_field_ids) / batch_limit) if request_field_ids else 0,
+            "result_count": len(batch_results),
+            "error_count": len(errors),
+            "errors": errors[:10],
+            "runtime_timing": runtime_timing,
+            "image_batch_total_ms": round(image_batch_total_ms, 2),
+            "siglip_batch_size": len(request_field_ids),
+            "siglip_preprocess_ms": round(siglip_preprocess_ms, 2) if siglip_preprocess_ms is not None else None,
+            "siglip_inference_ms": round(siglip_inference_ms, 2) if siglip_inference_ms is not None else None,
+            "siglip_postprocess_ms": round(siglip_postprocess_ms, 2) if siglip_postprocess_ms is not None else None,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 2),
+        }
 
     def verify_template(
         self,

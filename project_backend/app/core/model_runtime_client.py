@@ -498,7 +498,8 @@ def remote_verify_image_logits_batch(
     if not is_runtime_configured(ModelRuntimeKind.IMAGE_VERIFICATION):
         return None
     encode_started = time.perf_counter()
-    images = [_path_to_data_url(image_path) for image_path in image_paths]
+    images = [image_path if isinstance(image_path, str) and image_path.startswith("data:image/") else _path_to_data_url(image_path)
+              for image_path in image_paths]
     if timing is not None:
         timing["image_encode_ms"] = round((time.perf_counter() - encode_started) * 1000.0, 2)
         timing["image_count"] = len(images)
