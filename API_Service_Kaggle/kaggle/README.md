@@ -161,7 +161,9 @@ The detection batch endpoint defaults to real Paddle batching with
 If detection fails, the Backend's existing OCR flow may proceed using whole ROIs and
 the detection inference timing will be unavailable. Test equivalence and performance
 on the target runtime with the comparison below. This setting does not change the API
-or selected model.
+or selected model. Images are grouped by identical input dimensions before inference;
+unique dimensions run individually, and all outputs return in their original order.
+No ROI is resized for batching, so speedup depends on how many dimensions match.
 Unsupported batch sizes, invalid outputs, or inference errors fail the request without
 silently retrying with another model or inference mode.
 

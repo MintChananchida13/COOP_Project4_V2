@@ -110,19 +110,30 @@ def paddle_result(model, image, *, layout=False):
     return output[0]
 
 
-def paddle_detection_batch(model, images):
-    results = []
-    size = settings.detection_batch_size
-    for start in range(0, len(images), size):
-        chunk = images[start:start + size]
-        if size == 1:
-            # Preserve the previous single-image path unless batching is enabled.
-            output = [paddle_result(model, chunk[0])]
-        else:
-            output = json_safe(list(model.predict(chunk, batch_size=len(chunk))))
-        if len(output) != len(chunk) or any(not isinstance(item, dict) for item in output):
-            raise RuntimeError("Unexpected Paddle detection batch result count or shape")
-        results.extend(output)
+def paddle_detection_batch(model, images, batch_size=None):
+    size = settings.detection_batch_size if batch_size is None else batch_size
+    if size < 1:
+        raise ValueError("Detection batch size must be positive")
+    if size == 1:
+        return {"results": [paddle_result(model, image) for image in images]}
+
+    # PaddleX stacks preprocessed images. Equal input shapes take the same
+    # resize path; never resize or pad ROIs merely to make them batchable.
+    groups = {}
+    for index, image in enumerate(images):
+        groups.setdefault(tuple(image.shape), []).append((index, image))
+    results = [None] * len(images)
+    for group in groups.values():
+        for start in range(0, len(group), size):
+            chunk = group[start:start + size]
+            if len(chunk) == 1:
+                output = [paddle_result(model, chunk[0][1])]
+            else:
+                output = json_safe(list(model.predict([image for _, image in chunk], batch_size=len(chunk))))
+            if len(output) != len(chunk) or any(not isinstance(item, dict) for item in output):
+                raise RuntimeError("Unexpected Paddle detection batch result count or shape")
+            for (index, _), result in zip(chunk, output):
+                results[index] = result
     return {"results": results}
 
 

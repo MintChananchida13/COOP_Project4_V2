@@ -22,6 +22,8 @@ class FakeDetection:
     def predict(self, images, batch_size=None):
         single = isinstance(images, np.ndarray)
         items = [images] if single else images
+        if not single:
+            np.stack(items)  # Mirror PaddleX rejecting differing image shapes.
         self.calls.append(('single' if single else 'batch', len(items), batch_size))
         return [{'res': {'dt_polys': [[[int(image[0, 0, 0]), 1]]], 'dt_scores': [0.9]}} for image in items]
 
@@ -41,7 +43,18 @@ class DetectionBatchTests(unittest.TestCase):
             body = response.json()
             self.assertEqual(set(body), {'success', 'model', 'result', 'timing'})
             self.assertEqual([x['res']['dt_polys'][0][0][0] for x in body['result']['results']], [10, 20, 30, 40, 50])
-            self.assertEqual(model.calls, [('batch', 2, 2), ('batch', 2, 2), ('batch', 1, 1)])
+            self.assertEqual(model.calls, [('batch', 2, 2), ('batch', 2, 2), ('single', 1, None)])
+
+    def test_mixed_roi_shapes_are_grouped_and_returned_in_original_order(self):
+        model = FakeDetection()
+        originals = [np.full((height, width, 3), value, dtype=np.uint8) for height, width, value in
+                     [(8, 12, 10), (5, 7, 20), (8, 12, 30), (6, 9, 40), (5, 7, 50)]]
+        copies = [image.copy() for image in originals]
+        with patch.object(main, 'settings', replace(main.settings, detection_batch_size=8)):
+            result = main.paddle_detection_batch(model, originals)
+        self.assertEqual([x['res']['dt_polys'][0][0][0] for x in result['results']], [10, 20, 30, 40, 50])
+        self.assertEqual(model.calls, [('batch', 2, 2), ('batch', 2, 2), ('single', 1, None)])
+        self.assertTrue(all(np.array_equal(a, b) for a, b in zip(originals, copies)))
 
     def test_default_path_still_calls_each_image_separately(self):
         model = FakeDetection()
@@ -62,7 +75,7 @@ class DetectionBatchTests(unittest.TestCase):
         body = response.json()
         self.assertIsInstance(body['timing']['inference_ms'], (int, float))
         self.assertEqual([x['res']['dt_polys'][0][0][0] for x in body['result']['results']], list(range(9)))
-        self.assertEqual(model.calls, [('batch', 8, 8), ('batch', 1, 1)])
+        self.assertEqual(model.calls, [('batch', 8, 8), ('single', 1, None)])
 
     def test_single_image_path_reports_inference_timing_for_batch_endpoint(self):
         model = FakeDetection()
@@ -81,7 +94,7 @@ class DetectionBatchTests(unittest.TestCase):
         model.predict = lambda images, batch_size: []
         with patch.object(main, 'settings', replace(main.settings, detection_batch_size=2)):
             with self.assertRaisesRegex(RuntimeError, 'result count or shape'):
-                main.paddle_detection_batch(model, [np.zeros((4, 4, 3), dtype=np.uint8)])
+                main.paddle_detection_batch(model, [np.zeros((4, 4, 3), dtype=np.uint8)] * 2)
 
 
 if __name__ == '__main__':

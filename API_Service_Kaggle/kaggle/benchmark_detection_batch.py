@@ -11,7 +11,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.models import manager, predict, resolve_ocr
-from app.serialization import json_safe
+from app.main import paddle_detection_batch
 
 
 def detection_values(item):
@@ -58,13 +58,7 @@ def run():
         singles = [predict('det', image, model)[0] for image in images]
         singles_ms.append(round((time.perf_counter() - start) * 1000, 2))
         start = time.perf_counter()
-        batches = []
-        for index in range(0, len(images), args.batch_size):
-            chunk = images[index:index + args.batch_size]
-            output = json_safe(list(model.predict(chunk, batch_size=len(chunk))))
-            if len(output) != len(chunk) or any(not isinstance(item, dict) for item in output):
-                raise RuntimeError('Unexpected batch result count or shape')
-            batches.extend(output)
+        batches = paddle_detection_batch(model, images, batch_size=args.batch_size)['results']
         batches_ms.append(round((time.perf_counter() - start) * 1000, 2))
         for index, (single, batch) in enumerate(zip(singles, batches)):
             single_polys, single_scores = detection_values(single)
