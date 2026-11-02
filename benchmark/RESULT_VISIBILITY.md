@@ -129,3 +129,16 @@ Files changed for this visibility update:
 - `benchmark/TIMING_AUDIT.md`
 - `benchmark/FRONTEND_RENDERING_AUDIT.md`
 - `benchmark/RESULT_VISIBILITY.md`
+
+## Initial request and observer diagnostics
+
+`initial_response_headers_ms` runs from the browser POST until response headers.
+The `initial_server_*` values are server-side elapsed intervals for maintenance
+checking, reading/parsing the request body, job setup, and their total. They
+are available only for traced successful requests, overlap the browser interval,
+and do not isolate network latency. `frontend_observer_to_first_ui_ms` measures
+from starting the readiness observer to its first UI-ready frame;
+`frontend_preview_decode_wait_ms` is elapsed asynchronous decode/render wait,
+not CPU time; `frontend_observer_max_frame_gap_ms` is the largest observed gap
+between callbacks, not proof of browser throttling. These diagnostics can overlap
+and do not change the readiness criteria or the end-to-end measurement.

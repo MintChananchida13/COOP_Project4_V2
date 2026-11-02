@@ -231,7 +231,7 @@ def _run_detect_dev_job(job_id: str, image_bytes: bytes | list[bytes], standard_
                 if benchmark_state is not None:
                     benchmark_ended = time.perf_counter()
                     search_benchmark.record_span(benchmark_trace_id, "search", started_at, benchmark_ended)
-                    job["benchmark_timing"] = search_benchmark.metrics(benchmark_state, (benchmark_ended - started_at) * 1000)
+                    job["benchmark_timing"] = {**search_benchmark.metrics(benchmark_state, (benchmark_ended - started_at) * 1000), **job.get("initial_benchmark_timing", {})}
                 job["status"] = "completed"
                 job["result"] = result
         matched = bool(result.get("matched")) if isinstance(result, dict) else False
@@ -248,7 +248,7 @@ def _run_detect_dev_job(job_id: str, image_bytes: bytes | list[bytes], standard_
                 if benchmark_state is not None:
                     benchmark_ended = time.perf_counter()
                     search_benchmark.record_span(benchmark_trace_id, "search", started_at, benchmark_ended)
-                    job["benchmark_timing"] = search_benchmark.metrics(benchmark_state, (benchmark_ended - started_at) * 1000)
+                    job["benchmark_timing"] = {**search_benchmark.metrics(benchmark_state, (benchmark_ended - started_at) * 1000), **job.get("initial_benchmark_timing", {})}
                 job["status"] = "failed"
                 job["error"] = str(error)
         reason = " ".join(str(error).split())[:240]
@@ -430,12 +430,15 @@ async def detect_template_dev_route(
     background_tasks: BackgroundTasks,
     response: Response,
 ) -> dict:
+    started_at = time.perf_counter()
     _ensure_processing_available_for_request(request)
+    maintenance_at = time.perf_counter()
     admin_context = _is_admin_processing_context(request)
     confirmed_images = request.query_params.get("confirmedImages") == "1" and not admin_context
     if not admin_context and not confirmed_images:
         raise HTTPException(status_code=400, detail="Template search requires confirmed image pages from AdjustZone")
     image_bytes = await _read_dev_detection_image(request, confirmed_images=confirmed_images)
+    body_at = time.perf_counter()
     if confirmed_images and not isinstance(image_bytes, list):
         raise HTTPException(status_code=400, detail="Confirmed pages must use multipart image uploads")
     standard_top5 = request.query_params.get("standardTop5") in {"1", "true", "yes"}
@@ -453,6 +456,24 @@ async def detect_template_dev_route(
     compact_candidates = request.query_params.get("candidateFormat") == "pool-v1" and not admin_context
     args = (job_id, image_bytes, standard_top5, admin_context, compact_candidates, confirmed_images)
     background_tasks.add_task(_run_detect_dev_job, *args, **({"benchmark_trace_id": trace_id} if trace_id else {}))
+    if trace_id:
+        finished_at = time.perf_counter()
+        initial_timing = {
+            "initial_server_maintenance_ms": round((maintenance_at - started_at) * 1000, 2),
+            "initial_server_request_body_ms": round((body_at - maintenance_at) * 1000, 2),
+            "initial_server_job_setup_ms": round((finished_at - body_at) * 1000, 2),
+            "initial_server_total_ms": round((finished_at - started_at) * 1000, 2),
+        }
+        with detect_dev_jobs_lock:
+            detect_dev_jobs[job_id]["initial_benchmark_timing"] = initial_timing
+        response.headers["Server-Timing"] = ", ".join(
+            f"{name};dur={initial_timing[key]:.2f}" for name, key in (
+                ("maintenance", "initial_server_maintenance_ms"),
+                ("request_body", "initial_server_request_body_ms"),
+                ("job_setup", "initial_server_job_setup_ms"),
+                ("initial_total", "initial_server_total_ms"),
+            )
+        )
     response.status_code = 202
     return {"status": "success", "data": {
         "job_id": job_id,

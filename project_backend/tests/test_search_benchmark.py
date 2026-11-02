@@ -118,11 +118,15 @@ class SearchBenchmarkTests(unittest.TestCase):
                 response = client.post(f"/api/templates/detect-dev?confirmedImages=1&benchmark_trace_id={trace}",
                                        files={"file": ("page.png", b"sample", "image/png")})
                 self.assertEqual(response.status_code, 202)
+                self.assertIn("initial_total;dur=", response.headers["server-timing"])
                 job_id = response.json()["data"]["job_id"]
                 job = client.get(f"/api/templates/detect-dev/jobs/{job_id}").json()["data"]
         try:
             self.assertEqual(job["result"], {"matched": False, "query_id": "query"})
             self.assertEqual(job["benchmark_timing"]["trace_id"], trace)
+            for key in ("initial_server_maintenance_ms", "initial_server_request_body_ms",
+                        "initial_server_job_setup_ms", "initial_server_total_ms"):
+                self.assertGreaterEqual(job["benchmark_timing"][key], 0)
             self.assertEqual(job["benchmark_timing"]["processing_mode"], "text_only")
             self.assertIsNone(job["benchmark_timing"]["siglip_inference_ms"])
         finally:

@@ -60,6 +60,19 @@ class ConfirmedPagesTests(unittest.TestCase):
         self.assertEqual(error.exception.status_code, 400)
         self.assertIn("confirmed image pages", error.exception.detail)
 
+    def test_traced_request_exposes_initial_server_timing_without_changing_response(self):
+        request = Request(multipart(b'page'), {"confirmedImages": "1", "benchmark_trace_id": "a" * 32})
+        response = Response()
+        tasks = BackgroundTasks()
+        with patch.object(routes, "_ensure_processing_available_for_request"):
+            result = asyncio.run(routes.detect_template_dev_route(request, tasks, response))
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(response.status_code, 202)
+        for name in ("maintenance", "request_body", "job_setup", "initial_total"):
+            self.assertIn(name + ";dur=", response.headers["Server-Timing"])
+        self.assertEqual(tasks.tasks[0].kwargs["benchmark_trace_id"], "a" * 32)
+        routes.detect_dev_jobs.pop(result["data"]["job_id"], None)
+
     def test_confirmed_pages_remain_separate_and_in_order(self):
         data=multipart(b'page-one',b'page-two')
         with patch.object(routes,"_images_to_pdf_bytes") as convert:

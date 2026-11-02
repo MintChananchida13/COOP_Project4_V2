@@ -22,6 +22,10 @@ export interface VisibilityOutcome {
   uiReadyAt: number | null;
   previewRequired: boolean;
   reason: string | null;
+  observedAt?: number;
+  firstUiReadyAt?: number | null;
+  previewDecodeStartedAt?: number | null;
+  maxFrameGapMs?: number | null;
 }
 
 interface VisibilityScheduler {
@@ -44,6 +48,11 @@ export function observeResultVisibility(snapshot: () => VisibilitySnapshot, opti
     cancelTimeout: (handle: ReturnType<typeof setTimeout>) => clearTimeout(handle),
   };
   return new Promise(resolve => {
+    const observedAt = scheduler.now();
+    let firstUiReadyAt: number | null = null;
+    let previewDecodeStartedAt: number | null = null;
+    let previousFrameAt: number | null = null;
+    let maxFrameGapMs: number | null = null;
     let done = false;
     let frameHandle: number | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -65,12 +74,15 @@ export function observeResultVisibility(snapshot: () => VisibilitySnapshot, opti
       if (timer !== undefined) scheduler.cancelTimeout(timer);
       options.signal.removeEventListener("abort", cancelled);
       resolve({ status, reason, readyAt: status === "READY" ? scheduler.now() : null,
-        previewReadyAt, uiReadyAt, previewRequired });
+        previewReadyAt, uiReadyAt, previewRequired, observedAt, firstUiReadyAt, previewDecodeStartedAt, maxFrameGapMs });
     };
     const cancelled = () => finish("RUN_CANCELLED", "run_changed_or_component_unmounted");
     const check = () => {
       if (done) return;
       try {
+        const frameAt = scheduler.now();
+        if (previousFrameAt !== null) maxFrameGapMs = Math.max(maxFrameGapMs ?? 0, frameAt - previousFrameAt);
+        previousFrameAt = frameAt;
         const state = snapshot();
         if (!state.current || options.signal.aborted) return cancelled();
         const source = state.image?.src ?? "";
@@ -82,6 +94,7 @@ export function observeResultVisibility(snapshot: () => VisibilitySnapshot, opti
           imageSrc = source;
           pdfRender = state.pdfRender;
           previewReadyAt = null;
+          previewDecodeStartedAt = null;
           previewReady = false;
           decoding = false;
           readyFrames = 0;
@@ -105,10 +118,12 @@ export function observeResultVisibility(snapshot: () => VisibilitySnapshot, opti
           };
           if (pdfRender) {
             decoding = true;
+            previewDecodeStartedAt = scheduler.now();
             pdfRender.then(success, failed).catch(() => finish("VISIBILITY_ERROR", "preview_observer_failed"));
           } else if (image?.complete) {
             if (image.naturalWidth <= 0) return failed();
             decoding = true;
+            previewDecodeStartedAt = scheduler.now();
             if (image.decode) {
               const decode = image.decode.bind(image);
               Promise.resolve().then(decode).then(success, failed)
@@ -118,6 +133,7 @@ export function observeResultVisibility(snapshot: () => VisibilitySnapshot, opti
           }
         }
         const uiReady = state.domReady && !state.overlay;
+        if (uiReady && firstUiReadyAt === null) firstUiReadyAt = scheduler.now();
         uiFrames = uiReady ? uiFrames + 1 : 0;
         if (uiFrames >= 2 && uiReadyAt === null) uiReadyAt = scheduler.now();
         readyFrames = uiReady && previewReady && (!previewRequired || state.previewVisible !== false) ? readyFrames + 1 : 0;
@@ -139,6 +155,9 @@ export function visibilityMetrics(startedAt: number, committedAt: number, respon
     typeof start === "number" && end !== null && Number.isFinite(start) && Number.isFinite(end) && end >= start
       ? Math.round((end - start) * 100) / 100 : null;
   return {
+    frontend_observer_to_first_ui_ms: elapsed(outcome.observedAt, outcome.firstUiReadyAt ?? null),
+    frontend_preview_decode_wait_ms: elapsed(outcome.previewDecodeStartedAt ?? undefined, outcome.previewReadyAt),
+    frontend_observer_max_frame_gap_ms: outcome.maxFrameGapMs == null ? null : Math.round(outcome.maxFrameGapMs * 100) / 100,
     frontend_render_ms: elapsed(committedAt, outcome.readyAt),
     frontend_result_visible_ms: elapsed(responseAt, outcome.readyAt),
     frontend_preview_ready_ms: elapsed(responseAt, outcome.previewReadyAt),

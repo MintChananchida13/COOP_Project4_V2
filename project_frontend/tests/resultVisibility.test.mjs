@@ -48,6 +48,10 @@ test('commit and visible DOM do not imply readiness while required image is load
   assert.equal(calls, 1);
   assert.ok(result.readyAt >= result.previewReadyAt);
   assert.ok(result.uiReadyAt < result.previewReadyAt);
+  const diagnostics = visibilityMetrics(0, 0, 0, result);
+  assert.equal(diagnostics.frontend_observer_to_first_ui_ms, 16);
+  assert.equal(diagnostics.frontend_preview_decode_wait_ms, 0);
+  assert.equal(diagnostics.frontend_observer_max_frame_gap_ms, 16);
   assert.equal(run.frames.size, 0); assert.equal(run.timers.size, 0);
 });
 

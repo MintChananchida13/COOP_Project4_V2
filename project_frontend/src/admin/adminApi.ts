@@ -2485,6 +2485,21 @@ export const detectTemplateDev = async (
     body: formData,
     signal: options.signal,
   });
+  if (options.timing) {
+    options.timing.initialResponseHeadersMs = Math.round((performance.now() - uploadStartedAt) * 100) / 100;
+    const header = response.headers.get("Server-Timing");
+    if (header) {
+      const measurements: Record<string, number> = {};
+      for (const item of header.split(",")) {
+        const match = /^\s*(maintenance|request_body|job_setup|initial_total);dur=(\d+(?:\.\d+)?)\s*$/.exec(item);
+        if (match) measurements[match[1]] = Number(match[2]);
+      }
+      options.timing.initialServerTiming = measurements;
+      options.timing.initialServerTimingHeaderStatus = Object.keys(measurements).length === 4 ? "available" : "incomplete";
+    } else {
+      options.timing.initialServerTimingHeaderStatus = "unavailable";
+    }
+  }
   const json = await response.json().catch(() => null);
   options.signal?.throwIfAborted();
   if (options.timing) options.timing.uploadJobMs = Math.round((performance.now() - uploadStartedAt) * 100) / 100;

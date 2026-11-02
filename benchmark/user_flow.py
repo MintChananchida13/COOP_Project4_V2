@@ -27,8 +27,10 @@ LEGACY_METRICS = (
 )
 FRONTEND_METRICS = ("frontend_response_json_ms", "frontend_response_processing_ms", "frontend_result_preparation_ms",
                     "frontend_state_to_commit_ms", "frontend_response_to_commit_ms", "frontend_flow_complete_ms",
-                    "frontend_result_visible_ms", "frontend_preview_ready_ms", "frontend_ui_ready_ms", "frontend_commit_end_to_end_ms")
-SEARCH_METRICS = ("frontend_preparation_ms", "request_network_ms", "request_round_trip_ms", "template_search_ms", "model_queue_wait_ms", "search_model_queue_wait_ms",
+                    "frontend_result_visible_ms", "frontend_preview_ready_ms", "frontend_ui_ready_ms", "frontend_commit_end_to_end_ms",
+                    "frontend_observer_to_first_ui_ms", "frontend_preview_decode_wait_ms", "frontend_observer_max_frame_gap_ms")
+SEARCH_METRICS = ("initial_response_headers_ms", "initial_server_maintenance_ms", "initial_server_request_body_ms",
+                  "initial_server_job_setup_ms", "initial_server_total_ms", "frontend_preparation_ms", "request_network_ms", "request_round_trip_ms", "template_search_ms", "model_queue_wait_ms", "search_model_queue_wait_ms",
                   "backend_search_ms", "backend_post_search_ms", "backend_total_active_ms",
                   "result_processing_ms", "polling_wait_ms", "result_fetch_ms", "result_ready_ms",
                   "layout_queue_wait_ms", "layout_inference_ms", "layout_total_ms",
@@ -37,7 +39,7 @@ SEARCH_METRICS = ("frontend_preparation_ms", "request_network_ms", "request_roun
                   "siglip_queue_wait_ms", "siglip_inference_ms", "siglip_total_ms")
 METRICS = (*LEGACY_METRICS, *FRONTEND_METRICS, *SEARCH_METRICS)
 HEADERS = ("file", "run_number", "runs_per_file", "expected_mode", "actual_mode", "status", "matched", "query_id", "ocr_status", "ocr_wall_ms", "error", "model_intervals_overlap", "model_call_count", "model_timing_missing_reason", *(key for key in LEGACY_METRICS if key != "backend_runtime_ms"), "timing_missing_reasons", "job_id", "error_type", "job_status", "capture_errors", *FRONTEND_METRICS,
-           "frontend_visibility_status", "frontend_visibility_reason", "frontend_timing_kind", "frontend_run_token", "benchmark_run_token", *SEARCH_METRICS,
+           "frontend_visibility_status", "frontend_visibility_reason", "frontend_timing_kind", "frontend_run_token", "benchmark_run_token", "initial_server_timing_header_status", *SEARCH_METRICS,
            "trace_id", "template_id", "matching_score", "expected_matched", "match_correctness", "expected_template_id", "matching_correctness", "layout_telemetry_incomplete")
 CALL_KEYS = ("call_id", "kind", "http_request_ms", "model_load_ms", "queue_wait_ms",
              "inference_lock_wait_ms", "inference_ms", "serialization_ms", "service_total_runtime_ms",
@@ -308,7 +310,7 @@ def run_case(page, path, expected_mode, timeout_ms):
             terminal = job.get("status") in ("completed", "failed")
             frontend = {item.get("metric"): item.get("value", item.get("valueMs")) for table in tables for item in table if item.get("metric")}
             frontend_status = frontend.get("frontend_visibility_status")
-            for key in ("frontend_visibility_status", "frontend_visibility_reason", "frontend_timing_kind", "frontend_run_token", "benchmark_run_token"):
+            for key in ("frontend_visibility_status", "frontend_visibility_reason", "frontend_timing_kind", "frontend_run_token", "benchmark_run_token", "initial_server_timing_header_status"):
                 row[key] = frontend.get(key)
             if frontend_status is not None and row.get("benchmark_run_token") != token:
                 raise CaptureFailure("RESPONSE_CAPTURE_ERROR", "Frontend visibility belongs to another benchmark run")

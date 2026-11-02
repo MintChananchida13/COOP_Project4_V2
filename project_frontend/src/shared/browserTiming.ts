@@ -19,6 +19,9 @@ export interface DetectionTransportTiming {
   layoutRequests?: Record<string, unknown>[];
   layoutTelemetryIncomplete?: boolean;
   uploadJobMs?: number;
+  initialServerTiming?: Record<string, number>;
+  initialServerTimingHeaderStatus?: "available" | "unavailable" | "incomplete";
+  initialResponseHeadersMs?: number;
   jobPollingMs?: number;
   frontendResponseHeadersAt?: number;
   frontendResponseMappedAt?: number;

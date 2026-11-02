@@ -57,6 +57,13 @@ class UserFlowTests(unittest.TestCase):
         self.assertEqual(values["frontend_result_visible_ms"], 60)
         self.assertEqual(values["frontend_preview_ready_ms"], 40)
 
+    def test_initial_server_timing_survives_header_loss_via_job(self):
+        timing = {"initial_server_maintenance_ms": 321.0, "initial_server_request_body_ms": 20.0,
+                  "initial_server_job_setup_ms": 1.0, "initial_server_total_ms": 342.0}
+        values = user_flow.timing_values([], {}, timing)
+        for key, value in timing.items():
+            self.assertEqual(values[key], value)
+
     def test_locked_excel_uses_unique_recovery_name(self):
         from openpyxl import Workbook
 

@@ -390,8 +390,9 @@ class GlobalSettingsService:
             conn.execute("DELETE FROM app_settings WHERE key = ?", (key,))
             conn.commit()
 
-    def _pending_template_statuses(self) -> Dict[str, str]:
-        raw_value = self._load_setting_value(PENDING_TEMPLATE_CHANGES_SETTING_KEY)
+    def _pending_template_statuses(self, raw_value: Optional[str] = None, *, loaded: bool = False) -> Dict[str, str]:
+        if not loaded:
+            raw_value = self._load_setting_value(PENDING_TEMPLATE_CHANGES_SETTING_KEY)
         raw = jsonb_load(raw_value, {}) if raw_value is not None else {}
         if not isinstance(raw, dict):
             return {}
@@ -404,20 +405,23 @@ class GlobalSettingsService:
             if str(template_id).strip() and str(status).strip()
         }
 
-    def _pending_template_updates(self) -> Dict[str, Dict[str, Any]]:
-        raw_value = self._load_setting_value(PENDING_TEMPLATE_CHANGES_SETTING_KEY)
+    def _pending_template_updates(self, raw_value: Optional[str] = None, *, loaded: bool = False) -> Dict[str, Dict[str, Any]]:
+        if not loaded:
+            raw_value = self._load_setting_value(PENDING_TEMPLATE_CHANGES_SETTING_KEY)
         raw = jsonb_load(raw_value, {}) if raw_value is not None else {}
         updates = raw.get("template_updates") if isinstance(raw, dict) else {}
         return updates if isinstance(updates, dict) else {}
 
-    def _pending_template_field_ops(self) -> Dict[str, List[Dict[str, Any]]]:
-        raw_value = self._load_setting_value(PENDING_TEMPLATE_CHANGES_SETTING_KEY)
+    def _pending_template_field_ops(self, raw_value: Optional[str] = None, *, loaded: bool = False) -> Dict[str, List[Dict[str, Any]]]:
+        if not loaded:
+            raw_value = self._load_setting_value(PENDING_TEMPLATE_CHANGES_SETTING_KEY)
         raw = jsonb_load(raw_value, {}) if raw_value is not None else {}
         ops = raw.get("template_field_ops") if isinstance(raw, dict) else {}
         return ops if isinstance(ops, dict) else {}
 
-    def _pending_template_page_ops(self) -> Dict[str, List[Dict[str, Any]]]:
-        raw_value = self._load_setting_value(PENDING_TEMPLATE_CHANGES_SETTING_KEY)
+    def _pending_template_page_ops(self, raw_value: Optional[str] = None, *, loaded: bool = False) -> Dict[str, List[Dict[str, Any]]]:
+        if not loaded:
+            raw_value = self._load_setting_value(PENDING_TEMPLATE_CHANGES_SETTING_KEY)
         raw = jsonb_load(raw_value, {}) if raw_value is not None else {}
         ops = raw.get("template_page_ops") if isinstance(raw, dict) else {}
         return ops if isinstance(ops, dict) else {}
@@ -607,13 +611,21 @@ class GlobalSettingsService:
         if not force and not self._pending_settings_due(state):
             return False
 
-        pending_strategy_raw = self._load_setting_value(PENDING_VERIFICATION_STRATEGY_SETTING_KEY)
-        pending_batch_mode_raw = self._load_setting_value(PENDING_DETECTION_BATCH_MODE_SETTING_KEY)
-        pending_ocr_raw = self._load_setting_value(PENDING_OCR_MODEL_SETTINGS_KEY)
-        pending_template_statuses = self._pending_template_statuses()
-        pending_template_updates = self._pending_template_updates()
-        pending_template_field_ops = self._pending_template_field_ops()
-        pending_template_page_ops = self._pending_template_page_ops()
+        # Fetch one consistent snapshot; these values are often all absent on the
+        # request path, where separate connections add substantial latency.
+        keys = (PENDING_VERIFICATION_STRATEGY_SETTING_KEY, PENDING_DETECTION_BATCH_MODE_SETTING_KEY,
+                PENDING_OCR_MODEL_SETTINGS_KEY, PENDING_TEMPLATE_CHANGES_SETTING_KEY)
+        with _connect() as conn:
+            rows = conn.execute("SELECT key, value FROM app_settings WHERE key IN (?, ?, ?, ?)", keys).fetchall()
+        pending = {row["key"]: row["value"] for row in rows}
+        pending_strategy_raw = pending.get(PENDING_VERIFICATION_STRATEGY_SETTING_KEY)
+        pending_batch_mode_raw = pending.get(PENDING_DETECTION_BATCH_MODE_SETTING_KEY)
+        pending_ocr_raw = pending.get(PENDING_OCR_MODEL_SETTINGS_KEY)
+        template_raw = pending.get(PENDING_TEMPLATE_CHANGES_SETTING_KEY)
+        pending_template_statuses = self._pending_template_statuses(template_raw, loaded=True)
+        pending_template_updates = self._pending_template_updates(template_raw, loaded=True)
+        pending_template_field_ops = self._pending_template_field_ops(template_raw, loaded=True)
+        pending_template_page_ops = self._pending_template_page_ops(template_raw, loaded=True)
         if pending_strategy_raw is None and pending_batch_mode_raw is None and pending_ocr_raw is None and not pending_template_statuses and not pending_template_updates and not pending_template_field_ops and not pending_template_page_ops:
             return False
 
