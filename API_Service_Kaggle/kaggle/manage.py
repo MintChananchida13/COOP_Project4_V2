@@ -111,6 +111,9 @@ def start():
         raise RuntimeError("Run install.py first")
     environment = os.environ.copy()
     environment.update(values)
+    # manage.py launches exactly one Backend worker. Disable this option if
+    # another Backend process can write settings to the same database.
+    environment.setdefault("MAINTENANCE_SINGLE_PROCESS_CACHE", "true")
     environment.update({
         "GATEWAY_URL": API_URL,
         "MODEL_DEVICE": "cpu",

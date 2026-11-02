@@ -143,3 +143,13 @@ In the Windows `project_frontend/.env.local`, set the **existing** variable `NEX
 ## Validation status
 
 Local syntax and small management unit tests can run without model packages. Kaggle installation, tunnel availability, Neon access, model downloads, real inference, RAM/CPU measurements, and frontend end-to-end behavior are **Not Tested** until the notebook steps succeed. No production deployment is implied.
+
+### Maintenance cache deployment scope
+
+`manage.py` enables `MAINTENANCE_SINGLE_PROCESS_CACHE=true` because it launches one Backend worker.
+The Backend loads maintenance state at startup, invalidates it after settings writes in that process,
+and reevaluates schedule boundaries when processing starts. Failed database reads or pending-setting
+application are not cached. Do not enable this cache if any other Backend process or external writer
+can change the same settings: the existing event hub is process-local. For shared databases, set
+`MAINTENANCE_SINGLE_PROCESS_CACHE=false` before startup; that preserves the database check for every
+request until reliable cross-process invalidation is available. Restart the Backend after changing it.

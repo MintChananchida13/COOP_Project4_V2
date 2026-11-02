@@ -183,7 +183,7 @@ async def startup_warmup() -> None:
     with db_connect() as conn:
         ensure_image_verification_categories_table(conn)
     try:
-        global_settings.get_system_maintenance()
+        global_settings.processing_maintenance()
     except Exception as error:
         logger.exception("System maintenance startup check failed; pending settings will be retried on next read: %s", error)
     try:

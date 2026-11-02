@@ -117,6 +117,27 @@ _VERIFICATION_STRATEGY_CACHE_LOCK = threading.RLock()
 _VERIFICATION_STRATEGY_CACHE: Optional[str] = None
 _DETECTION_BATCH_MODE_CACHE_LOCK = threading.RLock()
 _DETECTION_BATCH_MODE_CACHE: Optional[str] = None
+# Only enabled when the deployment guarantees all writes go through one process.
+_MAINTENANCE_CACHE_LOCK = threading.RLock()
+_MAINTENANCE_CACHE: Optional[Dict[str, Any]] = None
+_MAINTENANCE_CACHE_DUE = False
+
+
+def _maintenance_cache_enabled() -> bool:
+    return os.getenv("MAINTENANCE_SINGLE_PROCESS_CACHE", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _invalidate_maintenance_cache() -> None:
+    global _MAINTENANCE_CACHE
+    with _MAINTENANCE_CACHE_LOCK:
+        _MAINTENANCE_CACHE = None
+
+
+def _invalidate_maintenance_for_setting(key: str) -> None:
+    if key in {SYSTEM_MAINTENANCE_SETTING_KEY, PENDING_VERIFICATION_STRATEGY_SETTING_KEY,
+               PENDING_DETECTION_BATCH_MODE_SETTING_KEY, PENDING_OCR_MODEL_SETTINGS_KEY,
+               PENDING_TEMPLATE_CHANGES_SETTING_KEY}:
+        _invalidate_maintenance_cache()
 
 DEFAULT_SYSTEM_MAINTENANCE: Dict[str, Any] = {
     "enforcementEnabled": False,
@@ -376,6 +397,7 @@ class GlobalSettingsService:
                 (key, value),
             )
             conn.commit()
+        _invalidate_maintenance_for_setting(key)
 
     def _load_setting_value(self, key: str) -> Optional[str]:
         with _connect() as conn:
@@ -389,6 +411,7 @@ class GlobalSettingsService:
         with _connect() as conn:
             conn.execute("DELETE FROM app_settings WHERE key = ?", (key,))
             conn.commit()
+        _invalidate_maintenance_for_setting(key)
 
     def _pending_template_statuses(self, raw_value: Optional[str] = None, *, loaded: bool = False) -> Dict[str, str]:
         if not loaded:
@@ -586,11 +609,13 @@ class GlobalSettingsService:
             "expectedEndAt": self._maintenance_datetime_to_iso(end),
         }
 
-    def _system_maintenance_from_storage(self) -> Dict[str, Any]:
+    def _system_maintenance_from_storage(self, *, raise_on_error: bool = False) -> Dict[str, Any]:
         raw_value = None
         try:
             raw_value = self._load_setting_value(SYSTEM_MAINTENANCE_SETTING_KEY)
         except Exception as error:
+            if raise_on_error:
+                raise
             logger.exception("System maintenance setting read failed; falling back to disabled state: %s", error)
         raw = jsonb_load(raw_value, {}) if raw_value is not None else {}
         if not isinstance(raw, dict):
@@ -758,6 +783,38 @@ class GlobalSettingsService:
                 timing["initial_server_pending_settings_ms"] = round((time.perf_counter() - started) * 1000, 2)
         return maintenance
 
+    def processing_maintenance(self, timing: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+        global _MAINTENANCE_CACHE, _MAINTENANCE_CACHE_DUE
+        if not _maintenance_cache_enabled():
+            return self.get_system_maintenance(timing) if timing is not None else self.get_system_maintenance()
+        with _MAINTENANCE_CACHE_LOCK:
+            if _MAINTENANCE_CACHE is not None:
+                current = self._maintenance_state(_MAINTENANCE_CACHE)
+                if not self._pending_settings_due(current) or _MAINTENANCE_CACHE_DUE:
+                    return current
+            started = time.perf_counter()
+            try:
+                current = self._system_maintenance_from_storage(raise_on_error=True)
+            except Exception:
+                # Preserve the pre-existing failure behavior, without caching it.
+                return self.get_system_maintenance(timing) if timing is not None else self.get_system_maintenance()
+            if timing is not None:
+                timing["initial_server_maintenance_read_ms"] = round((time.perf_counter() - started) * 1000, 2)
+            started = time.perf_counter()
+            try:
+                self._apply_pending_settings_if_due(current, force=not bool(current.get("enforcementEnabled")))
+            except Exception:
+                # Retry on the next request, just as the uncached path does.
+                logger.exception("Pending settings apply failed; maintenance cache was not populated")
+                _MAINTENANCE_CACHE = None
+            else:
+                _MAINTENANCE_CACHE = dict(current)
+                _MAINTENANCE_CACHE_DUE = self._pending_settings_due(current)
+            finally:
+                if timing is not None:
+                    timing["initial_server_pending_settings_ms"] = round((time.perf_counter() - started) * 1000, 2)
+            return current
+
     def update_system_maintenance(self, payload: Any, updated_by: Optional[str] = None) -> Dict[str, Any]:
         current = self._system_maintenance_from_storage()
         next_setting = {
@@ -807,7 +864,7 @@ class GlobalSettingsService:
         return bool(maintenance.get("enforcementEnabled"))
 
     def ensure_processing_available(self, timing: Optional[Dict[str, float]] = None) -> None:
-        maintenance = self.get_system_maintenance(timing) if timing is not None else self.get_system_maintenance()
+        maintenance = self.processing_maintenance(timing)
         if not maintenance.get("active"):
             return
         message = str(maintenance.get("message") or "ระบบอยู่ระหว่างการปิดปรับปรุง")
