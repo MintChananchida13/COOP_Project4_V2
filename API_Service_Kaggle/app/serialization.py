@@ -49,6 +49,15 @@ def decode_image(data_url: str, *, composite_alpha: bool = False) -> np.ndarray:
     return image
 
 
+def without_input_images(value):
+    """Remove input image payloads without modifying Paddle result objects."""
+    if isinstance(value, dict):
+        return {key: without_input_images(item) for key, item in value.items() if key != "input_img"}
+    if isinstance(value, (list, tuple)):
+        return [without_input_images(item) for item in value]
+    return value
+
+
 def json_safe(value):
     if isinstance(value, np.ndarray):
         return value.tolist()

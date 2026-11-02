@@ -8,7 +8,7 @@ from pathlib import Path
 import cv2
 
 from .config import settings
-from .serialization import json_safe
+from .serialization import json_safe, without_input_images
 
 
 logger = logging.getLogger(__name__)
@@ -148,12 +148,11 @@ manager = ModelManager()
 
 def predict(name, image, model):
     output = model.predict(image)
-    if name == "layout":
-        # PaddleX result objects inherit dict and retain the original image.
-        # Omit it before json_safe expands the pixel array into JSON lists.
-        output = [{key: value for key, value in item.items() if key != "input_img"}
-                  if isinstance(item, dict) else item for item in output]
-    return json_safe(list(output))
+    output = list(output)
+    if name in {"layout", "det", "rec"}:
+        # Drop image arrays before converting numpy values to JSON lists.
+        output = without_input_images(output)
+    return json_safe(output)
 
 
 def siglip_logits(images, categories, instance):

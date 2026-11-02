@@ -59,7 +59,7 @@ class CompactLayoutTests(unittest.TestCase):
                     self.assertNotIn("text_detection", raw)
                 else:
                     self.assertEqual(raw["text_detection"][0]["dt_scores"], [0.9])
-                    self.assertIn("input_img", raw["text_detection"][0])
+                    self.assertNotIn("input_img", raw["text_detection"][0])
 
 
 if __name__ == "__main__":

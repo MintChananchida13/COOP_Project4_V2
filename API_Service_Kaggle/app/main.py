@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from .config import settings
 from .models import NAMES, manager, predict, siglip_logits, registry, resolve_ocr, register_ocr_model
-from .serialization import decode_image, json_safe
+from .serialization import decode_image, json_safe, without_input_images
 from .timing import build_timing
 from .siglip_policy import POSITIVE, NEGATIVE, decide
 
@@ -103,8 +103,8 @@ def run(name, operation, model_timings=None, ocr_entry=None):
         slots.release()
 
 
-def paddle_result(model, image, *, layout=False):
-    output = predict("layout" if layout else "", image, model)
+def paddle_result(model, image, *, layout=False, kind=""):
+    output = predict("layout" if layout else kind, image, model)
     if len(output) != 1 or not isinstance(output[0], dict):
         raise RuntimeError("Unexpected Paddle result count or shape")
     return output[0]
@@ -115,7 +115,7 @@ def paddle_detection_batch(model, images, batch_size=None):
     if size < 1:
         raise ValueError("Detection batch size must be positive")
     if size == 1:
-        return {"results": [paddle_result(model, image) for image in images]}
+        return {"results": [paddle_result(model, image, kind="det") for image in images]}
 
     # PaddleX stacks preprocessed images. Equal input shapes take the same
     # resize path; never resize or pad ROIs merely to make them batchable.
@@ -127,9 +127,9 @@ def paddle_detection_batch(model, images, batch_size=None):
         for start in range(0, len(group), size):
             chunk = group[start:start + size]
             if len(chunk) == 1:
-                output = [paddle_result(model, chunk[0][1])]
+                output = [paddle_result(model, chunk[0][1], kind="det")]
             else:
-                output = json_safe(list(model.predict([image for _, image in chunk], batch_size=len(chunk))))
+                output = json_safe(without_input_images(list(model.predict([image for _, image in chunk], batch_size=len(chunk)))))
             if len(output) != len(chunk) or any(not isinstance(item, dict) for item in output):
                 raise RuntimeError("Unexpected Paddle detection batch result count or shape")
             for (index, _), result in zip(chunk, output):
@@ -142,7 +142,7 @@ def paddle_recognition_batch(model, images):
     size = settings.recognition_batch_size
     for start in range(0, len(images), size):
         chunk = images[start:start + size]
-        output = json_safe(list(model.predict(chunk, batch_size=len(chunk))))
+        output = json_safe(without_input_images(list(model.predict(chunk, batch_size=len(chunk)))))
         if len(output) != len(chunk) or any(not isinstance(item, dict) for item in output):
             raise RuntimeError("Unexpected Paddle recognition batch result count or shape")
         results.extend(output)
@@ -170,7 +170,7 @@ def layout(request: LayoutImage):
         with manager.inference_locks["det"]:
             detector_lock_ms = round((time.perf_counter() - detector_lock_started) * 1000, 2)
             detector_started = time.perf_counter()
-            detection_raw = paddle_result(detector, image)
+            detection_raw = paddle_result(detector, image, kind="det")
             model_timings["text_detection"] = {
                 "inference_ms": round((time.perf_counter() - detector_started) * 1000, 2),
                 "model_load_ms": detector_load_ms,
@@ -251,7 +251,7 @@ def check_ocr_model(request: OcrModelCheck):
 def detection(request: SingleImage, version: str = "v6", model_id: str = "default"):
     image = decode_image(request.image)
     entry = selected_ocr("det", version, model_id)
-    return run("det", lambda model: paddle_result(model, image), **({} if model_id == "default" else {"ocr_entry": entry}))
+    return run("det", lambda model: paddle_result(model, image, kind="det"), **({} if model_id == "default" else {"ocr_entry": entry}))
 
 
 @app.post("/api/v1/text-detection-batches", dependencies=[Depends(authenticate)])
@@ -265,7 +265,7 @@ def detection_batch(request: BatchImages, version: str = "v6", model_id: str = "
 def recognition(request: SingleImage, version: str = "v5", model_id: str = "default"):
     image = decode_image(request.image)
     entry = selected_ocr("rec", version, model_id)
-    return run("rec", lambda model: paddle_result(model, image), **({} if model_id == "default" else {"ocr_entry": entry}))
+    return run("rec", lambda model: paddle_result(model, image, kind="rec"), **({} if model_id == "default" else {"ocr_entry": entry}))
 
 
 @app.post("/api/v1/text-recognition-batches", dependencies=[Depends(authenticate)])
