@@ -13,6 +13,28 @@ from app.core.model_runtime_client import (
 
 
 class ModelRuntimeTimingTests(unittest.TestCase):
+    def test_service_timing_flows_through_runtime_and_benchmark(self):
+        import json
+        from unittest.mock import MagicMock
+        from app.processing import search_benchmark
+        state, token = search_benchmark.begin("c" * 32)
+        try:
+            with patch("app.core.model_runtime_client.GATEWAY_URL", "http://localhost"):
+                for kind, value in ((ModelRuntimeKind.TEXT_DETECTION, 12.3), (ModelRuntimeKind.TEXT_RECOGNITION, 45.6)):
+                    response = MagicMock()
+                    response.__enter__.return_value.read.return_value = json.dumps({
+                        "success": True, "model": "example", "result": {"results": []},
+                        "timing": {"inference_ms": value, "queue_wait_ms": 0, "total_runtime_ms": value + 1}
+                    }).encode()
+                    with patch("app.core.model_runtime_client.urllib.request.urlopen", return_value=response):
+                        _post_predict(kind, {}, path_override="/api/v1/batch")
+            metrics = search_benchmark.metrics(state, 100)
+        finally:
+            search_benchmark.end(token)
+        self.assertEqual(metrics["text_detection_inference_ms"], 12.3)
+        self.assertEqual(metrics["text_recognition_inference_ms"], 45.6)
+        self.assertEqual([call["inference_ms"] for call in metrics["model_calls"]], [12.3, 45.6])
+
     def test_failed_http_call_keeps_monotonic_interval(self):
         timing = {}
         with patch("app.core.model_runtime_client.runtime_url", return_value="http://localhost/model"), \

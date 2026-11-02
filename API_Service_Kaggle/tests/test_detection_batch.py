@@ -50,6 +50,32 @@ class DetectionBatchTests(unittest.TestCase):
         self.assertEqual(len(result['results']), 2)
         self.assertEqual(model.calls, [('single', 1, None), ('single', 1, None)])
 
+    def test_batch_size_eight_preserves_order_and_reports_timing(self):
+        model = FakeDetection()
+        settings = replace(main.settings, api_key='secret', detection_batch_size=8)
+        with patch.object(main, 'settings', settings), patch.object(main.manager, 'get', return_value=(model, 0)):
+            response = TestClient(main.app).post(
+                '/api/v1/text-detection-batches?version=v6',
+                headers={'Authorization': 'Bearer secret'},
+                json={'images': [image_url(value) for value in range(9)]})
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertIsInstance(body['timing']['inference_ms'], (int, float))
+        self.assertEqual([x['res']['dt_polys'][0][0][0] for x in body['result']['results']], list(range(9)))
+        self.assertEqual(model.calls, [('batch', 8, 8), ('batch', 1, 1)])
+
+    def test_single_image_path_reports_inference_timing_for_batch_endpoint(self):
+        model = FakeDetection()
+        settings = replace(main.settings, api_key='secret', detection_batch_size=1)
+        with patch.object(main, 'settings', settings), patch.object(main.manager, 'get', return_value=(model, 0)):
+            response = TestClient(main.app).post(
+                '/api/v1/text-detection-batches?version=v6',
+                headers={'Authorization': 'Bearer secret'},
+                json={'images': [image_url(10), image_url(20)]})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIsInstance(response.json()['timing']['inference_ms'], (int, float))
+        self.assertEqual(model.calls, [('single', 1, None), ('single', 1, None)])
+
     def test_bad_count_or_batch_failure_is_not_silently_retried(self):
         model = FakeDetection()
         model.predict = lambda images, batch_size: []

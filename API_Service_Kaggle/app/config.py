@@ -12,8 +12,8 @@ class Settings:
     max_image_bytes: int = int(os.getenv("MAX_IMAGE_BYTES", "15000000"))
     max_image_pixels: int = int(os.getenv("MAX_IMAGE_PIXELS", "25000000"))
     batch_chunk_size: int = int(os.getenv("BATCH_CHUNK_SIZE", "16"))
-    recognition_batch_size: int = int(os.getenv("OCR_RECOGNITION_BATCH_SIZE", "4"))
-    detection_batch_size: int = int(os.getenv("OCR_DETECTION_BATCH_SIZE", "4"))
+    recognition_batch_size: int = int(os.getenv("OCR_RECOGNITION_BATCH_SIZE", "8"))
+    detection_batch_size: int = int(os.getenv("OCR_DETECTION_BATCH_SIZE", "8"))
 
 
 settings = Settings()

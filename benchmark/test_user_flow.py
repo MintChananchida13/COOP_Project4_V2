@@ -66,6 +66,12 @@ class UserFlowTests(unittest.TestCase):
         for key, value in timing.items():
             self.assertEqual(values[key], value)
 
+    def test_detection_and_recognition_inference_reach_benchmark_row(self):
+        values = user_flow.timing_values([], {}, {"text_detection_inference_ms": 12.3,
+                                                 "text_recognition_inference_ms": 45.6})
+        self.assertEqual(values["text_detection_inference_ms"], 12.3)
+        self.assertEqual(values["text_recognition_inference_ms"], 45.6)
+
     def test_locked_excel_uses_unique_recovery_name(self):
         from openpyxl import Workbook
 

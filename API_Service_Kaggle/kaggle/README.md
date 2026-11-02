@@ -156,10 +156,12 @@ request until reliable cross-process invalidation is available. Restart the Back
 
 ### Experimental true Text Detection batching
 
-The existing detection batch endpoint uses real Paddle batching by default with
-`OCR_DETECTION_BATCH_SIZE=4`. Set it before starting the model service to change the
-batch size; use `1` to restore the previous per-image inference path. The option does
-not change the API or selected model.
+The detection batch endpoint defaults to real Paddle batching with
+`OCR_DETECTION_BATCH_SIZE=8`. Use `1` for the previously verified per-image path.
+If detection fails, the Backend's existing OCR flow may proceed using whole ROIs and
+the detection inference timing will be unavailable. Test equivalence and performance
+on the target runtime with the comparison below. This setting does not change the API
+or selected model.
 Unsupported batch sizes, invalid outputs, or inference errors fail the request without
 silently retrying with another model or inference mode.
 

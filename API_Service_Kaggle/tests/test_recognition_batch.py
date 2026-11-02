@@ -41,6 +41,19 @@ class RecognitionBatchTests(unittest.TestCase):
             self.assertEqual([item["res"]["rec_text"] for item in body["result"]["results"]], ["10", "20", "30", "40", "50"])
             self.assertEqual(model.calls, [(2, 2), (2, 2), (1, 1)])
 
+    def test_size_eight_preserves_results_and_inference_timing(self):
+        model = FakeRecognition()
+        settings = replace(main.settings, api_key="secret", recognition_batch_size=8)
+        with patch.object(main, "settings", settings), patch.object(main.manager, "get", return_value=(model, 0)):
+            response = TestClient(main.app).post(
+                "/api/v1/text-recognition-batches?version=v5", headers={"Authorization": "Bearer secret"},
+                json={"images": [image_url(value) for value in range(9)]})
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual([item["res"]["rec_text"] for item in body["result"]["results"]], [str(i) for i in range(9)])
+        self.assertEqual(model.calls, [(8, 8), (1, 1)])
+        self.assertIsInstance(body["timing"]["inference_ms"], (int, float))
+
     def test_invalid_result_count_fails_without_silent_fallback(self):
         model = FakeRecognition()
         model.predict = lambda images, batch_size: []
