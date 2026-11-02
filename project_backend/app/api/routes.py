@@ -91,10 +91,13 @@ def _is_admin_processing_context(request: Request) -> bool:
     return str(request.query_params.get("context") or "").strip().lower() == "admin"
 
 
-def _ensure_processing_available_for_request(request: Request) -> None:
+def _ensure_processing_available_for_request(request: Request, timing: Dict[str, float] | None = None) -> None:
     if _is_admin_processing_context(request):
         return
-    global_settings.ensure_processing_available()
+    if timing is not None:
+        global_settings.ensure_processing_available(timing)
+    else:
+        global_settings.ensure_processing_available()
 
 
 def _public_maintenance_payload(maintenance: Dict[str, Any]) -> Dict[str, Any]:
@@ -431,7 +434,11 @@ async def detect_template_dev_route(
     response: Response,
 ) -> dict:
     started_at = time.perf_counter()
-    _ensure_processing_available_for_request(request)
+    trace_requested = request.query_params.get("benchmark_trace_id")
+    maintenance_timing: Dict[str, float] | None = {} if trace_requested else None
+    # Keep the gate before the upload and job creation, but do not block the
+    # event loop while synchronous PostgreSQL operations are in progress.
+    await asyncio.to_thread(_ensure_processing_available_for_request, request, maintenance_timing)
     maintenance_at = time.perf_counter()
     admin_context = _is_admin_processing_context(request)
     confirmed_images = request.query_params.get("confirmedImages") == "1" and not admin_context
@@ -464,6 +471,13 @@ async def detect_template_dev_route(
             "initial_server_job_setup_ms": round((finished_at - body_at) * 1000, 2),
             "initial_server_total_ms": round((finished_at - started_at) * 1000, 2),
         }
+        initial_timing.update(maintenance_timing or {})
+        scope = getattr(request, "scope", {})
+        state = scope.get("state", {})
+        asgi_at = state.get("benchmark_initial_asgi_at")
+        if isinstance(asgi_at, (int, float)):
+            initial_timing["initial_server_asgi_to_route_ms"] = round((started_at - asgi_at) * 1000, 2)
+            state["benchmark_initial_timing"] = initial_timing
         with detect_dev_jobs_lock:
             detect_dev_jobs[job_id]["initial_benchmark_timing"] = initial_timing
         response.headers["Server-Timing"] = ", ".join(

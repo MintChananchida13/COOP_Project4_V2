@@ -15,6 +15,20 @@ class SearchBenchmarkMiddleware:
         path = scope.get("path", "")
         query = parse_qs(scope.get("query_string", b"").decode("ascii", errors="ignore"))
         trace = (query.get("benchmark_trace_id") or [""])[0]
+        valid_trace = len(trace) == 32 and all(c in "0123456789abcdef" for c in trace)
+        if path == "/api/templates/detect-dev" and scope.get("method") == "POST" and valid_trace:
+            state = scope.setdefault("state", {})
+            state["benchmark_initial_asgi_at"] = time.perf_counter()
+
+            async def initial_send(message):
+                if message.get("type") == "http.response.start":
+                    timing = state.get("benchmark_initial_timing")
+                    if isinstance(timing, dict):
+                        timing["initial_server_asgi_to_response_headers_ms"] = round(
+                            (time.perf_counter() - state["benchmark_initial_asgi_at"]) * 1000, 2)
+                await send(message)
+
+            return await self.app(scope, receive, initial_send)
         eligible = (path == "/api/layout/analyze" or path.startswith("/debug/detection-queries/") or
                     (path.startswith("/admin/templates/") and path.count("/") == 3))
         if not eligible or len(trace) != 32 or any(c not in "0123456789abcdef" for c in trace):

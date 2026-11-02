@@ -743,12 +743,19 @@ class GlobalSettingsService:
             raise
         return True
 
-    def get_system_maintenance(self) -> Dict[str, Any]:
+    def get_system_maintenance(self, timing: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+        started = time.perf_counter()
         maintenance = self._system_maintenance_from_storage()
+        if timing is not None:
+            timing["initial_server_maintenance_read_ms"] = round((time.perf_counter() - started) * 1000, 2)
+        started = time.perf_counter()
         try:
             self._apply_pending_settings_if_due(maintenance, force=not bool(maintenance.get("enforcementEnabled")))
         except Exception:
             pass
+        finally:
+            if timing is not None:
+                timing["initial_server_pending_settings_ms"] = round((time.perf_counter() - started) * 1000, 2)
         return maintenance
 
     def update_system_maintenance(self, payload: Any, updated_by: Optional[str] = None) -> Dict[str, Any]:
@@ -799,8 +806,8 @@ class GlobalSettingsService:
         maintenance = self._system_maintenance_from_storage()
         return bool(maintenance.get("enforcementEnabled"))
 
-    def ensure_processing_available(self) -> None:
-        maintenance = self.get_system_maintenance()
+    def ensure_processing_available(self, timing: Optional[Dict[str, float]] = None) -> None:
+        maintenance = self.get_system_maintenance(timing) if timing is not None else self.get_system_maintenance()
         if not maintenance.get("active"):
             return
         message = str(maintenance.get("message") or "ระบบอยู่ระหว่างการปิดปรับปรุง")

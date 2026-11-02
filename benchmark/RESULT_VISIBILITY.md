@@ -142,3 +142,17 @@ from starting the readiness observer to its first UI-ready frame;
 not CPU time; `frontend_observer_max_frame_gap_ms` is the largest observed gap
 between callbacks, not proof of browser throttling. These diagnostics can overlap
 and do not change the readiness criteria or the end-to-end measurement.
+
+The new `initial_server_maintenance_read_ms` and `initial_server_pending_settings_ms`
+measure the two database-related phases within `initial_server_maintenance_ms`.
+`initial_server_asgi_to_route_ms` starts when the ASGI middleware is invoked,
+not when the browser or tunnel sent the request; it cannot measure time waiting
+before the event loop dispatches the request. `initial_server_asgi_to_response_headers_ms`
+ends when the application sends response headers to ASGI, not when the browser
+receives them. These intervals overlap and must not be added together. They are
+returned only in traced job timing; no extra model call is made.
+
+For a non-mutating local versus tunnel baseline, run on Kaggle:
+`python benchmark/compare_backend_paths.py --public https://YOUR-TUNNEL-HOST`.
+This sends only `/health` requests, not an image or search job; results do not
+include the Windows browser-to-tunnel path and cannot establish upload latency.

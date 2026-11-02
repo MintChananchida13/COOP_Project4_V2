@@ -45,6 +45,15 @@ class PendingSettingsSnapshotTests(unittest.TestCase):
             self.assertFalse(self.service._apply_pending_settings_if_due({'enforcementEnabled': True}))
         connect.assert_not_called()
 
+    def test_maintenance_timing_preserves_pending_application_and_errors(self):
+        timing = {}
+        with patch.object(self.service, "_system_maintenance_from_storage", return_value={"enforcementEnabled": False, "active": False}), \
+             patch.object(self.service, "_apply_pending_settings_if_due") as apply:
+            self.service.ensure_processing_available(timing)
+        apply.assert_called_once()
+        self.assertGreaterEqual(timing["initial_server_maintenance_read_ms"], 0)
+        self.assertGreaterEqual(timing["initial_server_pending_settings_ms"], 0)
+
     def test_template_snapshot_parsing_matches_individual_reads(self):
         raw = '{"template_statuses":{"t1":"active"},"template_updates":{"t1":{"name":"x"}},"template_field_ops":{"t1":[{"op":"x"}]},"template_page_ops":{"t1":[{"op":"y"}]}}'
         for name in ('statuses', 'updates', 'field_ops', 'page_ops'):

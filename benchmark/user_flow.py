@@ -29,7 +29,8 @@ FRONTEND_METRICS = ("frontend_response_json_ms", "frontend_response_processing_m
                     "frontend_state_to_commit_ms", "frontend_response_to_commit_ms", "frontend_flow_complete_ms",
                     "frontend_result_visible_ms", "frontend_preview_ready_ms", "frontend_ui_ready_ms", "frontend_commit_end_to_end_ms",
                     "frontend_observer_to_first_ui_ms", "frontend_preview_decode_wait_ms", "frontend_observer_max_frame_gap_ms")
-SEARCH_METRICS = ("initial_response_headers_ms", "initial_server_maintenance_ms", "initial_server_request_body_ms",
+SEARCH_METRICS = ("initial_response_headers_ms", "initial_server_maintenance_ms", "initial_server_maintenance_read_ms",
+                  "initial_server_pending_settings_ms", "initial_server_asgi_to_route_ms", "initial_server_asgi_to_response_headers_ms", "initial_server_request_body_ms",
                   "initial_server_job_setup_ms", "initial_server_total_ms", "frontend_preparation_ms", "request_network_ms", "request_round_trip_ms", "template_search_ms", "model_queue_wait_ms", "search_model_queue_wait_ms",
                   "backend_search_ms", "backend_post_search_ms", "backend_total_active_ms",
                   "result_processing_ms", "polling_wait_ms", "result_fetch_ms", "result_ready_ms",

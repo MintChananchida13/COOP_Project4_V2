@@ -60,6 +60,36 @@ class ConfirmedPagesTests(unittest.TestCase):
         self.assertEqual(error.exception.status_code, 400)
         self.assertIn("confirmed image pages", error.exception.detail)
 
+    def test_maintenance_blocks_before_reading_image_and_creating_job(self):
+        request = Request(multipart(b"page"), {"confirmedImages": "1"})
+        tasks = BackgroundTasks()
+        with patch.object(routes.global_settings, "get_system_maintenance", return_value={"active": True, "message": "maintenance"}):
+            with self.assertRaises(HTTPException) as error:
+                asyncio.run(routes.detect_template_dev_route(request, tasks, Response()))
+        self.assertEqual(error.exception.status_code, 503)
+        self.assertEqual(error.exception.detail["error"]["code"], "SYSTEM_MAINTENANCE")
+        self.assertEqual(len(tasks.tasks), 0)
+
+    def test_waiting_for_maintenance_does_not_block_event_loop(self):
+        import threading
+        entered, release = threading.Event(), threading.Event()
+        def gate(*args):
+            entered.set()
+            release.wait(timeout=2)
+        async def run():
+            with patch.object(routes, "_ensure_processing_available_for_request", side_effect=gate):
+                task = asyncio.create_task(routes.detect_template_dev_route(
+                    Request(multipart(b"page"), {"confirmedImages": "1"}), BackgroundTasks(), Response()))
+                try:
+                    await asyncio.wait_for(asyncio.to_thread(entered.wait), timeout=1)
+                    self.assertFalse(task.done())
+                    release.set()
+                    result = await asyncio.wait_for(task, timeout=1)
+                    routes.detect_dev_jobs.pop(result["data"]["job_id"], None)
+                finally:
+                    release.set()
+        asyncio.run(run())
+
     def test_traced_request_exposes_initial_server_timing_without_changing_response(self):
         request = Request(multipart(b'page'), {"confirmedImages": "1", "benchmark_trace_id": "a" * 32})
         response = Response()

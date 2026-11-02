@@ -59,7 +59,9 @@ class UserFlowTests(unittest.TestCase):
 
     def test_initial_server_timing_survives_header_loss_via_job(self):
         timing = {"initial_server_maintenance_ms": 321.0, "initial_server_request_body_ms": 20.0,
-                  "initial_server_job_setup_ms": 1.0, "initial_server_total_ms": 342.0}
+                  "initial_server_job_setup_ms": 1.0, "initial_server_total_ms": 342.0,
+                  "initial_server_maintenance_read_ms": 120.0, "initial_server_pending_settings_ms": 200.0,
+                  "initial_server_asgi_to_route_ms": 2.0, "initial_server_asgi_to_response_headers_ms": 344.0}
         values = user_flow.timing_values([], {}, timing)
         for key, value in timing.items():
             self.assertEqual(values[key], value)

@@ -105,7 +105,9 @@ class SearchBenchmarkTests(unittest.TestCase):
     def test_traced_http_job_keeps_user_result_and_exposes_timing(self):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
+        from app.processing.search_benchmark_middleware import SearchBenchmarkMiddleware
         app = FastAPI()
+        app.add_middleware(SearchBenchmarkMiddleware)
         app.include_router(routes.router)
         def detect(*args, **kwargs):
             search_benchmark.capture_result({"debug": {"verification_strategy": "text_only", "timing": {}}})
@@ -125,7 +127,8 @@ class SearchBenchmarkTests(unittest.TestCase):
             self.assertEqual(job["result"], {"matched": False, "query_id": "query"})
             self.assertEqual(job["benchmark_timing"]["trace_id"], trace)
             for key in ("initial_server_maintenance_ms", "initial_server_request_body_ms",
-                        "initial_server_job_setup_ms", "initial_server_total_ms"):
+                        "initial_server_job_setup_ms", "initial_server_total_ms", "initial_server_asgi_to_route_ms",
+                        "initial_server_asgi_to_response_headers_ms"):
                 self.assertGreaterEqual(job["benchmark_timing"][key], 0)
             self.assertEqual(job["benchmark_timing"]["processing_mode"], "text_only")
             self.assertIsNone(job["benchmark_timing"]["siglip_inference_ms"])
