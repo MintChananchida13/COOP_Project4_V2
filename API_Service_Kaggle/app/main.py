@@ -110,6 +110,22 @@ def paddle_result(model, image, *, layout=False):
     return output[0]
 
 
+def paddle_detection_batch(model, images):
+    results = []
+    size = settings.detection_batch_size
+    for start in range(0, len(images), size):
+        chunk = images[start:start + size]
+        if size == 1:
+            # Preserve the previous single-image path unless batching is enabled.
+            output = [paddle_result(model, chunk[0])]
+        else:
+            output = json_safe(list(model.predict(chunk, batch_size=len(chunk))))
+        if len(output) != len(chunk) or any(not isinstance(item, dict) for item in output):
+            raise RuntimeError("Unexpected Paddle detection batch result count or shape")
+        results.extend(output)
+    return {"results": results}
+
+
 def paddle_recognition_batch(model, images):
     results = []
     size = settings.recognition_batch_size
@@ -231,7 +247,7 @@ def detection(request: SingleImage, version: str = "v6", model_id: str = "defaul
 def detection_batch(request: BatchImages, version: str = "v6", model_id: str = "default"):
     images = [decode_image(item) for item in request.images]
     entry = selected_ocr("det", version, model_id)
-    return run("det", lambda model: {"results": [paddle_result(model, image) for image in images]}, **({} if model_id == "default" else {"ocr_entry": entry}))
+    return run("det", lambda model: paddle_detection_batch(model, images), **({} if model_id == "default" else {"ocr_entry": entry}))
 
 
 @app.post("/api/v1/text-recognitions", dependencies=[Depends(authenticate)])

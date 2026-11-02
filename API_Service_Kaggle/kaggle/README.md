@@ -153,3 +153,30 @@ application are not cached. Do not enable this cache if any other Backend proces
 can change the same settings: the existing event hub is process-local. For shared databases, set
 `MAINTENANCE_SINGLE_PROCESS_CACHE=false` before startup; that preserves the database check for every
 request until reliable cross-process invalidation is available. Restart the Backend after changing it.
+
+### Experimental true Text Detection batching
+
+The existing detection batch endpoint uses real Paddle batching by default with
+`OCR_DETECTION_BATCH_SIZE=4`. Set it before starting the model service to change the
+batch size; use `1` to restore the previous per-image inference path. The option does
+not change the API or selected model.
+Unsupported batch sizes, invalid outputs, or inference errors fail the request without
+silently retrying with another model or inference mode.
+
+To verify the target runtime, run the comparison using at least two representative
+text ROI images (include different ROI sizes and samples with and without text):
+
+```bash
+/kaggle/working/ocr_runtime/api_env/bin/python \
+  API_Service_Kaggle/kaggle/benchmark_detection_batch.py \
+  /path/to/roi1.png /path/to/roi2.png --version v6 --model-id thai_ft_v2 --batch-size 4 --repeat 3
+```
+
+The comparison uses the registry selected model, warms it up, runs single and batched
+inference on the same inputs and checks result count, order, exact polygons and scores
+within `1e-4` absolute tolerance. It reports the median times and exits nonzero on a
+mismatch. This is a limited sample comparison, not a substitute for comparing complete
+OCR/Template Search results on the actual workload. Run it while the service is idle;
+it loads a separate model process and may consume substantial CPU and memory.
+Restart the model service after changing `OCR_DETECTION_BATCH_SIZE`; the Kaggle bootstrap
+may reuse a healthy old process.
