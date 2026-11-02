@@ -24,14 +24,17 @@ class AutoRoiLayoutOnlyTests(unittest.TestCase):
         temp.__enter__.return_value.name = "unused.png"
         with patch.object(service, "_layout_raw_items_cache", OrderedDict()), \
                 patch.object(service, "_require_runtime"), \
-                patch.object(service.tempfile, "NamedTemporaryFile", return_value=temp), \
-                patch.object(service.cv2, "imwrite"), \
-                patch.object(service.Path, "unlink"), \
+                patch.object(service.tempfile, "NamedTemporaryFile", return_value=temp) as temp_file, \
+                patch.object(service.cv2, "imwrite") as write_image, \
+                patch.object(service.Path, "unlink") as unlink, \
                 patch.object(service, "remote_analyze_layout", side_effect=[combined, layout_only]) as remote:
             before = service.analyze_layout(image, expand_text_rois=True, use_text_detection=False)
             service.clear_layout_analysis_cache()
             after = service.analyze_layout(image, expand_text_rois=True, use_text_detection=False)
         self.assertEqual(before["regions"], after["regions"])
+        temp_file.assert_not_called()
+        write_image.assert_not_called()
+        unlink.assert_not_called()
         self.assertEqual(remote.call_count, 2)
         self.assertTrue(all(call.kwargs == {"layout_only": True} for call in remote.call_args_list))
 
@@ -41,14 +44,17 @@ class AutoRoiLayoutOnlyTests(unittest.TestCase):
         temp.__enter__.return_value.name = "unused.png"
         with patch.object(service, "_layout_raw_items_cache", OrderedDict()), \
                 patch.object(service, "_require_runtime"), \
-                patch.object(service.tempfile, "NamedTemporaryFile", return_value=temp), \
-                patch.object(service.cv2, "imwrite"), \
-                patch.object(service.Path, "unlink"), \
+                patch.object(service.tempfile, "NamedTemporaryFile", return_value=temp) as temp_file, \
+                patch.object(service.cv2, "imwrite") as write_image, \
+                patch.object(service.Path, "unlink") as unlink, \
                 patch.object(service, "remote_analyze_layout", return_value={"raw": {"layout": []}}) as remote, \
                 patch.object(service, "remote_detect_text_boxes", return_value={"raw": []}) as detector:
             service.analyze_layout(image, use_text_detection=True)
         self.assertEqual(remote.call_args.kwargs, {"layout_only": False})
-        detector.assert_called_once()
+        detector.assert_called_once_with("unused.png")
+        temp_file.assert_called_once()
+        write_image.assert_called_once()
+        unlink.assert_called_once_with(missing_ok=True)
 
 
 if __name__ == "__main__":

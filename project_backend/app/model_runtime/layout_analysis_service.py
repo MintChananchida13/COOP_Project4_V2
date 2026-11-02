@@ -978,10 +978,13 @@ def analyze_layout(
     source_mode = "layout_text_detection" if use_text_detection else _RAW_LAYOUT_ONLY_CACHE_MODE
     raw_items = _get_cached_layout_raw_items(image, source_mode)
     if raw_items is None:
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
-            temp_path = temp_file.name
+        temp_path = None
+        if use_text_detection:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
+                temp_path = temp_file.name
         try:
-            cv2.imwrite(temp_path, image)
+            if temp_path is not None:
+                cv2.imwrite(temp_path, image)
             _require_runtime(ModelRuntimeKind.LAYOUT)
             if use_text_detection:
                 _require_runtime(ModelRuntimeKind.TEXT_DETECTION)
@@ -1036,7 +1039,8 @@ def analyze_layout(
             )
             _set_cached_layout_raw_items(image, raw_items, source_mode)
         finally:
-            Path(temp_path).unlink(missing_ok=True)
+            if temp_path is not None:
+                Path(temp_path).unlink(missing_ok=True)
 
     parsed_items: List[Dict[str, Any]] = []
     for item in raw_items:
