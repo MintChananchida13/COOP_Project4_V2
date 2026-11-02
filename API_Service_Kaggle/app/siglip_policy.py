@@ -5,6 +5,7 @@ import json
 import math
 
 SCORING_VERSION = "siglip-single-prompt-v2.4"
+NEGATIVE_TOLERANCE = 0.8
 POSITIVE = ("emblem", "thai_garuda", "company_logo", "document_stamp", "portrait", "signature", "barcode", "qr_code")
 NEGATIVE = ("printed_text", "table", "blank", "background", "illustration", "pattern", "bar_chart")
 
@@ -32,7 +33,7 @@ def validate_logits(logits):
 
 def fingerprint(logits, config=None):
     validate_logits(logits)
-    data = [SCORING_VERSION, POSITIVE, NEGATIVE, [float(value) for value in logits], normalize_config(config)]
+    data = [SCORING_VERSION, NEGATIVE_TOLERANCE, POSITIVE, NEGATIVE, [float(value) for value in logits], normalize_config(config)]
     return hashlib.sha256(json.dumps(data, allow_nan=False, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -50,12 +51,12 @@ def decide(logits, config=None):
         raise ValueError("Raw logit margin overflow")
     confidence = relatives[first]
     relative_margin = relatives[first] - relatives[second]
-    negative_passed = scores[first] > scores[negative]
+    negative_passed = scores[negative] <= scores[first] + NEGATIVE_TOLERANCE
     confidence_passed = "not_applied" if config["confidence_min_relative_score"] is None else "not_evaluated"
     margin_passed = "not_applied" if config["margin_min_relative_score"] is None else "not_evaluated"
     reason = "positive_rank1_accepted"
     if not negative_passed:
-        reason = "negative_category_won" if scores[negative] > scores[first] else "negative_category_tied"
+        reason = "negative_category_won"
     else:
         if config["confidence_min_relative_score"] is not None:
             confidence_passed = confidence >= config["confidence_min_relative_score"]
@@ -77,6 +78,7 @@ def decide(logits, config=None):
         "positive_top1_logit": scores[first],
         "negative_top1_category": negative, "negative_top1_logit": scores[negative],
         "positive_negative_margin": scores[first] - scores[negative],
+        "negative_tolerance": NEGATIVE_TOLERANCE,
         "positive_top1_top2_margin": scores[first] - scores[second],
         "positive_relative_score": confidence, "positive_relative_margin": relative_margin,
         "confidence_gate_passed": confidence_passed,

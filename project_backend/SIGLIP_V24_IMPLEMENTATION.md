@@ -5,23 +5,23 @@
 At the user's request, `numbers` is now removed from the shared prompt registry
 and active policy: **8 Positive + 7 Negative = 15 ordered logits**. References
 to 16 logits/eight Negatives below describe the original V2.4 implementation.
-Remaining Negative competition and optional gates are unchanged. The V2.3
+Negative competition now accepts a Negative lead up to and including 0.8 raw-logit units; optional gates are unchanged. The V2.3
 comparison rules now use the same reduced prompt registry, so comparisons are
 not an exact replay of the original 16-category experiment. Tests verify the
 removed category is absent, reject stale 16-logit vectors, and retain rejection
-when another Negative wins. Restart/update both API and Backend together;
+when the strongest Negative leads by more than 0.8. Restart/update both API and Backend together;
 mixed revisions are not supported. Accuracy effects are not verified and
 removing this Negative does not guarantee a portrait will pass.
 
 ## Decision flow
 
-The checkpoint, all eight Positive and eight Negative single prompts, model
+The checkpoint, eight Positive and seven Negative single prompts, model
 forward pass, crops, and category order are unchanged. The active version is
 `siglip-single-prompt-v2.4`.
 
-1. Validate 16 finite, ordered raw logits.
+1. Validate 15 finite, ordered raw logits.
 2. Rank Positive categories by raw logit; find the highest Negative logit.
-3. Reject as `other` when Negative wins or ties the highest Positive.
+3. Reject as `other` only when the strongest Negative exceeds the highest Positive by more than 0.8 raw-logit units.
 4. Apply explicitly configured relative-confidence and relative-margin gates,
    in that order. Both are disabled by default: no validated new thresholds
    were provided.
@@ -30,14 +30,14 @@ forward pass, crops, and category order are unchanged. The active version is
 
 | Gate | Units / comparison | Default | Rejection reason |
 | --- | --- | --- | --- |
-| Negative competition | Positive top logit > Negative top logit | Enabled | `negative_category_won` / `negative_category_tied` |
+| Negative competition | Negative top logit <= Positive top logit + 0.8 | Enabled | `negative_category_won` |
 | Relative confidence | Positive softmax top share >= configured minimum | Disabled | `confidence_gate_failed` |
 | Relative margin | Positive softmax top share minus second share >= configured minimum | Disabled | `margin_gate_failed` |
 
 Disabled gates report `not_applied`, not `true`. An enabled gate skipped because
 an earlier gate failed reports `not_evaluated`. Comparisons use unrounded values.
 Positive ties preserve canonical category order; with the margin gate disabled
-they can be accepted if Negative loses. Positive/Negative ties reject explicitly.
+they can be accepted if the strongest Negative is within the 0.8 tolerance. Positive/Negative ties pass the Negative gate.
 
 The active policy removes the Garuda-to-Emblem override below 2.0, the
 Garuda/Negative gap below 2.0 rejection, and the Emblem raw-logit floor -6.3.

@@ -61,10 +61,18 @@ class SiglipV24Tests(unittest.TestCase):
                 self.assertEqual(result["final_predicted_category"], "other")
                 self.assertEqual(result["decision_reason"], "negative_category_won")
 
-    def test_unknown_ties_reject_instead_of_arbitrary_positive(self):
-        result = policy.decide([0.0] * 15)
-        self.assertEqual(result["final_predicted_category"], "other")
-        self.assertEqual(result["decision_reason"], "negative_category_tied")
+    def test_tie_passes_within_negative_tolerance(self):
+        result = policy.decide(raw(portrait=0, background=0))
+        self.assertEqual(result["final_predicted_category"], "portrait")
+        self.assertTrue(result["negative_gate_passed"])
+
+    def test_negative_tolerance_boundaries_for_every_positive(self):
+        for category in SINGLE:
+            for negative, expected in ((0.7999, category), (0.8, category), (0.8001, "other")):
+                with self.subTest(category=category, negative=negative):
+                    result = policy.decide(raw(**{category: 0, "background": negative}))
+                    self.assertEqual(result["final_predicted_category"], expected)
+                    self.assertEqual(result["negative_tolerance"], 0.8)
 
     def test_garuda_close_to_emblem_is_never_substituted(self):
         result = adapter.verify_image_category_from_logits(raw(thai_garuda=8.1, emblem=6.5818), "thai_garuda", categories())
@@ -77,7 +85,7 @@ class SiglipV24Tests(unittest.TestCase):
         self.assertEqual(result.decision["margin_gate_passed"], "not_applied")
 
     def test_portrait_depends_on_negative_not_low_sigmoid(self):
-        for negative, expected in ((-8.0, "other"), (-20.0, "portrait")):
+        for negative, expected in ((-8.0, "portrait"), (-7.0, "other"), (-20.0, "portrait")):
             result = adapter.verify_image_category_from_logits(raw(portrait=-8.1219, barcode=-9.7214, printed_text=negative), "portrait", categories())
             self.assertEqual(result.predicted_category, expected)
             self.assertEqual(result.raw_pair_score, 0.0003)
