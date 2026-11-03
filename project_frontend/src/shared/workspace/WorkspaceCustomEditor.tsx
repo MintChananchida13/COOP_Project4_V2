@@ -7,6 +7,15 @@ import { ROI } from '../../types/ocr';
 import { WorkspaceImageMetrics } from './roiGeometry';
 import { ADMIN_API_BASE_URL } from "@/admin/adminApi";
 import { authHeaders } from "@/auth/session";
+import { MousePointer2 } from 'lucide-react';
+import { canvasPoint, groupTranslation, intersectsSelection, selectionRect, translateRoi, type SelectionRect } from './roiSelection';
+
+type SelectionGesture = {
+  kind: 'marquee' | 'move';
+  start: { x: number; y: number };
+  rois: ROI[];
+  initialIds: number[];
+};
 
 const renderTypeIcon = (type?: 'text' | 'table' | 'image', size = 11) => {
   if (type === 'table') return <Table size={size} className="shrink-0" />;
@@ -136,7 +145,7 @@ export interface WorkspaceCustomEditorProps {
     selectedId: number | null;
     triggerOCRProcessing: () => void;
   }) => React.ReactNode;
-  getRoiClassName?: (roi: ROI & { pageIndex?: number }, selected: boolean, activeTool: 'pan' | 'box' | 'polygon') => string;
+  getRoiClassName?: (roi: ROI & { pageIndex?: number }, selected: boolean, activeTool: 'pan' | 'box' | 'polygon' | 'select') => string;
   getRoiLabelClassName?: (roi: ROI & { pageIndex?: number }, selected: boolean) => string;
   getRoiLabelText?: (roi: ROI & { pageIndex?: number }) => string;
   getRoiBadges?: (roi: ROI & { pageIndex?: number }) => string[];
@@ -190,7 +199,30 @@ export default function WorkspaceCustomEditor({
   onCanvasRoiSelect,
 }: WorkspaceCustomEditorProps) {
   const isUserLayout = layoutVariant === "user";
-  const [activeTool, setActiveTool] = useState<'pan' | 'box' | 'polygon'>(readOnly || hideDrawTools ? 'pan' : 'box');
+  const [activeTool, setActiveTool] = useState<'pan' | 'box' | 'polygon' | 'select'>(readOnly ? 'pan' : 'select');
+  const [multiSelection, setMultiSelection] = useState<{ ids: number[]; primary: number | null; page: number }>({ ids: [], primary: null, page: currentIndex });
+  const selectedIds = new Set(multiSelection.primary === selectedId && multiSelection.page === currentIndex
+    ? multiSelection.ids.filter(id => rois.some(roi => roi.id === id && (roi.pageIndex ?? 0) === currentIndex))
+    : selectedId === null ? [] : [selectedId]);
+  const [selectionGesture, setSelectionGesture] = useState<SelectionGesture | null>(null);
+  const selectionGestureRef = useRef<SelectionGesture | null>(null);
+  const [marquee, setMarquee] = useState<SelectionRect | null>(null);
+  const [groupDelta, setGroupDelta] = useState({ x: 0, y: 0 });
+  const groupDeltaRef = useRef({ x: 0, y: 0 });
+
+  const selectIds = (ids: number[]) => {
+    const primary = ids.includes(selectedId as number) ? selectedId : ids[0] ?? null;
+    setMultiSelection({ ids, primary, page: currentIndex });
+    setSelectedId(primary);
+  };
+
+  const cancelSelectionGesture = () => {
+    selectionGestureRef.current = null;
+    setSelectionGesture(null);
+    setMarquee(null);
+    setGroupDelta({ x: 0, y: 0 });
+    groupDeltaRef.current = { x: 0, y: 0 };
+  };
   const [activeDrawPoints, setActiveDrawPoints] = useState<{ x: number; y: number }[]>([]);
 
   // Calculate the bounding box for custom ROI points.
@@ -366,11 +398,20 @@ export default function WorkspaceCustomEditor({
 
   useEffect(() => {
     setSelectedId(null);
-  }, [currentIndex]);
+    return () => cancelSelectionGesture();
+  }, [currentIndex, setSelectedId]);
 
       // Delete selected ROI.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        cancelSelectionGesture();
+        setSelectedId(null);
+        setActiveDrawPoints([]);
+        setIsDrawing(false);
+        setDragBox(null);
+        return;
+      }
       const activeEl = document.activeElement;
       const isInputActive = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
 
@@ -405,7 +446,7 @@ export default function WorkspaceCustomEditor({
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [selectedId, handleUndo, handleRedo, deleteROI]);
+  }, [selectedId, handleUndo, handleRedo, deleteROI, setSelectedId]);
 
 
   useEffect(() => {
@@ -456,10 +497,71 @@ export default function WorkspaceCustomEditor({
   };
 
   const selectRoiFromCanvas = (roiId: number) => {
+    setMultiSelection({ ids: [roiId], primary: roiId, page: currentIndex });
     setSelectedId(roiId);
     onCanvasRoiSelect?.(roiId);
     window.setTimeout(() => scrollDefaultRightPanelToRoi(roiId), 0);
   };
+
+  useEffect(() => {
+    if (!selectionGesture) return;
+    const update = (event: MouseEvent) => {
+      if (selectionGestureRef.current !== selectionGesture || !containerRef.current) return;
+      const canvas = containerRef.current;
+      const rect = canvas.getBoundingClientRect();
+      const point = canvasPoint(event.clientX, event.clientY, rect, canvas.offsetWidth, canvas.offsetHeight);
+      if (selectionGesture.kind === 'marquee') {
+        const area = selectionRect(selectionGesture.start, point);
+        setMarquee(area);
+        const hits = area.width * currentZoom > 3 || area.height * currentZoom > 3
+          ? selectionGesture.rois.filter(roi => intersectsSelection(roi, area)).map(roi => roi.id) : [];
+        const ids = [...new Set([...selectionGesture.initialIds, ...hits])];
+        const primary = ids[0] ?? null;
+        setMultiSelection({ ids, primary, page: currentIndex });
+        setSelectedId(primary);
+      } else {
+        const delta = groupTranslation(selectionGesture.rois, point.x - selectionGesture.start.x,
+          point.y - selectionGesture.start.y, canvas.offsetWidth, canvas.offsetHeight);
+        groupDeltaRef.current = delta;
+        setGroupDelta(delta);
+      }
+    };
+    const finish = (event: MouseEvent) => {
+      if (selectionGestureRef.current !== selectionGesture) return;
+      update(event);
+      if (selectionGesture.kind === 'move') {
+        const delta = groupDeltaRef.current;
+        if (delta.x || delta.y) {
+          const originals = new Map(selectionGesture.rois.map(roi => [roi.id, roi]));
+          setRois(previous => previous.map(roi => {
+            const original = originals.get(roi.id);
+            if (!original || (roi.pageIndex ?? 0) !== currentIndex) return roi;
+            return { ...roi, ...translateRoi(original, delta) };
+          }));
+        }
+      }
+      selectionGestureRef.current = null;
+      setSelectionGesture(null);
+      setMarquee(null);
+      setGroupDelta({ x: 0, y: 0 });
+      groupDeltaRef.current = { x: 0, y: 0 };
+    };
+    const cancel = () => {
+      selectionGestureRef.current = null;
+      setSelectionGesture(null);
+      setMarquee(null);
+      setGroupDelta({ x: 0, y: 0 });
+      groupDeltaRef.current = { x: 0, y: 0 };
+    };
+    window.addEventListener('mousemove', update);
+    window.addEventListener('mouseup', finish);
+    window.addEventListener('blur', cancel);
+    return () => {
+      window.removeEventListener('mousemove', update);
+      window.removeEventListener('mouseup', finish);
+      window.removeEventListener('blur', cancel);
+    };
+  }, [selectionGesture, currentZoom, currentIndex, setRois, setSelectedId]);
 
   const renderPagePagination = () => (
     <div className="w-full rounded-xl border border-slate-200 bg-[#edf2f7] px-4 py-3 text-slate-800 shadow-sm select-none">
@@ -550,7 +652,22 @@ export default function WorkspaceCustomEditor({
   const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!containerRef.current || !viewportRef.current) return;
 
+    if (e.button !== 0 && e.button !== 1) return;
+
+    if (!readOnly && activeTool === 'select' && e.button === 0 && !(e.target as HTMLElement).closest('.rnd-box-item')) {
+      e.preventDefault();
+      const rect = containerRef.current.getBoundingClientRect();
+      const gesture: SelectionGesture = { kind: 'marquee', start: canvasPoint(e.clientX, e.clientY, rect, containerRef.current.offsetWidth, containerRef.current.offsetHeight),
+        rois: currentPageRois, initialIds: e.ctrlKey || e.metaKey ? [...selectedIds] : [] };
+      selectionGestureRef.current = gesture;
+      setSelectionGesture(gesture);
+      if (!e.ctrlKey && !e.metaKey) selectIds([]);
+      return;
+    }
+
     if (readOnly || activeTool === 'pan' || e.button === 1) {
+      if (e.button === 1) e.preventDefault();
+      if (e.button === 0 && !(e.target as HTMLElement).closest('.rnd-box-item')) selectIds([]);
       setIsPanning(true);
       setPanStart({
         scrollLeft: viewportRef.current.scrollLeft,
@@ -932,6 +1049,18 @@ export default function WorkspaceCustomEditor({
           >
             <Hand size={20} />
           </button>
+          {!readOnly && (
+            <button
+              type="button"
+              onClick={() => { cancelSelectionGesture(); setActiveTool('select'); selectIds([]); setActiveDrawPoints([]); }}
+              className={`p-2.5 rounded-lg transition-all ${activeTool === 'select' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-100 hover:text-indigo-600'}`}
+              title="เลือกหลายกรอบ: ลากคลุมพื้นที่ หรือ Ctrl + คลิก (Esc ยกเลิก)"
+              aria-label="เลือก ROI หลายกรอบ"
+              aria-pressed={activeTool === 'select'}
+            >
+              <MousePointer2 size={20} />
+            </button>
+          )}
           {!readOnly && !hideDrawTools && (
             <>
               <button 
@@ -1059,11 +1188,14 @@ export default function WorkspaceCustomEditor({
           )}
           <div 
             ref={viewportRef} 
+            onMouseDown={(event) => {
+              if (event.button === 0 && event.target === event.currentTarget) selectIds([]);
+            }}
             className="min-h-0 min-w-0 flex-1 bg-[#edf2f7] border border-slate-200 rounded-xl overflow-auto flex items-start justify-start p-6 shadow-inner relative"
           >
             <div 
               ref={containerRef}
-              className={`relative inline-block ${centerCanvas ? "mx-auto" : ""} ${selectedId ? 'cursor-default' : (activeTool === 'box' || activeTool === 'polygon') ? 'cursor-crosshair select-none' : isPanning ? 'cursor-grabbing' : 'cursor-grab'}`} 
+              className={`relative inline-block select-none ${centerCanvas ? "mx-auto" : ""} ${activeTool === 'select' ? 'cursor-default' : selectedId ? 'cursor-default' : (activeTool === 'box' || activeTool === 'polygon') ? 'cursor-crosshair' : isPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
               style={{ 
                 transform: `scale(${currentZoom})`, 
                 transformOrigin: "top left",
@@ -1097,6 +1229,10 @@ export default function WorkspaceCustomEditor({
                   style={{ left: dragBox.x, top: dragBox.y, width: dragBox.w, height: dragBox.h }} 
                 />
               )}
+              {marquee && (
+                <div className="absolute z-50 pointer-events-none border border-sky-500 bg-sky-400/15"
+                  style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />
+              )}
 
               {/* Temporary drawing overlay for freeform polygon */}
               {activeTool === 'polygon' && activeDrawPoints.length > 0 && (
@@ -1125,26 +1261,51 @@ export default function WorkspaceCustomEditor({
               <div className="absolute inset-0 top-0 left-0 w-full h-full pointer-events-auto">
                 {currentPageRois.map((roi, index) => {
                   const hasPoints = roi.points && roi.points.length > 0;
-                  const selected = selectedId === roi.id;
+                  const selected = selectedIds.has(roi.id);
+                  const moving = selectionGesture?.kind === 'move' && selectionGesture.rois.some(item => item.id === roi.id);
                   const customRoiClassName = getRoiClassName?.(roi, selected, activeTool);
                   const roiBadges = getRoiBadges?.(roi) || [];
                   return (
                     <Rnd
                       key={`${roi.type || "roi"}-${roi.pageIndex ?? currentIndex}-${roi.id}-${index}`}
                       size={{ width: roi.width, height: roi.height }}
-                      position={{ x: roi.x, y: roi.y }}
-                      onMouseDown={(e) => { e.stopPropagation(); selectRoiFromCanvas(roi.id); }}
+                      position={{ x: roi.x + (moving ? groupDelta.x : 0), y: roi.y + (moving ? groupDelta.y : 0) }}
+                      onMouseDown={(e) => {
+                        if (e.button !== 0) return;
+                        e.stopPropagation();
+                        const resizing = (e.target as HTMLElement).closest('.roi-resize-handle');
+                        if (!readOnly && (e.ctrlKey || e.metaKey) && !resizing) {
+                          selectIds(selected ? [...selectedIds].filter(id => id !== roi.id) : [...selectedIds, roi.id]);
+                          return;
+                        }
+                        if (!readOnly && selected && selectedIds.size > 1 && !resizing && containerRef.current) {
+                          e.preventDefault();
+                          const rect = containerRef.current.getBoundingClientRect();
+                          const gesture: SelectionGesture = { kind: 'move', start: canvasPoint(e.clientX, e.clientY, rect, containerRef.current.offsetWidth, containerRef.current.offsetHeight),
+                            rois: currentPageRois.filter(item => selectedIds.has(item.id)), initialIds: [...selectedIds] };
+                          groupDeltaRef.current = { x: 0, y: 0 };
+                          selectionGestureRef.current = gesture;
+                          setSelectionGesture(gesture);
+                          return;
+                        }
+                        if (resizing && selected) setSelectedId(roi.id);
+                        else selectRoiFromCanvas(roi.id);
+                      }}
+                      onDragStart={(event) => {
+                        if (event.ctrlKey || event.metaKey || selectionGestureRef.current?.kind === 'move') return false;
+                      }}
                       onDragStop={(e, d) => {
-                        if (!readOnly) updateROI(roi.id, { x: d.x, y: d.y });
+                        if (!readOnly && !selectionGestureRef.current) updateROI(roi.id, { x: d.x, y: d.y });
                       }}
                       onResizeStop={(e, dir, ref, delta, pos) => {
                         if (!readOnly) updateROI(roi.id, { width: parseInt(ref.style.width), height: parseInt(ref.style.height), ...pos });
                       }}
                       bounds="parent"
                       scale={currentZoom}
-                      className={customRoiClassName || `rnd-box-item border transition-shadow ${
-                        activeTool !== 'pan' && selectedId !== roi.id ? 'pointer-events-none' : 'pointer-events-auto'
-                      } ${hasPoints ? 'border-transparent bg-transparent shadow-none' : (selectedId === roi.id ? "border-indigo-600 bg-indigo-600/10 shadow-md z-30 ring-2 ring-indigo-500/20" : "border-indigo-400/80 bg-indigo-50/5 hover:border-indigo-500 hover:bg-indigo-50/10 z-20")}`}
+                      className={`${customRoiClassName || `rnd-box-item border transition-shadow ${
+                        activeTool !== 'pan' && activeTool !== 'select' && !selected ? 'pointer-events-none' : 'pointer-events-auto'
+                      } ${hasPoints ? 'border-transparent bg-transparent shadow-none' : (selected ? "border-indigo-600 bg-indigo-600/10 shadow-md z-30 ring-2 ring-indigo-500/20" : "border-indigo-400/80 bg-indigo-50/5 hover:border-indigo-500 hover:bg-indigo-50/10 z-20")}`} ${selected ? 'outline outline-2 outline-sky-500' : ''}`}
+                      resizeHandleClasses={{ topLeft: 'roi-resize-handle', topRight: 'roi-resize-handle', bottomLeft: 'roi-resize-handle', bottomRight: 'roi-resize-handle', top: 'roi-resize-handle', bottom: 'roi-resize-handle', left: 'roi-resize-handle', right: 'roi-resize-handle' }}
                       resizeHandleStyles={!readOnly && selectedId === roi.id ? {
                         topLeft: cornerHandleStyle,
                         topRight: cornerHandleStyle,
@@ -1156,18 +1317,18 @@ export default function WorkspaceCustomEditor({
                         right: rightHandleStyle,
                       } : {}}
                       enableResizing={!readOnly && selectedId === roi.id}
-                      disableDragging={readOnly}
+                      disableDragging={readOnly || (selected && selectedIds.size > 1)}
                     >
-                      <div className={`w-full h-full relative ${selectedId === roi.id || activeTool === 'pan' ? 'pointer-events-auto' : 'pointer-events-none'}`}>
+                      <div className={`w-full h-full relative ${selected || activeTool === 'pan' || activeTool === 'select' ? 'pointer-events-auto' : 'pointer-events-none'}`}>
                         {/* SVG Polygon overlay for Quad/Polygon ROIs */}
                         {roi.points && roi.points.length > 0 && (
                           <svg className="absolute inset-0 w-full h-full pointer-events-none z-10 overflow-visible">
                             <polygon
                               points={roi.points.map(p => `${p.x - roi.x},${p.y - roi.y}`).join(' ')}
-                              fill={selectedId === roi.id ? "rgba(79, 70, 229, 0.18)" : "rgba(99, 102, 241, 0.08)"}
-                              stroke={selectedId === roi.id ? "#4f46e5" : "#818cf8"}
+                              fill={selected ? "rgba(79, 70, 229, 0.18)" : "rgba(99, 102, 241, 0.08)"}
+                              stroke={selected ? "#4f46e5" : "#818cf8"}
                               strokeWidth="2"
-                              strokeDasharray={selectedId === roi.id ? "0" : "3,3"}
+                              strokeDasharray={selected ? "0" : "3,3"}
                             />
                           </svg>
                         )}
@@ -1189,8 +1350,7 @@ export default function WorkspaceCustomEditor({
 
                         {showLabels && (
                           <span 
-                            onMouseDown={(e) => { e.stopPropagation(); selectRoiFromCanvas(roi.id); }}
-                            className={getRoiLabelClassName?.(roi, selected) || `absolute -top-5 left-0 px-1.5 py-0.5 text-[9px] font-sans rounded shadow border flex items-center gap-1.5 pointer-events-auto cursor-pointer ${selectedId === roi.id ? "bg-indigo-600 border-indigo-600 text-white font-extrabold" : "bg-white border-indigo-200 text-indigo-700 font-bold"}`}
+                            className={getRoiLabelClassName?.(roi, selected) || `absolute -top-5 left-0 px-1.5 py-0.5 text-[9px] font-sans rounded shadow border flex items-center gap-1.5 pointer-events-auto cursor-pointer ${selected ? "bg-indigo-600 border-indigo-600 text-white font-extrabold" : "bg-white border-indigo-200 text-indigo-700 font-bold"}`}
                           >
                             {renderTypeIcon(roi.type, 10)}
                             <span>{getRoiLabelText?.(roi) || roi.fieldName || "(Unnamed)"}</span>
@@ -1198,7 +1358,7 @@ export default function WorkspaceCustomEditor({
                         )}
 
                       {/* Floating Menu Popover */}
-                      {!readOnly && !lockRoiMetadata && selectedId === roi.id && (
+                      {!readOnly && !lockRoiMetadata && selectedId === roi.id && selectedIds.size <= 1 && (
                         <div 
                           className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-60 bg-white border border-slate-200 rounded-xl shadow-xl p-3 z-50 text-slate-800 flex flex-col gap-2 pointer-events-auto"
                           onMouseDown={(e) => e.stopPropagation()}
