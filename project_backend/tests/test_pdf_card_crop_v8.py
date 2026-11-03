@@ -57,10 +57,3 @@ class PdfCardCropV8Tests(unittest.TestCase):
         self.assertEqual(result["crop_box"], [x, y, x+w, y+h])
         self.assertTrue(result["passed"])
         self.assertGreater(write.call_args.args[1].size, 0)
-
-    def test_detection_service_propagates_page_count_to_post_match(self):
-        path = Path(__file__).resolve().parents[1] / "app/processing/detection_service.py"
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
-                 and isinstance(node.func, ast.Attribute) and node.func.attr == "detect_pdf_subdocument_boundary"]
-        self.assertTrue(any(any(kw.arg == "total_pages" for kw in call.keywords) for call in calls))

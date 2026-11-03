@@ -192,32 +192,26 @@ class SiglipV23AuditTests(unittest.TestCase):
             self.assertEqual([item["value"] for item in payload["categories"]], [*SINGLE, *NEGATIVE])
 
     def test_real_backend_mapping_summary_and_standard_final_gate(self):
-        source = Path(__file__).parents[1] / "app/business/services.py"
-        tree = ast.parse(source.read_text(encoding="utf-8-sig"))
-        methods = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and
-                   node.name in ("_image_match_from_siglip_result", "_verification_summary", "verify_template_strict")]
-        decision_class = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "DecisionService")
-        namespace = {"VERIFICATION_STRATEGY_STANDARD": "standard", "time": time, "logger": logging.getLogger(__name__)}
-        exec(compile(ast.Module(body=[*methods, decision_class], type_ignores=[]), str(source), "exec",
-                     flags=__future__.annotations.compiler_flag), namespace)
+        from app.business.services import VerificationService
+        from app.processing import detection_service
+        verification_service = VerificationService()
         for scores, expected in ((raw(portrait=5), True), (portrait_case(-8.0), False)):
             result = self.verify(scores)
-            mapped = namespace["_image_match_from_siglip_result"](None, result, None)
+            mapped = verification_service._image_match_from_siglip_result(result, None)
             self.assertIsNone(mapped.get("siglip_decision"))
             self.assertNotIn("negative_scores", mapped)
             self.assertEqual(mapped["field_score"], 1 if expected else 0)
             checked = {**mapped, "anchor_type": "image", "required": True, "weight": 2}
-            service = SimpleNamespace(_image_anchor_check=lambda *args, **kwargs: checked)
-            service._verification_summary = MethodType(namespace["_verification_summary"], service)
-            summary = namespace["verify_template_strict"](service, "template", {1: "unused"}, [{"data_type": "image"}])
+            summary = verification_service._verification_summary("template", [checked])
             self.assertEqual(summary["passed"], expected)
-            self.assertEqual(summary["image_anchor_score"], 1 if expected else 0)
-            final = namespace["DecisionService"]().decide_candidate_strict(0.9, summary, 0.75)
-            self.assertEqual(final["final_passed"], expected)
-            if not expected:
-                self.assertEqual(final["decision_path"], "standard_image_anchor_failed")
-            else:
-                self.assertFalse(namespace["DecisionService"]().decide_candidate_strict(0.1, summary, 0.75)["final_passed"])
+            for mode in ("standard", "strict"):
+                final = detection_service._candidate_from_anchor_strategy(
+                    {"template_id": "template", "final_confidence_threshold": .75},
+                    summary, [{"data_type": "image"}], {}, mode, {},
+                )
+                self.assertEqual(final["final_passed"], expected)
+                self.assertEqual(final["layout_score"], 0)
+
 
 
 if __name__ == "__main__":

@@ -630,7 +630,7 @@ interface ApiTemplate {
   ignore_regions?: ApiIgnoreRegion[];
 }
 
-interface ApiEmbeddingJob {
+interface ApiPublishJob {
   id: string;
   template_id: string;
   status: string;
@@ -642,12 +642,12 @@ interface ApiEmbeddingJob {
   metadata_json?: string | null;
 }
 
-export type EmbeddingJobStatus = "queued" | "running" | "completed" | "failed";
+export type PublishJobStatus = "queued" | "running" | "completed" | "failed";
 
-export interface EmbeddingJob {
+export interface PublishJob {
   id: string;
   templateId: string;
-  status: EmbeddingJobStatus;
+  status: PublishJobStatus;
   requestedAt?: string;
   startedAt?: string | null;
   completedAt?: string | null;
@@ -869,60 +869,12 @@ export interface PrepublishCandidate {
 
 export interface PrepublishSimulationResult {
   template: Template;
-  draftSummary: {
-    templateName?: string | null;
-    templateId: string;
-    status: string;
-    pageCount: number;
-    extractionFieldCount: number;
-    textAnchorCount: number;
-    imageAnchorCount: number;
-    similarityThreshold?: number | null;
-    finalConfidenceThreshold?: number | null;
-    layoutWeight?: number | null;
-    textAnchorWeight?: number | null;
-    imageAnchorWeight?: number | null;
-  };
-  temporaryEmbedding: {
-    status: string;
-    engine: string;
-    version: string;
-    modelName: string;
-    embeddingDimension: number;
-    inputCount: number;
-    generatedAt?: string;
-    persisted: boolean;
-    note?: string;
-    layoutSignaturePages?: PrepublishLayoutSignaturePage[];
-  };
-  layoutSignaturePages?: PrepublishLayoutSignaturePage[];
-  candidates: PrepublishCandidate[];
-  verificationAnchorResults: Record<string, unknown>[];
-  separationAnalysis: {
-    top1Score: number;
-    top2Score?: number | null;
-    status: "ready_to_publish" | "needs_review" | "conflict_detected" | "not_ready" | string;
-    simulationPassed: boolean;
-    conflictTemplates: PrepublishCandidate[];
-    message?: string;
-  };
-}
-
-export interface PrepublishLayoutSignaturePage {
-  templatePageId?: string | null;
-  templateLayoutReferenceId?: string | null;
-  pageNumber: number;
-  status: string;
-  engine?: string | null;
-  version?: string | null;
-  modelName?: string | null;
-  labelCount?: number | null;
-  imageUrl?: string | null;
-  imageSource?: string | null;
-  isCanonical?: boolean;
-  referenceRole?: "main" | "reference_only" | string | null;
-  persisted?: boolean;
-  reason?: string | null;
+  passed: boolean;
+  checkedAt?: string;
+  issues: string[];
+  readinessPages: { templatePageId: string; pageNumber: number; status: string; reason: string | null }[];
+  anchorReadinessResults: { fieldId: string; fieldName: string; anchorType: string; pageNumber: number; passed: boolean; failureReason: string | null }[];
+  draftSummary: { status: string; pageCount: number; extractionFieldCount: number; textAnchorCount: number; imageAnchorCount: number };
 }
 
 export interface PrepublishDetectionTestResult {
@@ -1147,7 +1099,7 @@ const normalizeExtractionMethod = (value?: string | null) => {
   return "ocr_text";
 };
 
-const mapEmbeddingJobStatus = (status: string): EmbeddingJobStatus => {
+const mapPublishJobStatus = (status: string): PublishJobStatus => {
   if (status === "running" || status === "completed" || status === "failed") return status;
   return "queued";
 };
@@ -1237,12 +1189,12 @@ function mapApiTemplate(template: Partial<ApiTemplate> | null | undefined, fallb
   };
 }
 
-const mapApiEmbeddingJob = (job?: ApiEmbeddingJob | null): EmbeddingJob | null => {
+const mapApiPublishJob = (job?: ApiPublishJob | null): PublishJob | null => {
   if (!job) return null;
   return {
     id: job.id,
     templateId: job.template_id,
-    status: mapEmbeddingJobStatus(job.status),
+    status: mapPublishJobStatus(job.status),
     requestedAt: job.requested_at || undefined,
     startedAt: job.started_at || null,
     completedAt: job.completed_at || null,
@@ -2351,22 +2303,22 @@ export const deleteOcrModel = async (kind: OcrModelKind, modelId: string): Promi
   return cloneOcrModelSettings(settings);
 };
 
-const embeddingJobResponseError = async (response: Response, fallback: string) => {
+const publishJobResponseError = async (response: Response, fallback: string) => {
   const json = await response.json().catch(() => null);
   const detail = json?.detail || json?.error?.message || json?.error || fallback;
   return new Error(typeof detail === "string" ? detail : fallback);
 };
 
-const mapEmbeddingJobMutationResponse = async (response: Response) => {
+const mapPublishJobMutationResponse = async (response: Response) => {
   if (!response.ok) {
-    throw await embeddingJobResponseError(response, `Embedding job request failed with ${response.status}`);
+    throw await publishJobResponseError(response, `Publish job request failed with ${response.status}`);
   }
 
   const json = await response.json();
-  const data = json?.data as { job?: ApiEmbeddingJob | null; template?: ApiTemplate } | undefined;
-  const job = mapApiEmbeddingJob(data?.job);
+  const data = json?.data as { job?: ApiPublishJob | null; template?: ApiTemplate } | undefined;
+  const job = mapApiPublishJob(data?.job);
   if (!job || !data?.template) {
-    throw new Error("Embedding job mutation did not return job and template data");
+    throw new Error("Publish job mutation did not return job and template data");
   }
 
   return {
@@ -2375,46 +2327,46 @@ const mapEmbeddingJobMutationResponse = async (response: Response) => {
   };
 };
 
-export const createEmbeddingJob = async (templateId: string) =>
-  mapEmbeddingJobMutationResponse(
-    await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/templates/${templateId}/embedding-jobs`, {
+export const createPublishJob = async (templateId: string) =>
+  mapPublishJobMutationResponse(
+    await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/templates/${templateId}/publish-jobs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
     })
   );
 
-export const fetchLatestEmbeddingJob = async (templateId: string) => {
-  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/templates/${templateId}/embedding-jobs/latest`, {
+export const fetchLatestPublishJob = async (templateId: string) => {
+  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/templates/${templateId}/publish-jobs/latest`, {
     cache: "no-store",
   });
   if (!response.ok) {
-    throw await embeddingJobResponseError(response, `Embedding job load failed with ${response.status}`);
+    throw await publishJobResponseError(response, `Publish job load failed with ${response.status}`);
   }
 
   const json = await response.json();
-  const job = json?.data?.job as ApiEmbeddingJob | null | undefined;
-  return mapApiEmbeddingJob(job);
+  const job = json?.data?.job as ApiPublishJob | null | undefined;
+  return mapApiPublishJob(job);
 };
 
-export const completeEmbeddingJobDev = async (jobId: string) =>
-  mapEmbeddingJobMutationResponse(
-    await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/embedding-jobs/${jobId}/complete-dev`, {
+export const completePublishJobDev = async (jobId: string) =>
+  mapPublishJobMutationResponse(
+    await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/publish-jobs/${jobId}/complete-dev`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
     })
   );
 
-export const runEmbeddingJobDev = async (jobId: string) =>
-  mapEmbeddingJobMutationResponse(
-    await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/embedding-jobs/${jobId}/run-dev`, {
+export const runPublishJobDev = async (jobId: string) =>
+  mapPublishJobMutationResponse(
+    await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/publish-jobs/${jobId}/run-dev`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
     })
   );
 
-export const failEmbeddingJobDev = async (jobId: string) =>
-  mapEmbeddingJobMutationResponse(
-    await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/embedding-jobs/${jobId}/fail-dev`, {
+export const failPublishJobDev = async (jobId: string) =>
+  mapPublishJobMutationResponse(
+    await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/publish-jobs/${jobId}/fail-dev`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
     })
@@ -2656,29 +2608,6 @@ function mapPrepublishCandidate(candidate: Record<string, unknown>): PrepublishC
   };
 }
 
-function mapPrepublishLayoutSignaturePage(page: Record<string, unknown>): PrepublishLayoutSignaturePage {
-  return {
-    templatePageId: (page.template_page_id as string | null | undefined) ?? null,
-    templateLayoutReferenceId: (page.template_layout_reference_id as string | null | undefined) ?? null,
-    pageNumber: Number(page.page_number || 0),
-    status: String(page.status || "pending"),
-    engine: (page.engine as string | null | undefined) ?? null,
-    version: (page.version as string | null | undefined) ?? null,
-    modelName: (page.model_name as string | null | undefined) ?? (page.model as string | null | undefined) ?? null,
-    labelCount: typeof page.label_count === "number" ? page.label_count : typeof page.region_count === "number" ? page.region_count : null,
-    imageUrl:
-      (page.image_url as string | null | undefined) ??
-      (page.normalized_image_url as string | null | undefined) ??
-      (page.sample_image_url as string | null | undefined) ??
-      null,
-    imageSource: (page.image_source as string | null | undefined) ?? null,
-    isCanonical: Boolean(page.is_canonical),
-    referenceRole: (page.reference_role as string | null | undefined) ?? null,
-    persisted: Boolean(page.persisted),
-    reason: (page.reason as string | null | undefined) ?? null,
-  };
-}
-
 export const runPrepublishSimulation = async (templateId: string): Promise<PrepublishSimulationResult> => {
   const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/templates/${templateId}/prepublish-simulation`, {
     method: "POST",
@@ -2691,98 +2620,35 @@ export const runPrepublishSimulation = async (templateId: string): Promise<Prepu
   }
 
   const data = asRecord(json?.data);
-  // Simulation rewrites page signatures; discard pre-simulation bundles.
+  // Refresh stored template data together with its readiness result.
   // Drain existing loads first so they cannot repopulate the cache afterwards.
   await Promise.allSettled([templateBundlePromises.get(templateId), templateBundlePromises.get(`user:${templateId}`)]);
   templateBundleCache.delete(templateId);
   templateBundleCache.delete(`user:${templateId}`);
   debugPrepublishPagesAccess("runPrepublishSimulation:data", data);
-  const summary = asRecord(data.draft_summary);
-  const temp = asRecord(data.temporary_embedding);
-  const separation = asRecord(data.separation_analysis);
-  const layoutSignaturePages = Array.isArray(data.layout_signature_pages)
-    ? asRecordArray(data.layout_signature_pages).map(mapPrepublishLayoutSignaturePage)
-    : [];
-  const candidates = Array.isArray(data.candidates)
-    ? asRecordArray(data.candidates).map(mapPrepublishCandidate)
-    : [];
-  const conflictTemplates = Array.isArray(separation.conflict_templates)
-    ? asRecordArray(separation.conflict_templates).map(mapPrepublishCandidate)
-    : [];
-  const rootPassed = typeof data.passed === "boolean" ? data.passed : null;
-  const separationPassed = typeof separation.simulation_passed === "boolean" ? separation.simulation_passed : null;
-
-  const responseTemplate = data.template && typeof data.template === "object" && !Array.isArray(data.template)
-    ? (data.template as ApiTemplate)
-    : undefined;
-  let template = mapApiTemplate(responseTemplate, templateId);
-  if (!responseTemplate) {
-    try {
-      template = (await fetchTemplateBundle(templateId)).template;
-    } catch {
-      template = mapApiTemplate(
-        {
-          id: templateId,
-          name: String(summary.template_name || data.template_name || templateId),
-          status: String(summary.status || data.status || "draft"),
-          version: 1,
-          page_count: Number(summary.page_count || 0),
-          similarity_threshold: typeof summary.similarity_threshold === "number" ? summary.similarity_threshold : 0.5,
-          final_confidence_threshold: typeof summary.final_confidence_threshold === "number" ? summary.final_confidence_threshold : 0.75,
-          layout_weight: typeof summary.layout_weight === "number" ? summary.layout_weight : 0.5,
-          text_anchor_weight: typeof summary.text_anchor_weight === "number" ? summary.text_anchor_weight : 0.35,
-          image_anchor_weight: typeof summary.image_anchor_weight === "number" ? summary.image_anchor_weight : 0.15,
-        },
-        templateId
-      );
-    }
-  }
-
+  const bundle = await fetchTemplateBundle(templateId);
   return {
-    template,
+    template: bundle.template,
+    passed: data.passed === true,
+    checkedAt: typeof data.timestamp === "string" ? data.timestamp : undefined,
+    issues: Array.isArray(data.issues) ? data.issues.map(String) : [],
+    readinessPages: asRecordArray(data.readiness_pages).map(page => ({
+      templatePageId: String(page.template_page_id || ""), pageNumber: Number(page.page_number || 1),
+      status: String(page.status || "failed"), reason: typeof page.reason === "string" ? page.reason : null,
+    })),
+    anchorReadinessResults: asRecordArray(data.anchor_readiness_results).map(anchor => ({
+      fieldId: String(anchor.field_id || ""), fieldName: String(anchor.field_name || ""),
+      anchorType: String(anchor.anchor_type || ""), pageNumber: Number(anchor.page_number || 1),
+      passed: anchor.passed === true, failureReason: typeof anchor.failure_reason === "string" ? anchor.failure_reason : null,
+    })),
     draftSummary: {
-      templateName: (summary.template_name as string | null | undefined) ?? null,
-      templateId: String(summary.template_id || templateId),
-      status: String(summary.status || "draft"),
-      pageCount: Number(summary.page_count || 0),
-      extractionFieldCount: Number(summary.extraction_field_count || 0),
-      textAnchorCount: Number(summary.text_anchor_count || 0),
-      imageAnchorCount: Number(summary.image_anchor_count || 0),
-      similarityThreshold: typeof summary.similarity_threshold === "number" ? summary.similarity_threshold : null,
-      finalConfidenceThreshold: typeof summary.final_confidence_threshold === "number" ? summary.final_confidence_threshold : null,
-      layoutWeight: typeof summary.layout_weight === "number" ? summary.layout_weight : null,
-      textAnchorWeight: typeof summary.text_anchor_weight === "number" ? summary.text_anchor_weight : null,
-      imageAnchorWeight: typeof summary.image_anchor_weight === "number" ? summary.image_anchor_weight : null,
-    },
-    temporaryEmbedding: {
-      status: String(temp.status || "not_generated"),
-      engine: String(temp.engine || "stub"),
-      version: String(temp.version || ""),
-      modelName: String(temp.model_name || ""),
-      embeddingDimension: Number(temp.embedding_dimension || 0),
-      inputCount: Number(temp.input_count || 0),
-      generatedAt: (temp.generated_at as string | undefined) || (data.timestamp as string | undefined) || undefined,
-      persisted: Boolean(temp.persisted),
-      note: (temp.note as string | undefined) || undefined,
-      layoutSignaturePages: Array.isArray(temp.layout_signature_pages)
-        ? asRecordArray(temp.layout_signature_pages).map(mapPrepublishLayoutSignaturePage)
-        : layoutSignaturePages,
-    },
-    layoutSignaturePages,
-    candidates,
-    verificationAnchorResults: Array.isArray(data.verification_anchor_results)
-      ? asRecordArray(data.verification_anchor_results)
-      : [],
-    separationAnalysis: {
-      top1Score: Number(separation.top1_score || 0),
-      top2Score: typeof separation.top2_score === "number" ? separation.top2_score : null,
-      status: String(separation.status || data.status || (rootPassed ? "ready_to_publish" : "not_ready")),
-      simulationPassed: separationPassed ?? Boolean(rootPassed),
-      conflictTemplates,
-      message: (separation.message as string | undefined) || undefined,
+      status: bundle.template.status, pageCount: Number(data.page_count || 0),
+      extractionFieldCount: bundle.fields.filter(field => !field.useForVerification).length,
+      textAnchorCount: Number(data.text_anchor_count || 0), imageAnchorCount: Number(data.image_anchor_count || 0),
     },
   };
 };
+
 
 function mapPrepublishDetectionTestResult(data: Record<string, unknown>, templateId: string): PrepublishDetectionTestResult {
   const candidates = Array.isArray(data.candidates)
@@ -2890,7 +2756,7 @@ export const confirmTemplatePublish = async (templateId: string) => {
     method: "POST",
     headers: { "Content-Type": "application/json" },
   });
-  const result = await mapEmbeddingJobMutationResponse(response);
+  const result = await mapPublishJobMutationResponse(response);
   invalidateAdminListCache("templates");
   return result;
 };

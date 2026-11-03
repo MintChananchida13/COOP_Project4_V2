@@ -17,6 +17,32 @@ DETECTION_COORDINATE_DEBUG=false
 
 The backend calls model inference through Gateway only.
 
+## Template verification and publishing
+
+Only `standard` and `strict` are supported. Both use Text/Image Anchors:
+
+- `standard` runs Text OCR and Image verification concurrently, evaluates all
+  templates, and selects the highest-scoring passing template.
+- `strict` finishes Text checks before Image checks for each template. A failed
+  Text check skips that template's Image verification.
+
+`POST /admin/templates/{id}/prepublish-simulation` checks stored page images,
+anchor ROIs, expected text, and enabled image categories. It returns `passed`,
+`readiness_pages`, `anchor_readiness_results`, and `issues`. This is a
+configuration check; testing a new document still performs model inference.
+
+Publish jobs use `/admin/templates/{id}/publish-jobs` and
+`/admin/publish-jobs/{job_id}/run-dev` or `complete-dev`. The old
+`embedding-jobs` paths remain deprecated aliases. Both completion paths recheck
+stored anchor readiness before activation and preserve Maintenance deferral.
+Publishing no longer generates or requires Layout Signatures. The old
+`generate-layout-embedding` endpoints have been removed.
+
+Layout analysis remains available for Auto ROI and flexible OCR. A live model
+test requires a configured `DATABASE_URL`, a reachable authenticated Gateway,
+a stored template with anchors, and a representative test document. Automated
+tests use isolated fixtures and do not establish live model accuracy.
+
 ## PostgreSQL
 
 ```powershell

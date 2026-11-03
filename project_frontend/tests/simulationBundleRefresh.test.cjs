@@ -20,10 +20,10 @@ test('simulation drains pre-existing loads and discards both stale bundles befor
   const context = vm.createContext({
     templateBundleCache:cache, templateBundlePromises:new Map([['tpl',oldLoad]]),
     ADMIN_API_BASE_URL:'http://backend',
-    fetchWithAuth:async()=>({ok:true,json:async()=>({data:{passed:true,layout_signature_pages:[]}})}),
+    fetchWithAuth:async()=>({ok:true,json:async()=>({data:{passed:true,readiness_pages:[],anchor_readiness_results:[]}})}),
     asRecord:v=>v||{}, asRecordArray:v=>v||[], debugPrepublishPagesAccess:()=>{},
     mapApiTemplate:()=>({id:'tpl'}), mapPrepublishLayoutSignaturePage:v=>v,mapPrepublishCandidate:v=>v,
-    fetchTemplateBundle:async()=>{assert.equal(cache.has('tpl'),false); assert.equal(cache.has('user:tpl'),false); refreshes++; return {template:{id:'tpl'}};},
+    fetchTemplateBundle:async()=>{assert.equal(cache.has('tpl'),false); assert.equal(cache.has('user:tpl'),false); refreshes++; return {template:{id:'tpl'},fields:[]};},
   });
   vm.runInContext(code,context);
   const running=context.run('tpl');
@@ -32,6 +32,6 @@ test('simulation drains pre-existing loads and discards both stale bundles befor
   release();
   const result=await running;
   assert.equal(refreshes,1);
-  assert.equal(result.separationAnalysis.simulationPassed,true);
+  assert.equal(result.passed,true);
   assert.equal(cache.has('unrelated'),true);
 });

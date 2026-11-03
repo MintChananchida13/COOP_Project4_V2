@@ -53,7 +53,7 @@ from app.model_runtime.layout_analysis_service import clear_layout_analysis_cach
 from app.core.model_runtime_client import configured_runtimes
 from app.business.services import (
     AdminTemplateService,
-    EmbeddingService,
+    TemplatePublishService,
     GlobalSettingsService,
     NotificationService,
     ProcessingLogService,
@@ -71,7 +71,7 @@ logger.setLevel(logging.INFO)
 
 template_requests = TemplateRequestService()
 admin_templates = AdminTemplateService()
-embeddings = EmbeddingService()
+template_publisher = TemplatePublishService()
 storage_maintenance = StorageMaintenanceService()
 image_categories = ImageVerificationCategoryService()
 global_settings = GlobalSettingsService()
@@ -963,42 +963,34 @@ def delete_ignore_region(
     return ok(admin_templates.delete_ignore_region(template_id, region_id))
 
 
-@router.post("/admin/templates/{template_id}/generate-layout-embedding", response_model=ApiResponse)
-def generate_template_embedding(template_id: str) -> ApiResponse:
-    return ok(embeddings.generate_for_template(template_id))
+@router.post("/admin/templates/{template_id}/publish-jobs", response_model=ApiResponse)
+@router.post("/admin/templates/{template_id}/embedding-jobs", response_model=ApiResponse, deprecated=True)
+def create_publish_job(template_id: str) -> ApiResponse:
+    return ok(template_publisher.create_publish_job(template_id))
 
 
-@router.post("/admin/templates/{template_id}/embedding-jobs", response_model=ApiResponse)
-def create_embedding_job(template_id: str) -> ApiResponse:
-    return ok(embeddings.create_embedding_job(template_id))
+@router.get("/admin/templates/{template_id}/publish-jobs/latest", response_model=ApiResponse)
+@router.get("/admin/templates/{template_id}/embedding-jobs/latest", response_model=ApiResponse, deprecated=True)
+def get_latest_publish_job(template_id: str) -> ApiResponse:
+    return ok(template_publisher.latest_publish_job(template_id))
 
 
-@router.get("/admin/templates/{template_id}/embedding-jobs/latest", response_model=ApiResponse)
-def get_latest_embedding_job(template_id: str) -> ApiResponse:
-    return ok(embeddings.latest_embedding_job(template_id))
+@router.post("/admin/publish-jobs/{job_id}/complete-dev", response_model=ApiResponse)
+@router.post("/admin/embedding-jobs/{job_id}/complete-dev", response_model=ApiResponse, deprecated=True)
+def complete_publish_job_dev(job_id: str) -> ApiResponse:
+    return ok(template_publisher.complete_job_dev(job_id))
 
 
-@router.post("/admin/embedding-jobs/{job_id}/complete-dev", response_model=ApiResponse)
-def complete_embedding_job_dev(job_id: str) -> ApiResponse:
-    return ok(embeddings.complete_job_dev(job_id))
+@router.post("/admin/publish-jobs/{job_id}/run-dev", response_model=ApiResponse)
+@router.post("/admin/embedding-jobs/{job_id}/run-dev", response_model=ApiResponse, deprecated=True)
+def run_publish_job_dev(job_id: str) -> ApiResponse:
+    return ok(template_publisher.run_job_dev(job_id))
 
 
-@router.post("/admin/embedding-jobs/{job_id}/run-dev", response_model=ApiResponse)
-def run_embedding_job_dev(job_id: str) -> ApiResponse:
-    return ok(embeddings.run_job_dev(job_id))
-
-
-@router.post("/admin/embedding-jobs/{job_id}/fail-dev", response_model=ApiResponse)
-def fail_embedding_job_dev(job_id: str) -> ApiResponse:
-    return ok(embeddings.fail_job_dev(job_id))
-
-
-@router.post("/admin/templates/{template_id}/pages/{page_id}/generate-layout-embedding", response_model=ApiResponse)
-def generate_template_page_embedding(
-    template_id: str,
-    page_id: str,
-) -> ApiResponse:
-    return ok(embeddings.generate_for_template_page(template_id, page_id))
+@router.post("/admin/publish-jobs/{job_id}/fail-dev", response_model=ApiResponse)
+@router.post("/admin/embedding-jobs/{job_id}/fail-dev", response_model=ApiResponse, deprecated=True)
+def fail_publish_job_dev(job_id: str) -> ApiResponse:
+    return ok(template_publisher.fail_job_dev(job_id))
 
 
 @router.post("/admin/templates/{template_id}/test", response_model=ApiResponse)

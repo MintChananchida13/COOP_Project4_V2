@@ -126,7 +126,7 @@ class AnchorModeTests(unittest.TestCase):
             verification_service=SimpleNamespace(verify_template=Mock(return_value=dict(
                 passed=True, score=1, text_anchor_score=1, image_anchor_score=1, checked_fields=[])),
                 DEFAULT_VERIFICATION_THRESHOLD=.75),
-            DecisionService=SimpleNamespace(DEFAULT_FINAL_CONFIDENCE_THRESHOLD=.75),
+            DEFAULT_FINAL_CONFIDENCE_THRESHOLD=.75,
             _auto_roi_region_items=lambda page: {'page_index': page['page_index'], 'regions': [{'id': 'auto'}]},
             _persist_selected_processing_pages=Mock(return_value=[]), _detection_timing_debug=Mock(return_value={}),
             _detection_preview_url=lambda path: path, _runtime_ms=lambda value: value,
@@ -146,7 +146,7 @@ class AnchorModeTests(unittest.TestCase):
 
     def test_score_uses_normalized_text_image_weights_and_ignores_layout(self):
         service = load({'_candidate_from_anchor_strategy'}, dict(
-            DecisionService=SimpleNamespace(DEFAULT_FINAL_CONFIDENCE_THRESHOLD=.75),
+            DEFAULT_FINAL_CONFIDENCE_THRESHOLD=.75,
             _detection_preview_url=lambda path: path, _runtime_ms=lambda value: value, _ms=lambda value: value))
         template = dict(template_id='template', final_confidence_threshold=.5,
                         text_anchor_weight=.6, image_anchor_weight=.4)

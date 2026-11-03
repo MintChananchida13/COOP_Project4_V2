@@ -14,7 +14,6 @@ import {
   PrepublishCandidate,
   PrepublishDetectionProgress,
   PrepublishDetectionTestResult,
-  PrepublishLayoutSignaturePage,
   PrepublishSimulationResult,
   confirmTemplatePublish,
   fetchTemplateBundle,
@@ -686,38 +685,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
     });
   }, [imageAnchors.length, template?.imageAnchorWeight, template?.layoutWeight, template?.textAnchorWeight, textAnchors.length]);
   const effectiveMatchingWeights = matchingWeights;
-  const rawLayoutSignaturePages: PrepublishLayoutSignaturePage[] =
-    simulation?.layoutSignaturePages?.length
-      ? simulation.layoutSignaturePages
-      : simulation?.temporaryEmbedding?.layoutSignaturePages?.length
-        ? simulation.temporaryEmbedding?.layoutSignaturePages || []
-        : safePages.map((page) => ({
-            templatePageId: page.id,
-            templateLayoutReferenceId: null,
-            pageNumber: page.pageNumber,
-            status: simulationAction === "run" ? "running" : "pending",
-            engine: "layout_signature",
-            version: null,
-            modelName: null,
-            labelCount: null,
-            imageUrl: page.normalizedImageUrl || page.sampleImageUrl || samplePage,
-            imageSource: "template_page",
-            isCanonical: true,
-            referenceRole: "main",
-            persisted: false,
-            reason: null,
-          }));
-  const layoutSignaturePages: PrepublishLayoutSignaturePage[] = rawLayoutSignaturePages.map((signaturePage) => {
-    const templatePage = safePages.find(
-      (page) => page.id === signaturePage.templatePageId || page.pageNumber === signaturePage.pageNumber
-    );
-    return {
-      ...signaturePage,
-      imageUrl: signaturePage.imageUrl || templatePage?.normalizedImageUrl || templatePage?.sampleImageUrl || null,
-    };
-  });
-  const generatedLayoutReferenceCount = layoutSignaturePages.filter((page) => String(page.status || "").toLowerCase() === "generated").length;
-  const simulationPassed = Boolean(simulation?.separationAnalysis?.simulationPassed);
+  const simulationPassed = Boolean(simulation?.passed);
   const stepTwoCompleted = Boolean(simulationPassed);
   const detectionTestPassed = Boolean(detectionTest?.passed);
   const publishPrerequisitesMet = Boolean(stepTwoCompleted && detectionTestPassed);
@@ -730,7 +698,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
   ].filter((value) => String(value || "").trim()).join(" - ");
   const validationSteps = [
     { step: 1, label: "ตรวจสอบ ROI และ OCR", enabled: true, done: ocrPreviewPassed },
-    { step: 2, label: "สร้างข้อมูลอ้างอิง Template", enabled: stepOneConfirmed, done: stepTwoCompleted },
+    { step: 2, label: "ตรวจความพร้อม Anchors", enabled: stepOneConfirmed, done: stepTwoCompleted },
     { step: 3, label: "ทดสอบเอกสารใหม่", enabled: stepTwoCompleted, done: Boolean(detectionTest) },
     { step: 4, label: "ตรวจสอบก่อนเผยแพร่", enabled: Boolean(detectionTest), done: overallReady },
   ];
@@ -832,7 +800,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
       const refreshedBundle = await fetchTemplateBundle(templateId);
       applyTemplateBundle(refreshedBundle, "post-simulation-transition");
       setSimulation({ ...result, template: refreshedBundle.template });
-      setStatusMessage("Template references prepared. Test the selected template with Text/Image Anchors before publishing.");
+      setStatusMessage("Anchor readiness checked. Review the result before testing a new document.");
     } catch (error) {
       console.warn("Pre-publish simulation failed.", error);
       setSimulationError(error instanceof Error ? error.message : "Pre-publish simulation failed.");
@@ -1336,115 +1304,38 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
       )}
 
       {validationStep === 2 && (
-      <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <DraftSectionHeader
-            title="สร้างข้อมูลอ้างอิง Template"
-            subtitle="เตรียมข้อมูลอ้างอิงสำหรับฝั่ง user ตอน Publish การทดสอบ admin ใช้ Text/Image Anchors ของ Template ที่เลือก"
-          />
-          <span className={`rounded-full px-3 py-1 text-[10px] font-black uppercase ${
-            simulationAction === "run"
-              ? "bg-indigo-100 text-indigo-700"
-              : stepTwoCompleted
-                ? "bg-emerald-100 text-emerald-700"
-                : simulation
-                  ? "bg-amber-100 text-amber-700"
-                  : "bg-slate-200 text-slate-600"
-          }`}>
-            {simulationAction === "run" ? "Running" : stepTwoCompleted ? "Completed" : simulation ? "Incomplete" : "Waiting"}
-          </span>
-        </div>
-        {!ocrPreviewPassed && (
-          <p className="mt-4 rounded-xl bg-amber-50 p-3 text-xs font-bold text-amber-700">
-            ต้อง Preview OCR ใน Step 1 ให้ผ่านก่อนจึงจะเริ่ม Simulation ได้
-          </p>
-        )}
-        <div className="mt-4 rounded-xl border border-slate-100 bg-white p-3">
-          {simulationAction === "run" && (
-            <div className="mb-4 rounded-xl border border-indigo-100 bg-indigo-50 p-4">
-              <div className="flex items-center gap-3">
-                <Loader2 size={20} className="shrink-0 animate-spin text-indigo-700" />
-                <div>
-                  <div className="text-sm font-black text-indigo-950">กำลังเตรียมข้อมูลอ้างอิง</div>
-                  <p className="mt-1 text-xs font-semibold text-indigo-700">
-                    ระบบกำลังเตรียมข้อมูลอ้างอิงสำหรับการประมวลผลฝั่ง user
-                  </p>
-                </div>
+        <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <DraftSectionHeader title="ตรวจความพร้อม Text/Image Anchors" subtitle="ตรวจรูปหน้าเอกสาร ตำแหน่ง ROI ข้อความที่คาดหวัง และหมวดรูปภาพ ก่อนทดสอบกับเอกสารใหม่" />
+          {simulationAction === "run" && <p className="mt-4 text-sm font-bold text-indigo-700">กำลังตรวจความพร้อม Template...</p>}
+          {simulation && (
+            <>
+              <div className="mt-4 flex items-center gap-3">
+                <DraftStatusPill passed={simulation.passed} label={simulation.passed ? "พร้อมทดสอบ" : "ต้องแก้ไข"} />
+                <span className="text-xs font-semibold text-slate-500">{simulation.checkedAt}</span>
               </div>
-            </div>
-          )}
-          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h4 className="text-[11px] font-black uppercase tracking-wider text-slate-700">ข้อมูลอ้างอิงสำหรับฝั่ง user</h4>
-              <p className="mt-1 text-[10px] font-semibold text-slate-500">
-                ข้อมูลอ้างอิงนี้ใช้ในฝั่ง user หลัง Publish ส่วน admin ตรวจเอกสารจาก Anchors โดยตรง
-              </p>
-            </div>
-            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase text-slate-600">
-              {generatedLayoutReferenceCount}/{layoutSignaturePages.length} generated
-            </span>
-          </div>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {layoutSignaturePages.map((page) => {
-              const status = page.status || "pending";
-              const isGenerated = status === "generated";
-              const isRunning = status === "running";
-              const isFailed = status === "failed";
-              const isReferenceOnly = page.referenceRole === "reference_only" || page.isCanonical === false;
-              return (
-                <div key={`${page.templateLayoutReferenceId || page.templatePageId || "page"}-${page.pageNumber}`} className="rounded-xl border border-slate-200 bg-slate-50 p-2.5">
-                  <div className="flex items-start gap-3">
-                    <div className="h-20 w-16 shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-white">
-                      {page.imageUrl ? (
-                        <img src={page.imageUrl} alt={`Page ${page.pageNumber}`} className="h-full w-full object-contain" />
-                      ) : (
-                        <div className="flex h-full w-full items-center justify-center text-[10px] font-bold text-slate-400">No Image</div>
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="text-xs font-black text-slate-900">Page {page.pageNumber}</div>
-                        <div className="flex shrink-0 flex-wrap justify-end gap-1">
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[9px] font-black uppercase ${
-                              isReferenceOnly ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"
-                            }`}
-                          >
-                            {isReferenceOnly ? "Reference Only" : "Main"}
-                          </span>
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[9px] font-black uppercase ${
-                              isGenerated
-                                ? "bg-emerald-100 text-emerald-700"
-                                : isRunning
-                                  ? "bg-indigo-100 text-indigo-700"
-                                  : isFailed
-                                    ? "bg-red-100 text-red-700"
-                                    : "bg-slate-200 text-slate-600"
-                            }`}
-                          >
-                            {isGenerated ? "Generated" : isRunning ? "Running" : isFailed ? "Failed" : "Pending"}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="mt-2 space-y-1 text-[10px] font-semibold text-slate-500">
-                        {page.reason && <p className="text-red-600">Reason: {page.reason}</p>}
-                      </div>
-                    </div>
+              {simulation.issues.length > 0 && (
+                <ul className="mt-3 list-inside list-disc rounded-lg bg-amber-50 p-3 text-xs font-semibold text-amber-800">
+                  {simulation.issues.map((issue, index) => <li key={index}>{issue}</li>)}
+                </ul>
+              )}
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                {simulation.readinessPages.map(page => (
+                  <div key={page.templatePageId} className="rounded-lg border border-slate-200 p-3 text-xs">
+                    <div className="flex items-center justify-between font-bold"><span>Page {page.pageNumber}</span><DraftStatusPill passed={page.status === "ready"} /></div>
+                    {page.reason && <p className="mt-2 text-red-600">{page.reason}</p>}
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        {simulation?.temporaryEmbedding && (
-          <div className="mt-4 rounded-xl border border-slate-100 bg-white p-3">
-            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-              <DraftOverviewMetric label="Generated" value={simulation.temporaryEmbedding?.generatedAt || "N/A"} />
-            </div>
-          </div>
-        )}
-      </section>
+                ))}
+                {simulation.anchorReadinessResults.map(anchor => (
+                  <div key={anchor.fieldId} className="rounded-lg border border-slate-200 p-3 text-xs">
+                    <div className="flex items-center justify-between font-bold"><span>{anchor.fieldName} ({anchor.anchorType})</span><DraftStatusPill passed={anchor.passed} /></div>
+                    <p className="mt-1 text-slate-500">Page {anchor.pageNumber}</p>
+                    {anchor.failureReason && <p className="mt-2 text-red-600">{anchor.failureReason}</p>}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </section>
       )}
 
       {validationStep === 3 && (
@@ -1502,7 +1393,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
             )}
             {!stepTwoCompleted && (
               <p className="mt-3 rounded-lg bg-amber-50 p-2.5 text-[11px] font-bold text-amber-700">
-                ต้อง Run Simulation ให้ผ่านก่อนจึงจะทดสอบเอกสารใหม่ได้
+                ต้องตรวจความพร้อม Anchors ให้ผ่านก่อนจึงจะทดสอบเอกสารใหม่ได้
               </p>
             )}
           </div>
@@ -1613,80 +1504,13 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
       </section>
       )}
 
-      {validationStep === 2 && simulation && (
-      <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <DraftSectionHeader title="7. Verification Anchor Results" subtitle="Text anchors use OCR comparison. Image anchors use temporary image-feature similarity when available." />
-        <div className="mt-4 grid gap-3 lg:grid-cols-2">
-          {(simulation?.verificationAnchorResults || []).length > 0 ? (
-            (simulation?.verificationAnchorResults || []).map((anchor, index) => {
-              const anchorType = String(readPrepublishValue(anchor, ["anchor_type", "type", "verification_method"]) || "text");
-              const passed = Boolean(readPrepublishValue(anchor, ["passed", "final_passed"]));
-              return (
-                <div key={`anchor-result-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <div className="font-black text-slate-900">{String(readPrepublishValue(anchor, ["anchor_name", "field_name", "name", "display_label"]) || `Anchor ${index + 1}`)}</div>
-                      <div className="mt-1 text-[10px] font-black uppercase text-slate-400">{anchorType}</div>
-                    </div>
-                    <DraftStatusPill passed={passed} />
-                  </div>
-                  {anchorType === "image" ? (
-                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                      <div className="rounded-lg bg-white p-3">
-                        <div className="text-[10px] font-black uppercase text-slate-400">Reference Preview</div>
-                        {readPrepublishValue(anchor, ["reference_crop_preview_data_url", "reference_crop_preview_url"]) ? (
-                          <img
-                            src={String(readPrepublishValue(anchor, ["reference_crop_preview_data_url", "reference_crop_preview_url"]))}
-                            alt=""
-                            className="mt-2 h-28 w-full rounded-lg object-contain"
-                          />
-                        ) : (
-                          <div className="mt-2 text-xs font-semibold text-slate-500">Preview unavailable</div>
-                        )}
-                      </div>
-                      <div className="rounded-lg bg-white p-3">
-                        <div className="text-[10px] font-black uppercase text-slate-400">Test Preview</div>
-                        {readPrepublishValue(anchor, ["current_crop_preview_data_url", "current_crop_preview_url"]) ? (
-                          <img
-                            src={String(readPrepublishValue(anchor, ["current_crop_preview_data_url", "current_crop_preview_url"]))}
-                            alt=""
-                            className="mt-2 h-28 w-full rounded-lg object-contain"
-                          />
-                        ) : (
-                          <div className="mt-2 text-xs font-semibold text-slate-500">Preview unavailable</div>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                      <p className="rounded-lg bg-white p-3 font-semibold text-slate-700">Expected: {String(readPrepublishValue(anchor, ["expected_text", "expectedText"]) || "N/A")}</p>
-                      <p className="rounded-lg bg-white p-3 font-semibold text-slate-700">OCR: {String(readPrepublishValue(anchor, ["actual_text", "ocr_text", "actualText"]) || "N/A")}</p>
-                    </div>
-                  )}
-                  <div className="mt-3 flex flex-wrap gap-2 text-[10px] font-black uppercase text-slate-500">
-                    <span className="rounded-full bg-white px-2 py-1">Score {formatPrepublishScore(readVerificationRecordScore(anchor))}</span>
-                    {readPrepublishValue(anchor, ["image_category_label", "image_category"]) && (
-                      <span className="rounded-full bg-white px-2 py-1">{String(readPrepublishValue(anchor, ["image_category_label", "image_category"]))}</span>
-                    )}
-                    <span className="rounded-full bg-white px-2 py-1">Weight {String(readPrepublishValue(anchor, ["weight", "verification_weight"]) || "N/A")}</span>
-                  </div>
-                </div>
-              );
-            })
-          ) : (
-            <p className="rounded-xl bg-slate-50 p-4 text-xs font-semibold text-slate-500 lg:col-span-2">Run Simulation to see verification anchor results.</p>
-          )}
-        </div>
-      </section>
-      )}
-
       {validationStep === 4 && (
       <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <DraftSectionHeader title="Publish Review" subtitle="ตรวจสอบความพร้อมครั้งสุดท้ายก่อนเปิดใช้งาน Template" />
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
           {[
             ["ROI พร้อมใช้งาน", ocrPreviewPassed],
-            ["ข้อมูลอ้างอิงพร้อม", stepTwoCompleted],
+            ["Anchors พร้อม", stepTwoCompleted],
             ["ทดสอบเอกสารใหม่", detectionTestPassed],
           ].map(([label, passed]) => (
             <div key={String(label)} className="flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50 p-3">
@@ -1699,7 +1523,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
           <div>
             <h4 className="text-sm font-black text-slate-900">{overallReady ? "พร้อมเผยแพร่" : "ยังเผยแพร่ไม่ได้"}</h4>
             <p className="mt-1 text-xs font-semibold text-slate-500">
-              {overallReady ? "เมื่อตกลง ระบบจะบันทึกข้อมูลอ้างอิงสำหรับฝั่ง user และเปิดใช้งาน Template" : "ต้องเตรียมข้อมูลอ้างอิงและทดสอบ Text/Image Anchors ให้ผ่านก่อน"}
+              {overallReady ? "เมื่อตกลง ระบบจะตรวจความพร้อม Anchors อีกครั้งและเปิดใช้งาน Template" : "ต้องตรวจความพร้อมและทดสอบ Text/Image Anchors ให้ผ่านก่อน"}
             </p>
           </div>
           <button

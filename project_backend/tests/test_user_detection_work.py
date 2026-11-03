@@ -119,22 +119,6 @@ class UserDetectionWorkTests(unittest.TestCase):
         namespace['_image_to_data_url'](path)
         self.assertEqual(reads.call_count, 2)
 
-    def test_only_unused_extraction_test_is_skipped_and_admin_ocr_is_retained(self):
-        ocr = Mock(return_value={'field': {'text': 'Name', 'confidence': .9}})
-        namespace = {'include_detection_diagnostics': include_detection_diagnostics, 'time': time,
-                     'ocr_rois': ocr, 'OcrUnavailableError': RuntimeError, '_timing_ms_map': lambda value: value,
-                     '_detection_debug_url': lambda value: None}
-        load_functions({'_run_extraction_test'}, namespace)
-        fields = [{'id': 'field', 'page_number': 1, 'field_name': 'Name', 'data_type': 'text'}]
-        projected = [{'field_id': 'field', 'template_roi': {'x_ratio': .1, 'y_ratio': .1,
-                      'width_ratio': .3, 'height_ratio': .2}}]
-        @detection_work_scope
-        def inspect(*, user_context=False):
-            return namespace['_run_extraction_test']('template', fields, projected, 'image.png', 1, 'template_canvas')
-        self.assertEqual(inspect(user_context=True)['status'], 'skipped')
-        ocr.assert_not_called()
-        self.assertEqual(inspect()['tested_count'], 1)
-        self.assertEqual(ocr.call_count, 1)
 
     def test_compaction_roundtrip_preserves_scores_variants_roi_and_log_metadata(self):
         candidate = {'template_id': 'template', 'final_passed': True, 'final_score': .9,
@@ -193,7 +177,6 @@ class UserDetectionWorkTests(unittest.TestCase):
                     _normalize_query_pages=lambda *args, **kwargs: [{'page_index': 1, 'normalized_path': 'processed.png'}],
                     DETECTION_RETRIEVAL_LIMIT=3, USER_DETECTION_RETRIEVAL_LIMIT=3, DETECTION_VERIFICATION_CANDIDATE_LIMIT=3,
                     DETECTION_BATCH_MODE_GLOBAL='global', normalize_verification_strategy=lambda value: value,
-                    _detect_template_text_only=record_batch,
                     _detect_template_anchor_strategy=record_batch,
                     _fetch_template_cached=lambda *args: (None, False, {}), _detect_page=lambda *args, **kwargs: page,
                     _is_confirmed_main_page_candidate=lambda value: False, _aggregate_candidates=lambda value: [candidate],

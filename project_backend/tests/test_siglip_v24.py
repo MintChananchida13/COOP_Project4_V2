@@ -173,22 +173,20 @@ class SiglipV24Tests(unittest.TestCase):
         self.assertEqual(current.predicted_category, "thai_garuda")
 
     def test_backend_trace_image_anchor_score_and_final_decision(self):
-        source = Path(__file__).parents[1] / "app/business/services.py"
-        tree = ast.parse(source.read_text(encoding="utf-8-sig"))
-        methods = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and
-                   node.name in ("_image_match_from_siglip_result", "_verification_summary")]
-        decision_class = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "DecisionService")
-        namespace = {"VERIFICATION_STRATEGY_STANDARD": "standard"}
-        exec(compile(ast.Module(body=[*methods, decision_class], type_ignores=[]), str(source), "exec",
-                     flags=__future__.annotations.compiler_flag), namespace)
+        from app.business.services import VerificationService
+        from app.processing import detection_service
+        verification = VerificationService()
         for negative, expected in ((-30, True), (9, False)):
             result = adapter.verify_image_category_from_logits(raw(thai_garuda=8.1, emblem=6.5818, printed_text=negative), "thai_garuda", categories())
-            mapped = namespace["_image_match_from_siglip_result"](None, result, None)
+            mapped = verification._image_match_from_siglip_result(result, None)
             self.assertEqual(mapped["final_predicted_category"], result.predicted_category)
             self.assertEqual(mapped["decision_reason"], result.decision["decision_reason"])
-            summary = namespace["_verification_summary"](None, "template", [{**mapped, "anchor_type": "image", "required": True, "weight": 1}])
+            summary = verification._verification_summary("template", [{**mapped, "anchor_type": "image", "required": True, "weight": 1}])
             self.assertEqual(summary["image_anchor_score"], int(expected))
-            final = namespace["DecisionService"]().decide_candidate_strict(0.9, summary, 0.75)
-            self.assertEqual(final["final_passed"], expected)
-            if expected:
-                self.assertFalse(namespace["DecisionService"]().decide_candidate_strict(0.1, summary, 0.75)["final_passed"])
+            for mode in ("standard", "strict"):
+                final = detection_service._candidate_from_anchor_strategy(
+                    {"template_id": "template", "final_confidence_threshold": .75},
+                    summary, [{"data_type": "image"}], {}, mode, {},
+                )
+                self.assertEqual(final["final_passed"], expected)
+                self.assertEqual(final["layout_score"], 0)

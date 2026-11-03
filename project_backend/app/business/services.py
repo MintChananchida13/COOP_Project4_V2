@@ -20,9 +20,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from app.processing.alignment_service import AlignmentService
 from app.core.db import connect as connect_db
-from app.processing.image_normalization import ImageNormalizationService
 from app.business.image_verification_category_service import (
     ImageVerificationCategoryService,
     categories_to_runtime_payload,
@@ -38,8 +36,6 @@ from app.model_runtime.layout_analysis_service import (
     analyze_layout,
     detect_text_boxes,
 )
-from app.model_runtime import layout_analysis_service as layout_runtime
-from app.processing.layout_signature_service import build_layout_signature, signature_from_json, signature_to_json
 from app.processing import published_template_cache
 from app.processing.ocr_adapter import (
     OcrUnavailableError,
@@ -90,12 +86,9 @@ VERIFICATION_STRATEGY_SETTING_KEY = "verification_strategy"
 PENDING_VERIFICATION_STRATEGY_SETTING_KEY = "pending_verification_strategy"
 DETECTION_BATCH_MODE_SETTING_KEY = "detection_batch_processing_mode"
 PENDING_DETECTION_BATCH_MODE_SETTING_KEY = "pending_detection_batch_processing_mode"
+DEFAULT_FINAL_CONFIDENCE_THRESHOLD = 0.75
 VERIFICATION_STRATEGY_STANDARD = "standard"
 VERIFICATION_STRATEGY_STRICT = "strict"
-VERIFICATION_STRATEGY_TEXT_ONLY = "text_only"
-VERIFICATION_STRATEGY_TEXT_IMAGE = "text_image"
-VERIFICATION_STRATEGY_IMAGE_ONLY = "image_only"
-VERIFICATION_STRATEGY_LAYOUT_ONLY = "layout_only"
 VERIFICATION_STRATEGIES = {VERIFICATION_STRATEGY_STANDARD, VERIFICATION_STRATEGY_STRICT}
 DETECTION_BATCH_MODE_GLOBAL = "global"
 DETECTION_BATCH_MODE_PER_TEMPLATE = "per_template"
@@ -170,10 +163,6 @@ DEFAULT_OCR_MODEL_SETTINGS: Dict[str, Any] = {
         ],
     },
 }
-
-
-class EmbeddingContextError(Exception):
-    pass
 
 
 def _now() -> str:
@@ -2102,7 +2091,7 @@ def _ignore_region_row_to_api(row: Any) -> Dict[str, Any]:
     }
 
 
-def _embedding_job_row_to_api(row: Optional[Any]) -> Optional[Dict[str, Any]]:
+def _publish_job_row_to_api(row: Optional[Any]) -> Optional[Dict[str, Any]]:
     if row is None:
         return None
     item = _row_to_dict(row)
@@ -2119,17 +2108,6 @@ def _embedding_job_row_to_api(row: Optional[Any]) -> Optional[Dict[str, Any]]:
         "metadata_json": item["metadata_json"],
         "step": item.get("step"),
     }
-
-
-def _cosine_similarity(left: List[float], right: List[float]) -> float:
-    if not left or not right or len(left) != len(right):
-        return 0.0
-    dot = sum(a * b for a, b in zip(left, right))
-    left_norm = math.sqrt(sum(a * a for a in left))
-    right_norm = math.sqrt(sum(b * b for b in right))
-    if left_norm == 0 or right_norm == 0:
-        return 0.0
-    return dot / (left_norm * right_norm)
 
 
 def _storage_root() -> Path:
@@ -2256,136 +2234,6 @@ def _image_to_bgr_array(image: Any):
         return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     except Exception:
         return None
-
-
-def _field_roi_to_layout_region(field: Dict[str, Any], *, source: str) -> Optional[Dict[str, Any]]:
-    try:
-        roi = {
-            "x_ratio": float(field.get("roi_x_ratio") or 0.0),
-            "y_ratio": float(field.get("roi_y_ratio") or 0.0),
-            "width_ratio": float(field.get("roi_width_ratio") or 0.0),
-            "height_ratio": float(field.get("roi_height_ratio") or 0.0),
-        }
-    except (TypeError, ValueError):
-        return None
-    if roi["width_ratio"] <= 0 or roi["height_ratio"] <= 0:
-        return None
-    return {
-        "type": _normalize_data_type(field.get("data_type")),
-        "roi": roi,
-        "confidence": 1.0,
-        "source": source,
-    }
-
-
-def _signature_layout_overrides(fields: Optional[List[Dict[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
-    ignored_regions: List[Dict[str, Any]] = []
-    stable_regions: List[Dict[str, Any]] = []
-    for field in fields or []:
-        region = _field_roi_to_layout_region(field, source="template_roi")
-        if not region:
-            continue
-        if _normalize_roi_mode(field.get("roi_mode")) == "flexible":
-            ignored_regions.append(region["roi"])
-            stable_regions.append({**region, "source": "flexible_search_boundary"})
-        else:
-            stable_regions.append({**region, "source": "fix_roi"})
-    return {"ignored_regions": ignored_regions, "stable_regions": stable_regions}
-
-
-def _template_fields_for_page(conn: Any, template_id: str, page_number: int) -> List[Dict[str, Any]]:
-    return [
-        _row_to_dict(row)
-        for row in conn.execute(
-            """
-            SELECT
-                ef.*,
-                tp.template_version_id AS template_id,
-                tp.page_number
-            FROM extraction_fields ef
-            JOIN template_pages tp ON tp.id = ef.template_page_id
-            WHERE tp.template_version_id = ? AND tp.page_number = ?
-            ORDER BY sort_order ASC, created_at ASC
-            """,
-            (template_id, page_number),
-        ).fetchall()
-    ]
-
-
-def _generate_layout_signature_for_source(source: Optional[str]) -> Optional[Dict[str, Any]]:
-    image = _load_image_source(source)
-    if image is None:
-        return None
-    opencv_img = _image_to_bgr_array(image)
-    if opencv_img is None:
-        return None
-    analysis = layout_runtime.analyze_layout_signature(opencv_img)
-    if analysis.get("model") != layout_runtime.LAYOUT_SIGNATURE_MODEL:
-        raise HTTPException(status_code=503, detail="Template signature requires Layout + Text Detection; received an incompatible analyzer result.")
-    signature = build_layout_signature(analysis)
-    logger.info("Template signature generated model=%s region_sources=%s region_count=%s",
-                signature.get("model"), signature.get("region_sources"), signature.get("region_count"))
-    return signature
-
-
-def _ensure_template_pages_have_layout_signatures(conn: Any, template_id: str) -> None:
-    return None
-
-
-def _refresh_template_layout_signatures(conn: Any, template_id: str) -> List[Dict[str, Any]]:
-    rows = conn.execute(
-        """
-        SELECT id, page_number, normalized_image_url, sample_image_url
-        FROM template_pages
-        WHERE template_version_id = ?
-        ORDER BY page_number ASC
-        """,
-        (template_id,),
-    ).fetchall()
-    refreshed: List[Dict[str, Any]] = []
-    for row in rows:
-        source = row["normalized_image_url"] or row["sample_image_url"]
-        signature = _generate_layout_signature_for_source(source)
-        if signature is None:
-            refreshed.append(
-                {
-                    "template_page_id": row["id"],
-                    "page_number": row["page_number"],
-                    "status": "failed",
-                    "reason": "page_image_unavailable_or_invalid",
-                }
-            )
-            continue
-        signature_json = signature_to_json(signature)
-        conn.execute(
-            """
-            UPDATE template_pages
-            SET layout_signature_json = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            """,
-            (signature_json, row["id"]),
-        )
-        refreshed.append(
-            {
-                "template_page_id": row["id"],
-                "page_number": row["page_number"],
-                "status": "generated",
-                "region_count": signature.get("region_count", 0),
-                "region_sources": signature.get("region_sources") or {},
-                "model": signature.get("model"),
-            }
-        )
-    _ensure_template_pages_have_layout_signatures(conn, template_id)
-    return refreshed
-
-
-def _refresh_template_page_signatures(conn: Any, template_id: str) -> List[Dict[str, Any]]:
-    return _refresh_template_layout_signatures(conn, template_id)
-
-
-def _refresh_template_layout_reference_signatures(conn: Any, template_id: str) -> List[Dict[str, Any]]:
-    # Schema V2 uses template_pages as the canonical layout references.
-    return _refresh_template_layout_signatures(conn, template_id)
 
 
 def _crop_anchor_roi_from_image(image, roi: Dict[str, Any], padding: float = 0):
@@ -3186,77 +3034,6 @@ def _flexible_text_ocr_from_boundary(boundary_image_path: Optional[str]) -> Dict
     }
 
 
-def _save_prepublish_test_image(test_id: str, file_bytes: bytes, page_index: int = 1) -> Path:
-    try:
-        from PIL import Image
-    except ImportError as error:
-        raise HTTPException(status_code=400, detail="Image validation requires Pillow") from error
-    if not file_bytes:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
-
-    try:
-        image = Image.open(io.BytesIO(file_bytes))
-        if image.mode != "RGB":
-            image = image.convert("RGB")
-    except Exception as error:
-        raise HTTPException(status_code=400, detail="Uploaded file is not a valid image or PDF") from error
-
-    output_dir = _storage_root() / "prepublish_detection_tests" / test_id
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"page_{page_index}.png"
-    image.save(output_path, format="PNG")
-    return output_path
-
-
-def _convert_prepublish_test_pdf(test_id: str, pdf_bytes: bytes) -> List[Path]:
-    if not pdf_bytes:
-        raise HTTPException(status_code=400, detail="Uploaded PDF is empty")
-    try:
-        import fitz
-    except ImportError as error:
-        raise HTTPException(status_code=501, detail="PDF testing requires PyMuPDF") from error
-
-    output_dir = _storage_root() / "prepublish_detection_tests" / test_id
-    output_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        document = fitz.open(stream=pdf_bytes, filetype="pdf")
-    except Exception as error:
-        raise HTTPException(status_code=400, detail="Uploaded file is not a valid PDF") from error
-    if document.page_count == 0:
-        document.close()
-        raise HTTPException(status_code=400, detail="Uploaded PDF has no pages")
-
-    paths: List[Path] = []
-    try:
-        for index in range(document.page_count):
-            page = document.load_page(index)
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0), alpha=False)
-            output_path = output_dir / f"page_{index + 1}.png"
-            pixmap.save(str(output_path))
-            paths.append(output_path)
-    finally:
-        document.close()
-    return paths
-
-
-def _prepare_prepublish_test_pages(test_id: str, file_bytes: bytes) -> List[Path]:
-    if file_bytes.lstrip().startswith(b"%PDF"):
-        return _convert_prepublish_test_pdf(test_id, file_bytes)
-    return [_save_prepublish_test_image(test_id, file_bytes, 1)]
-
-
-def _normalize_prepublish_test_pages(test_id: str, page_paths: List[Path]) -> Dict[int, str]:
-    output_dir = _storage_root() / "prepublish_detection_tests" / test_id / "normalized"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    normalizer = ImageNormalizationService()
-    normalized: Dict[int, str] = {}
-    for index, page_path in enumerate(page_paths, start=1):
-        output_path = output_dir / f"page_{index}_normalized.png"
-        info = normalizer.normalize_document(str(page_path), str(output_path))
-        normalized[index] = str(info.get("normalized_image_path") or output_path)
-    return normalized
-
-
 def _template_page_image_source(conn: Any, template_page_id: str) -> Optional[str]:
     row = conn.execute(
         "SELECT normalized_image_url, sample_image_url FROM template_pages WHERE id = ?",
@@ -3294,7 +3071,85 @@ class ImageProcessingService:
         return [{**page, "status": "preprocessing_pending"} for page in pages]
 
 
-class EmbeddingService:
+def _template_anchor_readiness(conn: Any, template_id: str) -> Dict[str, Any]:
+    """Validate stored pages and anchors without calling inference services."""
+    template = conn.execute(
+        "SELECT id, detection_mode, main_page_number FROM template_versions WHERE id = ?", (template_id,),
+    ).fetchone()
+    if template is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    pages = conn.execute(
+        "SELECT id, page_number, normalized_image_url, sample_image_url FROM template_pages "
+        "WHERE template_version_id = ? ORDER BY page_number", (template_id,),
+    ).fetchall()
+    anchors = conn.execute(
+        """SELECT va.*, tp.page_number, ivc.value AS image_category, ivc.enabled AS category_enabled
+           FROM verification_anchors va JOIN template_pages tp ON tp.id = va.template_page_id
+           LEFT JOIN image_verification_categories ivc ON ivc.id = va.image_category_id
+           WHERE tp.template_version_id = ? ORDER BY tp.page_number, va.sort_order, va.id""", (template_id,),
+    ).fetchall()
+    main_page_only = template["detection_mode"] == "main_page"
+    main_page = int(template["main_page_number"] or 1)
+    issues: List[str] = []
+    page_results: List[Dict[str, Any]] = []
+    for page in pages:
+        source = page["normalized_image_url"] or page["sample_image_url"]
+        image = _load_image_source(source) if source else None
+        ready = image is not None
+        if image is not None:
+            image.close()
+        reason = None if ready else "page_image_unavailable_or_invalid"
+        if reason:
+            issues.append(f"page_{page['page_number']}: {reason}")
+        page_results.append({"template_page_id": page["id"], "page_number": page["page_number"],
+                             "status": "ready" if ready else "failed", "reason": reason})
+    if not pages:
+        issues.append("template_has_no_pages")
+    if main_page_only and main_page not in {int(page["page_number"]) for page in pages}:
+        issues.append("main_page_unavailable")
+    anchor_results: List[Dict[str, Any]] = []
+    for anchor in anchors:
+        if main_page_only and int(anchor["page_number"]) != main_page:
+            continue
+        reasons: List[str] = []
+        kind = anchor["anchor_type"]
+        if kind not in {"text", "image"}:
+            reasons.append("unsupported_anchor_type")
+        try:
+            x, y, width, height = (float(anchor[key]) for key in
+                                  ("roi_x_ratio", "roi_y_ratio", "roi_width_ratio", "roi_height_ratio"))
+            if not all(math.isfinite(value) for value in (x, y, width, height)) or not (
+                0 <= x < 1 and 0 <= y < 1 and width > 0 and height > 0
+                and x + width <= 1.000001 and y + height <= 1.000001
+            ):
+                reasons.append("invalid_anchor_roi")
+        except (TypeError, ValueError):
+            reasons.append("invalid_anchor_roi")
+        if kind == "text" and not str(anchor["expected_text"] or "").strip():
+            reasons.append("expected_text_required")
+        if kind == "image" and (not anchor["image_category"] or not anchor["category_enabled"]):
+            reasons.append("enabled_image_category_required")
+        anchor_results.append({"field_id": anchor["id"], "field_name": anchor["anchor_name"],
+                               "anchor_type": kind, "page_number": anchor["page_number"],
+                               "passed": not reasons, "failure_reason": ", ".join(reasons) or None})
+        issues.extend(f"anchor_{anchor['id']}: {reason}" for reason in reasons)
+    if not anchor_results:
+        issues.append("text_or_image_anchor_required")
+    return {"template_id": template_id, "passed": not issues, "engine": "text_image_anchors",
+            "page_count": len(pages), "readiness_pages": page_results,
+            "text_anchor_count": sum(item["anchor_type"] == "text" for item in anchor_results),
+            "image_anchor_count": sum(item["anchor_type"] == "image" for item in anchor_results),
+            "anchor_readiness_results": anchor_results, "issues": issues}
+
+
+def _require_template_anchor_readiness(conn: Any, template_id: str) -> Dict[str, Any]:
+    readiness = _template_anchor_readiness(conn, template_id)
+    if not readiness["passed"]:
+        raise HTTPException(status_code=409, detail={"message": "Template anchors are not ready", **readiness})
+    return readiness
+
+
+class TemplatePublishService:
     def _fetch_template_or_404(self, conn: Any, template_id: str) -> Any:
         template_row = conn.execute(
             """
@@ -3346,12 +3201,12 @@ class EmbeddingService:
         if pending_status:
             template["pending_status"] = pending_status
         return {
-            "job": _embedding_job_row_to_api(job_row),
+            "job": _publish_job_row_to_api(job_row),
             "template": template,
         }
 
-    def create_embedding_job(self, template_id: str) -> Dict[str, Any]:
-        job_id = _stub_id("emb_job")
+    def create_publish_job(self, template_id: str) -> Dict[str, Any]:
+        job_id = _stub_id("pub_job")
         with _connect() as conn:
             template_row = self._fetch_template_or_404(conn, template_id)
             if template_row["status"] != "validated":
@@ -3365,9 +3220,9 @@ class EmbeddingService:
                 INSERT INTO publish_jobs (
                     id, template_version_id, status, step, requested_at, metadata_json
                 )
-                VALUES (?, ?, 'queued', 'layout_signature', CURRENT_TIMESTAMP, ?)
+                VALUES (?, ?, 'queued', 'anchor_readiness', CURRENT_TIMESTAMP, ?)
                 """,
-                (job_id, template_id, '{"source":"admin_template_test","mode":"layout_signature"}'),
+                (job_id, template_id, '{"source":"admin_template_test","mode":"text_image_anchors"}'),
             )
             conn.execute(
                 """
@@ -3380,7 +3235,7 @@ class EmbeddingService:
             conn.commit()
             return self._job_with_template(conn, job_id)
 
-    def latest_embedding_job(self, template_id: str) -> Dict[str, Any]:
+    def latest_publish_job(self, template_id: str) -> Dict[str, Any]:
         with _connect() as conn:
             self._fetch_template_or_404(conn, template_id)
             job_row = conn.execute(
@@ -3392,7 +3247,7 @@ class EmbeddingService:
                 """,
                 (template_id,),
             ).fetchone()
-        return {"template_id": template_id, "job": _embedding_job_row_to_api(job_row)}
+        return {"template_id": template_id, "job": _publish_job_row_to_api(job_row)}
 
     def complete_job_dev(self, job_id: str) -> Dict[str, Any]:
         settings = GlobalSettingsService()
@@ -3401,26 +3256,13 @@ class EmbeddingService:
             if job_row is None:
                 raise HTTPException(status_code=404, detail="Publish job not found")
 
+            if job_row["status"] not in {"queued", "running"}:
+                raise HTTPException(status_code=409, detail="Publish job must be queued or running before completion")
+
             template_id = job_row["template_version_id"]
             self._fetch_template_or_404(conn, template_id)
-            _refresh_template_layout_signatures(conn, template_id)
-            generated_references = _refresh_template_layout_reference_signatures(conn, template_id)
-            if not generated_references or any(item.get("status") != "generated" for item in generated_references):
-                failed_pages = [item for item in generated_references if item.get("status") != "generated"]
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Layout reference signature generation failed: {failed_pages or 'no layout references'}",
-                )
-            metadata = {
-                "engine": "layout_signature",
-                "version": "layout-signature-v1",
-                "template_id": template_id,
-                "page_count": len(generated_references),
-                "layout_signature_pages": generated_references,
-                "global_vector_store": "disabled",
-                "image_anchor_verification": "siglip_image_category",
-                "completed_by": "complete-dev",
-            }
+            readiness = _require_template_anchor_readiness(conn, template_id)
+            metadata = {**readiness, "version": "anchors-v1", "completed_by": "complete-dev"}
             conn.execute(
                 """
                 UPDATE publish_jobs
@@ -3430,7 +3272,7 @@ class EmbeddingService:
                     metadata_json = ?
                 WHERE id = ?
                 """,
-                (jsonb_dump({**metadata, "vector_id": f"layout_{template_id}"}), job_id),
+                (jsonb_dump(metadata), job_id),
             )
             if settings._should_defer_admin_setting_updates():
                 settings.save_pending_template_status(template_id, "active")
@@ -3481,26 +3323,11 @@ class EmbeddingService:
             )
             conn.commit()
 
-        time.sleep(1)
-
         try:
             with _connect() as conn:
-                generated_references = _refresh_template_layout_signatures(conn, template_id)
-                if not generated_references or any(item.get("status") != "generated" for item in generated_references):
-                    failed_pages = [item for item in generated_references if item.get("status") != "generated"]
-                    raise RuntimeError(f"Layout reference signature generation failed: {failed_pages or 'no layout references'}")
-                conn.commit()
-            metadata = {
-                "engine": "layout_signature",
-                "version": "layout-signature-v1",
-                "template_id": template_id,
-                "page_count": len(generated_references),
-                "layout_signature_pages": generated_references,
-                "global_vector_store": "disabled",
-                "image_anchor_verification": "siglip_image_category",
-            }
-            vector_id = f"layout_{template_id}"
-        except (EmbeddingContextError, ValueError, RuntimeError) as error:
+                readiness = _require_template_anchor_readiness(conn, template_id)
+            metadata = {**readiness, "version": "anchors-v1"}
+        except (HTTPException, ValueError, RuntimeError) as error:
             error_message = str(error)
             with _connect() as conn:
                 conn.execute(
@@ -3534,7 +3361,7 @@ class EmbeddingService:
                     metadata_json = ?
                 WHERE id = ?
                 """,
-                (jsonb_dump({**metadata, "vector_id": vector_id}), job_id),
+                (jsonb_dump(metadata), job_id),
             )
             if settings._should_defer_admin_setting_updates():
                 settings.save_pending_template_status(template_id, "active")
@@ -3580,7 +3407,7 @@ class EmbeddingService:
                     error_message = ?
                 WHERE id = ?
                 """,
-                ("Embedding job failed in dev mode.", job_id),
+                ("Publish job failed in dev mode.", job_id),
             )
             conn.execute(
                 """
@@ -3592,49 +3419,6 @@ class EmbeddingService:
             )
             conn.commit()
             return self._job_with_template(conn, job_id)
-
-    def generate_for_template(self, template_id: str) -> Dict[str, Any]:
-        with _connect() as conn:
-            self._fetch_template_or_404(conn, template_id)
-            pages = _refresh_template_layout_signatures(conn, template_id)
-            conn.commit()
-        return {
-            "template_id": template_id,
-            "status": "layout_signature_generated",
-            "scope": "template",
-            "pages": pages,
-        }
-
-    def generate_for_template_page(self, template_id: str, page_id: str) -> Dict[str, Any]:
-        with _connect() as conn:
-            self._fetch_template_or_404(conn, template_id)
-            page_row = conn.execute(
-                "SELECT * FROM template_pages WHERE id = ? AND template_version_id = ?",
-                (page_id, template_id),
-            ).fetchone()
-            if page_row is None:
-                raise HTTPException(status_code=404, detail="Template page not found")
-            image_url = page_row["normalized_image_url"] or page_row["sample_image_url"]
-            if not image_url:
-                raise HTTPException(status_code=409, detail="Template page image is unavailable")
-            signature = build_layout_signature(image_url)
-            conn.execute(
-                """
-                UPDATE template_pages
-                SET layout_signature_json = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND template_version_id = ?
-                """,
-                (signature_to_json(signature), page_id, template_id),
-            )
-            conn.commit()
-        return {
-            "template_id": template_id,
-            "template_page_id": page_id,
-            "status": "layout_signature_generated",
-            "scope": "template_page",
-            "layout_signature": signature,
-        }
-
 
 class OCRService:
     def ocr_custom_fields(self, document_id: str, payload: CustomOcrRequest) -> Dict[str, Any]:
@@ -4675,416 +4459,6 @@ class VerificationService:
             "verification_details": checked_fields,
         }
 
-    def _text_anchor_check(
-        self,
-        field: Dict[str, Any],
-        page_image_paths: Optional[Dict[int, str]],
-        runtime_cache: Optional[Dict[str, Dict[str, Any]]] = None,
-        timing: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        expected_text = field.get("expected_text")
-        page_number = int(field["page_number"])
-        image_path = (page_image_paths or {}).get(page_number)
-        actual_text = ""
-        ocr_confidence = 0.0
-        field_error = None
-        current_crop_preview_data_url = None
-        if image_path:
-            try:
-                if include_detection_diagnostics():
-                    cropped = _crop_anchor_roi_to_temp(image_path, field["roi"], field.get("roi_padding") or 0)
-                    current_crop_preview_data_url = _image_path_to_data_url(cropped)
-                    if cropped:
-                        Path(cropped).unlink(missing_ok=True)
-                cache_key = _verification_roi_cache_key(image_path, field["roi"], 0, "text_ocr")
-                text_cache = runtime_cache.setdefault("text_ocr", {}) if runtime_cache is not None else None
-                if text_cache is not None and cache_key in text_cache:
-                    ocr_result = dict(text_cache[cache_key])
-                    if timing is not None:
-                        timing["text_ocr_cache_hits"] = int(timing.get("text_ocr_cache_hits") or 0) + 1
-                else:
-                    if timing is not None:
-                        timing["text_ocr_cache_misses"] = int(timing.get("text_ocr_cache_misses") or 0) + 1
-                    inference_started = time.perf_counter()
-                    ocr_result = ocr_roi(image_path, field["roi"], timing=timing)
-                    if timing is not None:
-                        timing["text_ocr_inference"] = float(timing.get("text_ocr_inference") or 0.0) + (time.perf_counter() - inference_started)
-                    if text_cache is not None:
-                        text_cache[cache_key] = dict(ocr_result)
-                actual_text = str(ocr_result.get("text") or "")
-                ocr_confidence = float(ocr_result.get("confidence") or 0.0)
-                if ocr_result.get("error"):
-                    field_error = str(ocr_result.get("error"))
-            except OcrUnavailableError as error:
-                field_error = str(error)
-            except Exception as error:
-                field_error = f"ROI OCR failed: {error}"
-        else:
-            field_error = f"No query page image available for page {page_number}"
-
-        verification_threshold = self.DEFAULT_VERIFICATION_THRESHOLD
-        match = self._score_match(
-            expected_text,
-            actual_text,
-            field.get("match_type"),
-            ocr_confidence,
-            verification_threshold,
-        ) if not field_error else {
-            "match_type": (field.get("match_type") or "contains").strip().lower(),
-            "normalized_expected": self._normalize_text(expected_text),
-            "normalized_actual": self._normalize_text(actual_text),
-            "text_similarity_score": 0.0,
-            "text_match_score": 0.0,
-            "ocr_confidence": round(float(ocr_confidence or 0.0), 4),
-            "field_score": 0.0,
-            "verification_threshold": verification_threshold,
-            "score": 0.0,
-            "passed": False,
-            "failure_reason": "ocr_error",
-        }
-        return {
-            "field_id": field["id"],
-            "anchor_id": field["id"],
-            "field_name": field["field_name"],
-            "display_label": field["display_label"],
-            "anchor_type": "text",
-            "verification_method": "ocr_text",
-            "page_number": page_number,
-            "expected_text": expected_text,
-            "actual_text": actual_text,
-            "normalized_expected": match["normalized_expected"],
-            "normalized_actual": match["normalized_actual"],
-            "text_similarity_score": match["text_similarity_score"],
-            "text_match_score": match.get("text_match_score", match["field_score"]),
-            "ocr_confidence": match["ocr_confidence"],
-            "field_score": match["field_score"],
-            "verification_threshold": match["verification_threshold"],
-            "match_type": match["match_type"],
-            "required": bool(field["required_for_verification"]),
-            "passed": match["passed"],
-            "score": match["field_score"],
-            "failure_reason": match["failure_reason"],
-            "roi": field["roi"],
-            "roi_padding": field.get("roi_padding") or 0,
-            "weight": float(field.get("verification_weight") or 1.0),
-            "reference_crop_preview_data_url": None,
-            "current_crop_preview_data_url": current_crop_preview_data_url,
-            "error": field_error,
-        }
-
-    def _image_anchor_check(
-        self,
-        field: Dict[str, Any],
-        page_image_paths: Optional[Dict[int, str]],
-        runtime_cache: Optional[Dict[str, Dict[str, Any]]] = None,
-        timing: Optional[Dict[str, Any]] = None,
-        precomputed_image_match: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        page_number = int(field["page_number"])
-        image_path = (page_image_paths or {}).get(page_number)
-        if not image_path:
-            category_info = _image_category_api(field.get("image_category"))
-            return {
-                "field_id": field["id"],
-                "anchor_id": field["id"],
-                "field_name": field["field_name"],
-                "display_label": field["display_label"],
-                "anchor_type": "image",
-                "verification_method": "image_feature",
-                "page_number": page_number,
-                "expected_text": category_info.get("label") or field.get("image_category"),
-                "actual_text": "",
-                "normalized_expected": "",
-                "normalized_actual": "",
-                "text_similarity_score": None,
-                "ocr_confidence": None,
-                "field_score": 0.0,
-                "verification_threshold": category_info.get("match_threshold", 0.0),
-                "margin_threshold": category_info.get("margin_threshold", 0.0),
-                "match_type": "image_feature",
-                "required": bool(field["required_for_verification"]),
-                "passed": False,
-                "score": 0.0,
-                "failure_reason": "query_page_missing",
-                "roi": field["roi"],
-                "roi_padding": field.get("roi_padding") or 6,
-                "weight": float(field.get("verification_weight") or 1.0),
-                "image_category": field.get("image_category"),
-                "image_category_label": category_info.get("label") or field.get("image_category"),
-                "image_category_prompt": category_info.get("prompt") or "",
-                "reference_crop_preview_data_url": None,
-                "current_crop_preview_data_url": None,
-                "siglip_similarity_score": 0.0,
-                "image_category_score": 0.0,
-                "evidence_score": 0.0,
-                "raw_logit": 0.0,
-                "raw_pair_score": 0.0,
-                "relative_percentage": 0.0,
-                "siglip_target_rank": 0,
-                "siglip_score_margin": 0.0,
-                "siglip_labels": [],
-                "siglip_ui_percentages": [],
-                "error": f"No query page image available for page {page_number}",
-            }
-        try:
-            image_cache_key = _verification_roi_cache_key(
-                image_path,
-                field["roi"],
-                field.get("roi_padding") or 6,
-                f"image_model:{field.get('image_category') or ''}",
-            )
-            image_cache = runtime_cache.setdefault("image_model", {}) if runtime_cache is not None else None
-            if precomputed_image_match is not None:
-                image_match = dict(precomputed_image_match)
-                if timing is not None:
-                    timing["image_model_batch_hits"] = int(timing.get("image_model_batch_hits") or 0) + 1
-            elif image_cache is not None and image_cache_key in image_cache:
-                image_match = dict(image_cache[image_cache_key])
-                if timing is not None:
-                    timing["image_model_cache_hits"] = int(timing.get("image_model_cache_hits") or 0) + 1
-            else:
-                if timing is not None:
-                    timing["image_model_cache_misses"] = int(timing.get("image_model_cache_misses") or 0) + 1
-                inference_started = time.perf_counter()
-                image_match = self._score_image_anchor(field, image_path, timing=timing)
-                if timing is not None:
-                    timing["image_model_inference"] = float(timing.get("image_model_inference") or 0.0) + (time.perf_counter() - inference_started)
-                if image_cache is not None:
-                    image_cache[image_cache_key] = dict(image_match)
-        except Exception as error:
-            category_values = _image_category_values(field.get("image_category"))
-            category_value = category_values[0] if category_values else ""
-            try:
-                category_info = _image_category_api(category_value)
-                category_label = _image_category_display(category_values)
-            except Exception:
-                category_info = {"label": category_value, "prompt": "", "match_threshold": 0.0, "margin_threshold": 0.0}
-                category_label = ", ".join(category_values)
-            image_match = {
-                "score": 0.0,
-                "field_score": 0.0,
-                "evidence_score": 0.0,
-                "passed": False,
-                "status": "error",
-                "failure_reason": f"image_verification_error: {error}",
-                "verification_threshold": category_info.get("match_threshold", 0.0),
-                "margin_threshold": category_info.get("margin_threshold", 0.0),
-                "reference_crop_preview_data_url": None,
-                "current_crop_preview_data_url": None,
-                "siglip_similarity_score": 0.0,
-                "image_category_score": 0.0,
-                "raw_logit": 0.0,
-                "raw_pair_score": 0.0,
-                "relative_percentage": 0.0,
-                "image_category": ", ".join(category_values) or field.get("image_category"),
-                "image_category_label": category_label or category_info.get("label") or field.get("image_category"),
-                "image_category_prompt": category_info.get("prompt") or "",
-                "predicted_image_category": "",
-                "predicted_image_category_label": "",
-                "predicted_image_category_prompt": "",
-                "siglip_target_rank": 0,
-                "siglip_score_margin": 0.0,
-                "siglip_labels": [],
-                "siglip_ui_percentages": [],
-                "error": str(error),
-            }
-        image_verification_threshold = image_match.get("verification_threshold")
-        if image_verification_threshold is None:
-            try:
-                image_verification_threshold = _siglip_image_threshold(image_match.get("image_category"))
-            except Exception:
-                image_verification_threshold = 0.0
-        return {
-            "field_id": field["id"],
-            "anchor_id": field["id"],
-            "field_name": field["field_name"],
-            "display_label": field["display_label"],
-            "anchor_type": "image",
-            "verification_method": "image_feature",
-            "page_number": page_number,
-            "expected_text": image_match.get("image_category_label"),
-            "actual_text": image_match.get("predicted_image_category_label", ""),
-            "normalized_expected": image_match.get("image_category_prompt", ""),
-            "normalized_actual": image_match.get("predicted_image_category_prompt", ""),
-            "text_similarity_score": None,
-            "ocr_confidence": None,
-            "field_score": image_match["score"],
-            "verification_threshold": image_verification_threshold,
-            "margin_threshold": image_match.get("margin_threshold"),
-            "match_type": "image_feature",
-            "required": bool(field["required_for_verification"]),
-            "passed": image_match["passed"],
-            "score": image_match["score"],
-            "failure_reason": image_match["failure_reason"],
-            "roi": field["roi"],
-            "roi_padding": field.get("roi_padding") or 6,
-            "weight": float(field.get("verification_weight") or 1.0),
-            "reference_crop_preview_data_url": image_match.get("reference_crop_preview_data_url"),
-            "current_crop_preview_data_url": image_match.get("current_crop_preview_data_url"),
-            "siglip_similarity_score": image_match.get("siglip_similarity_score", image_match["score"]),
-            "image_category_score": image_match.get("image_category_score", image_match["score"]),
-            "evidence_score": image_match.get("evidence_score", image_match["score"]),
-            "raw_logit": image_match.get("raw_logit"),
-            "raw_pair_score": image_match.get("raw_pair_score"),
-            "relative_percentage": image_match.get("relative_percentage"),
-            "status": image_match.get("status"),
-            "image_category": image_match.get("image_category"),
-            "image_category_label": image_match.get("image_category_label"),
-            "image_category_prompt": image_match.get("image_category_prompt"),
-            "predicted_image_category": image_match.get("predicted_image_category"),
-            "predicted_image_category_label": image_match.get("predicted_image_category_label"),
-            "predicted_image_category_prompt": image_match.get("predicted_image_category_prompt"),
-            "siglip_target_rank": image_match.get("siglip_target_rank"),
-            "siglip_score_margin": image_match.get("siglip_score_margin"),
-            "siglip_labels": image_match.get("siglip_labels"),
-            "siglip_ui_percentages": image_match.get("siglip_ui_percentages"),
-            "siglip_decision": image_match.get("siglip_decision"),
-            **(image_match.get("siglip_decision") or {}),
-            "model_name": image_match.get("model_name"),
-            "device": image_match.get("device"),
-            "model_version": image_match.get("model_version"),
-            "scoring_version": image_match.get("scoring_version"),
-            "error": image_match.get("error"),
-        }
-
-    def verify_template_strict(
-        self,
-        template_id: str,
-        page_image_paths: Optional[Dict[int, str]] = None,
-        verification_fields: Optional[List[Dict[str, Any]]] = None,
-        runtime_cache: Optional[Dict[str, Dict[str, Any]]] = None,
-        use_image_batch: bool = False,
-    ) -> Dict[str, Any]:
-        verify_started = time.perf_counter()
-        step_started = time.perf_counter()
-        fields = verification_fields if verification_fields is not None else self.load_verification_fields(template_id)
-        load_fields_elapsed = time.perf_counter() - step_started
-        if not fields:
-            return {
-                "template_id": template_id,
-                "status": "no_verification_fields",
-                "passed": True,
-                "score": 1.0,
-                "text_anchor_score": 1.0,
-                "image_anchor_score": 1.0,
-                "required_passed": True,
-                "checked_fields": [],
-                "verification_details": [],
-                "verification_strategy": VERIFICATION_STRATEGY_STANDARD,
-                "timing": {
-                    "total_verification": time.perf_counter() - verify_started,
-                    "load_fields": load_fields_elapsed,
-                    "split_anchors": 0.0,
-                    "text_verification": 0.0,
-                    "image_verification": 0.0,
-                    "summary": 0.0,
-                },
-            }
-
-        checked_fields: List[Dict[str, Any]] = []
-        text_verification_elapsed = 0.0
-        image_verification_elapsed = 0.0
-        runtime_timing: Dict[str, Any] = {
-            "text_ocr_inference": 0.0,
-            "image_model_inference": 0.0,
-            "text_ocr_cache_hits": 0,
-            "text_ocr_cache_misses": 0,
-            "image_model_cache_hits": 0,
-            "image_model_cache_misses": 0,
-            "image_model_batch_hits": 0,
-        }
-        step_started = time.perf_counter()
-        text_fields = [field for field in fields if field.get("data_type") != "image"]
-        image_fields = [field for field in fields if field.get("data_type") == "image"]
-        split_anchors_elapsed = time.perf_counter() - step_started
-        for field in text_fields:
-            step_started = time.perf_counter()
-            checked = self._text_anchor_check(field, page_image_paths, runtime_cache, runtime_timing)
-            text_verification_elapsed += time.perf_counter() - step_started
-            checked_fields.append(checked)
-            if not checked["passed"]:
-                step_started = time.perf_counter()
-                summary = self._verification_summary(template_id, checked_fields, status="standard_text_failed")
-                summary_elapsed = time.perf_counter() - step_started
-                return {
-                    **summary,
-                    "passed": False,
-                    "required_passed": False,
-                    "verification_strategy": VERIFICATION_STRATEGY_STANDARD,
-                    "strict_failed_stage": "text",
-                    "standard_failed_stage": "text",
-                    "timing": {
-                        "total_verification": time.perf_counter() - verify_started,
-                        "load_fields": load_fields_elapsed,
-                        "split_anchors": split_anchors_elapsed,
-                        "text_verification": text_verification_elapsed,
-                        "image_verification": image_verification_elapsed,
-                        **runtime_timing,
-                        "summary": summary_elapsed,
-                    },
-                }
-
-        image_match_cache: Dict[str, Dict[str, Any]] = {}
-        image_batch_debug: Optional[Dict[str, Any]] = None
-        if use_image_batch and image_fields:
-            batch_started = time.perf_counter()
-            image_match_cache, image_batch_debug = self.score_image_anchors_batch(image_fields, page_image_paths or {})
-            runtime_timing["image_model_inference"] = float(runtime_timing.get("image_model_inference") or 0.0) + (time.perf_counter() - batch_started)
-            runtime_timing["image_batch"] = image_batch_debug
-
-        for field in image_fields:
-            step_started = time.perf_counter()
-            checked = self._image_anchor_check(
-                field,
-                page_image_paths,
-                runtime_cache,
-                runtime_timing,
-                precomputed_image_match=image_match_cache.get(str(field.get("id"))) if image_match_cache else None,
-            )
-            image_verification_elapsed += time.perf_counter() - step_started
-            checked_fields.append(checked)
-            if not checked["passed"]:
-                step_started = time.perf_counter()
-                summary = self._verification_summary(template_id, checked_fields, status="standard_image_failed")
-                summary_elapsed = time.perf_counter() - step_started
-                return {
-                    **summary,
-                    "passed": False,
-                    "required_passed": False,
-                    "verification_strategy": VERIFICATION_STRATEGY_STANDARD,
-                    "strict_failed_stage": "image",
-                    "standard_failed_stage": "image",
-                    "timing": {
-                        "total_verification": time.perf_counter() - verify_started,
-                        "load_fields": load_fields_elapsed,
-                        "split_anchors": split_anchors_elapsed,
-                        "text_verification": text_verification_elapsed,
-                        "image_verification": image_verification_elapsed,
-                        **runtime_timing,
-                        "summary": summary_elapsed,
-                    },
-                }
-
-        step_started = time.perf_counter()
-        summary = self._verification_summary(template_id, checked_fields, status="standard_verified")
-        summary_elapsed = time.perf_counter() - step_started
-        return {
-            **summary,
-            "passed": True,
-            "required_passed": True,
-            "verification_strategy": VERIFICATION_STRATEGY_STANDARD,
-            "strict_failed_stage": None,
-            "standard_failed_stage": None,
-            "timing": {
-                "total_verification": time.perf_counter() - verify_started,
-                "load_fields": load_fields_elapsed,
-                "split_anchors": split_anchors_elapsed,
-                "text_verification": text_verification_elapsed,
-                "image_verification": image_verification_elapsed,
-                **runtime_timing,
-                "summary": summary_elapsed,
-            },
-        }
 
     def verify_candidate(
         self,
@@ -5247,224 +4621,6 @@ class StorageMaintenanceService:
             "scanned_directories": [str(path) for path in self.GENERATED_DIRS],
             "candidates": candidates[:200],
             "truncated": len(candidates) > 200,
-        }
-
-
-class DecisionService:
-    MIN_RETRIEVAL_SCORE = 0.50
-    HIGH_RETRIEVAL_SCORE = 0.95
-    STRONG_VERIFICATION_SCORE = 0.75
-    DEFAULT_FINAL_CONFIDENCE_THRESHOLD = 0.75
-    DEFAULT_LAYOUT_WEIGHT = 0.50
-    DEFAULT_TEXT_ANCHOR_WEIGHT = 0.35
-    DEFAULT_IMAGE_ANCHOR_WEIGHT = 0.15
-
-    def _truthy(self, value: Any) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return value != 0
-        if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "pass", "passed"}
-        return bool(value)
-
-    def _required_passed_from_fields(self, verification: Dict[str, Any], fallback: bool) -> bool:
-        checked_fields = verification.get("checked_fields") or verification.get("verification_details") or []
-        if not isinstance(checked_fields, list):
-            return fallback
-        required_fields = [
-            field
-            for field in checked_fields
-            if isinstance(field, dict) and self._truthy(field.get("required"))
-        ]
-        if not required_fields:
-            return True
-        return all(self._truthy(field.get("passed")) for field in required_fields)
-
-    def _required_failed_fields(self, verification: Dict[str, Any]) -> List[Dict[str, Any]]:
-        checked_fields = verification.get("checked_fields") or verification.get("verification_details") or []
-        if not isinstance(checked_fields, list):
-            return []
-        failed_fields: List[Dict[str, Any]] = []
-        for field in checked_fields:
-            if not isinstance(field, dict):
-                continue
-            if not self._truthy(field.get("required")):
-                continue
-            if self._truthy(field.get("passed")):
-                continue
-            failed_fields.append(
-                {
-                    "field_id": field.get("field_id") or field.get("anchor_id"),
-                    "field_name": field.get("field_name") or field.get("anchor_name") or field.get("display_label"),
-                    "display_label": field.get("display_label"),
-                    "anchor_type": field.get("anchor_type"),
-                    "page_number": field.get("page_number"),
-                    "score": field.get("score") if field.get("score") is not None else field.get("field_score"),
-                    "expected_text": field.get("expected_text"),
-                    "actual_text": field.get("actual_text"),
-                    "failure_reason": field.get("failure_reason") or field.get("error"),
-                }
-            )
-        return failed_fields
-
-    def final_confidence_threshold(self, template: Optional[Dict[str, Any]], metadata: Dict[str, Any]) -> float:
-        raw_threshold = template.get("final_confidence_threshold") if template else metadata.get("final_confidence_threshold")
-        try:
-            threshold = float(raw_threshold)
-        except (TypeError, ValueError):
-            threshold = self.DEFAULT_FINAL_CONFIDENCE_THRESHOLD
-        if threshold <= 0 or threshold > 1:
-            return self.DEFAULT_FINAL_CONFIDENCE_THRESHOLD
-        return threshold
-
-    def matching_weights(self, template: Optional[Dict[str, Any]], metadata: Optional[Dict[str, Any]] = None) -> Dict[str, float]:
-        metadata = metadata or {}
-
-        def read_weight(key: str, fallback: float) -> float:
-            raw_value = template.get(key) if template and template.get(key) is not None else metadata.get(key)
-            try:
-                value = float(raw_value)
-            except (TypeError, ValueError):
-                value = fallback
-            return max(0.0, min(1.0, value))
-
-        weights = {
-            "layout": read_weight("layout_weight", self.DEFAULT_LAYOUT_WEIGHT),
-            "text_anchor": read_weight("text_anchor_weight", self.DEFAULT_TEXT_ANCHOR_WEIGHT),
-            "image_anchor": read_weight("image_anchor_weight", self.DEFAULT_IMAGE_ANCHOR_WEIGHT),
-        }
-        total = sum(weights.values())
-        if total <= 0:
-            return {
-                "layout": self.DEFAULT_LAYOUT_WEIGHT,
-                "text_anchor": self.DEFAULT_TEXT_ANCHOR_WEIGHT,
-                "image_anchor": self.DEFAULT_IMAGE_ANCHOR_WEIGHT,
-            }
-        return {key: round(value / total, 4) for key, value in weights.items()}
-
-    def _effective_matching_weights(self, configured_weights: Dict[str, float], verification: Dict[str, Any]) -> Dict[str, float]:
-        checked_fields = verification.get("checked_fields") or verification.get("verification_details") or []
-        has_text_anchor = any(isinstance(field, dict) and field.get("anchor_type") == "text" for field in checked_fields)
-        has_image_anchor = any(isinstance(field, dict) and field.get("anchor_type") == "image" for field in checked_fields)
-        weights = dict(configured_weights)
-        if not has_text_anchor:
-            weights["text_anchor"] = 0.0
-        if not has_image_anchor:
-            weights["image_anchor"] = 0.0
-        total = sum(weights.values())
-        if total <= 0:
-            return {"layout": 1.0, "text_anchor": 0.0, "image_anchor": 0.0}
-        return {key: round(value / total, 4) for key, value in weights.items()}
-
-    def decide_candidate(
-        self,
-        retrieval_score: float,
-        verification: Dict[str, Any],
-        final_confidence_threshold: float,
-        matching_weights: Optional[Dict[str, float]] = None,
-    ) -> Dict[str, Any]:
-        retrieval_score = round(float(retrieval_score), 4)
-        verification_score = round(float(verification.get("score", 0.0) or 0.0), 4)
-        text_anchor_score = round(float(verification.get("text_anchor_score", verification_score) or 0.0), 4)
-        image_anchor_score = round(float(verification.get("image_anchor_score", 1.0) or 0.0), 4)
-        verification_passed = self._truthy(verification.get("passed"))
-        raw_required_passed = self._truthy(verification.get("required_passed", verification_passed))
-        required_passed = self._required_passed_from_fields(verification, raw_required_passed)
-        required_failed_fields = self._required_failed_fields(verification)
-        verification_status = verification.get("status")
-        configured_weights = matching_weights or self.matching_weights(None, {})
-        effective_weights = self._effective_matching_weights(configured_weights, verification)
-        anchor_weight = effective_weights["text_anchor"] + effective_weights["image_anchor"]
-        anchor_score = round(
-            (
-                (text_anchor_score * effective_weights["text_anchor"]) +
-                (image_anchor_score * effective_weights["image_anchor"])
-            ) / anchor_weight,
-            4,
-        ) if anchor_weight > 0 else 0.0
-        final_score = round(
-            (retrieval_score * effective_weights["layout"]) +
-            (text_anchor_score * effective_weights["text_anchor"]) +
-            (image_anchor_score * effective_weights["image_anchor"]),
-            4,
-        )
-        final_threshold_passed = final_score >= final_confidence_threshold
-        layout_passed = retrieval_score >= self.MIN_RETRIEVAL_SCORE
-        final_passed = final_threshold_passed and required_passed and layout_passed
-        if not required_passed:
-            decision_path = "required_verification_failed"
-        elif not layout_passed:
-            decision_path = "layout_score_below_threshold"
-        elif not final_threshold_passed:
-            decision_path = "final_threshold_failed"
-        else:
-            decision_path = "final_threshold_passed"
-
-        return {
-            "retrieval_score": retrieval_score,
-            "verification_score": verification_score,
-            "text_anchor_score": text_anchor_score,
-            "image_anchor_score": image_anchor_score,
-            "anchor_score": anchor_score,
-            "matching_weights": configured_weights,
-            "effective_matching_weights": effective_weights,
-            "verification_passed": verification_passed,
-            "final_score": round(float(final_score), 4),
-            "final_passed": final_passed,
-            "decision_reason": decision_path,
-            "decision_path": decision_path,
-            "final_confidence_threshold": final_confidence_threshold,
-            "final_threshold_passed": final_threshold_passed,
-            "layout_passed": layout_passed,
-            "required_passed": required_passed,
-            "required_failed_fields": required_failed_fields,
-        }
-
-    def decide_candidate_strict(
-        self,
-        retrieval_score: float,
-        verification: Dict[str, Any],
-        final_confidence_threshold: float,
-        matching_weights: Optional[Dict[str, float]] = None,
-    ) -> Dict[str, Any]:
-        retrieval_score = round(float(retrieval_score), 4)
-        verification_score = round(float(verification.get("score", 0.0) or 0.0), 4)
-        text_anchor_score = round(float(verification.get("text_anchor_score", verification_score) or 0.0), 4)
-        image_anchor_score = round(float(verification.get("image_anchor_score", 1.0) or 0.0), 4)
-        verification_passed = self._truthy(verification.get("passed"))
-        layout_passed = retrieval_score >= self.MIN_RETRIEVAL_SCORE
-        required_passed = self._required_passed_from_fields(verification, verification_passed)
-        required_failed_fields = self._required_failed_fields(verification)
-        final_passed = verification_passed and required_passed and layout_passed
-        configured_weights = matching_weights or self.matching_weights(None, {})
-        effective_weights = self._effective_matching_weights(configured_weights, verification)
-        if not layout_passed:
-            decision_path = "standard_layout_score_below_threshold"
-        elif not verification_passed:
-            failed_stage = verification.get("standard_failed_stage") or verification.get("strict_failed_stage")
-            decision_path = f"standard_{failed_stage}_anchor_failed" if failed_stage else "standard_anchor_failed"
-        else:
-            decision_path = "standard_all_anchors_passed"
-        return {
-            "retrieval_score": retrieval_score,
-            "verification_score": verification_score,
-            "text_anchor_score": text_anchor_score,
-            "image_anchor_score": image_anchor_score,
-            "anchor_score": verification_score,
-            "matching_weights": configured_weights,
-            "effective_matching_weights": effective_weights,
-            "verification_passed": verification_passed,
-            "final_score": retrieval_score if final_passed else verification_score,
-            "final_passed": final_passed,
-            "decision_reason": decision_path,
-            "decision_path": decision_path,
-            "final_confidence_threshold": final_confidence_threshold,
-            "final_threshold_passed": None,
-            "layout_passed": layout_passed,
-            "required_passed": required_passed,
-            "required_failed_fields": required_failed_fields,
-            "verification_strategy": VERIFICATION_STRATEGY_STANDARD,
         }
 
 
@@ -6169,7 +5325,6 @@ class AdminTemplateService:
         return coalesced
 
     def _apply_pending_template_page_ops(self, conn: Any, ops_by_template: Dict[str, List[Dict[str, Any]]]) -> None:
-        templates_to_refresh: set[str] = set()
         column_map = {
             "page_number": "page_number",
             "page_name": "page_name",
@@ -6195,9 +5350,6 @@ class AdminTemplateService:
                     f"UPDATE template_pages SET {', '.join(f'{column} = ?' for column, _ in updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND template_version_id = ?",
                     [*(value for _, value in updates), page_id, template_id],
                 )
-                templates_to_refresh.add(str(template_id))
-        for template_id in templates_to_refresh:
-            _refresh_template_layout_signatures(conn, template_id)
 
     def _apply_pending_template_field_ops(self, conn: Any, ops_by_template: Dict[str, List[Dict[str, Any]]]) -> None:
         for template_id, ops in ops_by_template.items():
@@ -6508,15 +5660,8 @@ class AdminTemplateService:
         if draft.get("status") == "not_found":
             raise HTTPException(status_code=404, detail="Template not found")
         with _connect() as conn:
-            pages = _refresh_template_layout_signatures(conn, template_id)
-            conn.commit()
-        _refresh_published_template_cache(template_id)
-        passed = bool(pages) and all(
-            page.get("status") == "generated" and int(page.get("region_count") or 0) > 0
-            for page in pages
-        )
-        return {"template_id": template_id, "status": "completed", "passed": passed,
-                "layout_signature_pages": pages, "page_count": len(draft.get("pages") or []), "timestamp": _now()}
+            readiness = _template_anchor_readiness(conn, template_id)
+        return {**readiness, "status": "completed", "timestamp": _now()}
 
     def _prepublish_detection_page_paths(self, detection: Dict[str, Any]) -> Dict[int, str]:
         page_paths: Dict[int, str] = {}
@@ -6742,6 +5887,7 @@ class AdminTemplateService:
 
         # 1. ให้ผ่านสถานะก่อนสร้าง publish job
         with _connect() as conn:
+            _require_template_anchor_readiness(conn, template_id)
             conn.execute(
                 """
                 UPDATE template_versions
@@ -6753,10 +5899,10 @@ class AdminTemplateService:
             )
             conn.commit()
 
-        embedding_service = EmbeddingService()
+        publish_service = TemplatePublishService()
 
         # 2. สร้าง Publish Job จริง
-        created = embedding_service.create_embedding_job(template_id)
+        created = publish_service.create_publish_job(template_id)
 
         job = created.get("job") or {}
         job_id = job.get("id")
@@ -6767,7 +5913,7 @@ class AdminTemplateService:
             )
 
         # 3. รัน Publish Job ให้เสร็จทันที
-        completed = embedding_service.run_job_dev(job_id)
+        completed = publish_service.run_job_dev(job_id)
 
         completed_job = completed.get("job") or {}
         completed_template = completed.get("template") or {}

@@ -57,7 +57,7 @@ class AdminAnchorDetectionTests(unittest.TestCase):
                          _load_anchor_strategy_templates=loader,
                          verification_service=SimpleNamespace(verify_template=verify, _verification_summary=no_anchors,
                                                                DEFAULT_VERIFICATION_THRESHOLD=.75),
-                         DecisionService=SimpleNamespace(DEFAULT_FINAL_CONFIDENCE_THRESHOLD=.75),
+                         DEFAULT_FINAL_CONFIDENCE_THRESHOLD=.75,
                          DETECTION_BATCH_MODE_GLOBAL='global', VERIFICATION_STRATEGY_IMAGE_ONLY='image_only',
                          _persist_selected_processing_pages=Mock(return_value=[]),
                          _detection_timing_debug=Mock(return_value={}), _detection_preview_url=lambda path: path,

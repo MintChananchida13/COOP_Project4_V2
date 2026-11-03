@@ -88,9 +88,9 @@ class AnchorLoadingTests(unittest.TestCase):
         namespace = {'time': time, 'json': json, '_connect': Connection,
                      '_ms': lambda value: value * 1000,
                      'published_template_cache': SimpleNamespace(get_verification_anchor_templates=lambda kinds: None)}
-        functions('app/processing/detection_service.py', {'_load_text_only_template_anchors'}, namespace)
+        functions('app/processing/detection_service.py', {'_load_anchor_strategy_templates'}, namespace)
         for kinds in [{'text'}, {'image'}, {'text', 'image'}]:
-            templates, _ = namespace['_load_text_only_template_anchors'](anchor_types=kinds)
+            templates, _ = namespace['_load_anchor_strategy_templates'](anchor_types=kinds)
             mapped = {item['template_id']: item for item in templates}
             self.assertEqual({item['data_type'] for item in mapped['template']['verification_anchors']}, kinds)
             self.assertEqual(mapped['empty']['verification_anchors'], [])
@@ -98,12 +98,9 @@ class AnchorLoadingTests(unittest.TestCase):
                 image = next(item for item in mapped['template']['verification_anchors'] if item['data_type'] == 'image')
                 self.assertEqual(image['image_category'], 'person')
 
-    def test_policy_for_all_six_modes(self):
-        expected = {'standard': {'text', 'image'}, 'strict': {'text', 'image'},
-                    'text_only': {'text'}, 'text_image': {'text', 'image'},
-                    'image_only': {'image'}, 'layout_only': set()}
-        for mode, kinds in expected.items():
-            self.assertEqual(verification_anchor_types(mode), kinds)
+    def test_policy_for_both_supported_modes(self):
+        for mode in ('standard', 'strict'):
+            self.assertEqual(verification_anchor_types(mode), {'text', 'image'})
 
     def loader(self, cached=None):
         calls = []
@@ -123,7 +120,7 @@ class AnchorLoadingTests(unittest.TestCase):
         namespace = {'time': time, 'json': json, '_connect': Connection,
                      '_ms': lambda value: value * 1000,
                      'published_template_cache': SimpleNamespace(get_verification_anchor_templates=lambda kinds: cached)}
-        functions('app/processing/detection_service.py', {'_load_text_only_template_anchors', '_load_anchor_strategy_templates'}, namespace)
+        functions('app/processing/detection_service.py', {'_load_anchor_strategy_templates', '_load_anchor_strategy_templates'}, namespace)
         return namespace['_load_anchor_strategy_templates'], calls
 
     def test_database_fallback_filters_all_mode_types_and_keeps_metadata(self):
@@ -206,53 +203,7 @@ class AnchorLoadingTests(unittest.TestCase):
             if kinds == set():
                 self.assertIn('AND FALSE', query)
 
-    def test_layout_only_keeps_extraction_roi_but_does_not_run_extraction_ocr(self):
-        path = ROOT / 'app/processing/detection_service.py'
-        tree = ast.parse(path.read_text(encoding='utf-8-sig'))
-        candidate = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == '_candidate_from_result')
-        block = next(node for node in candidate.body if isinstance(node, ast.If)
-                     and ast.unparse(node.test) == "template_id and decision['final_passed']")
-        for mode in ['layout_only', 'standard', 'strict']:
-            with self.subTest(mode=mode):
-                calls = []
-                def fields(template_id, anchor_types=None):
-                    calls.append(('fields', anchor_types))
-                    return [{'id': 'extraction', 'use_for_verification': False}]
-                def ocr(*args):
-                    calls.append(('ocr', None))
-                    return {'status': 'done'}
-                namespace = dict(template_id='template', decision={'final_passed': True},
-                    time=time, anchor_types=set(verification_anchor_types(mode)), candidate_timing={},
-                    _fetch_template_fields=fields, _template_roi_items=lambda *args: [{'id': 'extraction'}],
-                    roi_coordinate_space='template_canvas', _template_canvas_projection=lambda *args: {'projected_fields': []},
-                    template_page_number=1, alignment_status='skipped', alignment_reason=None,
-                    extraction_image_path='image.png', extraction_image_preview_url=None,
-                    verification_strategy=mode, VERIFICATION_STRATEGY_LAYOUT_ONLY='layout_only', _run_extraction_test=ocr)
-                exec(compile(ast.Module(body=[block], type_ignores=[]), str(path), 'exec'), namespace)
-                self.assertEqual(calls[0], ('fields', set(verification_anchor_types(mode))))
-                self.assertEqual(namespace['template_rois'], [{'id': 'extraction'}])
-                self.assertEqual(any(call[0] == 'ocr' for call in calls), mode != 'layout_only')
 
-    def test_extraction_field_query_keeps_fields_and_filters_only_anchors(self):
-        calls = []
-        class Connection:
-            def __enter__(self):
-                return self
-            def __exit__(self, *args):
-                pass
-            def execute(self, query, params):
-                calls.append((query, params))
-                return SimpleNamespace(fetchall=lambda: [])
-        namespace = {'_connect': Connection}
-        functions('app/processing/detection_service.py', {'_fetch_template_fields'}, namespace)
-        for kinds in [set(), {'text'}, {'image'}, {'text', 'image'}]:
-            namespace['_fetch_template_fields']('template', anchor_types=kinds)
-            query, params = calls[-1]
-            extraction_query, anchor_query = query.split('UNION ALL')
-            self.assertIn('FROM extraction_fields', extraction_query)
-            self.assertNotIn('anchor_type IN', extraction_query)
-            self.assertEqual(params, ('template', 'template', *sorted(kinds)))
-            self.assertIn('AND FALSE' if not kinds else 'va.anchor_type IN', anchor_query)
 
 
 if __name__ == '__main__':
