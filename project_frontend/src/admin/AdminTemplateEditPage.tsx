@@ -68,14 +68,13 @@ const clampUnit = (value: number) => Math.max(0, Math.min(1, value));
 const roundWeight = (value: number) => Number(clampUnit(value).toFixed(4));
 const DEFAULT_FINAL_CONFIDENCE_THRESHOLD = 0.75;
 const DEFAULT_MATCHING_WEIGHTS = {
-  layoutWeight: 0.4,
-  textAnchorWeight: 0.3,
-  imageAnchorWeight: 0.3,
+  layoutWeight: 0,
+  textAnchorWeight: 0.5,
+  imageAnchorWeight: 0.5,
 };
 const MIN_DUAL_ANCHOR_WEIGHT = 0.2;
 
 const calculateMatchingWeights = ({
-  layoutWeight,
   textAnchorCount,
   imageAnchorCount,
   preferredTextWeight,
@@ -88,9 +87,9 @@ const calculateMatchingWeights = ({
   const hasText = textAnchorCount > 0;
   const hasImage = imageAnchorCount > 0;
   if (!hasText && !hasImage) {
-    return { layoutWeight: 1, textAnchorWeight: 0, imageAnchorWeight: 0 };
+    return { layoutWeight: 0, textAnchorWeight: 0, imageAnchorWeight: 0 };
   }
-  const layout = roundWeight(Math.max(0.3, Math.min(0.5, layoutWeight)));
+  const layout = 0;
   const remaining = roundWeight(1 - layout);
   if (hasText && hasImage) {
     const text = preferredTextWeight === undefined
@@ -1003,7 +1002,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
                   <p className="text-[11px] font-black uppercase tracking-wider text-indigo-600">2.3</p>
                   <h2 className="mt-1 text-xl font-black text-slate-950">ตรวจสอบค่าเกณฑ์ตัดสิน</h2>
                   <p className="mt-2 max-w-3xl text-sm font-semibold leading-6 text-slate-500">
-                    ตั้งค่าการตัดสินใจ ใช้เป็นเกณฑ์ตัดสิน Final Score ในขั้น New Document Test และตอน Publish พร้อมกำหนดน้ำหนัก Layout/Text/Image Anchors ก่อนอัปเดต Template
+                    ตั้งเกณฑ์ Final Score และน้ำหนัก Text/Image Anchors สำหรับโหมด standard และ strict
                   </p>
                 </div>
                 <button
@@ -1040,32 +1039,9 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
                   <div className="rounded-xl border border-slate-200 bg-white p-4">
                     <h3 className="text-xs font-black uppercase tracking-wider text-slate-700">กำหนดค่าน้ำหนัก</h3>
                     <p className="mt-1 text-[11px] font-semibold leading-5 text-slate-500">
-                      กำหนดน้ำหนัก Layout แล้วระบบจะคำนวณส่วนที่เหลือให้ Text/Image Anchors อัตโนมัติ
+                      กำหนดน้ำหนัก Text และ Image รวมกันเป็น 100%
                     </p>
                     <div className="mt-4 grid gap-4 lg:grid-cols-3">
-                      <label className="space-y-2 rounded-xl border border-slate-100 bg-slate-50 p-3">
-                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">Layout</span>
-                        <input
-                          type="range"
-                          min="30"
-                          max="50"
-                          step="5"
-                          value={Math.round(layoutWeightDraft * 100)}
-                          onChange={(event) => setLayoutWeightDraft(Number(event.target.value) / 100)}
-                          className="w-full"
-                        />
-                        <select
-                          value={Math.round(layoutWeightDraft * 100)}
-                          onChange={(event) => setLayoutWeightDraft(Number(event.target.value) / 100)}
-                          className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-black text-slate-700"
-                        >
-                          {[30, 35, 40, 45, 50].map((value) => (
-                            <option key={value} value={value}>
-                              {value}%
-                            </option>
-                          ))}
-                        </select>
-                      </label>
                       <label className={`space-y-2 rounded-xl border p-3 transition ${hasTextAnchors ? "border-slate-100 bg-slate-50" : "border-slate-100 bg-slate-50/50 opacity-55"}`}>
                         <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">Text</span>
                         <input
@@ -1121,7 +1097,6 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
                 <aside className="space-y-3 rounded-xl border border-indigo-200 bg-indigo-50/70 p-4">
                   <h3 className="text-xs font-black uppercase tracking-wider text-indigo-900">Effective Matching Weights</h3>
                   <div className="grid gap-2">
-                    <div className="rounded-lg bg-white px-3 py-2 text-xs font-black text-slate-700">Layout {formatPercent(effectiveMatchingWeights.layoutWeight)}</div>
                     <div className="rounded-lg bg-white px-3 py-2 text-xs font-black text-slate-700">Text {formatPercent(effectiveMatchingWeights.textAnchorWeight)}</div>
                     <div className="rounded-lg bg-white px-3 py-2 text-xs font-black text-slate-700">Image {formatPercent(effectiveMatchingWeights.imageAnchorWeight)}</div>
                   </div>

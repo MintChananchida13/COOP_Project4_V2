@@ -12,6 +12,8 @@ import numpy as np
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 
 from fastapi import HTTPException
 
@@ -3994,11 +3996,25 @@ def _candidate_from_anchor_strategy(
 ) -> Dict[str, Any]:
     template_id = str(template.get("template_id"))
     checked_fields = verification.get("checked_fields", [])
-    final_threshold = float(template.get("final_confidence_threshold") or DecisionService.DEFAULT_FINAL_CONFIDENCE_THRESHOLD)
+    threshold = template.get("final_confidence_threshold")
+    final_threshold = float(threshold if threshold is not None else DecisionService.DEFAULT_FINAL_CONFIDENCE_THRESHOLD)
     verification_score = float(verification.get("score", 0.0) or 0.0)
     final_passed = bool(verification.get("passed")) and bool(fields) and verification_score >= final_threshold
     text_score = verification.get("text_anchor_score")
-    image_score = verification.get("image_anchor_score")
+    image_score = 0.0 if verification.get("image_verification_skipped") else verification.get("image_anchor_score")
+    main_page = int(template.get("main_page_number") or 1) if template.get("detection_mode") == "main_page" else 1
+    image_count = sum(field.get("data_type") == "image" for field in fields)
+    text_count = sum(field.get("data_type") == "text" for field in fields)
+    text_weight = max(0.0, float(template.get("text_anchor_weight") or 0.0)) if text_count else 0.0
+    image_weight = max(0.0, float(template.get("image_anchor_weight") or 0.0)) if image_count else 0.0
+    if text_weight + image_weight <= 0:
+        text_weight, image_weight = float(bool(text_count)), float(bool(image_count))
+    total_weight = text_weight + image_weight or 1.0
+    weights = {"layout": 0.0, "text_anchor": text_weight / total_weight,
+               "image_anchor": image_weight / total_weight}
+    verification_score = (float(text_score or 0.0) * weights["text_anchor"]
+                          + float(image_score or 0.0) * weights["image_anchor"])
+    final_passed = bool(verification.get("passed")) and bool(fields) and verification_score >= final_threshold
     return {
         "template_id": template_id,
         "vector_id": f"{strategy}:{template_id}",
@@ -4017,8 +4033,8 @@ def _candidate_from_anchor_strategy(
         "model_name": strategy,
         "vector_store_engine": strategy,
         "retrieval_engine": strategy,
-        "query_page_index": 1,
-        "template_page_number": 1,
+        "query_page_index": main_page,
+        "template_page_number": main_page,
         "alignment_status": "skipped",
         "alignment": {"alignment_status": "skipped", "alignment_reason": f"{strategy}_strategy"},
         "alignment_debug": {"alignment_status": "skipped", "reason": f"{strategy}_strategy"},
@@ -4032,12 +4048,12 @@ def _candidate_from_anchor_strategy(
         "before_alignment_verification": round(verification_score, 4),
         "after_alignment_verification": None,
         "verification_improvement": None,
-        "normalized_image_path": page_image_paths.get(1),
-        "normalized_image_preview_url": _detection_preview_url(page_image_paths.get(1)) if page_image_paths.get(1) else None,
-        "extraction_image_path": page_image_paths.get(1),
-        "extraction_image_preview_url": _detection_preview_url(page_image_paths.get(1)) if page_image_paths.get(1) else None,
+        "normalized_image_path": page_image_paths.get(main_page),
+        "normalized_image_preview_url": _detection_preview_url(page_image_paths.get(main_page)) if page_image_paths.get(main_page) else None,
+        "extraction_image_path": page_image_paths.get(main_page),
+        "extraction_image_preview_url": _detection_preview_url(page_image_paths.get(main_page)) if page_image_paths.get(main_page) else None,
         "selected_processing_source": f"{strategy}_original_roi",
-        "selected_processing_path": page_image_paths.get(1),
+        "selected_processing_path": page_image_paths.get(main_page),
         "roi_coordinate_space": "normalized",
         "verification": verification,
         "verification_details": checked_fields,
@@ -4045,8 +4061,8 @@ def _candidate_from_anchor_strategy(
         "text_anchor_score": text_score,
         "image_anchor_score": image_score,
         "anchor_score": round(verification_score, 4),
-        "matching_weights": {"layout": 0.0, "text_anchor": 0.0 if strategy == VERIFICATION_STRATEGY_IMAGE_ONLY else 1.0, "image_anchor": 1.0 if strategy == VERIFICATION_STRATEGY_IMAGE_ONLY else 0.0},
-        "effective_matching_weights": {"layout": 0.0, "text_anchor": 0.0 if strategy == VERIFICATION_STRATEGY_IMAGE_ONLY else 1.0, "image_anchor": 1.0 if strategy == VERIFICATION_STRATEGY_IMAGE_ONLY else 0.0},
+        "matching_weights": weights,
+        "effective_matching_weights": weights,
         "verification_passed": bool(verification.get("passed")),
         "final_score": round(verification_score, 4),
         "final_passed": final_passed,
@@ -4204,6 +4220,70 @@ def _ordered_text_only_templates(templates: List[Dict[str, Any]]) -> tuple[List[
     return prepared, debug_order
 
 
+def _verify_sequential_anchor_template(
+    template_id: str,
+    fields: List[Dict[str, Any]],
+    page_image_paths: Dict[int, str],
+) -> Dict[str, Any]:
+    """Strict: finish Text checks before starting any Image checks."""
+    checked_fields: List[Dict[str, Any]] = []
+    combined_timing: Dict[str, Any] = {}
+    for anchor_type in ("text", "image"):
+        stage_fields = [field for field in fields if field.get("data_type") == anchor_type]
+        if not stage_fields:
+            continue
+        stage = verification_service.verify_template(
+            template_id, page_image_paths, stage_fields,
+            use_image_batch=anchor_type == "image",
+        )
+        stage_checked = stage.get("checked_fields") or []
+        checked_fields.extend(stage_checked)
+        for key, value in (stage.get("timing") or {}).items():
+            if isinstance(value, (int, float)):
+                combined_timing[key] = combined_timing.get(key, 0.0) + value
+            elif isinstance(value, list):
+                combined_timing.setdefault(key, []).extend(value)
+            elif value is not None:
+                combined_timing[key] = value
+        stage_passed = bool(stage.get("passed")) and len(stage_checked) == len(stage_fields) and all(
+            field.get("passed") for field in stage_checked
+        )
+        if not stage_passed:
+            result = verification_service._verification_summary(template_id, checked_fields)
+            result.update(passed=False, timing=combined_timing,
+                          image_verification_skipped=anchor_type == "text",
+                          failed_stage=anchor_type)
+            return result
+    result = verification_service._verification_summary(template_id, checked_fields)
+    result.update(passed=bool(checked_fields) and all(field.get("passed") for field in checked_fields),
+                  timing=combined_timing, image_verification_skipped=False)
+    return result
+
+
+def _run_parallel_anchor_batches(
+    ordered_templates: List[tuple[Dict[str, Any], List[Dict[str, Any]]]],
+    page_image_paths: Dict[int, str],
+    timing: Dict[str, Any],
+) -> tuple[Dict[str, Any], Dict[str, str], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    """Standard: run Text OCR and Image inference concurrently for the full pool."""
+    image_fields = [field for _, fields in ordered_templates for field in fields
+                    if field.get("data_type") == "image"]
+
+    def image_batch():
+        started = time.perf_counter()
+        result = verification_service.score_image_anchors_batch(image_fields, page_image_paths)
+        timing["anchor_strategy_global_image_batch"] = time.perf_counter() - started
+        return result
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        text_future = executor.submit(copy_context().run, _run_global_text_anchor_batch,
+                                      ordered_templates, page_image_paths, timing, "anchor_strategy")
+        image_future = executor.submit(copy_context().run, image_batch)
+        text_results, text_errors, text_debug = text_future.result()
+        image_matches, image_debug = image_future.result()
+    return text_results, text_errors, text_debug, image_matches, image_debug
+
+
 def _detect_template_anchor_strategy(
     query_id: str,
     normalized_pages: List[Dict[str, Any]],
@@ -4213,40 +4293,47 @@ def _detect_template_anchor_strategy(
     source_type: str,
     strategy: str,
     detection_batch_mode: str,
+    selected_template_id: Optional[str] = None,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    user_context: bool = False,
 ) -> Dict[str, Any]:
     started = time.perf_counter()
+    strategy = normalize_verification_strategy(strategy)
+    detection_batch_mode = "per_template" if strategy == VERIFICATION_STRATEGY_STRICT else DETECTION_BATCH_MODE_GLOBAL
     page_image_paths = {int(page["page_index"]): page["normalized_path"] for page in normalized_pages}
     anchor_types = set(verification_anchor_types(strategy))
     load_started = time.perf_counter()
-    templates, load_debug = _load_anchor_strategy_templates(anchor_types, request_cache)
+    if selected_template_id:
+        template, _, _ = _fetch_template_cached(selected_template_id, request_cache)
+        if template is None:
+            raise HTTPException(status_code=404, detail="Template not found")
+        fields, _, _ = _fetch_verification_fields_cached(selected_template_id, request_cache, anchor_types)
+        if template.get("detection_mode") == "main_page":
+            main_page = int(template.get("main_page_number") or 1)
+            fields = [field for field in fields if int(field.get("page_number") or 1) == main_page]
+        templates = [{**template, "template_id": selected_template_id,
+                      "template_name": template.get("name"), "template_status": template.get("status"),
+                      "verification_anchors": fields}]
+        load_debug = {"source": "selected_template", "template_count": 1}
+    else:
+        templates, load_debug = _load_anchor_strategy_templates(anchor_types, request_cache)
     timing["anchor_strategy_template_load"] = time.perf_counter() - load_started
+    templates = [
+        {**template, "verification_anchors": [
+            field for field in template.get("verification_anchors") or []
+            if template.get("detection_mode") != "main_page"
+            or int(field.get("page_number") or 1) == int(template.get("main_page_number") or 1)
+        ]} for template in templates
+    ]
     ordered_templates, template_order_debug = _ordered_anchor_templates(templates, anchor_types)
-    global_text_results: Optional[Dict[str, Dict[str, Any]]] = None
-    global_text_errors: Optional[Dict[str, str]] = None
-    global_text_debug: Optional[Dict[str, Any]] = None
-    if detection_batch_mode == DETECTION_BATCH_MODE_GLOBAL and "text" in anchor_types:
-        global_text_results, global_text_errors, global_text_debug = _run_global_text_anchor_batch(
-            ordered_templates,
-            page_image_paths,
-            timing,
-            "anchor_strategy",
+    global_text_results = global_text_errors = global_text_debug = None
+    global_image_matches = global_image_debug = None
+    if strategy == VERIFICATION_STRATEGY_STANDARD:
+        (global_text_results, global_text_errors, global_text_debug,
+         global_image_matches, global_image_debug) = _run_parallel_anchor_batches(
+            ordered_templates, page_image_paths, timing,
         )
         timing["anchor_strategy_global_text_batch_debug"] = global_text_debug
-    global_image_matches: Optional[Dict[str, Dict[str, Any]]] = None
-    global_image_debug: Optional[Dict[str, Any]] = None
-    if detection_batch_mode == DETECTION_BATCH_MODE_GLOBAL and "image" in anchor_types:
-        image_batch_started = time.perf_counter()
-        global_image_fields = [
-            field
-            for _, fields in ordered_templates
-            for field in fields
-            if str(field.get("data_type") or "").lower() == "image"
-        ]
-        global_image_matches, global_image_debug = verification_service.score_image_anchors_batch(
-            global_image_fields,
-            page_image_paths,
-        )
-        timing["anchor_strategy_global_image_batch"] = time.perf_counter() - image_batch_started
         timing["anchor_strategy_global_image_batch_debug"] = global_image_debug
     match_started = time.perf_counter()
     candidates: List[Dict[str, Any]] = []
@@ -4263,10 +4350,16 @@ def _detect_template_anchor_strategy(
         for page in normalized_pages
     }
     early_exit = False
-    for template, fields in ordered_templates:
+    for template_index, (template, fields) in enumerate(ordered_templates, start=1):
+        if progress_callback is not None:
+            progress_callback({"stage": "candidate_evaluation", "current_rank": template_index,
+                               "total_rank": len(ordered_templates), "template_id": template.get("template_id"),
+                               "template_name": template.get("template_name"), "version_name": template.get("version_name")})
         if not fields:
             verification = verification_service._verification_summary(str(template.get("template_id")), [], status=f"no_{strategy}_anchors")
             verification["passed"] = False
+        elif strategy == VERIFICATION_STRATEGY_STRICT:
+            verification = _verify_sequential_anchor_template(str(template.get("template_id")), fields, page_image_paths)
         else:
             verification = verification_service.verify_template(
                 str(template.get("template_id")),
@@ -4279,13 +4372,36 @@ def _detect_template_anchor_strategy(
                 use_image_batch=detection_batch_mode != DETECTION_BATCH_MODE_GLOBAL,
             )
         candidate = _candidate_from_anchor_strategy(template, verification, fields, page_image_paths, strategy, timing)
+        if template.get("page_count") is not None:
+            expected_pages = int(template.get("page_count") or 0)
+            main_page_mode = template.get("detection_mode") == "main_page"
+            page_count_valid = (
+                int(template.get("main_page_number") or 1) in page_image_paths
+                if main_page_mode else expected_pages == len(page_image_paths)
+            )
+            if not page_count_valid:
+                candidate.update(final_passed=False, decision_reason="page_count_mismatch",
+                                 decision_path="page_count_mismatch", candidate_rejection_reason="page_count_mismatch")
         candidates.append(candidate)
-        page = pages_by_index.get(1) or next(iter(pages_by_index.values()), None)
-        if page is not None:
-            page["candidates"].append(candidate)
-        if candidate.get("final_passed"):
-            early_exit = True
-            break
+        target_page_indexes = (
+            [int(template.get("main_page_number") or 1)]
+            if template.get("detection_mode") == "main_page" else list(pages_by_index)
+        )
+        for target_page_index in target_page_indexes:
+            page = pages_by_index.get(target_page_index)
+            if page is None:
+                continue
+            if target_page_index == int(candidate.get("query_page_index") or 1):
+                page_candidate = candidate
+            else:
+                image_path = page_image_paths[target_page_index]
+                preview_url = _detection_preview_url(image_path)
+                page_candidate = {**candidate, "query_page_index": target_page_index,
+                                  "template_page_number": target_page_index,
+                                  "normalized_image_path": image_path, "normalized_image_preview_url": preview_url,
+                                  "extraction_image_path": image_path, "extraction_image_preview_url": preview_url,
+                                  "selected_processing_path": image_path}
+            page["candidates"].append(page_candidate)
     timing["anchor_strategy_matching"] = time.perf_counter() - match_started
     candidates.sort(key=lambda item: (bool(item.get("final_passed")), float(item.get("final_score") or 0.0)), reverse=True)
     for page in pages_by_index.values():
@@ -4294,6 +4410,8 @@ def _detect_template_anchor_strategy(
     pages = list(pages_by_index.values())
     best_candidate = next((candidate for candidate in candidates if candidate.get("final_passed")), None)
     matched = best_candidate is not None
+    if user_context and best_candidate is not None:
+        _attach_main_page_auto_roi_pages([best_candidate], normalized_pages)
     processing_pages = _persist_selected_processing_pages(query_id, pages, best_candidate, normalized_pages)
     if best_candidate is not None:
         best_candidate["processing_pages"] = processing_pages
@@ -4307,9 +4425,9 @@ def _detect_template_anchor_strategy(
         "best_candidate": best_candidate,
         "candidates": candidates,
         "pages": pages,
-        "main_page_auto_roi_pages": [],
-        "main_page_auto_roi_total_pages": 0,
-        "main_page_auto_roi_total_regions": 0,
+        "main_page_auto_roi_pages": (best_candidate or {}).get("main_page_auto_roi_pages", []),
+        "main_page_auto_roi_total_pages": (best_candidate or {}).get("main_page_auto_roi_total_pages", 0),
+        "main_page_auto_roi_total_regions": (best_candidate or {}).get("main_page_auto_roi_total_regions", 0),
         "message": None if matched else f"ไม่พบ Template ที่ผ่าน {strategy}",
         "debug": {
             "pipeline_core": PIPELINE_CONFIG.to_debug_dict(),
@@ -5368,6 +5486,7 @@ def detect_template_dev(
     user_context: bool = False,
     compact_candidates: bool = False,
     skip_query_normalization: bool = False,
+    admin_context: bool = False,
 ) -> Dict[str, Any]:
     query_id = f"detq_{uuid4().hex[:12]}"
     timing: Dict[str, float] = {}
@@ -5383,7 +5502,7 @@ def detect_template_dev(
         normalized_pages = _normalize_query_pages(
             query_id,
             page_paths,
-            skip_normalization=skip_normalization,
+            skip_normalization=skip_normalization or admin_context,
             source_type=source_type,
             timing=timing,
             disable_pdf_subdocument_crop=disable_pdf_subdocument_crop,
@@ -5392,18 +5511,6 @@ def detect_template_dev(
         if prepublish_timing:
             print(f"[PREPUBLISH] prepare pages done: {timing['prepare_pages']:.2f}s")
         step_started = time.perf_counter()
-        page_image_paths = {page["page_index"]: page["normalized_path"] for page in normalized_pages}
-        query_page_count = len(normalized_pages)
-        retrieval_limit = (
-            max(1, int(retrieval_limit_override))
-            if retrieval_limit_override is not None
-            else DETECTION_RETRIEVAL_LIMIT if include_template_id else USER_DETECTION_RETRIEVAL_LIMIT
-        )
-        verification_candidate_limit = (
-            max(1, int(verification_candidate_limit_override))
-            if verification_candidate_limit_override is not None
-            else DETECTION_VERIFICATION_CANDIDATE_LIMIT
-        )
         timing["post_prepare_setup"] = time.perf_counter() - step_started
         step_started = time.perf_counter()
         if verification_strategy_override is not None:
@@ -5415,178 +5522,12 @@ def detect_template_dev(
         verification_strategy = normalize_verification_strategy(verification_strategy_setting.get("verification_strategy"))
         timing["verification_strategy_load"] = time.perf_counter() - step_started
         detection_batch_mode = DETECTION_BATCH_MODE_GLOBAL
-        if verification_strategy == VERIFICATION_STRATEGY_TEXT_ONLY:
-            return _finish_detection_result(_detect_template_text_only(
-                query_id,
-                normalized_pages,
-                timing,
-                request_cache,
-                total_started,
-                source_type,
-                detection_batch_mode,
-            ))
-        if verification_strategy in {VERIFICATION_STRATEGY_TEXT_IMAGE, VERIFICATION_STRATEGY_IMAGE_ONLY}:
-            return _finish_detection_result(_detect_template_anchor_strategy(
-                query_id,
-                normalized_pages,
-                timing,
-                request_cache,
-                total_started,
-                source_type,
-                verification_strategy,
-                detection_batch_mode,
-            ))
-        pages: List[Dict[str, Any]] = []
-        confirmed_main_page_candidate: Optional[Dict[str, Any]] = None
-        step_started = time.perf_counter()
-        included_template, _, _ = _fetch_template_cached(include_template_id, request_cache)
-        included_template_detection_mode = str((included_template or {}).get("detection_mode") or "all_pages")
-        included_template_main_page_only = bool(include_template_id and included_template_detection_mode == "main_page")
-        timing["include_template_lookup"] = time.perf_counter() - step_started
-        detect_pages_started = time.perf_counter()
-        if normalized_pages:
-            first_page = normalized_pages[0]
-            step_started = time.perf_counter()
-            first_detected_page = _detect_page(
-                first_page,
-                page_image_paths,
-                include_template_id=include_template_id,
-                timing=timing,
-                retrieval_limit=retrieval_limit,
-                verification_strategy=verification_strategy,
-                verification_candidate_limit=verification_candidate_limit,
-                full_evaluation_limit_override=full_evaluation_limit_override,
-                query_page_count=query_page_count,
-                request_cache=request_cache,
-                prepublish_full_evaluation=prepublish_full_evaluation,
-                progress_callback=progress_callback,
-                use_image_batch_for_verification=use_image_batch_for_verification,
-            )
-            timing["first_page_detection_total"] = time.perf_counter() - step_started
-            pages.append(first_detected_page)
-            step_started = time.perf_counter()
-            first_best_candidate = first_detected_page.get("best_candidate")
-            if _is_confirmed_main_page_candidate(first_best_candidate):
-                confirmed_main_page_candidate = first_best_candidate
-
-            should_detect_remaining_pages = False
-            if confirmed_main_page_candidate is None and not included_template_main_page_only and isinstance(first_best_candidate, dict):
-                first_metadata = first_best_candidate.get("metadata") if isinstance(first_best_candidate.get("metadata"), dict) else {}
-                first_detection_mode = str(first_best_candidate.get("detection_mode") or first_metadata.get("detection_mode") or "all_pages")
-                first_template_page_count = int(first_best_candidate.get("template_page_count") or first_metadata.get("page_count") or 0)
-                should_detect_remaining_pages = (
-                    first_detection_mode != "main_page"
-                    and first_template_page_count == query_page_count
-                    and query_page_count > 1
-                )
-            timing["remaining_pages_decision"] = time.perf_counter() - step_started
-
-            if should_detect_remaining_pages:
-                step_started = time.perf_counter()
-                for page in normalized_pages[1:]:
-                    detected_page = _detect_page(
-                        page,
-                        page_image_paths,
-                        include_template_id=include_template_id,
-                        timing=timing,
-                        retrieval_limit=retrieval_limit,
-                        verification_strategy=verification_strategy,
-                        verification_candidate_limit=verification_candidate_limit,
-                        full_evaluation_limit_override=full_evaluation_limit_override,
-                        query_page_count=query_page_count,
-                        request_cache=request_cache,
-                        prepublish_full_evaluation=prepublish_full_evaluation,
-                        progress_callback=progress_callback,
-                        use_image_batch_for_verification=use_image_batch_for_verification,
-                    )
-                    pages.append(detected_page)
-                timing["remaining_pages_detection_total"] = time.perf_counter() - step_started
-        timing["detect_pages_total"] = time.perf_counter() - detect_pages_started
-        step_started = time.perf_counter()
-        if prepublish_timing:
-            print(f"[PREPUBLISH] layout analysis done: {timing.get('layout_analysis', 0.0):.2f}s")
-            print(f"[PREPUBLISH] template matching done: {timing.get('template_matching', 0.0):.2f}s")
-            print(f"[PREPUBLISH] verification done: {timing.get('verification', 0.0):.2f}s")
-        timing["prepublish_logging"] = time.perf_counter() - step_started
-        step_started = time.perf_counter()
-        candidates = _aggregate_candidates(pages)
-        timing["candidate_aggregation"] = time.perf_counter() - step_started
-        if prepublish_timing:
-            print(f"[PREPUBLISH] candidate aggregation done: {timing['candidate_aggregation']:.2f}s")
-        step_started = time.perf_counter()
-        passing_candidates = sorted(
-            [candidate for candidate in candidates if candidate["final_passed"]],
-            key=lambda item: (item["final_score"], item["retrieval_score"]),
-            reverse=True,
-        )
-        best_candidate = passing_candidates[0] if passing_candidates else None
-        matched = best_candidate is not None
-        timing["final_selection"] = time.perf_counter() - step_started
-        step_started = time.perf_counter()
-        processing_pages = _persist_selected_processing_pages(query_id, pages, best_candidate, normalized_pages)
-        if best_candidate is not None:
-            best_candidate["processing_pages"] = processing_pages
-            if processing_pages:
-                best_page_number = int(best_candidate.get("query_page_index") or 0)
-                best_page_metadata = next(
-                    (item for item in processing_pages if int(item.get("pageNumber") or 0) == best_page_number),
-                    processing_pages[0],
-                )
-                best_candidate["source_image_query_reference"] = best_page_metadata.get("sourceImageReference")
-                best_candidate["processing_image_query_reference"] = best_page_metadata.get("processingImageReference")
-                best_candidate["processing_page_required"] = bool(best_page_metadata.get("processingImageReference"))
-                best_candidate["processing_log_roi_coordinate_space"] = best_page_metadata.get("roiCoordinateSpace")
-        timing["processing_page_persist"] = time.perf_counter() - step_started
-        step_started = time.perf_counter()
-        if best_candidate:
-            for page in pages:
-                page_candidate = next(
-                    (
-                        candidate
-                        for candidate in page.get("candidates", [])
-                        if candidate.get("template_id") == best_candidate.get("template_id")
-                    ),
-                    None,
-                )
-                if page_candidate is not None:
-                    if (page.get("best_candidate") or {}).get("template_id") == best_candidate.get("template_id"):
-                        page["best_candidate"] = page_candidate
-        timing["best_candidate_patch"] = time.perf_counter() - step_started
-
-        return _finish_detection_result({
-            "query_id": query_id,
-            "engine": _detection_engine(pages),
-            "version": DETECTION_VERSION,
-            "threshold": DETECTION_THRESHOLD,
-            "matched": matched,
-            "best_candidate": best_candidate,
-            "candidates": candidates,
-            "pages": pages,
-            "main_page_auto_roi_pages": [],
-            "main_page_auto_roi_total_pages": 0,
-            "main_page_auto_roi_total_regions": 0,
-            "message": None if matched else _no_match_message(candidates),
-            "debug": {
-                "pipeline_core": PIPELINE_CONFIG.to_debug_dict(),
-                "retrieval_engine": "layout_signature",
-                "image_verification_engine": "siglip_image_category",
-                "source_type": source_type,
-                "normalization_skipped": skip_normalization,
-                "input_page_count": len(page_paths),
-                "converted_page_count": len(page_paths) if source_type == "pdf" else 0,
-                "query_page_paths": [str(path) for path in page_paths] if SAVE_DEBUG_ARTIFACTS else [],
-                "normalized_query_page_paths": [page["normalized_path"] for page in normalized_pages] if SAVE_DEBUG_ARTIFACTS else [],
-                "matching_query_page_paths": [page.get("matching_path") for page in normalized_pages] if SAVE_DEBUG_ARTIFACTS else [],
-                "include_template_id": include_template_id,
-                "verification_strategy": verification_strategy,
-                "retrieval_limit": retrieval_limit,
-                "verification_candidate_limit": verification_candidate_limit,
-                "full_evaluation_limit_override": full_evaluation_limit_override,
-                "prepublish_full_evaluation": prepublish_full_evaluation,
-                "disable_pdf_subdocument_crop": disable_pdf_subdocument_crop,
-                "timing": _detection_timing_debug(timing, pages, total_started, request_cache=request_cache),
-            },
-        })
+        return _finish_detection_result(_detect_template_anchor_strategy(
+            query_id, normalized_pages, timing, request_cache, total_started,
+            source_type, verification_strategy, detection_batch_mode,
+            selected_template_id=include_template_id, progress_callback=progress_callback,
+            user_context=user_context,
+        ))
     finally:
         if cleanup_generated and not SAVE_DEBUG_ARTIFACTS:
             _cleanup_query_artifacts(query_id)

@@ -1997,7 +1997,7 @@ export const updateTemplateApi = async (templateId: string, patch: Partial<Templ
 export const updateTemplateStatus = async (templateId: string, status: TemplateStatus) =>
   updateTemplateApi(templateId, { status });
 
-export type VerificationStrategy = "standard" | "strict" | "text_only" | "text_image" | "image_only" | "layout_only";
+export type VerificationStrategy = "standard" | "strict";
 
 export interface VerificationStrategySettings {
   active: VerificationStrategy;
@@ -2034,14 +2034,9 @@ export interface SystemMaintenanceUpdate {
   clearSchedule?: boolean;
 }
 
-const mapVerificationStrategy = (value: unknown): VerificationStrategy => {
-  if (value === "strict") return "strict";
-  if (value === "text_only") return "text_only";
-  if (value === "text_image") return "text_image";
-  if (value === "image_only") return "image_only";
-  if (value === "layout_only") return "layout_only";
-  return "standard";
-};
+const mapVerificationStrategy = (value: unknown): VerificationStrategy =>
+  value === "strict" ? "strict" : "standard";
+
 
 const mapVerificationStrategySettings = (data: Record<string, unknown>): VerificationStrategySettings => ({
   active: mapVerificationStrategy(data.verification_strategy || data.verificationStrategy),

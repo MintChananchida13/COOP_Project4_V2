@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import AliasChoices, BaseModel, Field
 
@@ -141,9 +141,9 @@ class TemplateCreate(BaseModel):
     page_count: int = Field(default=1, ge=1)
     similarity_threshold: float = Field(default=0.50, ge=0, le=1)
     final_confidence_threshold: float = Field(default=0.75, ge=0, le=1)
-    layout_weight: float = Field(default=0.50, ge=0, le=1)
-    text_anchor_weight: float = Field(default=0.35, ge=0, le=1)
-    image_anchor_weight: float = Field(default=0.15, ge=0, le=1)
+    layout_weight: float = Field(default=0.0, ge=0, le=1)
+    text_anchor_weight: float = Field(default=0.5, ge=0, le=1)
+    image_anchor_weight: float = Field(default=0.5, ge=0, le=1)
     detection_mode: str = Field(default="all_pages", validation_alias=AliasChoices("detection_mode", "detectionMode"))
     main_page_number: int = Field(default=1, ge=1, validation_alias=AliasChoices("main_page_number", "mainPageNumber"))
     created_by: Optional[str] = None
@@ -169,7 +169,7 @@ class TemplateUpdate(BaseModel):
 
 
 class VerificationStrategyUpdate(BaseModel):
-    verification_strategy: str = Field(validation_alias=AliasChoices("verification_strategy", "verificationStrategy"))
+    verification_strategy: Literal["standard", "strict"] = Field(validation_alias=AliasChoices("verification_strategy", "verificationStrategy"))
 
 
 class DetectionBatchModeUpdate(BaseModel):

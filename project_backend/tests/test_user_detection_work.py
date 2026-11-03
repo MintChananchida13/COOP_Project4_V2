@@ -173,8 +173,8 @@ class UserDetectionWorkTests(unittest.TestCase):
         user_detection_response({**source, 'matched': False}, preview_loader=encode)
         encode.assert_not_called()
 
-    def test_finalization_occurs_before_cleanup_for_all_six_modes(self):
-        for mode in ['standard', 'strict', 'layout_only', 'text_only', 'text_image', 'image_only']:
+    def test_finalization_occurs_before_cleanup_for_both_anchor_modes(self):
+        for mode in ['standard', 'strict']:
             with self.subTest(mode=mode):
                 events = []
                 candidate = {'template_id': 'template', 'final_passed': True, 'final_score': .9, 'retrieval_score': .8}
@@ -185,7 +185,7 @@ class UserDetectionWorkTests(unittest.TestCase):
                     events.append('finish')
                     return value
                 batch_modes = []
-                def record_batch(*args):
+                def record_batch(*args, **kwargs):
                     batch_modes.append(args[-1])
                     return result
                 namespace = dict(time=time, uuid4=lambda: SimpleNamespace(hex='query'),
@@ -207,8 +207,7 @@ class UserDetectionWorkTests(unittest.TestCase):
                 returned = namespace['detect_template_dev'](b'image', verification_strategy_override=mode)
                 self.assertTrue(returned['matched'])
                 self.assertEqual(events, ['finish', 'cleanup'])
-                if mode in ('text_only', 'text_image', 'image_only'):
-                    self.assertEqual(batch_modes, ['global'])
+                self.assertEqual(batch_modes, ['global'])
 
 
 if __name__ == '__main__':

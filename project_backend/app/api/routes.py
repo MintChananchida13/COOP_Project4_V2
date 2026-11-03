@@ -155,7 +155,7 @@ def _run_prepublish_detection_job(job_id: str, template_id: str, file_bytes: byt
             queued_progress = {
                 "stage": "queued",
                 "current_rank": 0,
-                "total_rank": 5,
+                "total_rank": 1,
                 "sequence": 0,
             }
             job["status"] = "processing"
@@ -185,8 +185,8 @@ def _run_prepublish_detection_job(job_id: str, template_id: str, file_bytes: byt
                 completed_progress = {
                     **(job.get("progress") if isinstance(job.get("progress"), dict) else {}),
                     "stage": "completed",
-                    "current_rank": 5,
-                    "total_rank": 5,
+                    "current_rank": 1,
+                    "total_rank": 1,
                     "sequence": len(events),
                 }
                 job["progress"] = completed_progress
@@ -213,17 +213,11 @@ def _run_detect_dev_job(job_id: str, image_bytes: bytes | list[bytes], standard_
     logger.info("[DETECT] started job=%s", job_id)
     try:
         detect_kwargs: Dict[str, Any] = {}
-        if standard_top5:
-            detect_kwargs = {
-                "verification_strategy_override": "standard",
-                "retrieval_limit_override": 5,
-                "verification_candidate_limit_override": 5,
-                "full_evaluation_limit_override": 5,
-            }
         result = detect_template_dev(
             image_bytes,
             use_image_batch_for_verification=admin_context,
             user_context=not admin_context,
+            admin_context=admin_context,
             compact_candidates=compact_candidates and not admin_context,
             skip_query_normalization=confirmed_images,
             **detect_kwargs,

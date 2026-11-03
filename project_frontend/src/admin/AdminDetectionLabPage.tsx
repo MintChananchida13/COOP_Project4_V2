@@ -17,12 +17,6 @@ import { TemplateField } from "../types/ocr";
 const formatScore = (score?: number | null) => (typeof score === "number" && score !== null ? score.toFixed(4) : "N/A");
 const candidateFinalScore = (candidate?: DetectionCandidate | null) =>
   typeof candidate?.finalScore === "number" ? candidate.finalScore : typeof candidate?.score === "number" ? candidate.score : 0;
-const candidateLayoutScore = (candidate?: DetectionCandidate | null) =>
-  typeof candidate?.layoutScore === "number"
-    ? candidate.layoutScore
-    : typeof candidate?.retrievalScore === "number"
-      ? candidate.retrievalScore
-      : 0;
 const formatScoreDelta = (score?: number | null) => (typeof score === "number" && score !== null ? score.toFixed(4) : "N/A");
 const separationQuality = (delta: number | null) => {
   if (delta === null) return { label: "N/A", className: "bg-slate-100 text-slate-600" };
@@ -208,10 +202,6 @@ export default function AdminDetectionLabPage() {
   const secondFinalScore = sortedVisibleCandidates.length > 1 ? candidateFinalScore(sortedVisibleCandidates[1]) : null;
   const finalScoreGap = topFinalScore !== null && secondFinalScore !== null ? topFinalScore - secondFinalScore : null;
   const finalScoreGapQuality = separationQuality(finalScoreGap);
-  const topLayoutScore = sortedVisibleCandidates.length > 0 ? candidateLayoutScore(sortedVisibleCandidates[0]) : null;
-  const secondLayoutScore = sortedVisibleCandidates.length > 1 ? candidateLayoutScore(sortedVisibleCandidates[1]) : null;
-  const layoutScoreGap = topLayoutScore !== null && secondLayoutScore !== null ? topLayoutScore - secondLayoutScore : null;
-  const layoutScoreGapQuality = separationQuality(layoutScoreGap);
   const finalTemplateId = bestCandidate?.templateId || currentPage?.bestCandidate?.templateId || null;
   const pageDisplayCandidate =
     currentPage?.bestCandidate ||
@@ -503,7 +493,7 @@ export default function AdminDetectionLabPage() {
     setResult(null);
     setPageIndex(0);
     try {
-      setResult(await detectTemplateDev(file, { standardTop5: true, context: "admin" }));
+      setResult(await detectTemplateDev(file, { context: "admin" }));
     } catch (err) {
       console.warn("Detection lab failed.", err);
       setError(err instanceof Error ? err.message : "ค้นหา Template ไม่สำเร็จ");
@@ -583,7 +573,7 @@ export default function AdminDetectionLabPage() {
               <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase text-slate-600">Pipeline จริง</span>
             </div>
             <p className="mt-2 text-sm font-semibold text-slate-500">
-              อัปโหลดภาพหรือ PDF หลายหน้าเพื่อทดสอบการค้นหา Template ที่เผยแพร่แล้ว ระบบจะแปลง PDF เป็นภาพก่อนเริ่มตรวจจับ
+              อัปโหลดภาพหรือ PDF หลายหน้าเพื่อทดสอบ Template ที่เผยแพร่แล้วด้วย Text/Image Anchors ระบบจะแปลง PDF เป็นภาพก่อนเริ่มตรวจจับ
             </p>
           </div>
         </div>
@@ -592,8 +582,8 @@ export default function AdminDetectionLabPage() {
       <div className="grid gap-3 md:grid-cols-4">
         {[
           ["1", "อัปโหลดเอกสาร", "รองรับไฟล์ภาพและ PDF"],
-          ["2", "ค้นหา Template", "ตรวจสอบและค้นหา Template ที่ตรงกับเอกสาร"],
-          ["3", "ตรวจสอบแต่ละหน้า", "ตรวจสอบและจับคู่ Template ที่เหมาะสมสำหรับแต่ละหน้า"],
+          ["2", "ตรวจ Anchors", "ตรวจ Text/Image Anchors ของ Template ที่เผยแพร่แล้ว"],
+          ["3", "ตรวจสอบผล", "เลือก Template ที่ผ่านเงื่อนไข Anchors และเกณฑ์คะแนน"],
           ["4", "แสดง ROI และผลลัพธ์", "แสดง ROI/Extraction จาก Template ที่ match"],
         ].map(([step, title, note]) => (
           <div key={step} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
@@ -674,7 +664,7 @@ export default function AdminDetectionLabPage() {
                       <p>ชื่อ Template: {bestCandidate.templateName || "N/A"}</p>
                       <p>Template ID: {bestCandidate.templateId || "N/A"}</p>
                       <p>คะแนนรวม: {formatScore(bestCandidate.finalScore ?? bestCandidate.score)}</p>
-                      <p>คะแนน Layout: {formatScore(bestCandidate.layoutScore ?? bestCandidate.retrievalScore)}</p>
+                      <p>คะแนน Anchors: {formatScore(bestCandidate.verificationScore)}</p>
                       <p>คะแนน Anchor: {formatScore(bestCandidate.verificationScore)}</p>
                       <p>คะแนน Text Anchor: {formatScore(bestCandidate.textAnchorScore)}</p>
                       <p>คะแนน Image Anchor: {formatScore(bestCandidate.imageAnchorScore)}</p>
@@ -702,7 +692,7 @@ export default function AdminDetectionLabPage() {
                 )}
                 {result.candidates.length === 0 && (
                   <p className="rounded-xl bg-amber-50 p-3 font-bold text-amber-700">
-                    ยังไม่มี Template ที่ Active และมี Layout Signature กรุณาตรวจสอบและเผยแพร่ Template อย่างน้อย 1 รายการก่อน
+                    ยังไม่มี Template ที่ผ่านการตรวจ Text/Image Anchors กรุณาตรวจสอบ Anchors และเผยแพร่ Template ก่อนทดสอบ
                   </p>
                 )}
               </div>
@@ -1096,13 +1086,6 @@ export default function AdminDetectionLabPage() {
                     {finalScoreGapQuality.label}
                   </span>
                 </div>
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-right">
-                  <div className="text-[9px] font-black uppercase tracking-wider text-slate-400">Layout Diff</div>
-                  <div className="mt-0.5 text-sm font-black tabular-nums text-slate-900">{formatScoreDelta(layoutScoreGap)}</div>
-                  <span className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-black ${layoutScoreGapQuality.className}`}>
-                    {layoutScoreGapQuality.label}
-                  </span>
-                </div>
               </div>
             </div>
             <div className="mt-3 overflow-hidden rounded-xl border border-slate-200">
@@ -1112,16 +1095,14 @@ export default function AdminDetectionLabPage() {
                     <th className="px-3 py-2">Rank</th>
                     <th className="px-3 py-2">Template Name</th>
                     <th className="px-3 py-2">Final</th>
-                    <th className="px-3 py-2">Layout</th>
                     <th className="px-3 py-2">Verification</th>
                     <th className="px-3 py-2">Final Diff</th>
-                    <th className="px-3 py-2">Layout Diff</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-semibold text-slate-700">
                   {sortedVisibleCandidates.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-3 py-4 text-center text-slate-500">
+                      <td colSpan={5} className="px-3 py-4 text-center text-slate-500">
                         No candidates to display.
                       </td>
                     </tr>
@@ -1131,15 +1112,11 @@ export default function AdminDetectionLabPage() {
                         <td className="px-3 py-2">{index + 1}</td>
                         <td className="px-3 py-2">{candidate.templateName || "N/A"}</td>
                         <td className="px-3 py-2 font-black text-slate-900">{formatScore(candidateFinalScore(candidate))}</td>
-                        <td className="px-3 py-2">{formatScore(candidateLayoutScore(candidate))}</td>
                         <td className="px-3 py-2">
                           {formatScore(candidate.verificationScore)}
                         </td>
                         <td className="px-3 py-2 tabular-nums">
                           {index === 0 ? "Top" : formatScoreDelta((topFinalScore ?? 0) - candidateFinalScore(candidate))}
-                        </td>
-                        <td className="px-3 py-2 tabular-nums">
-                          {index === 0 ? "Top" : formatScoreDelta((topLayoutScore ?? 0) - candidateLayoutScore(candidate))}
                         </td>
                       </tr>
                     ))

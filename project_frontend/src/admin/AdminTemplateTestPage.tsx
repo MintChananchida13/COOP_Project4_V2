@@ -42,9 +42,9 @@ interface OcrPreviewResult {
 
 const DEFAULT_FINAL_CONFIDENCE_THRESHOLD = 0.75;
 const DEFAULT_MATCHING_WEIGHTS = {
-  layoutWeight: 0.4,
-  textAnchorWeight: 0.3,
-  imageAnchorWeight: 0.3,
+  layoutWeight: 0,
+  textAnchorWeight: 0.5,
+  imageAnchorWeight: 0.5,
 };
 const MIN_DUAL_ANCHOR_WEIGHT = 0.2;
 
@@ -69,10 +69,10 @@ const normalizeMatchingWeights = (weights: {
   imageAnchorWeight?: number | null;
 }) => {
   const raw = readMatchingWeights(weights);
-  const total = raw.layoutWeight + raw.textAnchorWeight + raw.imageAnchorWeight;
+  const total = raw.textAnchorWeight + raw.imageAnchorWeight;
   if (total <= 0) return DEFAULT_MATCHING_WEIGHTS;
   return {
-    layoutWeight: Number((raw.layoutWeight / total).toFixed(4)),
+    layoutWeight: 0,
     textAnchorWeight: Number((raw.textAnchorWeight / total).toFixed(4)),
     imageAnchorWeight: Number((raw.imageAnchorWeight / total).toFixed(4)),
   };
@@ -127,7 +127,6 @@ const prepublishTemplateDisplayName = (candidate?: PrepublishCandidate | null) =
 const roundWeight = (value: number) => Number(clampUnit(value).toFixed(4));
 
 const calculateMatchingWeights = ({
-  layoutWeight,
   textAnchorCount,
   imageAnchorCount,
   preferredTextWeight,
@@ -140,10 +139,10 @@ const calculateMatchingWeights = ({
   const hasText = textAnchorCount > 0;
   const hasImage = imageAnchorCount > 0;
   if (!hasText && !hasImage) {
-    return { layoutWeight: 1, textAnchorWeight: 0, imageAnchorWeight: 0 };
+    return { layoutWeight: 0, textAnchorWeight: 0, imageAnchorWeight: 0 };
   }
 
-  const layout = roundWeight(Math.max(0.3, Math.min(0.5, layoutWeight)));
+  const layout = 0;
   const remaining = roundWeight(1 - layout);
   if (hasText && hasImage) {
     const text = preferredTextWeight === undefined
@@ -241,6 +240,11 @@ const formatPrepublishDecision = (candidate: PrepublishCandidate) => {
     final_threshold_passed: "ผ่านเกณฑ์คะแนนรวม",
     final_threshold_failed: "คะแนนรวมต่ำกว่าเกณฑ์ความมั่นใจ",
     required_verification_failed: "Required Anchor ไม่ผ่าน",
+    standard_passed: "ผ่าน Text/Image Anchors และเกณฑ์คะแนน",
+    strict_passed: "ผ่าน Text ก่อน Image และเกณฑ์คะแนน",
+    standard_anchors_failed: "Anchors หรือคะแนนรวมไม่ผ่านเกณฑ์",
+    strict_anchors_failed: "Anchors หรือคะแนนรวมไม่ผ่านเกณฑ์",
+    page_count_mismatch: "จำนวนหน้าไม่ตรงกับ Template",
     layout_score_below_threshold: "Layout ต่ำกว่าเกณฑ์",
     layout_similarity_threshold_failed: "Layout similarity ต่ำกว่าเกณฑ์",
     page_count_rejected: "จำนวนหน้าไม่ตรงกับ Template",
@@ -305,7 +309,6 @@ function MatchingWeightsPanel({
   effectiveMatchingWeights,
   textAnchorCount,
   imageAnchorCount,
-  onLayoutChange,
   onTextChange,
   onImageChange,
   onWeightBlur,
@@ -315,7 +318,6 @@ function MatchingWeightsPanel({
   effectiveMatchingWeights: typeof DEFAULT_MATCHING_WEIGHTS;
   textAnchorCount: number;
   imageAnchorCount: number;
-  onLayoutChange: (value: number) => void;
   onTextChange: (value: number) => void;
   onImageChange: (value: number) => void;
   onWeightBlur: () => void;
@@ -325,21 +327,19 @@ function MatchingWeightsPanel({
   const hasImage = imageAnchorCount > 0;
   const hasAnyAnchor = hasText || hasImage;
   const remaining = Math.round((1 - effectiveMatchingWeights.layoutWeight) * 100);
-  const layoutPercent = Math.round(effectiveMatchingWeights.layoutWeight * 100);
   const textPercent = Math.round(effectiveMatchingWeights.textAnchorWeight * 100);
   const imagePercent = Math.round(effectiveMatchingWeights.imageAnchorWeight * 100);
   const textImageLocked = hasText && hasImage;
   const dualAnchorMinPercent = textImageLocked ? MIN_DUAL_ANCHOR_WEIGHT * 100 : 0;
   const dualAnchorMaxPercent = textImageLocked ? remaining - dualAnchorMinPercent : remaining;
-  const layoutOptions = [30, 35, 40, 45, 50];
 
   return (
     <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h4 className="text-[11px] font-black uppercase tracking-wider text-slate-700">กำหนดค่าน้ำหนัก</h4>
+          <h4 className="text-[11px] font-black uppercase tracking-wider text-slate-700">ค่าน้ำหนัก Text/Image Anchors</h4>
           <p className="mt-1 text-[11px] font-semibold leading-relaxed text-slate-500">
-            กำหนดน้ำหนัก Layout แล้วระบบจะคำนวณส่วนที่เหลือให้ Text/Image Anchors อัตโนมัติ
+            ใช้เฉพาะคะแนน Text และ Image รวมกันเป็น 100% ทั้งในโหมด standard และ strict
           </p>
         </div>
         <button
@@ -349,38 +349,6 @@ function MatchingWeightsPanel({
         >
           ใช้ค่าแนะนำ
         </button>
-      </div>
-
-      <div className="mt-3 rounded-lg border border-slate-100 bg-slate-50 p-3">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <label className="block min-w-36">
-            <span className="block text-[10px] font-black uppercase tracking-wider text-slate-500">Layout</span>
-            <select
-              value={layoutPercent}
-              disabled={!hasAnyAnchor}
-              onChange={(event) => onLayoutChange(Number(event.target.value) / 100)}
-              onBlur={onWeightBlur}
-              className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-black text-slate-800 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
-            >
-              {hasAnyAnchor ? layoutOptions.map((value) => <option key={value} value={value}>{value}%</option>) : <option value={100}>100%</option>}
-            </select>
-          </label>
-          <input
-            type="range"
-            min={hasAnyAnchor ? 30 : 100}
-            max={hasAnyAnchor ? 50 : 100}
-            step={5}
-            value={layoutPercent}
-            disabled={!hasAnyAnchor}
-            onChange={(event) => onLayoutChange(Number(event.target.value) / 100)}
-            onMouseUp={onWeightBlur}
-            onTouchEnd={onWeightBlur}
-            className="w-full accent-indigo-600 disabled:opacity-50"
-          />
-        </div>
-        <p className="mt-2 text-[10px] font-semibold text-slate-500">
-          กำหนดน้ำหนัก Layout ได้ระหว่าง 30–50% โดยปรับครั้งละ 5% ส่วนที่เหลือจะถูกแบ่งให้ Text และ Image Anchors {remaining}%.
-        </p>
       </div>
 
       <div className="mt-3 grid gap-2 md:grid-cols-2">
@@ -452,8 +420,8 @@ function MatchingWeightsPanel({
       </div>
 
       <div className="mt-3 rounded-lg bg-indigo-50 px-3 py-2 text-[11px] font-bold text-indigo-800">
-        ค่าน้ำหนักปัจจุบัน : Layout {formatWeightPercent(effectiveMatchingWeights.layoutWeight)} / Text {formatWeightPercent(effectiveMatchingWeights.textAnchorWeight)} / Image {formatWeightPercent(effectiveMatchingWeights.imageAnchorWeight)}
-        {!hasAnyAnchor && <span className="block text-[10px] text-indigo-600">No Text/Image Anchor. Layout is 100%.</span>}
+        ค่าน้ำหนักปัจจุบัน : Text {formatWeightPercent(effectiveMatchingWeights.textAnchorWeight)} / Image {formatWeightPercent(effectiveMatchingWeights.imageAnchorWeight)}
+        {!hasAnyAnchor && <span className="block text-[10px] text-indigo-600">ต้องเพิ่ม Text หรือ Image Anchor เพื่อทดสอบในฝั่ง admin</span>}
         {hasText && hasImage && <span className="block text-[10px] text-indigo-600">Text และ Image รวมกันต้องเท่ากับค่าน้ำหนักที่เหลือ และแต่ละส่วนต้องไม่น้อยกว่า 20%</span>}
       </div>
     </div>
@@ -498,7 +466,6 @@ function DraftCandidateCard({
             <DraftStatusPill passed={candidate.finalPassed} label={formatPrepublishDecision(candidate)} />
           </div>
           <div className="mt-2 grid gap-2 text-[10px] font-bold text-slate-500 sm:grid-cols-3 xl:grid-cols-6">
-            <span>Layout {formatPrepublishScore(candidate.globalScore)}</span>
             <span>Image {formatPrepublishAnchorScore(candidate, "image")}</span>
             <span>Text {formatPrepublishAnchorScore(candidate, "text")}</span>
             <span>Verification {formatPrepublishScore(candidate.verificationScore)}</span>
@@ -750,10 +717,9 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
     };
   });
   const generatedLayoutReferenceCount = layoutSignaturePages.filter((page) => String(page.status || "").toLowerCase() === "generated").length;
-  const layoutReferencesGenerated = layoutSignaturePages.length > 0 && generatedLayoutReferenceCount === layoutSignaturePages.length;
   const simulationPassed = Boolean(simulation?.separationAnalysis?.simulationPassed);
-  const stepTwoCompleted = Boolean(simulationPassed && layoutReferencesGenerated);
-  const detectionTestPassed = Boolean(detectionTest?.passed && detectionTest.draftTemplateRank === 1);
+  const stepTwoCompleted = Boolean(simulationPassed);
+  const detectionTestPassed = Boolean(detectionTest?.passed);
   const publishPrerequisitesMet = Boolean(stepTwoCompleted && detectionTestPassed);
   const overallReady = publishPrerequisitesMet;
   const canRunDetectionTest = Boolean(stepTwoCompleted && simulationAction === null && testDocumentFile && !detectionTestAction);
@@ -866,7 +832,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
       const refreshedBundle = await fetchTemplateBundle(templateId);
       applyTemplateBundle(refreshedBundle, "post-simulation-transition");
       setSimulation({ ...result, template: refreshedBundle.template });
-      setStatusMessage("Temporary layout signature simulation completed. Review candidate ranking and readiness before publishing.");
+      setStatusMessage("Template references prepared. Test the selected template with Text/Image Anchors before publishing.");
     } catch (error) {
       console.warn("Pre-publish simulation failed.", error);
       setSimulationError(error instanceof Error ? error.message : "Pre-publish simulation failed.");
@@ -900,7 +866,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
       });
       setDetectionTest(result);
       setDetectionProgress({ stage: "completed", currentRank: 5, totalRank: 5 });
-      setStatusMessage("การทดสอบตรวจจับเอกสารเสร็จสิ้น ตรวจสอบผลการจัดอันดับก่อนเผยแพร่");
+      setStatusMessage("ทดสอบ Template ที่เลือกเสร็จแล้ว ตรวจสอบผล Text/Image Anchors ก่อนเผยแพร่");
     } catch (error) {
       console.warn("การทดสอบ Draft Template ด้วยเอกสารใหม่ไม่สำเร็จ", error);
       setDetectionTestError(error instanceof Error ? error.message : "ไม่สามารถทดสอบด้วยเอกสารใหม่ได้");
@@ -944,14 +910,6 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
 
   const updateMatchingWeightsDraft = (weights: typeof DEFAULT_MATCHING_WEIGHTS) => {
     setTemplate((current) => current ? { ...current, ...weights } : current);
-  };
-
-  const updateLayoutWeightDraft = (value: number) => {
-    updateMatchingWeightsDraft(calculateMatchingWeights({
-      layoutWeight: Number.isFinite(value) ? value : DEFAULT_MATCHING_WEIGHTS.layoutWeight,
-      textAnchorCount: textAnchors.length,
-      imageAnchorCount: imageAnchors.length,
-    }));
   };
 
   const updateTextWeightDraft = (value: number) => {
@@ -1128,7 +1086,6 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
           effectiveMatchingWeights={effectiveMatchingWeights}
           textAnchorCount={textAnchors.length}
           imageAnchorCount={imageAnchors.length}
-          onLayoutChange={updateLayoutWeightDraft}
           onTextChange={updateTextWeightDraft}
           onImageChange={updateImageWeightDraft}
           onWeightBlur={() => persistMatchingWeights()}
@@ -1383,7 +1340,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <DraftSectionHeader
             title="สร้างข้อมูลอ้างอิง Template"
-            subtitle="สร้างและทดสอบ Layout Signature จาก Main และ Reference ทั้งหมด หลังจาก ROI & OCR Preview ผ่านแล้วเท่านั้น"
+            subtitle="เตรียมข้อมูลอ้างอิงสำหรับฝั่ง user ตอน Publish การทดสอบ admin ใช้ Text/Image Anchors ของ Template ที่เลือก"
           />
           <span className={`rounded-full px-3 py-1 text-[10px] font-black uppercase ${
             simulationAction === "run"
@@ -1408,9 +1365,9 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
               <div className="flex items-center gap-3">
                 <Loader2 size={20} className="shrink-0 animate-spin text-indigo-700" />
                 <div>
-                  <div className="text-sm font-black text-indigo-950">กำลังสร้าง Layout Simulation</div>
+                  <div className="text-sm font-black text-indigo-950">กำลังเตรียมข้อมูลอ้างอิง</div>
                   <p className="mt-1 text-xs font-semibold text-indigo-700">
-                    ระบบกำลังสร้าง Layout Signature ชั่วคราวและตรวจความพร้อมก่อนทดสอบเอกสารใหม่
+                    ระบบกำลังเตรียมข้อมูลอ้างอิงสำหรับการประมวลผลฝั่ง user
                   </p>
                 </div>
               </div>
@@ -1418,9 +1375,9 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
           )}
           <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h4 className="text-[11px] font-black uppercase tracking-wider text-slate-700">Layout Reference Images</h4>
+              <h4 className="text-[11px] font-black uppercase tracking-wider text-slate-700">ข้อมูลอ้างอิงสำหรับฝั่ง user</h4>
               <p className="mt-1 text-[10px] font-semibold text-slate-500">
-                ภาพแต่ละหน้าจะถูกแปลงเป็น Layout Signature ชั่วคราวเพื่อใช้ทดสอบก่อน Publish
+                ข้อมูลอ้างอิงนี้ใช้ในฝั่ง user หลัง Publish ส่วน admin ตรวจเอกสารจาก Anchors โดยตรง
               </p>
             </div>
             <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase text-slate-600">
@@ -1505,7 +1462,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
           >
             {detectionTestAction && <Loader2 size={14} className="animate-spin" />}
             {detectionTestAction
-              ? `กำลังทดสอบ Top ${Math.max(0, detectionProgress?.currentRank || 0)}/${Math.max(1, detectionProgress?.totalRank || 5)}`
+              ? "กำลังตรวจ Text/Image Anchors"
               : "Run Detection Test"}
           </button>
         </div>
@@ -1559,22 +1516,13 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
                     <p className="text-xs font-black text-indigo-900">กำลังทดสอบการจับคู่ Template กับเอกสารใหม่</p>
                     <p className="mt-1 text-[11px] font-semibold text-indigo-700">
                       {detectionProgress?.currentRank
-                        ? `กำลังประเมินผลอันดับ Top ${detectionProgress.currentRank}/${Math.max(1, detectionProgress.totalRank || 5)}${detectionProgressTemplateLabel ? ` : ${detectionProgressTemplateLabel}` : ""}`
-                        : "กำลังเตรียมเอกสารและค้นหา Candidate จาก Layout"}
+                        ? `กำลังตรวจ Text/Image Anchors${detectionProgressTemplateLabel ? ` : ${detectionProgressTemplateLabel}` : ""}`
+                        : "กำลังเตรียมเอกสารเพื่อตรวจ Template ที่เลือก"}
                     </p>
                   </div>
                   <Loader2 size={18} className="shrink-0 animate-spin text-indigo-600" />
                 </div>
-                <div className="mt-3 grid grid-cols-5 gap-1.5">
-                  {[1, 2, 3, 4, 5].map((rank) => (
-                    <div key={`detection-progress-${rank}`} className="space-y-1">
-                      <div className={`h-1.5 rounded-full ${rank <= Math.max(0, detectionProgress?.currentRank || 0) ? "bg-indigo-600" : "bg-white"}`} />
-                      <div className={`text-center text-[9px] font-black ${rank <= Math.max(0, detectionProgress?.currentRank || 0) ? "text-indigo-700" : "text-indigo-300"}`}>
-                        Top {rank}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+
               </div>
             )}
             {!detectionTest ? (
@@ -1588,7 +1536,6 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
                   <DraftOverviewMetric label="Template ที่ตรวจพบ" value={prepublishTemplateDisplayName(detectionTest.selectedTemplate)} />
                   <DraftOverviewMetric label="ประเภทของ Template" value={detectionTest.selectedTemplateType || "N/A"} />
                   <DraftOverviewMetric label="คะแนนความมั่นใจในการจับคู่" value={formatPrepublishScore(detectionTest.finalConfidence)} tone="indigo" />
-                  <DraftOverviewMetric label="ลำดับของ Template ใน Draft" value={detectionTest.draftTemplateRank ?? "N/A"} />
                   <DraftOverviewMetric label="สถานะการทดสอบ" value={detectionTest.passed ? "ผ่าน" : detectionTest.warning ? "คำเตือน" : "ไม่ผ่าน"} tone={detectionTest.passed ? "emerald" : detectionTest.warning ? "orange" : "slate"} />
                 </div>
               </div>
@@ -1600,16 +1547,14 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
 
       {validationStep === 3 && detectionTest && (
       <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <DraftSectionHeader title="ผลการจัดอันดับ Template" subtitle="แสดงผลหลังจากทดสอบการตรวจจับ โดยสามารถขยายเพื่อดูรายละเอียดของแต่ละ Template ได้" />
+        <DraftSectionHeader title="ผลการตรวจ Template ที่เลือก" subtitle="ตรวจ Text/Image Anchors ของ Template นี้กับเอกสารใหม่" />
         <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
           <table className="min-w-full divide-y divide-slate-200 text-xs">
             <thead className="bg-slate-50 text-[10px] font-black uppercase tracking-wider text-slate-500">
               <tr>
-                <th className="px-3 py-2 text-left">อันดับ</th>
                 <th className="px-3 py-2 text-left">Template</th>
                 <th className="px-3 py-2 text-left">แหล่งข้อมูล</th>
                 <th className="px-3 py-2 text-left">คะแนนรวม</th>
-                <th className="px-3 py-2 text-left">Layout</th>
                 <th className="px-3 py-2 text-left">Verification</th>
                 <th className="px-3 py-2 text-left">Text Anchor</th>
                 <th className="px-3 py-2 text-left">Image Anchor</th>
@@ -1619,25 +1564,19 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
             <tbody className="divide-y divide-slate-100 bg-white">
               {(detectionTest?.candidates || []).length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-3 py-6 text-center font-semibold text-slate-500">
-                    Run Detection Test to see unified candidates.
+                  <td colSpan={7} className="px-3 py-6 text-center font-semibold text-slate-500">
+                    Run the selected template anchor test to see results.
                   </td>
                 </tr>
               ) : (
                 (detectionTest?.candidates || []).slice(0, 5).map((candidate) => (
                   <tr key={`${candidate.templateId}-${candidate.rank}-test`} className={candidate.isCurrentDraft ? "bg-indigo-50" : undefined}>
-                    <td className="px-3 py-2 font-black text-slate-900">#{candidate.rank}</td>
                     <td className="px-3 py-2 font-bold text-slate-800">{prepublishTemplateDisplayName(candidate)}</td>
                     <td className="px-3 py-2 font-semibold text-slate-600">
                       <div>{candidate.sourceLabel || (candidate.isCurrentDraft ? "Template ฉบับร่าง" : "Template ที่เผยแพร่")}</div>
-                      {candidate.isCurrentDraft && candidate.layoutReferenceCount ? (
-                        <div className="mt-1 text-[10px] font-black uppercase text-indigo-500">
-                          {candidate.layoutReferenceCount} Layout References
-                        </div>
-                      ) : null}
+
                     </td>
                     <td className="px-3 py-2 font-black text-slate-900">{formatPrepublishScore(candidate.finalScore)}</td>
-                    <td className="px-3 py-2">{formatPrepublishScore(candidate.globalScore)}</td>
                     <td className="px-3 py-2">{formatPrepublishScore(candidate.verificationScore)}</td>
                     <td className="px-3 py-2">{formatPrepublishAnchorScore(candidate, "text")}</td>
                     <td className="px-3 py-2">{formatPrepublishAnchorScore(candidate, "image")}</td>
@@ -1747,7 +1686,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
           {[
             ["ROI พร้อมใช้งาน", ocrPreviewPassed],
-            ["Layout Simulation", stepTwoCompleted],
+            ["ข้อมูลอ้างอิงพร้อม", stepTwoCompleted],
             ["ทดสอบเอกสารใหม่", detectionTestPassed],
           ].map(([label, passed]) => (
             <div key={String(label)} className="flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50 p-3">
@@ -1760,7 +1699,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
           <div>
             <h4 className="text-sm font-black text-slate-900">{overallReady ? "พร้อมเผยแพร่" : "ยังเผยแพร่ไม่ได้"}</h4>
             <p className="mt-1 text-xs font-semibold text-slate-500">
-              {overallReady ? "เมื่อตกลง ระบบจะบันทึก Layout Signature จริงและเปิดใช้งาน Template" : "ต้องให้ Layout Simulation และ New Document Test ผ่านก่อน"}
+              {overallReady ? "เมื่อตกลง ระบบจะบันทึกข้อมูลอ้างอิงสำหรับฝั่ง user และเปิดใช้งาน Template" : "ต้องเตรียมข้อมูลอ้างอิงและทดสอบ Text/Image Anchors ให้ผ่านก่อน"}
             </p>
           </div>
           <button

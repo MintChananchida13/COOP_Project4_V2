@@ -39,8 +39,7 @@ from app.model_runtime.layout_analysis_service import (
     detect_text_boxes,
 )
 from app.model_runtime import layout_analysis_service as layout_runtime
-from app.processing.layout_signature_service import build_layout_signature, compare_layout_signatures, signature_from_json, signature_to_json
-from app.processing.layout_template_matcher import search_layout_candidates
+from app.processing.layout_signature_service import build_layout_signature, signature_from_json, signature_to_json
 from app.processing import published_template_cache
 from app.processing.ocr_adapter import (
     OcrUnavailableError,
@@ -97,14 +96,7 @@ VERIFICATION_STRATEGY_TEXT_ONLY = "text_only"
 VERIFICATION_STRATEGY_TEXT_IMAGE = "text_image"
 VERIFICATION_STRATEGY_IMAGE_ONLY = "image_only"
 VERIFICATION_STRATEGY_LAYOUT_ONLY = "layout_only"
-VERIFICATION_STRATEGIES = {
-    VERIFICATION_STRATEGY_STANDARD,
-    VERIFICATION_STRATEGY_STRICT,
-    VERIFICATION_STRATEGY_TEXT_ONLY,
-    VERIFICATION_STRATEGY_TEXT_IMAGE,
-    VERIFICATION_STRATEGY_IMAGE_ONLY,
-    VERIFICATION_STRATEGY_LAYOUT_ONLY,
-}
+VERIFICATION_STRATEGIES = {VERIFICATION_STRATEGY_STANDARD, VERIFICATION_STRATEGY_STRICT}
 DETECTION_BATCH_MODE_GLOBAL = "global"
 DETECTION_BATCH_MODE_PER_TEMPLATE = "per_template"
 DETECTION_BATCH_MODES = {DETECTION_BATCH_MODE_GLOBAL, DETECTION_BATCH_MODE_PER_TEMPLATE}
@@ -984,7 +976,7 @@ class GlobalSettingsService:
     def update_verification_strategy(self, value: str) -> Dict[str, Any]:
         strategy = normalize_verification_strategy(value)
         if strategy != str(value or "").strip().lower():
-            raise HTTPException(status_code=400, detail="verification_strategy must be standard, strict, text_only, text_image, image_only, or layout_only")
+            raise HTTPException(status_code=400, detail="verification_strategy must be standard or strict")
         if self._should_defer_admin_setting_updates():
             self._save_setting(PENDING_VERIFICATION_STRATEGY_SETTING_KEY, strategy)
             current = {"verification_strategy": self._active_verification_strategy_no_apply()}
@@ -6511,134 +6503,6 @@ class AdminTemplateService:
             paths[page_number] = str(output_path)
         return paths
 
-    def _template_id_from_vector_candidate(self, candidate: Dict[str, Any]) -> Optional[str]:
-        template_id = (candidate.get("metadata") or {}).get("template_id") or (candidate.get("metadata") or {}).get("id")
-        return str(template_id) if template_id else None
-
-    def _layout_signature_for_page_paths(self, page_paths: Dict[int, str], page_number: int = 1) -> Dict[str, Any]:
-        image_path = page_paths.get(page_number) or next(iter(page_paths.values()), None)
-        signature = _generate_layout_signature_for_source(image_path)
-        if signature is None:
-            raise HTTPException(status_code=409, detail="Unable to generate layout signature for template matching")
-        return signature
-
-    def _layout_signatures_for_page_paths(self, page_paths: Dict[int, str]) -> Dict[int, Dict[str, Any]]:
-        signatures = {int(page): self._layout_signature_for_page_paths(page_paths, int(page)) for page in sorted(page_paths)}
-        if not signatures:
-            raise HTTPException(status_code=409, detail="Unable to generate layout signatures for template matching")
-        return signatures
-
-    def _draft_layout_reference_match(self, template_id: str, query_signature: Dict[str, Any]) -> Dict[str, Any]:
-        with _connect() as conn:
-            _refresh_template_layout_signatures(conn, template_id)
-            rows = conn.execute(
-                """
-                SELECT tp.id, tp.id AS template_page_id, tp.page_number,
-                       COALESCE(tp.normalized_image_url, tp.sample_image_url) AS image_url,
-                       'template_page' AS image_source,
-                       CASE
-                         WHEN tv.detection_mode = 'main_page' AND tp.page_number = tv.main_page_number THEN 1
-                         WHEN tv.detection_mode != 'main_page' AND tp.page_number = 1 THEN 1
-                         ELSE 0
-                       END AS is_canonical,
-                       tp.layout_signature_json
-                FROM template_pages tp
-                JOIN template_versions tv ON tv.id = tp.template_version_id
-                WHERE tp.template_version_id = ? AND tp.layout_signature_json IS NOT NULL
-                ORDER BY is_canonical DESC, tp.page_number ASC, tp.created_at ASC
-                """,
-                (template_id,),
-            ).fetchall()
-        best_score = 0.0
-        best_reference = None
-        compared = []
-        for row in rows:
-            signature = signature_from_json(row["layout_signature_json"])
-            if not signature:
-                continue
-            comparison = compare_layout_signatures(query_signature, signature)
-            score = float(comparison.get("score") or 0.0)
-            reference = {
-                "template_layout_reference_id": row["id"],
-                "template_page_id": row["template_page_id"],
-                "page_number": row["page_number"],
-                "image_url": row["image_url"],
-                "image_source": row["image_source"],
-                "is_canonical": bool(row["is_canonical"]),
-                "reference_role": "main" if row["is_canonical"] else "reference_only",
-                "score": round(score, 4),
-            }
-            compared.append(reference)
-            if best_reference is None or score > best_score:
-                best_score = score
-                best_reference = {**reference, "layout_debug": comparison}
-        if best_reference is None:
-            raise HTTPException(status_code=409, detail="Unable to compare draft layout references")
-        return {"score": best_score, "best_reference": best_reference, "reference_count": len(compared), "references": compared}
-
-    def _draft_layout_reference_matches_for_pages(self, template_id: str, query_signatures_by_page: Dict[int, Dict[str, Any]]) -> Dict[str, Any]:
-        page_matches = []
-        for page_number, query_signature in sorted(query_signatures_by_page.items()):
-            match = self._draft_layout_reference_match(template_id, query_signature)
-            same_page = [item for item in match["references"] if int(item.get("page_number") or 0) == int(page_number)]
-            best = max(same_page, key=lambda item: float(item.get("score") or 0.0), default=None) or match["best_reference"]
-            page_matches.append({"query_page_number": page_number, "template_page_number": best.get("page_number"), "score": float(best.get("score") or 0.0), "best_reference": best, "reference_count": match.get("reference_count", 0), "same_page_reference_count": len(same_page), "fallback_cross_page": not same_page})
-        scores = [float(item.get("score") or 0.0) for item in page_matches]
-        best_page = max(page_matches, key=lambda item: float(item.get("score") or 0.0), default=None)
-        return {"score": sum(scores) / len(scores) if scores else 0.0, "best_reference": best_page.get("best_reference") if best_page else None, "reference_count": sum(int(item.get("reference_count") or 0) for item in page_matches), "page_matches": page_matches}
-
-    def _search_layout_candidates_for_pages(self, query_signatures_by_page: Dict[int, Dict[str, Any]], template_id: str, limit: int = 10) -> List[Dict[str, Any]]:
-        grouped: Dict[str, Dict[str, Any]] = {}
-        for page_number, query_signature in sorted(query_signatures_by_page.items()):
-            candidates = search_layout_candidates(query_signature, page_number=page_number, limit=limit, include_template_id=template_id)
-            for candidate in candidates:
-                candidate_template_id = self._template_id_from_vector_candidate(candidate) or str(candidate.get("template_id") or candidate.get("id") or "")
-                if not candidate_template_id:
-                    continue
-                metadata = candidate.get("metadata") or {}
-                bucket = grouped.setdefault(
-                    candidate_template_id,
-                    {
-                        **candidate,
-                        "score": 0.0,
-                        "matched_pages": 0,
-                        "page_match_details": [],
-                    },
-                )
-                detail = {
-                    "query_page_number": page_number,
-                    "template_page_number": metadata.get("matched_layout_reference_page_number") or metadata.get("page_number"),
-                    "score": float(candidate.get("score") or 0.0),
-                    "vector_id": candidate.get("vector_id"),
-                    "metadata": metadata,
-                }
-                bucket["page_match_details"].append(detail)
-                if float(candidate.get("score") or 0.0) > float(bucket.get("_best_score") or -1.0):
-                    bucket.update({**candidate, "page_match_details": bucket["page_match_details"]})
-                    bucket["_best_score"] = float(candidate.get("score") or 0.0)
-        aggregated: List[Dict[str, Any]] = []
-        for bucket in grouped.values():
-            details = bucket.get("page_match_details") or []
-            scores = [float(item.get("score") or 0.0) for item in details]
-            bucket.pop("_best_score", None)
-            bucket["matched_pages"] = len(details)
-            bucket["score"] = round(sum(scores) / len(scores), 4) if scores else 0.0
-            bucket["layout_score"] = bucket["score"]
-            aggregated.append(bucket)
-        return sorted(aggregated, key=lambda item: float(item.get("score") or 0.0), reverse=True)[:limit]
-
-    def _align_query_pages_for_candidate(self, candidate_template: Dict[str, Any], query_page_paths: Dict[int, str], allow_alignment: bool = True) -> Dict[str, Any]:
-        page_paths = dict(query_page_paths)
-        alignments = [
-            {
-                "page_number": page_number,
-                "alignment_status": "skipped" if not allow_alignment else "not_required",
-                "verification_source_used": "original",
-            }
-            for page_number in sorted(page_paths)
-        ]
-        return {"page_paths": page_paths, "verification_page_paths": page_paths, "alignments": alignments}
-
     def run_prepublish_simulation(self, template_id: str) -> Dict[str, Any]:
         draft = self.get_template(template_id)
         if draft.get("status") == "not_found":
@@ -6766,81 +6630,6 @@ class AdminTemplateService:
             )
         return enriched
 
-    def _append_prepublish_ranking_fallback_candidates(
-        self,
-        candidates: List[Dict[str, Any]],
-        detection: Dict[str, Any],
-        limit: int = 5,
-    ) -> List[Dict[str, Any]]:
-        if len(candidates) >= limit:
-            return candidates
-
-        existing_template_ids = {
-            str(candidate.get("template_id") or "")
-            for candidate in candidates
-            if isinstance(candidate, dict) and candidate.get("template_id")
-        }
-        timing_debug = ((detection.get("debug") or {}).get("timing") or {}) if isinstance(detection.get("debug"), dict) else {}
-        searches = timing_debug.get("template_matching_breakdown") if isinstance(timing_debug, dict) else []
-        fallback_by_template: Dict[str, Dict[str, Any]] = {}
-        for search in searches if isinstance(searches, list) else []:
-            if not isinstance(search, dict):
-                continue
-            compared_items = search.get("compared_all") or []
-            for item in compared_items if isinstance(compared_items, list) else []:
-                if not isinstance(item, dict):
-                    continue
-                template_id = str(item.get("template_id") or "").strip()
-                if not template_id or template_id in existing_template_ids:
-                    continue
-                try:
-                    score = float(item.get("score") if item.get("score") is not None else item.get("prefilter_score") or 0.0)
-                except (TypeError, ValueError):
-                    score = 0.0
-                previous = fallback_by_template.get(template_id)
-                if previous is not None and score <= float(previous.get("score") or 0.0):
-                    continue
-                fallback_by_template[template_id] = {
-                    "template_id": template_id,
-                    "template_name": item.get("template_name"),
-                    "version_name": item.get("version_name"),
-                    "version_number": item.get("version_number"),
-                    "template_status": item.get("template_status"),
-                    "score": score,
-                    "retrieval_score": score,
-                    "layout_score": score,
-                    "global_score": score,
-                    "final_score": score,
-                    "verification_score": 0.0,
-                    "text_anchor_score": 0.0,
-                    "image_anchor_score": 0.0,
-                    "final_passed": False,
-                    "verification_passed": False,
-                    "required_passed": False,
-                    "required_failed_fields": [],
-                    "decision": item.get("prefilter_reason") or "layout_prefilter_rejected",
-                    "decision_reason": item.get("prefilter_reason") or "layout_prefilter_rejected",
-                    "decision_path": item.get("prefilter_reason") or "layout_prefilter_rejected",
-                    "evaluation_status": "layout_prefilter_rejected" if item.get("prefilter_rejected") else "ranking_fallback_not_evaluated",
-                    "verification_details": [],
-                    "metadata": {
-                        "template_id": template_id,
-                        "template_name": item.get("template_name"),
-                        "version_name": item.get("version_name"),
-                        "version_number": item.get("version_number"),
-                        "template_status": item.get("template_status"),
-                        "page_number": item.get("template_page_number"),
-                        "layout_debug": item.get("layout_debug") or item,
-                    },
-                }
-
-        fallback_candidates = sorted(
-            fallback_by_template.values(),
-            key=lambda item: float(item.get("final_score") or item.get("score") or 0.0),
-            reverse=True,
-        )
-        return [*candidates, *fallback_candidates[: max(0, limit - len(candidates))]]
-
     def run_prepublish_detection_test(
         self,
         template_id: str,
@@ -6864,18 +6653,13 @@ class AdminTemplateService:
                 cleanup_generated=False,
                 prepublish_timing=True,
                 prepublish_total_started=total_started,
-                verification_strategy_override=VERIFICATION_STRATEGY_STRICT,
-                retrieval_limit_override=5,
-                verification_candidate_limit_override=5,
-                full_evaluation_limit_override=5,
-                prepublish_full_evaluation=True,
+                admin_context=True,
                 disable_pdf_subdocument_crop=True,
                 skip_query_normalization=True,
                 progress_callback=progress_callback,
                 use_image_batch_for_verification=True,
             )
             candidates = [candidate for candidate in detection.get("candidates") or [] if isinstance(candidate, dict)]
-            candidates = self._append_prepublish_ranking_fallback_candidates(candidates, detection, limit=5)
             candidates = [
                 {
                     **candidate,
@@ -6907,7 +6691,7 @@ class AdminTemplateService:
                 None,
             )
             selected_template_id = (best_candidate or {}).get("template_id") if isinstance(best_candidate, dict) else None
-            matched = bool(best_candidate)
+            matched = bool((best_candidate or {}).get("final_passed"))
             selected_passed_final_gate = bool((best_candidate or {}).get("final_passed")) if isinstance(best_candidate, dict) else False
             final_confidence = float((best_candidate or {}).get("final_score") or (best_candidate or {}).get("score") or 0.0) if isinstance(best_candidate, dict) else 0.0
             decision_reason = (
@@ -6926,7 +6710,7 @@ class AdminTemplateService:
                 "final_confidence": final_confidence,
                 "decision_reason": decision_reason,
                 "draft_template_rank": draft_rank,
-                "passed": bool(selected_passed_final_gate and selected_template_id == template_id and draft_rank == 1),
+                "passed": bool(selected_passed_final_gate and selected_template_id == template_id),
                 "warning": bool(matched and selected_template_id != template_id),
                 "candidates": candidates,
                 "separation_result": {
@@ -6942,7 +6726,7 @@ class AdminTemplateService:
                     "closest_published_template": selected_template_id if selected_template_id != template_id else None,
                     "closest_published_score": final_confidence if selected_template_id and selected_template_id != template_id else None,
                     "conflict_level": "none" if selected_template_id == template_id else "warning" if matched else "not_ready",
-                    "recommendation": "publish" if selected_template_id == template_id and draft_rank == 1 else "review_detection_result",
+                    "recommendation": "publish" if selected_passed_final_gate and selected_template_id == template_id else "review_detection_result",
                 },
                 "debug": detection.get("debug") or {},
                 "pages": detection.get("pages") or [],

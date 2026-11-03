@@ -25,45 +25,20 @@ const verificationStrategyOptions: { value: VerificationStrategy; label: string;
   {
     value: "standard",
     label: "แบบมาตรฐาน (standard)",
-    description: "ต้องผ่านเกณฑ์ Layout ก่อน จากนั้นตรวจ Text Anchor และ Image Anchor ทีละรายการ หาก Anchor ใดไม่ผ่าน ระบบจะไม่เลือก Template นั้นโดยไม่ใช้คะแนนรวมเป็นตัวตัดสินสุดท้าย",
+    description: "ตรวจ Text Anchor และ Image Anchor พร้อมกัน ประเมิน Template ทั้งหมด แล้วเลือกอันดับ 1 ที่ผ่านเงื่อนไขและมีคะแนนสูงสุด โดยไม่ใช้ Layout",
   },
   {
     value: "strict",
     label: "แบบเข้มงวด (strict)",
-    description: "ใช้คะแนนรวมจาก Layout, Text Anchor และ Image Anchor ตามค่าน้ำหนักของ Template แล้วเทียบกับเกณฑ์ความมั่นใจ โดย Anchor ที่บังคับต้องผ่านเสมอ",
+    description: "ตรวจ Text Anchor ก่อน เมื่อ Text ผ่านครบจึงตรวจ Image Anchor หากขั้นใดไม่ผ่านจะไม่เลือก Template นั้น โดยไม่ใช้ Layout",
   },
-  {
-    value: "text_only",
-    label: "เฉพาะข้อความ (Text Only)",
-    description: "ข้าม Layout Retrieval, Layout Pre-filter และ Image Verification ใช้เฉพาะ Text Anchor จาก Template ที่เผยแพร่แล้ว",
-    badge: "ทดลอง",
-  },
-  {
-    value: "text_image",
-    label: "Text + Image",
-    description: "ใช้ Text Anchor และ Image Anchor โดยข้าม Layout Retrieval และ Layout Pre-filter",
-    badge: "ทดลอง",
-  },
-  {
-    value: "image_only",
-    label: "Image Only",
-    description: "ใช้ Image Anchor (SigLIP) เท่านั้น ไม่เรียก Text OCR หรือ Layout",
-    badge: "ทดลอง",
-  },
-  {
-    value: "layout_only",
-    label: "Layout Only",
-    description: "ใช้ Layout Retrieval, Pre-filter และ Layout Score เท่านั้น ไม่ตรวจ Text/Image Anchor",
-    badge: "ทดลอง",
-  },
+
 ];
 
 const verificationStrategyLabel = (strategy: VerificationStrategy) =>
   strategy === "strict"
     ? "แบบเข้มงวด (strict)"
-    : strategy === "text_only"
-      ? "เฉพาะข้อความ (Text Only)"
-      : "แบบมาตรฐาน (standard)";
+    : "แบบมาตรฐาน (standard)";
 
 const emptyModelSettings: OcrModelSettings = {
   active: { text_detection: "", text_recognition: "" },
