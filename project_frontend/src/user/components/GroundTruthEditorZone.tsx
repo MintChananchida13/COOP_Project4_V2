@@ -308,6 +308,29 @@ const fitTextareaToContent = (textarea: HTMLTextAreaElement | null) => {
   textarea.style.height = `${Math.max(36, textarea.scrollHeight)}px`;
 };
 
+const AutoResizeTextArea = (props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) => {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    fitTextareaToContent(textareaRef.current);
+  }, [props.value]);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    let previousWidth = textarea.clientWidth;
+    const resizeObserver = new ResizeObserver(() => {
+      if (textarea.clientWidth === previousWidth) return;
+      previousWidth = textarea.clientWidth;
+      fitTextareaToContent(textarea);
+    });
+    resizeObserver.observe(textarea);
+    return () => resizeObserver.disconnect();
+  }, []);
+
+  return <textarea {...props} ref={textareaRef} />;
+};
+
 const cloneMergedCells = (cells?: TableMergedCell[]): TableMergedCell[] =>
   (cells || []).map(cell => ({
     ...cell,
@@ -1758,7 +1781,7 @@ export default function GroundTruthEditorZone({
                               else fieldResultRefs.current.delete(res.id);
                             }}
                             onClick={() => setActiveFieldId(res.id)}
-                            className={`grid min-w-0 grid-cols-1 gap-3 p-3 transition-colors xl:grid-cols-[minmax(125px,0.55fr)_minmax(0,1fr)_minmax(0,1fr)] ${
+                            className={`grid min-w-0 grid-cols-1 gap-3 p-3 transition-colors ${
                               isSelected ? "bg-indigo-50/50 ring-1 ring-inset ring-indigo-100" : "hover:bg-slate-50"
                             }`}
                           >
@@ -1784,7 +1807,7 @@ export default function GroundTruthEditorZone({
                             </div>
 
                             <div className="min-w-0">
-                              <p className="mb-1.5 text-[10px] font-black uppercase tracking-wider text-slate-400">ข้อความจาก OCR</p>
+                              <p className="mb-1.5 text-[10px] font-black uppercase tracking-wider text-slate-400">ข้อความ OCR ต้นฉบับ (อ่านอย่างเดียว)</p>
                               <div
                                 className="min-h-10 w-full max-w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium leading-relaxed text-slate-700 shadow-sm normal-case break-all"
                                 style={{ textTransform: "none", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
@@ -1796,7 +1819,8 @@ export default function GroundTruthEditorZone({
 
                             <div className="min-w-0" onClick={(e) => e.stopPropagation()}>
                               <p className="mb-1.5 text-[10px] font-black uppercase tracking-wider text-slate-400">ข้อความที่แก้ไขได้</p>
-                              <textarea
+                              <AutoResizeTextArea
+                                aria-label={`แก้ไขข้อความ OCR: ${res.fieldName}`}
                                 value={res.extractedText}
                                 onFocus={() => setActiveFieldId(res.id)}
                                 onInput={autoResizeTextarea}
@@ -1808,14 +1832,8 @@ export default function GroundTruthEditorZone({
                                 data-gramm="false"
                                 data-gramm_editor="false"
                                 data-enable-grammarly="false"
-                                ref={(el) => {
-                                  if (el) {
-                                    el.style.height = "auto";
-                                    el.style.height = `${el.scrollHeight}px`;
-                                  }
-                                }}
                                 onChange={(e) => setOcrResults(p => p.map(item => item.id === res.id ? { ...item, extractedText: e.target.value } : item))}
-                                className="min-h-10 w-full max-w-full resize-y overflow-auto rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium leading-relaxed text-slate-800 shadow-inner transition-all focus:border-indigo-500 focus:outline-none normal-case break-all"
+                                className="block min-h-10 w-full max-w-full resize-none overflow-hidden rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium leading-relaxed text-slate-800 shadow-inner transition-colors focus:border-indigo-500 focus:outline-none normal-case break-all"
                                 style={{ textTransform: "none", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
                                 placeholder="แก้ไขข้อความ OCR..."
                                 rows={1}
