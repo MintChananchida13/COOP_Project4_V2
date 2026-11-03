@@ -98,6 +98,29 @@ class AnchorLoadingTests(unittest.TestCase):
                 image = next(item for item in mapped['template']['verification_anchors'] if item['data_type'] == 'image')
                 self.assertEqual(image['image_category'], 'person')
 
+        from unittest.mock import Mock
+        stale_cache = Mock(return_value=[])
+        namespace['published_template_cache'].get_verification_anchor_templates = stale_cache
+        templates, debug = namespace['_load_anchor_strategy_templates'](anchor_types={'text','image'}, force_refresh=True)
+        self.assertEqual({template['template_id'] for template in templates}, {'template', 'empty'})
+        self.assertEqual(debug['source'], 'database')
+        stale_cache.assert_not_called()
+
+    def test_partial_refresh_does_not_make_the_full_template_inventory_ready(self):
+        from unittest.mock import patch
+        from app.processing import published_template_cache as cache
+        entry = SimpleNamespace(template_id='active', metadata={'status':'active'}, field_count=0,
+                                verification_fields=[])
+        for ready, degraded, refreshed in [(False, False, {}), (False, False, {'active':entry}),
+                                            (True, True, {'active':entry})]:
+            with self.subTest(ready=ready, degraded=degraded, entries=bool(refreshed)), \
+                    patch.object(cache, '_READY', ready), patch.object(cache, '_DEGRADED', degraded), \
+                    patch.object(cache, '_ENTRIES', {}), patch.object(cache, '_load_entries', return_value=refreshed):
+                cache.refresh('active' if refreshed else 'draft')
+                self.assertEqual(cache._READY, ready)
+                self.assertEqual(cache._DEGRADED, degraded)
+                self.assertIsNone(cache.get_verification_anchor_templates({'text','image'}))
+
     def test_policy_for_both_supported_modes(self):
         for mode in ('standard', 'strict'):
             self.assertEqual(verification_anchor_types(mode), {'text', 'image'})

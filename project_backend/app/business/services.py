@@ -5857,6 +5857,8 @@ class AdminTemplateService:
                 "final_confidence": final_confidence,
                 "decision_reason": decision_reason,
                 "draft_template_rank": draft_rank,
+                "active_template_count": sum(candidate.get("template_id") != template_id for candidate in candidates),
+                "candidate_count": len(candidates),
                 "passed": bool(selected_passed_final_gate and selected_template_id == template_id and draft_rank == 1),
                 "warning": bool(matched and selected_template_id != template_id),
                 "candidates": candidates,

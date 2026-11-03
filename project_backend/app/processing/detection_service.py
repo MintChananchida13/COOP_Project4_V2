@@ -982,13 +982,13 @@ def _attach_main_page_auto_roi_pages(
         candidate["main_page_auto_roi_total_regions"] = sum(len(page.get("regions") or []) for page in auto_pages)
 
 
-def _load_anchor_strategy_templates(anchor_types: Optional[set[str]] = None, request_cache: Optional[DetectionRequestCache] = None) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def _load_anchor_strategy_templates(anchor_types: Optional[set[str]] = None, request_cache: Optional[DetectionRequestCache] = None, *, force_refresh: bool = False) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
     anchor_types = {"text", "image"} if anchor_types is None else set(anchor_types)
     if not anchor_types:
         return [], {"source": "not_required", "anchor_types": [], "anchor_count": 0, "template_count": 0}
     total_started = time.perf_counter()
     cache_lookup_started = time.perf_counter()
-    cached_templates = published_template_cache.get_verification_anchor_templates(anchor_types)
+    cached_templates = None if force_refresh else published_template_cache.get_verification_anchor_templates(anchor_types)
     cache_lookup_elapsed = time.perf_counter() - cache_lookup_started
     if cached_templates is not None:
         anchor_processing_started = time.perf_counter()
@@ -1482,7 +1482,9 @@ def _detect_template_anchor_strategy(
                       "verification_anchors": fields}]
         load_debug = {"source": "selected_template", "template_count": 1}
         if compare_active_templates:
-            active_templates, active_debug = _load_anchor_strategy_templates(anchor_types, request_cache)
+            # Prepublish compares against the current database inventory,
+            # including activations made by another backend worker.
+            active_templates, active_debug = _load_anchor_strategy_templates(anchor_types, request_cache, force_refresh=True)
             active_templates = [item for item in active_templates
                                 if item.get("template_status") == "active"
                                 and item.get("template_id") != selected_template_id]

@@ -328,7 +328,7 @@ def load_all() -> Dict[str, Any]:
 
 
 def refresh(template_id: str) -> bool:
-    global _READY, _DEGRADED, _LAST_REFRESHED_AT
+    global _LAST_REFRESHED_AT
     if not template_id:
         return False
     entries = _load_entries(template_id)
@@ -337,8 +337,8 @@ def refresh(template_id: str) -> bool:
             _ENTRIES[template_id] = next(iter(entries.values()))
         else:
             _ENTRIES.pop(template_id, None)
-        _READY = True
-        _DEGRADED = False
+        # A single-entry refresh does not establish a complete inventory or
+        # recover a failed full load. Only load_all() can do that.
         _LAST_REFRESHED_AT = time.time()
     return bool(entries)
 

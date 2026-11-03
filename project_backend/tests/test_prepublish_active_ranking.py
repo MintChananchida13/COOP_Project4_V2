@@ -32,13 +32,14 @@ class PrepublishActiveRankingTests(unittest.TestCase):
         verify = Mock(side_effect=verification)
         strict = Mock(side_effect=lambda template_id, fields, paths: verification(template_id, paths, fields))
         parallel = Mock(return_value=({}, {}, {}, {}, {}))
+        pool_loader = Mock(return_value=(pool, {}))
         namespace = dict(time=time, normalize_verification_strategy=services.normalize_verification_strategy,
             verification_anchor_types=lambda strategy: {'text', 'image'},
             VERIFICATION_STRATEGY_STANDARD='standard', VERIFICATION_STRATEGY_STRICT='strict',
             DETECTION_BATCH_MODE_GLOBAL='global', DEFAULT_FINAL_CONFIDENCE_THRESHOLD=.75,
             _fetch_template_cached=Mock(return_value=(selected, False, {})),
             _fetch_verification_fields_cached=Mock(return_value=(fields, False, {})),
-            _load_anchor_strategy_templates=Mock(return_value=(pool, {})),
+            _load_anchor_strategy_templates=pool_loader,
             _run_parallel_anchor_batches=parallel, _verify_sequential_anchor_template=strict,
             verification_service=SimpleNamespace(verify_template=verify, DEFAULT_VERIFICATION_THRESHOLD=.6),
             _persist_selected_processing_pages=Mock(return_value=[]), _detection_timing_debug=Mock(return_value={}),
@@ -49,6 +50,7 @@ class PrepublishActiveRankingTests(unittest.TestCase):
         result = service._detect_template_anchor_strategy('detq_test', [{'page_index': 1, 'normalized_path': 'page.png'}],
             {}, None, time.perf_counter(), 'image', mode, 'global', selected_template_id='selected',
             compare_active_templates=True)
+        pool_loader.assert_called_once_with({"text", "image"}, None, force_refresh=True)
         return result, verify, strict, parallel
 
     def test_standard_compares_active_pool_and_draft_without_inactive_or_other_drafts(self):

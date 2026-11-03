@@ -1425,6 +1425,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
               <div className="rounded-xl border border-slate-100 bg-white p-3">
                 <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                   <DraftOverviewMetric label="ผลการจับคู่" value={detectionTest.matched ? "ตรวจพบ" : "ตรวจไม่พบ"} tone={detectionTest.matched ? "emerald" : "slate"} />
+                  <DraftOverviewMetric label="Active ที่นำมาเปรียบเทียบ" value={detectionTest.activeTemplateCount ?? "ไม่ทราบจำนวน"} />
                   <DraftOverviewMetric label="1" value={prepublishTemplateDisplayName(detectionTest.selectedTemplate || detectionTest.candidates[0])} />
                   <DraftOverviewMetric label="อันดับของ Draft ที่ทดสอบ" value={detectionTest.draftTemplateRank ? `#${detectionTest.draftTemplateRank}` : "N/A"} tone={detectionTest.draftTemplateRank === 1 ? "emerald" : "orange"} />
                   <DraftOverviewMetric label="ประเภทของ Template" value={detectionTest.selectedTemplateType || "N/A"} />
@@ -1441,6 +1442,16 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
       {validationStep === 3 && detectionTest && (
       <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <DraftSectionHeader title="ผลการจัดอันดับ Template" subtitle="แสดง 5 อันดับแรกที่เปรียบเทียบกับ Template ที่ active พร้อม Draft ที่ทดสอบเสมอ แม้อยู่ในอันดับอื่น" />
+        {detectionTest.activeTemplateCount === 0 && (
+          <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-800">
+            ไม่พบ Template ที่ active อื่นในฐานข้อมูลที่ backend ใช้อยู่ ผลนี้จึงมีเฉพาะ Template ที่ทดสอบ
+          </p>
+        )}
+        {detectionTest.activeTemplateCount === undefined && (
+          <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-800">
+            Backend ยังไม่ส่งจำนวน Template ที่ active ที่นำมาเปรียบเทียบ กรุณาตรวจสอบว่า backend ที่เว็บเชื่อมต่อใช้โค้ดล่าสุด
+          </p>
+        )}
         <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
           <table className="min-w-full divide-y divide-slate-200 text-xs">
             <thead className="bg-slate-50 text-[10px] font-black uppercase tracking-wider text-slate-500">

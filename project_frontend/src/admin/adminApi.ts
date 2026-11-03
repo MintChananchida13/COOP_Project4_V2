@@ -880,6 +880,7 @@ export interface PrepublishSimulationResult {
 export interface PrepublishDetectionTestResult {
   testId: string;
   templateId: string;
+  activeTemplateCount?: number;
   matched: boolean;
   selectedTemplate?: PrepublishCandidate | null;
   selectedTemplateType?: string | null;
@@ -2661,6 +2662,7 @@ function mapPrepublishDetectionTestResult(data: Record<string, unknown>, templat
   return {
     testId: String(data.test_id || ""),
     templateId: String(data.template_id || templateId),
+    activeTemplateCount: typeof data.active_template_count === "number" ? data.active_template_count : undefined,
     matched: Boolean(data.matched),
     selectedTemplate: data.selected_template ? mapPrepublishCandidate(data.selected_template as Record<string, unknown>) : null,
     selectedTemplateType: (data.selected_template_type as string | null | undefined) ?? null,
