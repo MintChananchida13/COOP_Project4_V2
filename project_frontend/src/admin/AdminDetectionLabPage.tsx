@@ -13,7 +13,7 @@ import { WorkspaceRoi } from "../shared/workspace/RoiBox";
 import WorkspaceCanvas from "../shared/workspace/WorkspaceCanvas";
 import { DEFAULT_WORKSPACE_IMAGE_METRICS, ratioToImageBox, WorkspaceImageMetrics } from "../shared/workspace/roiGeometry";
 import { TemplateField } from "../types/ocr";
-import { autoCropDetectionImage } from "./autoCropDetectionImage";
+import { prepareDetectionLabDocument } from "./prepareDetectionLabDocument";
 
 const formatScore = (score?: number | null) => (typeof score === "number" && score !== null ? score.toFixed(4) : "N/A");
 const candidateFinalScore = (candidate?: DetectionCandidate | null) =>
@@ -503,11 +503,11 @@ export default function AdminDetectionLabPage() {
     setResult(null);
     setPageIndex(0);
     try {
-      setIsAutoCropping(!isPdfFile(file));
-      const preparedFile = await autoCropDetectionImage(file, controller.signal);
+      setIsAutoCropping(true);
+      const preparedFiles = await prepareDetectionLabDocument(file, controller.signal);
       if (controller.signal.aborted) return;
       setIsAutoCropping(false);
-      const detectionResult = await detectTemplateDev(preparedFile, { context: "admin" });
+      const detectionResult = await detectTemplateDev(preparedFiles, { context: "admin", confirmedImages: true, signal: controller.signal });
       if (!controller.signal.aborted) setResult(detectionResult);
     } catch (err) {
       console.warn("Detection lab failed.", err);

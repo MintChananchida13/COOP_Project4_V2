@@ -1,5 +1,5 @@
 /** Apply the same boundary detector and axis-aligned crop as the user AdjustZone. */
-export async function autoCropDetectionImage(file: File, signal: AbortSignal): Promise<File> {
+export async function autoCropDetectionImage(file: File, signal: AbortSignal, sourceType: "image" | "pdf" = "image"): Promise<File> {
   if (!file.type.startsWith("image/") || signal.aborted) return file;
   const url = URL.createObjectURL(file);
   let worker: Worker | null = null;
@@ -36,7 +36,7 @@ export async function autoCropDetectionImage(file: File, signal: AbortSignal): P
         finish(event.data.error ? null : event.data.box || null);
       };
       detector.postMessage({ id: 1, width: canvas.width, height: canvas.height,
-        pixels: pixels.data.buffer, sourceType: "image" }, [pixels.data.buffer]);
+        pixels: pixels.data.buffer, sourceType }, [pixels.data.buffer]);
     });
     if (signal.aborted || !box || box.length !== 4 || !box.every(Number.isFinite)) return file;
     const left = Math.max(0, box[0] * image.naturalWidth / canvas.width);

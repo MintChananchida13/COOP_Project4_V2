@@ -15,6 +15,24 @@ class Request:
     async def body(self): return self._body
 
 class ConfirmedPagesTests(unittest.TestCase):
+    def test_admin_confirmed_pages_skip_backend_boundary_and_keep_page_order(self):
+        request = Request(multipart(b'first', b'second'), {"confirmedImages": "1", "context": "admin"})
+        tasks = BackgroundTasks()
+        with patch.object(routes, "_ensure_processing_available_for_request"):
+            response = asyncio.run(routes.detect_template_dev_route(request, tasks, Response()))
+        job_id = response["data"]["job_id"]
+        try:
+            task = tasks.tasks[0]
+            self.assertEqual(task.args[1], [b'first', b'second'])
+            self.assertTrue(task.args[3])  # Admin diagnostics remain enabled.
+            self.assertTrue(task.args[-1])  # Prepared pages bypass backend normalization.
+            with patch.object(routes, "detect_template_dev", return_value={"matched": False}) as detect:
+                routes._run_detect_dev_job(*task.args, **task.kwargs)
+            self.assertTrue(detect.call_args.kwargs["skip_query_normalization"])
+            self.assertFalse(detect.call_args.kwargs["user_context"])
+        finally:
+            routes.detect_dev_jobs.pop(job_id, None)
+
     def test_admin_worker_keeps_boundary_detection_enabled(self):
         key = "test-admin-boundary"
         routes.detect_dev_jobs[key] = {}

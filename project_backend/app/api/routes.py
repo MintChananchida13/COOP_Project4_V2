@@ -435,7 +435,7 @@ async def detect_template_dev_route(
     await asyncio.to_thread(_ensure_processing_available_for_request, request, maintenance_timing)
     maintenance_at = time.perf_counter()
     admin_context = _is_admin_processing_context(request)
-    confirmed_images = request.query_params.get("confirmedImages") == "1" and not admin_context
+    confirmed_images = request.query_params.get("confirmedImages") == "1"
     if not admin_context and not confirmed_images:
         raise HTTPException(status_code=400, detail="Template search requires confirmed image pages from AdjustZone")
     image_bytes = await _read_dev_detection_image(request, confirmed_images=confirmed_images)

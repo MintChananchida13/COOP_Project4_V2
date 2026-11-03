@@ -2428,7 +2428,7 @@ export const detectTemplateDev = async (
   });
   const queryParams = new URLSearchParams();
   if (options.standardTop5) queryParams.set("standardTop5", "1");
-  if (options.confirmedImages && options.context !== "admin") queryParams.set("confirmedImages", "1");
+  if (options.confirmedImages) queryParams.set("confirmedImages", "1");
   if (options.context) queryParams.set("context", options.context);
   if (options.context !== "admin") queryParams.set("candidateFormat", "pool-v1");
   if (options.timing?.traceId) queryParams.set("benchmark_trace_id", options.timing.traceId);
