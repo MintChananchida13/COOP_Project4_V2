@@ -1461,6 +1461,7 @@ def _detect_template_anchor_strategy(
     selected_template_id: Optional[str] = None,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     user_context: bool = False,
+    compare_active_templates: bool = False,
 ) -> Dict[str, Any]:
     started = time.perf_counter()
     strategy = normalize_verification_strategy(strategy)
@@ -1480,6 +1481,14 @@ def _detect_template_anchor_strategy(
                       "template_name": template.get("name"), "template_status": template.get("status"),
                       "verification_anchors": fields}]
         load_debug = {"source": "selected_template", "template_count": 1}
+        if compare_active_templates:
+            active_templates, active_debug = _load_anchor_strategy_templates(anchor_types, request_cache)
+            active_templates = [item for item in active_templates
+                                if item.get("template_status") == "active"
+                                and item.get("template_id") != selected_template_id]
+            templates = [*active_templates, *templates]
+            load_debug = {"source": "active_templates_and_selected_draft", "active_pool": active_debug,
+                          "active_template_count": len(active_templates), "template_count": len(templates)}
     else:
         templates, load_debug = _load_anchor_strategy_templates(anchor_types, request_cache)
     timing["anchor_strategy_template_load"] = time.perf_counter() - load_started
@@ -2242,6 +2251,7 @@ def detect_template_dev(
     compact_candidates: bool = False,
     skip_query_normalization: bool = False,
     admin_context: bool = False,
+    compare_active_templates: bool = False,
 ) -> Dict[str, Any]:
     query_id = f"detq_{uuid4().hex[:12]}"
     timing: Dict[str, float] = {}
@@ -2282,6 +2292,7 @@ def detect_template_dev(
             source_type, verification_strategy, detection_batch_mode,
             selected_template_id=include_template_id, progress_callback=progress_callback,
             user_context=user_context,
+            compare_active_templates=compare_active_templates,
         ))
     finally:
         if cleanup_generated and not SAVE_DEBUG_ARTIFACTS:

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Check, ChevronDown, ChevronRight, FileImage, Folder, Loader2, Pencil, Plus, Search, UploadCloud, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, FileImage, Folder, Loader2, Pause, Pencil, Play, Plus, Search, UploadCloud, X } from "lucide-react";
 import { Template, TemplateStatus } from "../types/ocr";
 import {
   addTemplateRequestImage,
@@ -140,6 +140,8 @@ export default function AdminTemplatesPage() {
   const [deletingTemplateId, setDeletingTemplateId] = useState<string | null>(null);
   const [deleteConfirmTemplate, setDeleteConfirmTemplate] = useState<Template | null>(null);
   const [statusUpdatingTemplateId, setStatusUpdatingTemplateId] = useState<string | null>(null);
+  const [statusConfirmation, setStatusConfirmation] = useState<{ template: Template; nextStatus: TemplateStatus } | null>(null);
+  const statusDialogRef = useRef<HTMLDialogElement | null>(null);
   const [deleteMessage, setDeleteMessage] = useState("");
   const [deleteError, setDeleteError] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
@@ -162,6 +164,13 @@ export default function AdminTemplatesPage() {
   const [isCreatingRequest, setIsCreatingRequest] = useState(false);
   const [createRequestError, setCreateRequestError] = useState("");
   const handledPendingRefreshEndRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const dialog = statusDialogRef.current;
+    if (!dialog) return;
+    if (statusConfirmation && !dialog.open) dialog.showModal();
+    if (!statusConfirmation && dialog.open) dialog.close();
+  }, [statusConfirmation]);
 
   const loadTemplates = useCallback(async (options?: { silent?: boolean; forceRefresh?: boolean }) => {
     if (!options?.silent) {
@@ -380,14 +389,21 @@ export default function AdminTemplatesPage() {
     }
   };
 
-  const handleChangeTemplateStatus = async (template: Template, nextStatus: TemplateStatus) => {
+  const handleChangeTemplateStatus = (template: Template, nextStatus: TemplateStatus) => {
     if (loadStatus !== "loaded") {
       setStatusError("ไม่สามารถเปลี่ยนสถานะ Template ตัวอย่างได้ เพราะไม่ได้โหลดจากฐานข้อมูลจริง");
       return;
     }
 
+    if (statusUpdatingTemplateId) return;
+    setStatusError("");
+    setStatusConfirmation({ template, nextStatus });
+  };
+
+  const confirmTemplateStatusChange = async () => {
+    if (!statusConfirmation || statusUpdatingTemplateId) return;
+    const { template, nextStatus } = statusConfirmation;
     const actionLabel = nextStatus === "active" ? "เปิดใช้งาน" : "ปิดใช้งานชั่วคราว";
-    if (!window.confirm(`${actionLabel} Template "${template.name}"?`)) return;
 
     setStatusUpdatingTemplateId(template.id);
     setStatusMessage("");
@@ -399,6 +415,7 @@ export default function AdminTemplatesPage() {
       const bundle = await updateTemplateStatus(template.id, nextStatus);
       setTemplates((current) => current.map((item) => (item.id === template.id ? bundle.template : item)));
       setStatusMessage(`${actionLabel} Template "${template.name}" เรียบร้อยแล้ว`);
+      setStatusConfirmation(null);
     } catch (error) {
       console.warn("Template status update failed.", error);
       setStatusError(error instanceof Error ? error.message : "เปลี่ยนสถานะ Template ไม่สำเร็จ");
@@ -1184,6 +1201,76 @@ export default function AdminTemplatesPage() {
           </div>
         </div>
       )}
+      <dialog
+        ref={statusDialogRef}
+        aria-labelledby="template-status-dialog-title"
+        aria-describedby="template-status-dialog-description"
+        className="m-auto w-[calc(100%_-_2rem)] max-w-md overflow-hidden rounded-3xl border border-slate-200 bg-white p-0 text-slate-900 shadow-2xl backdrop:bg-slate-950/40 backdrop:backdrop-blur-sm"
+        onCancel={(event) => {
+          event.preventDefault();
+          if (!statusUpdatingTemplateId) setStatusConfirmation(null);
+        }}
+        onClick={(event) => {
+          if (event.target === event.currentTarget && !statusUpdatingTemplateId) setStatusConfirmation(null);
+        }}
+      >
+        {statusConfirmation && (
+          <div>
+            <div className="flex items-start justify-between gap-4 px-6 pt-6">
+              <div className={`flex h-12 w-12 items-center justify-center rounded-2xl ring-1 ring-inset ${statusConfirmation.nextStatus === "active" ? "bg-indigo-50 text-indigo-600 ring-indigo-100" : "bg-amber-50 text-amber-600 ring-amber-100"}`}>
+                {statusConfirmation.nextStatus === "active" ? <Play size={22} /> : <Pause size={22} />}
+              </div>
+              <button
+                type="button"
+                onClick={() => setStatusConfirmation(null)}
+                disabled={Boolean(statusUpdatingTemplateId)}
+                aria-label="ปิดหน้าต่างยืนยันการเปลี่ยนสถานะ"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="px-6 pb-6 pt-4">
+              <h2 id="template-status-dialog-title" className="text-lg font-bold tracking-tight text-slate-900">
+                {statusConfirmation.nextStatus === "active" ? "เปิดใช้งาน Template?" : "ปิดใช้งานชั่วคราว?"}
+              </h2>
+              <p id="template-status-dialog-description" className="mt-2 text-sm leading-6 text-slate-500">
+                {statusConfirmation.nextStatus === "active"
+                  ? "Template นี้จะกลับมาใช้ค้นหาและประมวลผลเอกสารได้อีกครั้ง"
+                  : "Template นี้จะหยุดใช้ค้นหาเอกสารชั่วคราว คุณสามารถกลับมาเปิดใช้งานได้ภายหลัง"}
+              </p>
+              <div className="mt-5 flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <FileImage size={20} className="shrink-0 text-slate-400" />
+                <div className="min-w-0">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Template</p>
+                  <p className="mt-0.5 break-words text-sm font-semibold text-slate-800">{statusConfirmation.template.name}</p>
+                </div>
+              </div>
+              {statusError && <div className="mt-4" role="alert"><InlineState tone="danger" message={statusError} /></div>}
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 border-t border-slate-100 bg-slate-50/70 px-6 py-4">
+              <button
+                type="button"
+                autoFocus
+                onClick={() => setStatusConfirmation(null)}
+                disabled={Boolean(statusUpdatingTemplateId)}
+                className="inline-flex h-10 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmTemplateStatusChange()}
+                disabled={Boolean(statusUpdatingTemplateId)}
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 disabled:cursor-wait disabled:opacity-60"
+              >
+                {statusUpdatingTemplateId && <Loader2 size={16} className="animate-spin" />}
+                {statusUpdatingTemplateId ? "กำลังบันทึก..." : statusConfirmation.nextStatus === "active" ? "เปิดใช้งาน" : "ปิดใช้งานชั่วคราว"}
+              </button>
+            </div>
+          </div>
+        )}
+      </dialog>
       {deleteConfirmTemplate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
           <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl">

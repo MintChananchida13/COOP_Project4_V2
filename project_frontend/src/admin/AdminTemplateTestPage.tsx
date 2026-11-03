@@ -687,7 +687,8 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
   const effectiveMatchingWeights = matchingWeights;
   const simulationPassed = Boolean(simulation?.passed);
   const stepTwoCompleted = Boolean(simulationPassed);
-  const detectionTestPassed = Boolean(detectionTest?.passed);
+  const detectionTestPassed = Boolean(detectionTest?.passed && detectionTest.draftTemplateRank === 1);
+  const visibleDetectionCandidates = (detectionTest?.candidates || []).filter((candidate, index) => index < 5 || candidate.isCurrentDraft);
   const publishPrerequisitesMet = Boolean(stepTwoCompleted && detectionTestPassed);
   const overallReady = publishPrerequisitesMet;
   const canRunDetectionTest = Boolean(stepTwoCompleted && simulationAction === null && testDocumentFile && !detectionTestAction);
@@ -1343,7 +1344,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <DraftSectionHeader
             title="ทดสอบการจับคู่ Template กับเอกสารใหม่"
-            subtitle="อัปโหลดเอกสารใหม่เพื่อทดสอบว่า Draft Template นี้ถูกเลือกได้ถูกต้องก่อน Publish."
+            subtitle="เปรียบเทียบ Draft นี้กับ Template ที่ active ด้วย Text/Image Anchors และตรวจอันดับก่อน Publish"
           />
           <button
             type="button"
@@ -1407,8 +1408,8 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
                     <p className="text-xs font-black text-indigo-900">กำลังทดสอบการจับคู่ Template กับเอกสารใหม่</p>
                     <p className="mt-1 text-[11px] font-semibold text-indigo-700">
                       {detectionProgress?.currentRank
-                        ? `กำลังตรวจ Text/Image Anchors${detectionProgressTemplateLabel ? ` : ${detectionProgressTemplateLabel}` : ""}`
-                        : "กำลังเตรียมเอกสารเพื่อตรวจ Template ที่เลือก"}
+                        ? `กำลังประเมิน ${detectionProgress.currentRank}/${detectionProgress.totalRank || 1}${detectionProgressTemplateLabel ? ` : ${detectionProgressTemplateLabel}` : ""}`
+                        : "กำลังเตรียมเอกสารเพื่อเปรียบเทียบกับ Template ที่ active"}
                     </p>
                   </div>
                   <Loader2 size={18} className="shrink-0 animate-spin text-indigo-600" />
@@ -1424,7 +1425,8 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
               <div className="rounded-xl border border-slate-100 bg-white p-3">
                 <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                   <DraftOverviewMetric label="ผลการจับคู่" value={detectionTest.matched ? "ตรวจพบ" : "ตรวจไม่พบ"} tone={detectionTest.matched ? "emerald" : "slate"} />
-                  <DraftOverviewMetric label="Template ที่ตรวจพบ" value={prepublishTemplateDisplayName(detectionTest.selectedTemplate)} />
+                  <DraftOverviewMetric label="1" value={prepublishTemplateDisplayName(detectionTest.selectedTemplate || detectionTest.candidates[0])} />
+                  <DraftOverviewMetric label="อันดับของ Draft ที่ทดสอบ" value={detectionTest.draftTemplateRank ? `#${detectionTest.draftTemplateRank}` : "N/A"} tone={detectionTest.draftTemplateRank === 1 ? "emerald" : "orange"} />
                   <DraftOverviewMetric label="ประเภทของ Template" value={detectionTest.selectedTemplateType || "N/A"} />
                   <DraftOverviewMetric label="คะแนนความมั่นใจในการจับคู่" value={formatPrepublishScore(detectionTest.finalConfidence)} tone="indigo" />
                   <DraftOverviewMetric label="สถานะการทดสอบ" value={detectionTest.passed ? "ผ่าน" : detectionTest.warning ? "คำเตือน" : "ไม่ผ่าน"} tone={detectionTest.passed ? "emerald" : detectionTest.warning ? "orange" : "slate"} />
@@ -1438,11 +1440,12 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
 
       {validationStep === 3 && detectionTest && (
       <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <DraftSectionHeader title="ผลการตรวจ Template ที่เลือก" subtitle="ตรวจ Text/Image Anchors ของ Template นี้กับเอกสารใหม่" />
+        <DraftSectionHeader title="ผลการจัดอันดับ Template" subtitle="แสดง 5 อันดับแรกที่เปรียบเทียบกับ Template ที่ active พร้อม Draft ที่ทดสอบเสมอ แม้อยู่ในอันดับอื่น" />
         <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
           <table className="min-w-full divide-y divide-slate-200 text-xs">
             <thead className="bg-slate-50 text-[10px] font-black uppercase tracking-wider text-slate-500">
               <tr>
+                <th className="px-3 py-2 text-left">อันดับ</th>
                 <th className="px-3 py-2 text-left">Template</th>
                 <th className="px-3 py-2 text-left">แหล่งข้อมูล</th>
                 <th className="px-3 py-2 text-left">คะแนนรวม</th>
@@ -1455,13 +1458,16 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
             <tbody className="divide-y divide-slate-100 bg-white">
               {(detectionTest?.candidates || []).length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-3 py-6 text-center font-semibold text-slate-500">
-                    Run the selected template anchor test to see results.
+                  <td colSpan={8} className="px-3 py-6 text-center font-semibold text-slate-500">
+                    ทดสอบเอกสารเพื่อดูผลการจัดอันดับ
                   </td>
                 </tr>
               ) : (
-                (detectionTest?.candidates || []).slice(0, 5).map((candidate) => (
+                visibleDetectionCandidates.map((candidate) => (
                   <tr key={`${candidate.templateId}-${candidate.rank}-test`} className={candidate.isCurrentDraft ? "bg-indigo-50" : undefined}>
+                    <td className="px-3 py-2 font-black text-slate-900">
+                      {candidate.rank === 1 ? <span className="rounded-full bg-indigo-100 px-2 py-1 text-indigo-700">1</span> : candidate.rank}
+                    </td>
                     <td className="px-3 py-2 font-bold text-slate-800">{prepublishTemplateDisplayName(candidate)}</td>
                     <td className="px-3 py-2 font-semibold text-slate-600">
                       <div>{candidate.sourceLabel || (candidate.isCurrentDraft ? "Template ฉบับร่าง" : "Template ที่เผยแพร่")}</div>
@@ -1481,8 +1487,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
           </table>
         </div>
         <div className="mt-4 space-y-3">
-          {(detectionTest?.candidates || [])
-            .slice(0, 5)
+          {visibleDetectionCandidates
             .map((candidate) => {
               const key = `${candidate.templateId}-${candidate.rank}-detail`;
 

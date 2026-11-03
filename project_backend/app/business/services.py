@@ -5799,6 +5799,7 @@ class AdminTemplateService:
                 prepublish_timing=True,
                 prepublish_total_started=total_started,
                 admin_context=True,
+                compare_active_templates=True,
                 disable_pdf_subdocument_crop=True,
                 skip_query_normalization=True,
                 progress_callback=progress_callback,
@@ -5811,7 +5812,7 @@ class AdminTemplateService:
                     "rank": index,
                     "is_current_draft": candidate.get("template_id") == template_id,
                     "source": "draft" if candidate.get("template_id") == template_id else "published",
-                    "source_label": "Draft Template" if candidate.get("template_id") == template_id else "Published Template",
+                    "source_label": "Draft Template" if candidate.get("template_id") == template_id else "Active Template",
                 }
                 for index, candidate in enumerate(candidates, start=1)
             ]
@@ -5835,6 +5836,7 @@ class AdminTemplateService:
                 (index for index, candidate in enumerate(candidates, start=1) if candidate.get("template_id") == template_id),
                 None,
             )
+            closest_active = next((candidate for candidate in candidates if candidate.get("template_id") != template_id), None)
             selected_template_id = (best_candidate or {}).get("template_id") if isinstance(best_candidate, dict) else None
             matched = bool((best_candidate or {}).get("final_passed"))
             selected_passed_final_gate = bool((best_candidate or {}).get("final_passed")) if isinstance(best_candidate, dict) else False
@@ -5855,7 +5857,7 @@ class AdminTemplateService:
                 "final_confidence": final_confidence,
                 "decision_reason": decision_reason,
                 "draft_template_rank": draft_rank,
-                "passed": bool(selected_passed_final_gate and selected_template_id == template_id),
+                "passed": bool(selected_passed_final_gate and selected_template_id == template_id and draft_rank == 1),
                 "warning": bool(matched and selected_template_id != template_id),
                 "candidates": candidates,
                 "separation_result": {
@@ -5868,8 +5870,8 @@ class AdminTemplateService:
                         ),
                         0.0,
                     ),
-                    "closest_published_template": selected_template_id if selected_template_id != template_id else None,
-                    "closest_published_score": final_confidence if selected_template_id and selected_template_id != template_id else None,
+                    "closest_published_template": (closest_active or {}).get("template_id"),
+                    "closest_published_score": (closest_active or {}).get("final_score"),
                     "conflict_level": "none" if selected_template_id == template_id else "warning" if matched else "not_ready",
                     "recommendation": "publish" if selected_passed_final_gate and selected_template_id == template_id else "review_detection_result",
                 },
@@ -5877,7 +5879,10 @@ class AdminTemplateService:
                 "pages": detection.get("pages") or [],
             }
         finally:
-            shutil.rmtree(_detection_query_storage_root() / str(detection.get("query_id") or ""), ignore_errors=True)
+            query_id = str(detection.get("query_id") or "")
+            if query_id:
+                query_dir = _safe_detection_query_dir(query_id)
+                shutil.rmtree(query_dir, ignore_errors=True)
             print(f"[PREPUBLISH] TOTAL: {time.perf_counter() - total_started:.2f}s")
 
     def confirm_publish_template(self, template_id: str) -> Dict[str, Any]:

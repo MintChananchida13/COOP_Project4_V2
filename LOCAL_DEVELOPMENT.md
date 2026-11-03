@@ -31,6 +31,12 @@ anchor ROIs, expected text, and enabled image categories. It returns `passed`,
 `readiness_pages`, `anchor_readiness_results`, and `issues`. This is a
 configuration check; testing a new document still performs model inference.
 
+The prepublish document test compares the selected draft with all active
+templates, excludes inactive templates and other drafts, and evaluates the
+entire pool using the current verification mode. Its result includes Top 5
+and the draft's rank (the draft remains visible outside Top 5). The test passes
+only when the draft passes verification and ranks first.
+
 Publish jobs use `/admin/templates/{id}/publish-jobs` and
 `/admin/publish-jobs/{job_id}/run-dev` or `complete-dev`. The old
 `embedding-jobs` paths remain deprecated aliases. Both completion paths recheck

@@ -185,8 +185,8 @@ def _run_prepublish_detection_job(job_id: str, template_id: str, file_bytes: byt
                 completed_progress = {
                     **(job.get("progress") if isinstance(job.get("progress"), dict) else {}),
                     "stage": "completed",
-                    "current_rank": 1,
-                    "total_rank": 1,
+                    "current_rank": len(result.get("candidates") or []),
+                    "total_rank": len(result.get("candidates") or []),
                     "sequence": len(events),
                 }
                 job["progress"] = completed_progress
