@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 
 from app.core.config import GATEWAY_URL
+from app.core.ocr_model_config import DEFAULT_OCR_MODEL_SETTINGS, normalize_saved_ocr_settings
 from app.core.db import connect as connect_db
 from app.core.json_utils import jsonb_load
 
@@ -35,38 +36,14 @@ class ModelRuntimeKind(str, Enum):
 
 
 MODEL_RUNTIME_GATEWAY_PATH: Dict[ModelRuntimeKind, str] = {
-    ModelRuntimeKind.LAYOUT: "/api/v1/document-layouts",
-    ModelRuntimeKind.TEXT_DETECTION: "/api/v1/text-detections?version=v6",
-    ModelRuntimeKind.TEXT_RECOGNITION: "/api/v1/text-recognitions",
-    ModelRuntimeKind.TABLE: "/api/v1/table-model-results",
-    ModelRuntimeKind.IMAGE_VERIFICATION: "/api/v1/image-verifications",
+    ModelRuntimeKind.LAYOUT: "/paddle/api/v1/document-layouts",
+    ModelRuntimeKind.TEXT_DETECTION: "/paddle/api/v1/text-detections?version=v6",
+    ModelRuntimeKind.TEXT_RECOGNITION: "/paddle/api/v1/text-recognitions",
+    ModelRuntimeKind.TABLE: "/paddle/api/v1/table-model-results",
+    ModelRuntimeKind.IMAGE_VERIFICATION: "/paddle/api/v1/image-verifications",
 }
 
 OCR_MODEL_SETTINGS_KEY = "ocr_model_settings"
-DEFAULT_OCR_MODEL_SETTINGS: Dict[str, Any] = {
-    "active": {
-        "text_detection": "ocr_det_v6_medium",
-        "text_recognition": "thai_ocr_v5_mobile",
-    },
-    "models": {
-        "text_detection": [
-            {
-                "id": "ocr_det_v6_medium",
-                "display_name": "PP-OCRv6 Medium",
-                "single_api_path": "/api/v1/text-detections?version=v6",
-                "batch_api_path": "/api/v1/text-detection-batches?version=v6",
-            },
-        ],
-        "text_recognition": [
-            {
-                "id": "thai_ocr_v5_mobile",
-                "display_name": "Thai PP-OCRv5 Mobile",
-                "single_api_path": "/api/v1/text-recognitions",
-                "batch_api_path": "/api/v1/text-recognition-batches",
-            },
-        ],
-    },
-}
 
 
 def _active_ocr_model(kind: str) -> Dict[str, Any]:
@@ -79,7 +56,7 @@ def _active_ocr_model(kind: str) -> Dict[str, Any]:
             ).fetchone()
         loaded = jsonb_load(row["value"] if row else None, None)
         if isinstance(loaded, dict):
-            settings = loaded
+            settings = normalize_saved_ocr_settings(loaded)
         elif row is not None:
             raise ValueError("Invalid OCR model settings")
     except Exception as error:
@@ -94,12 +71,19 @@ def _active_ocr_model(kind: str) -> Dict[str, Any]:
     raise ModelRuntimeUnavailableError(f"Configured active {kind} model {active_id!r} was not found")
 
 
+def _gateway_api_path(path: str) -> str:
+    # Existing OCR settings can still contain the original API prefix.
+    if path == "/api/v1" or path.startswith("/api/v1/"):
+        return f"/paddle{path}"
+    return path
+
+
 def _active_ocr_path(kind: str, mode: str) -> str:
     model = _active_ocr_model(kind)
     key = "batch_api_path" if mode == "batch" else "single_api_path"
     path = str(model.get(key) or "").strip()
     if path.startswith("/"):
-        return path
+        return _gateway_api_path(path)
     raise ModelRuntimeUnavailableError(f"Configured {kind} model {model.get('id')!r} has an invalid {key}")
 
 
@@ -124,32 +108,6 @@ def _gateway_headers() -> Dict[str, str]:
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     return headers
-
-
-def fetch_ocr_registry() -> Dict[str, Any]:
-    if not GATEWAY_URL.strip():
-        raise ModelRuntimeUnavailableError("GATEWAY_URL is not configured")
-    request = urllib.request.Request(f"{GATEWAY_URL.strip().rstrip('/')}/api/v1/ocr-models", headers=_gateway_headers())
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            data = json.load(response)
-        return data["models"]
-    except Exception as error:
-        raise ModelRuntimeUnavailableError(f"Cannot fetch OCR model registry: {error}") from error
-
-
-def check_ocr_registry_model(kind: str, version: str, model_id: str) -> Dict[str, Any]:
-    return _post_predict(ModelRuntimeKind.TEXT_DETECTION if kind == "text_detection" else ModelRuntimeKind.TEXT_RECOGNITION,
-        {"kind": "det" if kind == "text_detection" else "rec", "version": version, "model_id": model_id},
-        path_override="/api/v1/ocr-models/check")
-
-
-def register_ocr_registry_model(kind: str, model: Dict[str, Any]) -> Dict[str, Any]:
-    return _post_predict(ModelRuntimeKind.TEXT_DETECTION if kind == "text_detection" else ModelRuntimeKind.TEXT_RECOGNITION,
-        {"kind": "det" if kind == "text_detection" else "rec", "version": model["model_version"],
-         "model_id": model["runtime_model_id"], "model_name": model["model_name"],
-         "model_dir": model["model_dir"], "display_name": model["display_name"]},
-        path_override="/api/v1/ocr-models")
 
 
 def _image_to_data_url(image: np.ndarray) -> str:
@@ -247,7 +205,7 @@ def _post_predict(
 ) -> Dict[str, Any]:
     if path_override:
         gateway_url = GATEWAY_URL.strip().rstrip("/")
-        endpoint_url = f"{gateway_url}{path_override}" if gateway_url else None
+        endpoint_url = f"{gateway_url}{_gateway_api_path(path_override)}" if gateway_url else None
     else:
         endpoint_url = runtime_url(kind)
     if not endpoint_url:
@@ -321,14 +279,21 @@ def _post_predict(
         detail = parsed.get("detail") or parsed.get("error") or "Model runtime request failed."
         raise ModelRuntimeUnavailableError(f"{kind.value} runtime failed: {detail}")
 
+    sources = [parsed, parsed.get("result"), parsed.get("data")]
+    selections = [source.get("model_selection") for source in sources
+                  if isinstance(source, dict) and isinstance(source.get("model_selection"), dict)]
+    runtime_model = parsed.get("model") or next((selection.get("model_name") for selection in selections
+                                                if selection.get("model_name")), None)
     selected_id = parse_qs(urlsplit(path_override or "").query).get("model_id", [""])[0]
-    if selected_id and selected_id != "default" and not str(parsed.get("model") or "").endswith(f":{selected_id}"):
+    confirmed_ids = {str(selection.get("model_id") or selection.get("runtime_model_id") or "")
+                     for selection in selections}
+    if selected_id and selected_id != "default" and selected_id not in confirmed_ids and not str(runtime_model or "").endswith(f":{selected_id}"):
         raise ModelRuntimeUnavailableError(f"{kind.value} runtime did not confirm selected model_id={selected_id}")
 
     logger.info(
         "Model Runtime timing: kind=%s model=%s payload_bytes=%s elapsed=%.3fs",
         kind.value,
-        parsed.get("model"),
+        runtime_model,
         len(body),
         time.perf_counter() - started,
     )
@@ -358,7 +323,7 @@ def _post_predict(
                 ):
                     timing["layout_item_field_sizes"] = _field_size_summary(layout_items[0])
 
-        timing["model"] = parsed.get("model")
+        timing["model"] = runtime_model
         timing["total_runtime_client_ms"] = round(
             (time.perf_counter() - started) * 1000.0, 2
         )
@@ -366,8 +331,8 @@ def _post_predict(
     result = parsed.get("result")
     if result is None and "data" in parsed:
         result = parsed.get("data")
-    if kind == ModelRuntimeKind.TEXT_RECOGNITION and isinstance(result, dict) and parsed.get("model") and "model" not in result:
-        result = {**result, "model": parsed.get("model")}
+    if kind == ModelRuntimeKind.TEXT_RECOGNITION and isinstance(result, dict) and runtime_model and "model" not in result:
+        result = {**result, "model": runtime_model}
     return result if isinstance(result, dict) else parsed
 
 
@@ -512,6 +477,35 @@ def remote_verify_image_logits_batch(
             "decision_config": gate_config(),
         },
         timeout=240.0,
-        path_override="/api/v1/image-classification-batches",
+        path_override="/paddle/api/v1/image-classification-batches",
         timing=timing,
     )
+
+
+def probe_ocr_model(kind: str, model: Dict[str, Any]) -> Dict[str, Any]:
+    """Exercise the configured single and batch inference routes, not a registry."""
+    runtime_kind = ModelRuntimeKind.TEXT_DETECTION if kind == "text_detection" else ModelRuntimeKind.TEXT_RECOGNITION
+    image = np.full((96, 384, 3), 255, dtype=np.uint8)
+    cv2.putText(image, "OCR TEST 123", (12, 62), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2)
+    encoded = _image_to_data_url(image)
+    checked_paths = {}
+    timings = {}
+    runtime_models = {}
+    for mode, key in (("single", "single_api_path"), ("batch", "batch_api_path")):
+        path = _gateway_api_path(str(model.get(key) or "").strip())
+        if not path.startswith("/") or path.startswith("//"):
+            raise ModelRuntimeUnavailableError(f"Invalid {key}")
+        timing = {}
+        payload = {"image": encoded} if mode == "single" else {"images": [encoded]}
+        _post_predict(runtime_kind, payload, path_override=path, timing=timing)
+        if not timing.get("model"):
+            raise ModelRuntimeUnavailableError(f"{mode} inference endpoint did not identify its model")
+        expected_name = str(model.get("model_name") or "").strip()
+        actual_name = str(timing["model"])
+        if expected_name and actual_name != expected_name and not actual_name.startswith(f"{expected_name}:"):
+            raise ModelRuntimeUnavailableError(f"{mode} inference endpoint returned model {actual_name!r}, expected {expected_name!r}")
+        runtime_models[mode] = actual_name
+        checked_paths[mode] = path
+        timings[mode] = timing
+    return {"model_id": model["id"], "processing_verified": True, "validation_scope": "processing_api",
+            "checked_paths": checked_paths, "models": runtime_models, "timing": timings}

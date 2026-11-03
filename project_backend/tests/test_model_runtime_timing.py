@@ -89,7 +89,7 @@ class ModelRuntimeTimingTests(unittest.TestCase):
             remote_verify_image_logits_batch(["image.png"], timing=timing)
             self.assertIs(predict.call_args.kwargs["timing"], timing)
 
-    def test_missing_active_model_or_path_does_not_fall_back(self):
+    def test_old_active_model_is_replaced_and_missing_fixed_path_is_rejected(self):
         from app.core.model_runtime_client import _active_ocr_model, _active_ocr_path
         from unittest.mock import MagicMock
 
@@ -98,8 +98,7 @@ class ModelRuntimeTimingTests(unittest.TestCase):
             "value": '{"active":{"text_recognition":"missing"},"models":{"text_recognition":[{"id":"other"}]}}'
         }
         with patch("app.core.model_runtime_client.connect_db", return_value=connection):
-            with self.assertRaisesRegex(ModelRuntimeUnavailableError, "missing"):
-                _active_ocr_model("text_recognition")
+            self.assertEqual(_active_ocr_model("text_recognition")["id"], "thai_ocr_v5_mobile")
         with patch("app.core.model_runtime_client._active_ocr_model", return_value={"id": "chosen"}):
             with self.assertRaisesRegex(ModelRuntimeUnavailableError, "chosen"):
                 _active_ocr_path("text_recognition", "single")

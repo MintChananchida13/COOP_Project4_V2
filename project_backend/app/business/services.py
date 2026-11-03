@@ -21,6 +21,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from app.core.db import connect as connect_db
+from app.core.ocr_model_config import DEFAULT_OCR_MODEL_SETTINGS, normalize_saved_ocr_settings
 from app.business.image_verification_category_service import (
     ImageVerificationCategoryService,
     categories_to_runtime_payload,
@@ -133,36 +134,6 @@ DEFAULT_SYSTEM_MAINTENANCE: Dict[str, Any] = {
     "updatedBy": None,
 }
 
-DEFAULT_OCR_MODEL_SETTINGS: Dict[str, Any] = {
-    "active": {
-        "text_detection": "ocr_det_v6_medium",
-        "text_recognition": "thai_ocr_v5_mobile",
-    },
-    "models": {
-        "text_detection": [
-            {
-                "id": "ocr_det_v6_medium",
-                "display_name": "PP-OCRv6 Medium",
-                "single_api_path": "/api/v1/text-detections?version=v6",
-                "batch_api_path": "/api/v1/text-detection-batches?version=v6",
-            },
-            {
-                "id": "ocr_det_v5_server",
-                "display_name": "PP-OCRv5 Server",
-                "single_api_path": "/api/v1/text-detections?version=v5",
-                "batch_api_path": "/api/v1/text-detection-batches?version=v5",
-            },
-        ],
-        "text_recognition": [
-            {
-                "id": "thai_ocr_v5_mobile",
-                "display_name": "Thai PP-OCRv5 Mobile",
-                "single_api_path": "/api/v1/text-recognitions",
-                "batch_api_path": "/api/v1/text-recognition-batches",
-            },
-        ],
-    },
-}
 
 
 def _now() -> str:
@@ -329,41 +300,7 @@ def _clean_ocr_model_payload(payload: Any, existing_id: Optional[str] = None) ->
 
 
 def normalize_ocr_model_settings(value: Any = None) -> Dict[str, Any]:
-    raw = jsonb_load(value, {}) if isinstance(value, str) else (value or {})
-    defaults = {
-        "active": dict(DEFAULT_OCR_MODEL_SETTINGS["active"]),
-        "models": {
-            kind: [dict(model) for model in DEFAULT_OCR_MODEL_SETTINGS["models"][kind]]
-            for kind in OCR_MODEL_KINDS
-        },
-    }
-    if not isinstance(raw, dict):
-        return defaults
-
-    raw_models = raw.get("models") if isinstance(raw.get("models"), dict) else {}
-    for kind in OCR_MODEL_KINDS:
-        incoming = raw_models.get(kind)
-        if isinstance(incoming, list) and incoming:
-            cleaned: List[Dict[str, Any]] = []
-            for item in incoming:
-                if not isinstance(item, dict):
-                    continue
-                try:
-                    cleaned.append(_clean_ocr_model_payload(item, existing_id=str(item.get("id") or "")))
-                except HTTPException:
-                    continue
-            if cleaned:
-                defaults["models"][kind] = cleaned
-
-    raw_active = raw.get("active") if isinstance(raw.get("active"), dict) else {}
-    for kind in OCR_MODEL_KINDS:
-        ids = {model["id"] for model in defaults["models"][kind]}
-        active_id = str(raw_active.get(kind) or defaults["active"][kind])
-        if active_id in ids:
-            defaults["active"][kind] = active_id
-        elif defaults["models"][kind]:
-            defaults["active"][kind] = defaults["models"][kind][0]["id"]
-    return defaults
+    return normalize_saved_ocr_settings(value)
 
 
 class GlobalSettingsService:
@@ -1064,38 +1001,24 @@ class GlobalSettingsService:
         settings = self._active_ocr_model_settings_no_apply()
         for models in settings["models"].values():
             for item in models:
+                # Runtime loading is unknown until a processing request is made.
                 item["loaded"] = False
-        registry_error = None
-        try:
-            from app.core.model_runtime_client import fetch_ocr_registry
-            from urllib.parse import urlencode
-            registry = fetch_ocr_registry()
-            for kind, category, api in (("text_detection", "detection", "text-detection"), ("text_recognition", "recognition", "text-recognition")):
-                for entry in registry.get(category, []):
-                    if entry.get("model_id") == "default":
-                        default_id = "ocr_det_v6_medium" if kind == "text_detection" else "thai_ocr_v5_mobile"
-                        for item in settings["models"][kind]:
-                            if item["id"] == default_id:
-                                item.update(model_name=entry["model_name"], model_version=entry["version"], runtime_model_id="default", loaded=bool(entry.get("loaded")))
-                        continue
-                    query = urlencode({"version": entry["version"], "model_id": entry["model_id"]})
-                    model = {"id": entry["model_id"], "runtime_model_id": entry["model_id"],
-                             "display_name": entry["display_name"], "model_name": entry["model_name"],
-                             "model_version": entry["version"], "model_dir": entry.get("model_dir"),
-                             "loaded": bool(entry.get("loaded")), "registry_managed": True,
-                             "single_api_path": f"/api/v1/{api}s?{query}",
-                             "batch_api_path": f"/api/v1/{api}-batches?{query}"}
-                    models = settings["models"][kind]
-                    index = next((i for i, item in enumerate(models) if item["id"] == model["id"]), None)
-                    if index is None:
-                        models.append(model)
-                    else:
-                        models[index] = model
-        except Exception as error:
-            registry_error = str(error)
+                item["registry_managed"] = False
         pending_raw = self._load_setting_value(PENDING_OCR_MODEL_SETTINGS_KEY)
         pending_settings = normalize_ocr_model_settings(jsonb_load(pending_raw, None)) if pending_raw is not None else None
-        return {"ocr_models": settings, "pending_ocr_models": pending_settings, "registry_error": registry_error}
+        return {"ocr_models": settings, "pending_ocr_models": pending_settings, "registry_error": None, "fixed_models": False}
+
+    def check_ocr_model_runtime(self, kind: str, model_id: str) -> Dict[str, Any]:
+        normalized_kind = _normalize_model_kind(kind)
+        settings = self.get_ocr_model_settings()["ocr_models"]
+        model = next((item for item in settings["models"][normalized_kind] if item["id"] == model_id), None)
+        if model is None:
+            raise HTTPException(status_code=404, detail="OCR model not found")
+        from app.core.model_runtime_client import probe_ocr_model, ModelRuntimeUnavailableError
+        try:
+            return probe_ocr_model(normalized_kind, model)
+        except ModelRuntimeUnavailableError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
 
     def _active_ocr_model_settings_no_apply(self) -> Dict[str, Any]:
         with _connect() as conn:
@@ -1128,37 +1051,36 @@ class GlobalSettingsService:
     def upsert_ocr_model(self, kind: str, payload: Any, model_id: Optional[str] = None) -> Dict[str, Any]:
         normalized_kind = _normalize_model_kind(kind)
         settings = self.get_ocr_model_settings()["ocr_models"]
-        cleaned = _clean_ocr_model_payload(payload, existing_id=model_id)
         models = settings["models"][normalized_kind]
+        cleaned = _clean_ocr_model_payload(payload, existing_id=model_id)
         runtime_id = str(cleaned.get("runtime_model_id") or "").strip()
         if runtime_id and not model_id:
             from urllib.parse import urlencode
-            from app.core.model_runtime_client import register_ocr_registry_model, ModelRuntimeUnavailableError
-            for key in ("model_name", "model_version", "model_dir"):
-                if not str(cleaned.get(key) or "").strip():
-                    raise HTTPException(status_code=400, detail=f"{key} is required")
-            if any(item["id"] == runtime_id for item in models):
-                raise HTTPException(status_code=409, detail="Model ID already exists")
+            version = str(cleaned.get("model_version") or "").strip()
+            if not version:
+                raise HTTPException(status_code=400, detail="model_version is required")
             cleaned["id"] = runtime_id
             api = "text-detection" if normalized_kind == "text_detection" else "text-recognition"
-            query = urlencode({"version": cleaned["model_version"], "model_id": runtime_id})
-            cleaned["single_api_path"] = f"/api/v1/{api}s?{query}"
-            cleaned["batch_api_path"] = f"/api/v1/{api}-batches?{query}"
-            try:
-                register_ocr_registry_model(normalized_kind, cleaned)
-            except ModelRuntimeUnavailableError as error:
-                raise HTTPException(status_code=503, detail=str(error)) from error
-            cleaned["registry_managed"] = True
-            cleaned["loaded"] = False
-        index = next((item_index for item_index, item in enumerate(models) if item["id"] == cleaned["id"]), -1)
+            query = urlencode({"version": version, "model_id": runtime_id})
+            cleaned["single_api_path"] = f"/paddle/api/v1/{api}s?{query}"
+            cleaned["batch_api_path"] = f"/paddle/api/v1/{api}-batches?{query}"
+        index = next((index for index, item in enumerate(models) if item["id"] == cleaned["id"]), -1)
+        if model_id and index < 0:
+            raise HTTPException(status_code=404, detail="OCR model not found")
+        if not model_id and index >= 0:
+            raise HTTPException(status_code=409, detail="Model ID already exists")
+        from app.core.model_runtime_client import probe_ocr_model, ModelRuntimeUnavailableError
+        try:
+            probe = probe_ocr_model(normalized_kind, cleaned)
+        except ModelRuntimeUnavailableError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        cleaned.update(registry_managed=False, loaded=False)
         if index >= 0:
             models[index] = cleaned
         else:
             models.append(cleaned)
-        if not settings["active"].get(normalized_kind):
-            settings["active"][normalized_kind] = cleaned["id"]
         self._save_setting(OCR_MODEL_SETTINGS_KEY, jsonb_dump(settings))
-        return {"ocr_models": settings, "model": cleaned}
+        return {"ocr_models": settings, "model": cleaned, "processing_check": probe, "fixed_models": False}
 
     def delete_ocr_model(self, kind: str, model_id: str) -> Dict[str, Any]:
         normalized_kind = _normalize_model_kind(kind)

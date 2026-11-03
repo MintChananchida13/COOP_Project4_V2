@@ -17,6 +17,25 @@ DETECTION_COORDINATE_DEBUG=false
 
 The backend calls model inference through Gateway only.
 
+The backend starts with two built-in OCR models: `ocr_det_v6_medium`
+(PP-OCRv6 Medium) and `thai_ocr_v5_mobile` (Thai PP-OCRv5 Mobile).
+Settings and inference share `app/core/ocr_model_config.py`. Additional models
+and active selections are stored in backend settings and used by inference.
+The obsolete `ocr_det_v5_server` default is not restored automatically.
+It does not fetch, register, or warm up models through Gateway `/ocr-models`
+endpoints. Adding or editing a model sends a synthetic image through both its
+single and batch processing APIs before saving. The Admin model check performs
+the same real requests. Failed requests or a mismatched model identity prevent
+saving. The service supports both the original response model field and
+`model_selection.model_name` metadata from `leaf-inference-v1` responses.
+Models must already be installed and served by the external model service;
+adding a backend configuration does not deploy model weights.
+
+Inference continues through the five model APIs under `/paddle/api/v1`:
+`document-layouts`, `text-detections`, `text-recognitions`,
+`table-model-results`, and `image-verifications`, with the existing batch APIs.
+Keep `GATEWAY_URL` as the host base URL, without adding `/paddle` to it.
+
 ## Template verification and publishing
 
 Only `standard` and `strict` are supported. Both use Text/Image Anchors:

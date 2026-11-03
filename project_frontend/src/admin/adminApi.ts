@@ -468,6 +468,7 @@ const cloneVerificationStrategySettings = (settings: VerificationStrategySetting
 const cloneDetectionBatchModeSettings = (settings: DetectionBatchModeSettings): DetectionBatchModeSettings => ({ ...settings });
 const cloneSystemMaintenanceState = (state: SystemMaintenanceState): SystemMaintenanceState => ({ ...state });
 const cloneOcrModelSettings = (settings: OcrModelSettings): OcrModelSettings => ({
+  fixedModels: settings.fixedModels,
   active: { ...settings.active },
   pendingActive: settings.pendingActive ? { ...settings.pendingActive } : settings.pendingActive,
   deferred: settings.deferred,
@@ -2163,6 +2164,7 @@ export interface OcrModelConfig {
 }
 
 export interface OcrModelSettings {
+  fixedModels?: boolean;
   active: Record<OcrModelKind, string>;
   models: Record<OcrModelKind, OcrModelConfig[]>;
   pendingActive?: Record<OcrModelKind, string> | null;
@@ -2188,6 +2190,7 @@ const mapOcrModelSettings = (data: Record<string, unknown>): OcrModelSettings =>
   const active = (settings.active || {}) as Record<string, unknown>;
   const models = (settings.models || {}) as Record<string, unknown>;
   return {
+    fixedModels: data.fixed_models === true,
     active: {
       text_detection: String(active.text_detection || active.textDetection || ""),
       text_recognition: String(active.text_recognition || active.textRecognition || ""),
@@ -2214,6 +2217,7 @@ export const checkOcrModel = async (kind: OcrModelKind, modelId: string): Promis
   const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/settings/ocr-models/${kind}/${encodeURIComponent(modelId)}/check`, { method: "POST" });
   const json = await response.json();
   if (!response.ok || json?.success === false) throw new Error(json?.detail || json?.error?.message || "Model check failed");
+  if (json?.data?.processing_verified !== true) throw new Error("Backend ยังไม่ยืนยันผลการประมวลผลจริง กรุณาอัปเดต backend แล้วทดสอบใหม่");
 };
 
 export const fetchOcrModelSettings = async (options: { forceRefresh?: boolean } = {}): Promise<OcrModelSettings> => {
@@ -2282,6 +2286,9 @@ export const saveOcrModel = async (
   const json = await response.json();
   if (!response.ok || json?.success === false) {
     throw new Error(json?.detail || json?.error?.message || "Save OCR model failed");
+  }
+  if (json?.data?.processing_check?.processing_verified !== true) {
+    throw new Error("Backend ???????????????????? API ???????????? ????????????????????????????");
   }
   const settings = mapOcrModelSettings((json?.data as Record<string, unknown>) || {});
   ocrModelSettingsCache = { value: cloneOcrModelSettings(settings) };

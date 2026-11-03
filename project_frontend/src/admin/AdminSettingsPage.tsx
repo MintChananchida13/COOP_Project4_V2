@@ -41,6 +41,7 @@ const verificationStrategyLabel = (strategy: VerificationStrategy) =>
     : "แบบมาตรฐาน (standard)";
 
 const emptyModelSettings: OcrModelSettings = {
+  fixedModels: false,
   active: { text_detection: "", text_recognition: "" },
   models: { text_detection: [], text_recognition: [] },
 };
@@ -637,8 +638,8 @@ export default function AdminSettingsPage() {
 
   const openAddModel = (kind: OcrModelKind) => {
     setEditingModel({ kind, draft: { ...emptyModelDraft,
-      singleApiPath: kind === "text_detection" ? "/api/v1/text-detections" : "/api/v1/text-recognitions",
-      batchApiPath: kind === "text_detection" ? "/api/v1/text-detection-batches" : "/api/v1/text-recognition-batches" } });
+      singleApiPath: kind === "text_detection" ? "/paddle/api/v1/text-detections?version=v6" : "/paddle/api/v1/text-recognitions",
+      batchApiPath: kind === "text_detection" ? "/paddle/api/v1/text-detection-batches?version=v6" : "/paddle/api/v1/text-recognition-batches" } });
     setModelFormStatus("idle");
     setModelFormError("");
   };
@@ -651,9 +652,9 @@ export default function AdminSettingsPage() {
 
   const handleSaveModelForm = async () => {
     if (!editingModel || modelFormStatus === "saving") return;
-    if (!editingModel.draft.id && ![editingModel.draft.displayName, editingModel.draft.modelName, editingModel.draft.runtimeModelId, editingModel.draft.modelVersion, editingModel.draft.modelDir].every(value => value?.trim())) {
+    if (![editingModel.draft.displayName, editingModel.draft.singleApiPath, editingModel.draft.batchApiPath].every(value => value?.trim())) {
       setModelFormStatus("error");
-      setModelFormError("กรุณากรอกชื่อ Model Name, Model ID, Version และ Model Directory ให้ครบ");
+      setModelFormError("กรุณากรอกชื่อโมเดล Single API Path และ Batch API Path ให้ครบ");
       return;
     }
     setModelFormStatus("saving");
@@ -663,6 +664,7 @@ export default function AdminSettingsPage() {
       applyOcrModelSettings(persistedSettings);
       setEditingModel(null);
       setModelFormStatus("idle");
+      setModelCheckMessage("ทดสอบ API ประมวลผลแบบ Single และ Batch สำเร็จ และบันทึกโมเดลแล้ว");
     } catch (error) {
       console.warn("OCR model save failed.", error);
       setModelFormStatus("error");
@@ -873,13 +875,15 @@ export default function AdminSettingsPage() {
           <div className="min-h-0 flex-1 overflow-y-auto p-5">
             {modelSettings.registryError && <p className="mb-3 text-xs text-amber-700">เชื่อมต่อ Model Service ไม่สำเร็จ: {modelSettings.registryError}</p>}
             {modelCheckMessage && <p role="status" className="mb-3 text-xs text-slate-700">{modelCheckMessage}</p>}
-            {editingModel ? (
+            {modelSettings.fixedModels && <p className="mb-3 text-xs font-semibold text-slate-500">ใช้ PP-OCRv6 Medium สำหรับ Text Detection และ Thai PP-OCRv5 Mobile สำหรับ Text Recognition</p>}
+            {editingModel && !modelSettings.fixedModels ? (
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <h3 className="text-sm font-black text-slate-900">{editingModel.draft.id ? "แก้ไขโมเดล" : "เพิ่มโมเดล"} {modelKindLabels[editingModel.kind]}</h3>
+                <p className="mt-2 text-xs leading-5 text-slate-500">ระบบจะส่งภาพทดสอบไปยัง API แบบ Single และ Batch จริงก่อนบันทึก โมเดลต้องพร้อมให้บริการที่เครื่องโมเดลแล้ว</p>
                 <div className="mt-4 grid gap-3">
                   {[
                     ["Display Name", "displayName"],
-                    ...(!editingModel.draft.id ? [["Model Name", "modelName"], ["Model ID", "runtimeModelId"], ["Version", "modelVersion"], ["Model Directory (Model Service)", "modelDir"]] : []),
+                    ...(!editingModel.draft.id ? [["Model Name (optional)", "modelName"], ["Model ID (optional)", "runtimeModelId"], ["Version (required with Model ID)", "modelVersion"]] : []),
                     ["Single API Path", "singleApiPath"],
                     ["Batch API Path", "batchApiPath"],
                   ].map(([label, key]) => (
@@ -887,7 +891,6 @@ export default function AdminSettingsPage() {
                       <span className="text-[11px] font-black uppercase tracking-wide text-slate-500">{label}</span>
                       <input
                         type="text"
-                        readOnly={!editingModel.draft.id && (key === "singleApiPath" || key === "batchApiPath")}
                         value={String(editingModel.draft[key as keyof ModelDraft] || "")}
                         placeholder={modelFormPlaceholders[editingModel.kind][key as keyof Omit<ModelDraft, "id">]}
                         onChange={(event) => setEditingModel((current) => current ? { ...current, draft: { ...current.draft, [key]: event.target.value } } : current)}
@@ -901,18 +904,18 @@ export default function AdminSettingsPage() {
                   <button type="button" onClick={() => setEditingModel(null)} className="h-10 rounded-xl border border-slate-200 bg-white px-4 text-xs font-black text-slate-700 hover:bg-slate-50">ยกเลิก</button>
                   <button type="button" onClick={() => void handleSaveModelForm()} disabled={modelFormStatus === "saving"} className="inline-flex h-10 items-center gap-2 rounded-xl bg-indigo-600 px-4 text-xs font-black text-white hover:bg-indigo-700 disabled:bg-slate-300">
                     {modelFormStatus === "saving" && <Loader2 size={14} className="animate-spin" />}
-                    {editingModel.draft.id ? "บันทึกโมเดล" : "เพิ่มโมเดล"}
+                    {modelFormStatus === "saving" ? "กำลังทดสอบ API และบันทึก..." : editingModel.draft.id ? "ทดสอบและบันทึกโมเดล" : "ทดสอบและเพิ่มโมเดล"}
                   </button>
                 </div>
               </div>
             ) : (
               <div className="space-y-3">
-                <div className="flex justify-end">
+                {!modelSettings.fixedModels && <div className="flex justify-end">
                   <button type="button" onClick={() => openAddModel(activeManagerTab)} className="inline-flex h-10 items-center gap-2 rounded-xl bg-indigo-600 px-3 text-xs font-black text-white hover:bg-indigo-700">
                     <Plus size={14} />
                     เพิ่มโมเดล
                   </button>
-                </div>
+                </div>}
                 {modelFormStatus === "error" && modelFormError && <InlineState tone="danger" message={modelFormError} />}
                 {models.map((model) => {
                   const isActive = model.id === activeModelId;
@@ -931,22 +934,21 @@ export default function AdminSettingsPage() {
                           <div><span className="font-black text-slate-700">Model Name</span><br />{model.modelName || "—"}</div>
                           <div><span className="font-black text-slate-700">Model ID</span><br />{model.runtimeModelId || model.id}</div>
                           <div><span className="font-black text-slate-700">Version</span><br />{model.modelVersion || "—"}</div>
-                          <div><span className="font-black text-slate-700">Model Directory (Model Service)</span><br />{model.modelDir || "—"}</div>
-                          <div><span className="font-black text-slate-700">สถานะ</span><br />{model.loaded ? "โหลดโมเดลแล้ว" : "ยังไม่ได้ตรวจสอบหรือยังไม่โหลด"}</div>
+                          <div><span className="font-black text-slate-700">สถานะ</span><br />ตั้งค่าการเรียก API ไว้ใน backend</div>
                           <div><span className="font-black text-slate-700">Single API Path</span><br />{model.singleApiPath}</div>
                           <div><span className="font-black text-slate-700">Batch API Path</span><br />{model.batchApiPath}</div>
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-2 sm:justify-end">
-                      <button type="button" disabled={Boolean(checkingModelId) || !model.runtimeModelId} onClick={() => {
-                        setCheckingModelId(model.id); setModelCheckMessage("กำลังตรวจสอบและโหลดโมเดล...");
+                      <button type="button" disabled={Boolean(checkingModelId)} onClick={() => {
+                        setCheckingModelId(model.id); setModelCheckMessage("กำลังทดสอบ API ประมวลผลจริงแบบ Single และ Batch...");
                         void checkOcrModel(activeManagerTab, model.id).then(async () => {
                           applyOcrModelSettings(await fetchOcrModelSettings({ forceRefresh: true }));
-                          setModelCheckMessage(`โหลด ${model.displayName} สำเร็จ`);
+                          setModelCheckMessage(`${model.displayName} ประมวลผลภาพทดสอบผ่าน API แบบ Single และ Batch สำเร็จ`);
                         }).catch((error) => setModelCheckMessage(error instanceof Error ? error.message : "ตรวจสอบโมเดลไม่สำเร็จ"))
                           .finally(() => setCheckingModelId(null));
-                      }} className="h-9 rounded-xl border border-indigo-200 px-3 text-xs font-bold text-indigo-700 disabled:opacity-40">ตรวจสอบโมเดล</button>
-                      <button type="button" disabled={model.registryManaged} title={model.registryManaged ? "ตั้งค่ารุ่นนี้ใน Registry ของ Model Service" : undefined} onClick={() => openEditModel(activeManagerTab, model)} className="inline-flex h-9 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 hover:bg-slate-50 disabled:opacity-40">
+                      }} className="h-9 rounded-xl border border-indigo-200 px-3 text-xs font-bold text-indigo-700 disabled:opacity-40">ทดสอบ API จริง</button>
+                      {!modelSettings.fixedModels && <><button type="button" disabled={model.registryManaged} title={model.registryManaged ? "ตั้งค่ารุ่นนี้ใน Registry ของ Model Service" : undefined} onClick={() => openEditModel(activeManagerTab, model)} className="inline-flex h-9 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 hover:bg-slate-50 disabled:opacity-40">
                         <Pencil size={14} />
                         แก้ไข
                       </button>
@@ -959,7 +961,7 @@ export default function AdminSettingsPage() {
                       >
                         {isDeleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
                         ลบ
-                      </button>
+                      </button></>}
                       </div>
                     </div>
                   </div>

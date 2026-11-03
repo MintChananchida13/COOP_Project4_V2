@@ -594,8 +594,8 @@ export default function AdminProcessingLogDetailPage({ logId }: { logId: string 
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {log.templateDetection.candidates.map((candidate) => (
-                    <tr key={`${candidate.template}-${candidate.layoutScore}`}>
+                  {log.templateDetection.candidates.map((candidate, index) => (
+                    <tr key={`${candidate.template}-${candidate.layoutScore}-${index}`}>
                       <td className="px-2.5 py-1.5 font-bold text-slate-800">{candidate.template}</td>
                       <td className="px-2.5 py-1.5 font-semibold text-slate-600">{candidate.layoutScore.toFixed(2)}</td>
                       <td className="px-2.5 py-1.5 font-semibold text-slate-600">{candidate.result}</td>
