@@ -13,6 +13,7 @@ import { WorkspaceRoi } from "../shared/workspace/RoiBox";
 import WorkspaceCanvas from "../shared/workspace/WorkspaceCanvas";
 import { DEFAULT_WORKSPACE_IMAGE_METRICS, ratioToImageBox, WorkspaceImageMetrics } from "../shared/workspace/roiGeometry";
 import { TemplateField } from "../types/ocr";
+import { autoCropDetectionImage } from "./autoCropDetectionImage";
 
 const formatScore = (score?: number | null) => (typeof score === "number" && score !== null ? score.toFixed(4) : "N/A");
 const candidateFinalScore = (candidate?: DetectionCandidate | null) =>
@@ -172,11 +173,14 @@ const isPdfFile = (file?: File | null) => {
 
 export default function AdminDetectionLabPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const detectionRunRef = useRef<AbortController | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState("");
   const [result, setResult] = useState<DetectionDevResult | null>(null);
   const [pageIndex, setPageIndex] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
+  const [isAutoCropping, setIsAutoCropping] = useState(false);
+  useEffect(() => () => detectionRunRef.current?.abort(), []);
   const [error, setError] = useState("");
   const [roiPreviewImageMetrics, setRoiPreviewImageMetrics] = useState<WorkspaceImageMetrics>(DEFAULT_WORKSPACE_IMAGE_METRICS);
   const [selectedPreviewRoiId, setSelectedPreviewRoiId] = useState<number | null>(null);
@@ -450,6 +454,9 @@ export default function AdminDetectionLabPage() {
   }, [alignmentCandidate, roiPreviewImageUrl, roiSourceLabel, roiPreviewImageMetrics, roiPreviewRois]);
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    detectionRunRef.current?.abort();
+    setIsRunning(false);
+    setIsAutoCropping(false);
     const nextFile = event.target.files?.[0] || null;
     setError("");
     setResult(null);
@@ -488,17 +495,28 @@ export default function AdminDetectionLabPage() {
       setError("Please select an image or PDF first.");
       return;
     }
+    detectionRunRef.current?.abort();
+    const controller = new AbortController();
+    detectionRunRef.current = controller;
     setIsRunning(true);
     setError("");
     setResult(null);
     setPageIndex(0);
     try {
-      setResult(await detectTemplateDev(file, { context: "admin" }));
+      setIsAutoCropping(!isPdfFile(file));
+      const preparedFile = await autoCropDetectionImage(file, controller.signal);
+      if (controller.signal.aborted) return;
+      setIsAutoCropping(false);
+      const detectionResult = await detectTemplateDev(preparedFile, { context: "admin" });
+      if (!controller.signal.aborted) setResult(detectionResult);
     } catch (err) {
       console.warn("Detection lab failed.", err);
-      setError(err instanceof Error ? err.message : "ค้นหา Template ไม่สำเร็จ");
+      if (!controller.signal.aborted) setError(err instanceof Error ? err.message : "ค้นหา Template ไม่สำเร็จ");
     } finally {
-      setIsRunning(false);
+      if (detectionRunRef.current === controller) {
+        setIsRunning(false);
+        setIsAutoCropping(false);
+      }
     }
   };
 
@@ -616,7 +634,7 @@ export default function AdminDetectionLabPage() {
             disabled={!file || isRunning}
             className="ui-stable-action-lg mt-4 w-full rounded-xl bg-indigo-600 px-4 py-3 text-sm font-black text-white disabled:bg-slate-300 disabled:text-slate-500"
           >
-            {isRunning ? "กำลังค้นหา Template..." : "เริ่มค้นหา Template"}
+            {isAutoCropping ? "กำลังตรวจขอบและ Crop อัตโนมัติ..." : isRunning ? "กำลังค้นหา Template..." : "เริ่มค้นหา Template"}
           </button>
           {error && <p className="mt-3 rounded-xl bg-red-50 p-3 text-xs font-bold text-red-700">{error}</p>}
 
