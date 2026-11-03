@@ -200,6 +200,10 @@ export default function WorkspaceCustomEditor({
 }: WorkspaceCustomEditorProps) {
   const isUserLayout = layoutVariant === "user";
   const [activeTool, setActiveTool] = useState<'pan' | 'box' | 'polygon' | 'select'>(readOnly ? 'pan' : 'select');
+  const selectionSetterRef = useRef(setSelectedId);
+  useEffect(() => {
+    selectionSetterRef.current = setSelectedId;
+  }, [setSelectedId]);
   const [multiSelection, setMultiSelection] = useState<{ ids: number[]; primary: number | null; page: number }>({ ids: [], primary: null, page: currentIndex });
   const selectedIds = new Set(multiSelection.primary === selectedId && multiSelection.page === currentIndex
     ? multiSelection.ids.filter(id => rois.some(roi => roi.id === id && (roi.pageIndex ?? 0) === currentIndex))
@@ -397,9 +401,10 @@ export default function WorkspaceCustomEditor({
 
 
   useEffect(() => {
-    setSelectedId(null);
+    // Admin passes a new selection callback on each render; only page changes reset selection.
+    selectionSetterRef.current(null);
     return () => cancelSelectionGesture();
-  }, [currentIndex, setSelectedId]);
+  }, [currentIndex]);
 
       // Delete selected ROI.
   useEffect(() => {
