@@ -1770,8 +1770,8 @@ export default function GroundTruthEditorZone({
                       </span>
                     </div>
 
-                    <div className="divide-y divide-slate-100">
-                      {visiblePageResultGroups.text.map(({ res, matchedRoi, fieldType }) => {
+                    <div className="space-y-2 bg-slate-50/50 p-2">
+                      {visiblePageResultGroups.text.map(({ res }) => {
                         const isSelected = activeFieldId === res.id;
                         return (
                           <div
@@ -1781,35 +1781,32 @@ export default function GroundTruthEditorZone({
                               else fieldResultRefs.current.delete(res.id);
                             }}
                             onClick={() => setActiveFieldId(res.id)}
-                            className={`grid min-w-0 grid-cols-1 gap-3 p-3 transition-colors ${
-                              isSelected ? "bg-indigo-50/50 ring-1 ring-inset ring-indigo-100" : "hover:bg-slate-50"
+                            className={`grid min-w-0 grid-cols-1 gap-2 rounded-xl border p-2.5 transition-colors ${
+                              isSelected ? "border-indigo-200 bg-indigo-50/30 ring-1 ring-indigo-100" : "border-slate-200 bg-white hover:border-slate-300"
                             }`}
                           >
-                            <div className="min-w-0" onClick={(e) => e.stopPropagation()}>
-                              <div className="flex items-center gap-1 rounded border border-transparent px-1 transition-all focus-within:border-indigo-400 focus-within:bg-white">
+                            <div className="flex min-w-0 items-start justify-between gap-2" onClick={(e) => e.stopPropagation()}>
+                              <div className="flex min-w-0 flex-1 items-center gap-1 rounded border border-transparent px-1 transition-colors focus-within:border-indigo-400 focus-within:bg-white">
                                 <input
                                   type="text"
                                   value={res.fieldName}
                                   onFocus={() => setActiveFieldId(res.id)}
                                   onChange={(e) => setOcrResults(p => p.map(item => item.id === res.id ? { ...item, fieldName: e.target.value } : item))}
-                                  className="w-full bg-transparent py-1 text-xs font-bold text-slate-800 focus:outline-none"
+                                  className="min-w-0 w-full bg-transparent py-0.5 text-xs font-bold leading-5 text-slate-800 focus:outline-none"
+                                  aria-label="ชื่อ Field"
                                   placeholder="ชื่อข้อมูล..."
                                 />
                                 <Edit3 size={12} className="shrink-0 text-slate-300" />
                               </div>
-                              <div className="mt-1.5 flex items-center gap-1.5 px-1 text-[9px] font-bold uppercase text-slate-400">
-                                {renderTypeIcon(fieldType, 10)}
-                                <span>ประเภท: {getFieldTypeLabel(fieldType)}</span>
-                              </div>
-                              <span className={`mt-2 inline-flex w-fit rounded px-1.5 py-0.5 text-[10px] font-bold tabular-nums ${res.confidence >= 0.8 ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
-                                ความมั่นใจ: {(res.confidence * 100).toFixed(1)}%
+                              <span className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1 text-[10px] font-bold leading-4 tabular-nums ${res.confidence >= 0.8 ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                                <span className="hidden sm:inline">Confidence</span> {(res.confidence * 100).toFixed(1)}%
                               </span>
                             </div>
 
                             <div className="min-w-0">
-                              <p className="mb-1.5 text-[10px] font-black uppercase tracking-wider text-slate-400">ข้อความ OCR ต้นฉบับ (อ่านอย่างเดียว)</p>
+                              <p className="mb-1 text-[10px] font-semibold text-slate-400">OCR ต้นฉบับ · อ่านอย่างเดียว</p>
                               <div
-                                className="min-h-10 w-full max-w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium leading-relaxed text-slate-700 shadow-sm normal-case break-all"
+                                className="min-h-7 w-full max-w-full rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium leading-5 text-slate-700 normal-case break-all"
                                 style={{ textTransform: "none", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
                                 translate="no"
                               >
@@ -1818,7 +1815,7 @@ export default function GroundTruthEditorZone({
                             </div>
 
                             <div className="min-w-0" onClick={(e) => e.stopPropagation()}>
-                              <p className="mb-1.5 text-[10px] font-black uppercase tracking-wider text-slate-400">ข้อความที่แก้ไขได้</p>
+                              <p className="mb-1 text-[10px] font-semibold text-slate-500">แก้ไขข้อความ</p>
                               <AutoResizeTextArea
                                 aria-label={`แก้ไขข้อความ OCR: ${res.fieldName}`}
                                 value={res.extractedText}
@@ -1833,7 +1830,7 @@ export default function GroundTruthEditorZone({
                                 data-gramm_editor="false"
                                 data-enable-grammarly="false"
                                 onChange={(e) => setOcrResults(p => p.map(item => item.id === res.id ? { ...item, extractedText: e.target.value } : item))}
-                                className="block min-h-10 w-full max-w-full resize-none overflow-hidden rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium leading-relaxed text-slate-800 shadow-inner transition-colors focus:border-indigo-500 focus:outline-none normal-case break-all"
+                                className="block min-h-7 w-full max-w-full resize-none overflow-hidden rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-medium leading-5 text-slate-800 transition-colors focus:border-indigo-500 focus:outline-none normal-case break-all"
                                 style={{ textTransform: "none", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
                                 placeholder="แก้ไขข้อความ OCR..."
                                 rows={1}
