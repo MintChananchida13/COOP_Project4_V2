@@ -38,10 +38,10 @@ SEARCH_METRICS = ("initial_response_headers_ms", "initial_server_maintenance_ms"
                   "text_detection_queue_wait_ms", "text_detection_inference_ms", "text_detection_total_ms",
                   "text_recognition_queue_wait_ms", "text_recognition_inference_ms", "text_recognition_total_ms",
                   "siglip_queue_wait_ms", "siglip_inference_ms", "siglip_total_ms")
-METRICS = (*LEGACY_METRICS, *FRONTEND_METRICS, *SEARCH_METRICS)
+METRICS = (*LEGACY_METRICS, *FRONTEND_METRICS, *SEARCH_METRICS, "stage_count", "roi_crop_count")
 HEADERS = ("file", "run_number", "runs_per_file", "expected_mode", "actual_mode", "status", "matched", "query_id", "ocr_status", "ocr_wall_ms", "error", "model_intervals_overlap", "model_call_count", "model_timing_missing_reason", *(key for key in LEGACY_METRICS if key != "backend_runtime_ms"), "timing_missing_reasons", "job_id", "error_type", "job_status", "capture_errors", *FRONTEND_METRICS,
            "frontend_visibility_status", "frontend_visibility_reason", "frontend_timing_kind", "frontend_run_token", "benchmark_run_token", "initial_server_timing_header_status", *SEARCH_METRICS,
-           "trace_id", "template_id", "matching_score", "expected_matched", "match_correctness", "expected_template_id", "matching_correctness", "layout_telemetry_incomplete")
+           "trace_id", "template_id", "matching_score", "expected_matched", "match_correctness", "expected_template_id", "matching_correctness", "layout_telemetry_incomplete", "stage_count", "roi_crop_count")
 CALL_KEYS = ("call_id", "kind", "http_request_ms", "model_load_ms", "queue_wait_ms",
              "inference_lock_wait_ms", "inference_ms", "serialization_ms", "service_total_runtime_ms",
              "runs_per_file", "endpoint", "model_call_start_monotonic", "model_call_end_monotonic", "model_timings", "conflicting_record")

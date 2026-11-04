@@ -6,6 +6,13 @@ import unittest
 
 
 class DetectionTimingOutputTests(unittest.TestCase):
+    def test_staged_counts_reach_public_benchmark_payload(self):
+        result = self.collect({'anchor_strategy_staged_batch_debug': {'stage_count': 3, 'roi_crop_count': 10}}, [])
+        self.assertEqual(result['stage_count'], 3)
+        self.assertEqual(result['roi_crop_count'], 10)
+        self.assertEqual(result['benchmark']['stage_count'], 3)
+        self.assertEqual(result['benchmark']['roi_crop_count'], 10)
+
     def test_anchor_matching_timings_are_available_for_search_benchmark(self):
         result = self.collect({"anchor_strategy_matching": 1.23}, [])
         self.assertEqual(result["anchor_strategy_matching_ms"], 1230)

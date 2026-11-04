@@ -25,12 +25,12 @@ const verificationStrategyOptions: { value: VerificationStrategy; label: string;
   {
     value: "standard",
     label: "แบบมาตรฐาน (standard)",
-    description: "ตรวจ Text Anchor และ Image Anchor พร้อมกัน ประเมิน Template ทั้งหมด แล้วเลือกอันดับ 1 ที่ผ่านเงื่อนไขและมีคะแนนสูงสุด โดยไม่ใช้ Layout",
+    description: "ตรวจ Anchor ทีละ Stage แบบ Batch โดย Text/Image ทำงานพร้อมกัน ตัด Template เมื่อ Anchor ใดไม่ผ่าน เลือกตัวที่ผ่านครบและมี Anchor มากที่สุด หากเท่ากันเรียงตาม Template ID",
   },
   {
     value: "strict",
     label: "แบบเข้มงวด (strict)",
-    description: "ตรวจ Text Anchor ก่อน เมื่อ Text ผ่านครบจึงตรวจ Image Anchor หากขั้นใดไม่ผ่านจะไม่เลือก Template นั้น โดยไม่ใช้ Layout",
+    description: "ตรวจ Anchor ทีละ Stage แบบ Batch โดย Text ก่อน Image ในแต่ละ Stage ทุก Anchor ต้องผ่าน เลือกตัวที่มี Anchor มากที่สุด หากเท่ากันเรียงตาม Template ID",
   },
 
 ];

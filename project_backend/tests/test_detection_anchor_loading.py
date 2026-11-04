@@ -17,6 +17,8 @@ from app.processing.detection_requirements import verification_anchor_types
 
 
 def functions(relative, names, namespace):
+    from app.processing import document_aspect
+    namespace.setdefault('document_aspect', document_aspect)
     path = ROOT / relative
     tree = ast.parse(path.read_text(encoding='utf-8-sig'))
     definitions = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name in names]
@@ -57,7 +59,8 @@ class AnchorLoadingTests(unittest.TestCase):
                 version_number INTEGER, detection_mode TEXT, main_page_number INTEGER,
                 final_confidence_threshold REAL, layout_weight REAL, text_anchor_weight REAL,
                 image_anchor_weight REAL, updated_at TEXT);
-            CREATE TABLE template_pages(id TEXT, template_version_id TEXT, page_number INTEGER);
+            CREATE TABLE template_pages(id TEXT, template_version_id TEXT, page_number INTEGER,
+                normalized_image_url TEXT, sample_image_url TEXT, image_aspect_ratio REAL);
             CREATE TABLE extraction_fields(id TEXT, template_page_id TEXT);
             CREATE TABLE image_verification_categories(id TEXT, value TEXT);
             CREATE TABLE verification_anchors(id TEXT, template_page_id TEXT, anchor_type TEXT,
@@ -70,8 +73,8 @@ class AnchorLoadingTests(unittest.TestCase):
                 'all_pages', 1, .7, .5, .3, .2, '2026-01-01');
             INSERT INTO template_versions VALUES ('empty', 'group', 'active', 'v1', 1,
                 'all_pages', 1, .7, .5, .3, .2, '2026-01-01');
-            INSERT INTO template_pages VALUES ('page', 'template', 1);
-            INSERT INTO template_pages VALUES ('empty-page', 'empty', 1);
+            INSERT INTO template_pages VALUES ('page', 'template', 1, NULL, NULL, 1.58);
+            INSERT INTO template_pages VALUES ('empty-page', 'empty', 1, NULL, NULL, NULL);
             INSERT INTO image_verification_categories VALUES ('category', 'person');
             INSERT INTO verification_anchors VALUES ('text', 'page', 'text', NULL, 'Name',
                 'expected', 'contains', 1, 1, .1, .2, .3, .4, NULL, 1, '2026-01-01');
@@ -85,6 +88,8 @@ class AnchorLoadingTests(unittest.TestCase):
                 pass
             def execute_timed(self, query, params):
                 return database.execute(query, params), {}
+            def execute(self, query, params):
+                return database.execute(query, params)
         namespace = {'time': time, 'json': json, '_connect': Connection,
                      '_ms': lambda value: value * 1000,
                      'published_template_cache': SimpleNamespace(get_verification_anchor_templates=lambda kinds: None)}
@@ -94,6 +99,7 @@ class AnchorLoadingTests(unittest.TestCase):
             mapped = {item['template_id']: item for item in templates}
             self.assertEqual({item['data_type'] for item in mapped['template']['verification_anchors']}, kinds)
             self.assertEqual(mapped['empty']['verification_anchors'], [])
+            self.assertEqual(mapped['template']['page_aspect_ratios'], {1: 1.58})
             if 'image' in kinds:
                 image = next(item for item in mapped['template']['verification_anchors'] if item['data_type'] == 'image')
                 self.assertEqual(image['image_category'], 'person')
@@ -140,6 +146,8 @@ class AnchorLoadingTests(unittest.TestCase):
                 empty['template_id'] = 'no-anchors'
                 rows.append(empty)
                 return SimpleNamespace(fetchall=lambda: rows), {}
+            def execute(self, query, params):
+                return SimpleNamespace(fetchall=lambda: [])
         namespace = {'time': time, 'json': json, '_connect': Connection,
                      '_ms': lambda value: value * 1000,
                      'published_template_cache': SimpleNamespace(get_verification_anchor_templates=lambda kinds: cached)}

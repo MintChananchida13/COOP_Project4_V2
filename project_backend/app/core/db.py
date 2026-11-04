@@ -627,12 +627,20 @@ _POSTGRES_SCHEMA = [
         page_name TEXT,
         sample_image_url TEXT,
         normalized_image_url TEXT,
+        image_width INTEGER,
+        image_height INTEGER,
+        image_aspect_ratio DOUBLE PRECISION,
+        image_geometry_checked BOOLEAN NOT NULL DEFAULT FALSE,
         layout_signature_json JSONB,
         created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
         CONSTRAINT template_pages_version_page_key UNIQUE (template_version_id, page_number)
     )
     """,
+    "ALTER TABLE template_pages ADD COLUMN IF NOT EXISTS image_width INTEGER",
+    "ALTER TABLE template_pages ADD COLUMN IF NOT EXISTS image_height INTEGER",
+    "ALTER TABLE template_pages ADD COLUMN IF NOT EXISTS image_aspect_ratio DOUBLE PRECISION",
+    "ALTER TABLE template_pages ADD COLUMN IF NOT EXISTS image_geometry_checked BOOLEAN NOT NULL DEFAULT FALSE",
     """
     CREATE TABLE IF NOT EXISTS extraction_fields (
         id TEXT NOT NULL PRIMARY KEY,

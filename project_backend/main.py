@@ -43,7 +43,7 @@ from app.core.json_utils import jsonb_dump, jsonb_load
 from app.core.model_runtime_client import configured_runtimes
 from app.business.image_verification_category_service import ensure_image_verification_categories_table
 from app.business.services import GlobalSettingsService
-from app.processing import published_template_cache
+from app.processing import document_aspect, published_template_cache
 from app.processing.search_benchmark_middleware import SearchBenchmarkMiddleware
 
 # Force UTF-8 console output on Windows.
@@ -182,6 +182,8 @@ async def startup_warmup() -> None:
     ensure_database_ready()
     with db_connect() as conn:
         ensure_image_verification_categories_table(conn)
+        geometry_backfill = document_aspect.backfill_page_geometry(conn)
+    logger.info("Template page image geometry backfill: %s", geometry_backfill)
     try:
         global_settings.processing_maintenance()
     except Exception as error:

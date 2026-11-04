@@ -37,7 +37,7 @@ from app.model_runtime.layout_analysis_service import (
     analyze_layout,
     detect_text_boxes,
 )
-from app.processing import published_template_cache
+from app.processing import document_aspect, published_template_cache, staged_verification
 from app.processing.ocr_adapter import (
     OcrUnavailableError,
     crop_table_processing_roi_from_image,
@@ -1962,6 +1962,9 @@ def _template_page_row_to_api(row: Any) -> Dict[str, Any]:
         "page_name": item["page_name"],
         "sample_image_url": item["sample_image_url"],
         "normalized_image_url": item["normalized_image_url"],
+        "image_width": item.get("image_width"),
+        "image_height": item.get("image_height"),
+        "image_aspect_ratio": item.get("image_aspect_ratio"),
         "layout_signature_json": layout_signature_json,
         "similarity_threshold": item.get("similarity_threshold"),
         "final_confidence_threshold": item.get("final_confidence_threshold"),
@@ -3924,6 +3927,7 @@ class VerificationService:
         precomputed_text_ocr_errors: Optional[Dict[str, str]] = None,
         precomputed_image_matches: Optional[Dict[str, Dict[str, Any]]] = None,
         use_image_batch: bool = False,
+        include_crop_preview: bool = True,
     ) -> Dict[str, Any]:
         verify_started = time.perf_counter()
         load_started = time.perf_counter()
@@ -4220,7 +4224,7 @@ class VerificationService:
 
             if image_path:
                 try:
-                    if include_detection_diagnostics():
+                    if include_crop_preview and include_detection_diagnostics():
                         cropped = _crop_anchor_roi_to_temp(image_path, field["roi"], field.get("roi_padding") or 0)
                         current_crop_preview_data_url = _image_path_to_data_url(cropped)
                         if cropped:
@@ -5272,6 +5276,8 @@ class AdminTemplateService:
                     f"UPDATE template_pages SET {', '.join(f'{column} = ?' for column, _ in updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND template_version_id = ?",
                     [*(value for _, value in updates), page_id, template_id],
                 )
+                if any(key in patch for key in ("sample_image_url", "normalized_image_url")):
+                    document_aspect.persist_page_geometry(conn, page_id, template_id)
 
     def _apply_pending_template_field_ops(self, conn: Any, ops_by_template: Dict[str, List[Dict[str, Any]]]) -> None:
         for template_id, ops in ops_by_template.items():
@@ -5621,7 +5627,7 @@ class AdminTemplateService:
         verifier = VerificationService()
         enriched: List[Dict[str, Any]] = []
         for index, candidate in enumerate(candidates):
-            if index >= limit or candidate.get("verification_details"):
+            if index >= limit or candidate.get("verification_details") or candidate.get("selection_rule") == "all_anchors_then_count_then_template_id":
                 enriched.append(candidate)
                 continue
             template_id = candidate.get("template_id")
@@ -5741,14 +5747,7 @@ class AdminTemplateService:
             candidates = self._enrich_prepublish_candidate_verification_details(candidates, detection)
             best_candidate = detection.get("best_candidate")
             if not best_candidate and candidates:
-                best_candidate = max(
-                    candidates,
-                    key=lambda item: (
-                        bool(item.get("final_passed")),
-                        float(item.get("final_score") or item.get("score") or 0.0),
-                        float(item.get("retrieval_score") or 0.0),
-                    ),
-                )
+                best_candidate = min(candidates, key=staged_verification.candidate_order)
             elif isinstance(best_candidate, dict):
                 matching_candidate = next((candidate for candidate in candidates if candidate.get("template_id") == best_candidate.get("template_id")), None)
                 if matching_candidate:
@@ -6193,7 +6192,9 @@ class AdminTemplateService:
         with _connect() as conn:
             if conn.execute("SELECT id FROM template_versions WHERE id = ?", (template_id,)).fetchone() is None:
                 raise HTTPException(status_code=404, detail="Template not found.")
-            conn.execute("INSERT INTO template_pages (id, template_version_id, page_number, page_name, sample_image_url, normalized_image_url, layout_signature_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (_stub_id("tpl_page"), template_id, payload.page_number, payload.page_name, payload.sample_image_url, payload.normalized_image_url, payload.layout_signature_json))
+            page_id = _stub_id("tpl_page")
+            conn.execute("INSERT INTO template_pages (id, template_version_id, page_number, page_name, sample_image_url, normalized_image_url, layout_signature_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (page_id, template_id, payload.page_number, payload.page_name, payload.sample_image_url, payload.normalized_image_url, payload.layout_signature_json))
+            document_aspect.persist_page_geometry(conn, page_id)
             conn.commit()
         _refresh_published_template_cache(template_id, list_changed=True)
         return self.get_template(template_id)
@@ -6210,6 +6211,8 @@ class AdminTemplateService:
                 )
             with _connect() as conn:
                 conn.execute(f"UPDATE template_pages SET {', '.join(f'{c} = ?' for c, _ in updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND template_version_id = ?", [*(v for _, v in updates), page_id, template_id])
+                if any(key in patch for key in ("sample_image_url", "normalized_image_url")):
+                    document_aspect.persist_page_geometry(conn, page_id, template_id)
                 conn.commit()
             _refresh_published_template_cache(template_id, list_changed=True)
         return self.get_template(template_id)
@@ -6518,6 +6521,7 @@ class AdminTemplateService:
                 request_page_id_map[str(page["id"])] = page_id
                 page_number_id_map[index] = page_id
                 conn.execute("INSERT INTO template_pages (id, template_version_id, page_number, page_name, sample_image_url, normalized_image_url, layout_signature_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (page_id, template_id, index, page.get("page_name") or f"Page {index}", page.get("sample_image_url"), page.get("sample_image_url")))
+                document_aspect.persist_page_geometry(conn, page_id)
             request_fields = [
                 _row_to_dict(row)
                 for row in conn.execute(
@@ -6804,6 +6808,7 @@ class AdminTemplateService:
             # ---------------------------------------------------------
             # 4. Copy User ROI -> Extraction Fields
             # ---------------------------------------------------------
+            document_aspect.backfill_page_geometry(conn, template_id)
 
             fields = [
                 _row_to_dict(row)

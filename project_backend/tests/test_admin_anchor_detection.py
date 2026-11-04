@@ -10,6 +10,18 @@ SOURCE = Path(__file__).resolve().parents[1] / 'app/processing/detection_service
 
 
 def load(names, namespace):
+    from app.processing import document_aspect, staged_verification
+    namespace.setdefault('document_aspect', document_aspect)
+    namespace.setdefault('staged_verification', staged_verification)
+    if '_detect_template_anchor_strategy' in names:
+        from test_staged_verification import fake_batch
+        names = names | {'_run_staged_anchor_batches', '_staged_anchor_callbacks'}
+        namespace.setdefault('_run_global_text_anchor_batch', Mock(side_effect=lambda templates, *args: fake_batch(templates)[:3]))
+        if hasattr(namespace.get('verification_service'), '__dict__') and not hasattr(namespace['verification_service'], 'score_image_anchors_batch'):
+            namespace['verification_service'].score_image_anchors_batch = Mock(side_effect=lambda fields, paths: ({field['id']: {} for field in fields}, {}))
+        parallel = namespace.get('_run_parallel_anchor_batches')
+        if isinstance(parallel, Mock) and parallel.side_effect is None:
+            parallel.side_effect = fake_batch
     definitions = [node for node in ast.parse(SOURCE.read_text(encoding='utf-8')).body
                    if isinstance(node, ast.FunctionDef) and node.name in names]
     for node in definitions:
@@ -41,17 +53,21 @@ class AdminAnchorDetectionTests(unittest.TestCase):
         settings.assert_not_called()
         self.assertEqual(settings.mock_calls, [])
 
-    def run_selected(self, fields, *, score=.9, required_passed=True, page_count=1, mode='all_pages', main_page=1):
+    def run_selected(self, fields, *, score=.9, required_passed=True, page_count=1, mode='all_pages', main_page=1,
+                     strategy='standard', page_indexes=(1,), parallel=None):
         template = dict(id='draft', name='Draft', status='draft', page_count=page_count,
                         detection_mode=mode, main_page_number=main_page, final_confidence_threshold=.75)
         loader = Mock(side_effect=AssertionError('Published candidates must not be loaded'))
-        verify = Mock(return_value=dict(passed=required_passed, score=score, required_passed=required_passed,
-                                        checked_fields=fields, text_anchor_score=score, image_anchor_score=score))
+        verify = Mock(side_effect=lambda tid, paths, stage_fields, **kwargs: dict(
+            passed=required_passed, score=score, required_passed=required_passed,
+            checked_fields=[{**field, 'passed': required_passed, 'score': score} for field in stage_fields],
+            text_anchor_score=score, image_anchor_score=score))
         no_anchors = Mock(return_value=dict(passed=False, score=0, checked_fields=[]))
         namespace = dict(time=time, verification_anchor_types=lambda strategy: {'text', 'image'},
                          normalize_verification_strategy=lambda value: value,
                          VERIFICATION_STRATEGY_STANDARD='standard', VERIFICATION_STRATEGY_STRICT='strict',
-                         _run_parallel_anchor_batches=Mock(return_value=({}, {}, {}, {}, {})),
+                         _run_parallel_anchor_batches=parallel if parallel is not None else Mock(return_value=({}, {}, {}, {}, {})),
+                         _verify_sequential_anchor_template=verify,
                          _fetch_template_cached=Mock(return_value=(template, False, {})),
                          _fetch_verification_fields_cached=Mock(return_value=(fields, False, {})),
                          _load_anchor_strategy_templates=loader,
@@ -66,8 +82,9 @@ class AdminAnchorDetectionTests(unittest.TestCase):
         service = load({'_detect_template_anchor_strategy', '_candidate_from_anchor_strategy',
                         '_ordered_anchor_templates', '_anchor_strategy_template_fields'}, namespace)
         progress = Mock()
-        result = service._detect_template_anchor_strategy('query', [{'page_index': 1, 'normalized_path': 'page.png'}],
-                    {}, None, time.perf_counter(), 'image', 'standard', 'global',
+        result = service._detect_template_anchor_strategy('query', [
+                    {'page_index': index, 'normalized_path': f'page{index}.png'} for index in page_indexes],
+                    {}, None, time.perf_counter(), 'image', strategy, 'global',
                     selected_template_id='draft', progress_callback=progress)
         loader.assert_not_called()
         self.assertTrue(result['debug']['layout_retrieval_skipped'])
@@ -79,12 +96,11 @@ class AdminAnchorDetectionTests(unittest.TestCase):
     def test_selected_draft_matches_using_anchors_without_signatures(self):
         result, _ = self.run_selected([dict(id='text', data_type='text', expected_text='Hello', page_number=1)])
         self.assertTrue(result['matched'])
-        self.assertEqual(result['best_candidate']['final_score'], .9)
+        self.assertEqual(result['best_candidate']['final_score'], 1)
         self.assertEqual(result['best_candidate']['layout_score'], 0)
 
-    def test_missing_anchors_required_failure_and_low_confidence_cannot_pass(self):
-        for fields, kwargs in [([], {}), ([dict(data_type='image')], {'required_passed': False}),
-                                ([dict(data_type='image')], {'score': .4})]:
+    def test_missing_anchors_and_any_failed_anchor_cannot_pass(self):
+        for fields, kwargs in [([], {}), ([dict(data_type='image')], {'required_passed': False})]:
             with self.subTest(fields=fields, kwargs=kwargs):
                 result, _ = self.run_selected(fields, **kwargs)
                 self.assertFalse(result['matched'])
@@ -100,6 +116,43 @@ class AdminAnchorDetectionTests(unittest.TestCase):
                                            page_count=2, mode='main_page')
         self.assertTrue(result['matched'])
         self.assertEqual([field['page_number'] for field in verify.call_args.args[2]], [1])
+
+    def test_page_count_mismatch_calls_neither_batches_nor_verification(self):
+        for strategy in ('standard', 'strict'):
+            with self.subTest(strategy=strategy):
+                parallel = Mock(return_value=({}, {}, {}, {}, {}))
+                result, verify = self.run_selected([dict(data_type='text', expected_text='Hello', page_number=1)],
+                    page_count=2, strategy=strategy, parallel=parallel)
+                parallel.assert_not_called()
+                verify.assert_not_called()
+                self.assertFalse(result['matched'])
+                self.assertEqual(result['candidates'][0]['evaluation_status'], 'skipped')
+                self.assertEqual(result['candidates'][0]['decision_reason'], 'page_count_mismatch')
+                self.assertEqual(result['debug']['anchor_strategy']['page_count_prefilter']['rejected_template_ids'], ['draft'])
+
+    def test_missing_main_page_is_rejected_before_models(self):
+        parallel = Mock(return_value=({}, {}, {}, {}, {}))
+        result, verify = self.run_selected([dict(data_type='image', page_number=2)],
+            page_count=2, mode='main_page', main_page=2, parallel=parallel)
+        parallel.assert_not_called()
+        verify.assert_not_called()
+        self.assertFalse(result['matched'])
+
+    def test_main_page_present_allows_extra_document_pages(self):
+        parallel = Mock(return_value=({}, {}, {}, {}, {}))
+        result, verify = self.run_selected([dict(data_type='image', page_number=2)],
+            page_count=2, mode='main_page', main_page=2, page_indexes=(1, 2, 3), parallel=parallel)
+        parallel.assert_called_once()
+        verify.assert_called_once()
+        self.assertTrue(result['matched'])
+
+    def test_unknown_template_page_count_keeps_existing_verification(self):
+        parallel = Mock(return_value=({}, {}, {}, {}, {}))
+        result, verify = self.run_selected([dict(data_type='text', expected_text='Hello', page_number=1)],
+            page_count=None, parallel=parallel)
+        parallel.assert_called_once()
+        verify.assert_called_once()
+        self.assertTrue(result['matched'])
 
 
 if __name__ == '__main__':

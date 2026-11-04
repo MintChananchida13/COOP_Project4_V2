@@ -20,7 +20,7 @@ from app.processing.image_normalization import ImageNormalizationService
 from app.processing.detection_requirements import verification_anchor_types
 from app.processing.detection_work_policy import detection_work_scope, include_detection_diagnostics, compact_detection_candidates
 from app.model_runtime.layout_analysis_service import analyze_layout
-from app.processing import published_template_cache
+from app.processing import document_aspect, published_template_cache, staged_verification
 from app.processing.ocr_adapter import OcrUnavailableError, ocr_rois
 from app.core.pipeline_core import get_pipeline_core_config
 from app.business.services import (
@@ -231,6 +231,8 @@ def _fetch_template_with_db_timing(template_id: Optional[str]) -> tuple[Optional
         fetch_elapsed = time.perf_counter() - fetch_started
         processing_started = time.perf_counter()
         template = dict(row) if row else None
+        if template is not None:
+            template["page_aspect_ratios"] = document_aspect.load_template_page_aspects(conn, [str(template_id)]).get(str(template_id), {})
         processing_elapsed = time.perf_counter() - processing_started
         timing = {
             "connect": connect_elapsed,
@@ -1083,6 +1085,7 @@ def _load_anchor_strategy_templates(anchor_types: Optional[set[str]] = None, req
         )
         fetch_started = time.perf_counter()
         rows = cursor.fetchall()
+        page_aspects = document_aspect.load_template_page_aspects(conn, list({str(row["template_id"]) for row in rows}))
         fetch_elapsed = time.perf_counter() - fetch_started
         db_query_elapsed = time.perf_counter() - query_started
 
@@ -1106,6 +1109,7 @@ def _load_anchor_strategy_templates(anchor_types: Optional[set[str]] = None, req
                 "text_anchor_weight": row["text_anchor_weight"],
                 "image_anchor_weight": row["image_anchor_weight"],
                 "page_count": row["page_count"],
+                "page_aspect_ratios": page_aspects.get(str(template_id), {}),
                 "field_count": row["field_count"],
                 "text_anchors": [],
                 "verification_anchors": [],
@@ -1182,25 +1186,14 @@ def _candidate_from_anchor_strategy(
 ) -> Dict[str, Any]:
     template_id = str(template.get("template_id"))
     checked_fields = verification.get("checked_fields", [])
-    threshold = template.get("final_confidence_threshold")
-    final_threshold = float(threshold if threshold is not None else DEFAULT_FINAL_CONFIDENCE_THRESHOLD)
-    verification_score = float(verification.get("score", 0.0) or 0.0)
-    final_passed = bool(verification.get("passed")) and bool(fields) and verification_score >= final_threshold
+    final_threshold = None  # Kept in the response for compatibility; no weighted final gate.
     text_score = verification.get("text_anchor_score")
     image_score = 0.0 if verification.get("image_verification_skipped") else verification.get("image_anchor_score")
     main_page = int(template.get("main_page_number") or 1) if template.get("detection_mode") == "main_page" else 1
-    image_count = sum(field.get("data_type") == "image" for field in fields)
-    text_count = sum(field.get("data_type") == "text" for field in fields)
-    text_weight = max(0.0, float(template.get("text_anchor_weight") or 0.0)) if text_count else 0.0
-    image_weight = max(0.0, float(template.get("image_anchor_weight") or 0.0)) if image_count else 0.0
-    if text_weight + image_weight <= 0:
-        text_weight, image_weight = float(bool(text_count)), float(bool(image_count))
-    total_weight = text_weight + image_weight or 1.0
-    weights = {"layout": 0.0, "text_anchor": text_weight / total_weight,
-               "image_anchor": image_weight / total_weight}
-    verification_score = (float(text_score or 0.0) * weights["text_anchor"]
-                          + float(image_score or 0.0) * weights["image_anchor"])
-    final_passed = bool(verification.get("passed")) and bool(fields) and verification_score >= final_threshold
+    weights = {"layout": 0.0, "text_anchor": 0.0, "image_anchor": 0.0}
+    final_passed = (bool(verification.get("passed")) and bool(fields) and len(checked_fields) == len(fields)
+                    and all(field.get("passed") and not field.get("error") for field in checked_fields))
+    verification_score = float(final_passed)
     return {
         "template_id": template_id,
         "vector_id": f"{strategy}:{template_id}",
@@ -1252,6 +1245,9 @@ def _candidate_from_anchor_strategy(
         "verification_passed": bool(verification.get("passed")),
         "final_score": round(verification_score, 4),
         "final_passed": final_passed,
+        "verification_anchor_count": len(fields),
+        "checked_anchor_count": len(checked_fields),
+        "selection_rule": "all_anchors_then_count_then_template_id",
         "decision_reason": f"{strategy}_passed" if final_passed else f"{strategy}_anchors_failed",
         "decision_path": f"{strategy}_passed" if final_passed else f"{strategy}_anchors_failed",
         "required_passed": verification.get("required_passed"),
@@ -1272,7 +1268,7 @@ def _candidate_from_anchor_strategy(
             "detection_mode": template.get("detection_mode"),
         },
         "verification_strategy": strategy,
-        "evaluation_status": "full",
+        "evaluation_status": "full" if len(checked_fields) == len(fields) else "early_rejected",
         "alignment_evaluated": False,
         "candidate_rejection_reason": None if final_passed else f"{strategy}_anchors_failed",
         "timing": {
@@ -1298,7 +1294,6 @@ def _anchor_strategy_template_fields(template: Dict[str, Any], anchor_types: set
     return [
         field for field in (template.get("verification_anchors") or [])
         if str(field.get("data_type") or "").lower() in anchor_types
-        and (str(field.get("data_type") or "").lower() != "text" or field.get("expected_text"))
     ]
 
 
@@ -1320,13 +1315,11 @@ def _ordered_anchor_templates(
             "anchor_count": total_count,
         })
     ordered.sort(key=lambda item: (
-        sum(1 for field in item[1] if bool(field.get("required_for_verification"))),
-        len(item[1]),
+        -len(item[1]),
         str(item[0].get("template_id") or ""),
     ))
     debug_order.sort(key=lambda item: (
-        int(item.get("required_anchor_count") or 0),
-        int(item.get("anchor_count") or 0),
+        -int(item.get("anchor_count") or 0),
         str(item.get("template_id") or ""),
     ))
     return ordered, debug_order
@@ -1373,6 +1366,7 @@ def _run_global_text_anchor_batch(
     return ocr_results, ocr_errors, {
         "batch_mode": DETECTION_BATCH_MODE_GLOBAL,
         "text_roi_count": text_anchor_count,
+        "roi_crop_count": int(ocr_timing.get("roi_crop_count") or 0),
         "text_batch_count": len([items for items in roi_items_by_page.values() if items]),
         "text_model_request_count": model_request_count,
         "text_det_inference_ms": _runtime_ms(ocr_timing.get("text_det_inference_ms")),
@@ -1436,7 +1430,11 @@ def _run_parallel_anchor_batches(
 
     def image_batch():
         started = time.perf_counter()
-        result = verification_service.score_image_anchors_batch(image_fields, page_image_paths)
+        try:
+            result = verification_service.score_image_anchors_batch(image_fields, page_image_paths)
+        except Exception as error:
+            result = ({}, {"batch_error": str(error)})
+        result[1]['elapsed_ms'] = (time.perf_counter() - started) * 1000
         timing["anchor_strategy_global_image_batch"] = time.perf_counter() - started
         return result
 
@@ -1447,6 +1445,46 @@ def _run_parallel_anchor_batches(
         text_results, text_errors, text_debug = text_future.result()
         image_matches, image_debug = image_future.result()
     return text_results, text_errors, text_debug, image_matches, image_debug
+
+
+def _staged_anchor_callbacks(page_paths, timing, strategy):
+    def batch(stage_templates):
+        if strategy == VERIFICATION_STRATEGY_STANDARD:
+            return _run_parallel_anchor_batches(stage_templates, page_paths, timing)
+        text, errors, text_debug = _run_global_text_anchor_batch(stage_templates, page_paths, timing, "anchor_strategy")
+        image_fields = [field for _, fields in stage_templates for field in fields if field.get("data_type") == "image"]
+        started = time.perf_counter()
+        try:
+            images, image_debug = verification_service.score_image_anchors_batch(image_fields, page_paths)
+        except Exception as error:
+            images, image_debug = {}, {"batch_error": str(error)}
+        image_debug['elapsed_ms'] = (time.perf_counter() - started) * 1000
+        return text, errors, text_debug, images, image_debug
+
+    def judge(template_id, field, text, errors, images):
+        key = field['id']
+        # Missing batch output must fail closed, never trigger single-image fallback calls.
+        if field.get('data_type') == 'image' and key not in images:
+            return {'passed': False, 'score': 0, 'error': 'missing_image_batch_result'}, {}
+        if field.get('data_type') == 'text' and key not in text and key not in errors:
+            return {'passed': False, 'score': 0, 'error': 'missing_text_batch_result'}, {}
+        result = verification_service.verify_template(template_id, page_paths, [field],
+            precomputed_text_ocr_cache=text, precomputed_text_ocr_errors=errors,
+            precomputed_image_matches=images, include_crop_preview=False)
+        checked = result.get('checked_fields') or []
+        if len(checked) != 1:
+            return {'passed': False, 'score': 0, 'error': 'missing_anchor_verification_result'}, {}
+        return checked[0], result.get('timing') or {}
+
+    return batch, judge
+
+
+def _run_staged_anchor_batches(templates, page_paths, timing, strategy, progress_callback=None):
+    batch, judge = _staged_anchor_callbacks(page_paths, timing, strategy)
+    result = staged_verification.run(templates, page_paths, batch, judge, progress_callback)
+    timing['anchor_strategy_global_text_batch'] = float(result[2].get('elapsed_ms') or 0) / 1000
+    timing['anchor_strategy_global_image_batch'] = float(result[3].get('elapsed_ms') or 0) / 1000
+    return result
 
 
 def _detect_template_anchor_strategy(
@@ -1465,7 +1503,7 @@ def _detect_template_anchor_strategy(
 ) -> Dict[str, Any]:
     started = time.perf_counter()
     strategy = normalize_verification_strategy(strategy)
-    detection_batch_mode = "per_template" if strategy == VERIFICATION_STRATEGY_STRICT else DETECTION_BATCH_MODE_GLOBAL
+    detection_batch_mode = DETECTION_BATCH_MODE_GLOBAL
     page_image_paths = {int(page["page_index"]): page["normalized_path"] for page in normalized_pages}
     anchor_types = set(verification_anchor_types(strategy))
     load_started = time.perf_counter()
@@ -1502,16 +1540,37 @@ def _detect_template_anchor_strategy(
         ]} for template in templates
     ]
     ordered_templates, template_order_debug = _ordered_anchor_templates(templates, anchor_types)
-    global_text_results = global_text_errors = global_text_debug = None
-    global_image_matches = global_image_debug = None
-    if strategy == VERIFICATION_STRATEGY_STANDARD:
-        (global_text_results, global_text_errors, global_text_debug,
-         global_image_matches, global_image_debug) = _run_parallel_anchor_batches(
-            ordered_templates, page_image_paths, timing,
-        )
-        timing["anchor_strategy_global_text_batch_debug"] = global_text_debug
-        timing["anchor_strategy_global_image_batch_debug"] = global_image_debug
+    # Exclude impossible page counts before either global batches or strict verification.
+    # Keep rejected candidates in the response so Admin can still explain the rejection.
+    page_count_rejected_ids: set[str] = set()
+    aspect_rejected_ids: set[str] = set()
+    aspect_checks: Dict[str, Dict[str, Any]] = {}
+    aspect_tolerance = document_aspect.tolerance()
+    query_aspects = {page: document_aspect.image_aspect(path) for page, path in page_image_paths.items()}
+    eligible_templates = []
+    for template, fields in ordered_templates:
+        page_count_valid = True
+        if template.get("page_count") is not None:
+            page_count_valid = (
+                int(template.get("main_page_number") or 1) in page_image_paths
+                if template.get("detection_mode") == "main_page"
+                else int(template.get("page_count") or 0) == len(page_image_paths)
+            )
+        if page_count_valid:
+            aspect_check = document_aspect.check_template(template, query_aspects, aspect_tolerance)
+            aspect_checks[str(template.get("template_id"))] = aspect_check
+            if aspect_check["passed"]:
+                eligible_templates.append((template, fields))
+            else:
+                aspect_rejected_ids.add(str(template.get("template_id")))
+        else:
+            page_count_rejected_ids.add(str(template.get("template_id")))
     match_started = time.perf_counter()
+    staged_results, staged_debug, global_text_debug, global_image_debug = _run_staged_anchor_batches(
+        eligible_templates, page_image_paths, timing, strategy, progress_callback)
+    timing["anchor_strategy_global_text_batch_debug"] = global_text_debug
+    timing["anchor_strategy_global_image_batch_debug"] = global_image_debug
+    timing["anchor_strategy_staged_batch_debug"] = staged_debug
     candidates: List[Dict[str, Any]] = []
     pages_by_index: Dict[int, Dict[str, Any]] = {
         int(page["page_index"]): {
@@ -1531,33 +1590,20 @@ def _detect_template_anchor_strategy(
             progress_callback({"stage": "candidate_evaluation", "current_rank": template_index,
                                "total_rank": len(ordered_templates), "template_id": template.get("template_id"),
                                "template_name": template.get("template_name"), "version_name": template.get("version_name")})
-        if not fields:
-            verification = verification_service._verification_summary(str(template.get("template_id")), [], status=f"no_{strategy}_anchors")
-            verification["passed"] = False
-        elif strategy == VERIFICATION_STRATEGY_STRICT:
-            verification = _verify_sequential_anchor_template(str(template.get("template_id")), fields, page_image_paths)
+        page_count_rejected = str(template.get("template_id")) in page_count_rejected_ids
+        aspect_rejected = str(template.get("template_id")) in aspect_rejected_ids
+        rejection_reason = "page_count_mismatch" if page_count_rejected else "aspect_ratio_mismatch" if aspect_rejected else None
+        if rejection_reason:
+            verification = {"passed": False, "score": 0.0, "checked_fields": [],
+                            "status": rejection_reason, "timing": {}}
         else:
-            verification = verification_service.verify_template(
-                str(template.get("template_id")),
-                page_image_paths,
-                fields,
-                detection_batch_mode=detection_batch_mode,
-                precomputed_text_ocr_cache=global_text_results if global_text_results is not None else None,
-                precomputed_text_ocr_errors=global_text_errors if global_text_errors is not None else None,
-                precomputed_image_matches=global_image_matches if global_image_matches is not None else None,
-                use_image_batch=detection_batch_mode != DETECTION_BATCH_MODE_GLOBAL,
-            )
+            verification = staged_results[str(template.get("template_id"))]
         candidate = _candidate_from_anchor_strategy(template, verification, fields, page_image_paths, strategy, timing)
-        if template.get("page_count") is not None:
-            expected_pages = int(template.get("page_count") or 0)
-            main_page_mode = template.get("detection_mode") == "main_page"
-            page_count_valid = (
-                int(template.get("main_page_number") or 1) in page_image_paths
-                if main_page_mode else expected_pages == len(page_image_paths)
-            )
-            if not page_count_valid:
-                candidate.update(final_passed=False, decision_reason="page_count_mismatch",
-                                 decision_path="page_count_mismatch", candidate_rejection_reason="page_count_mismatch")
+        candidate["aspect_ratio_check"] = aspect_checks.get(str(template.get("template_id")))
+        if rejection_reason:
+            candidate.update(final_passed=False, decision_reason=rejection_reason,
+                             decision_path=rejection_reason, candidate_rejection_reason=rejection_reason,
+                             evaluation_status="skipped")
         candidates.append(candidate)
         target_page_indexes = (
             [int(template.get("main_page_number") or 1)]
@@ -1579,9 +1625,9 @@ def _detect_template_anchor_strategy(
                                   "selected_processing_path": image_path}
             page["candidates"].append(page_candidate)
     timing["anchor_strategy_matching"] = time.perf_counter() - match_started
-    candidates.sort(key=lambda item: (bool(item.get("final_passed")), float(item.get("final_score") or 0.0)), reverse=True)
+    candidates.sort(key=staged_verification.candidate_order)
     for page in pages_by_index.values():
-        page["candidates"].sort(key=lambda item: (bool(item.get("final_passed")), float(item.get("final_score") or 0.0)), reverse=True)
+        page["candidates"].sort(key=staged_verification.candidate_order)
         page["best_candidate"] = page["candidates"][0] if page["candidates"] else None
     pages = list(pages_by_index.values())
     best_candidate = next((candidate for candidate in candidates if candidate.get("final_passed")), None)
@@ -1616,35 +1662,31 @@ def _detect_template_anchor_strategy(
                 "template_anchor_load": load_debug,
                 "anchor_types": sorted(anchor_types),
                 "batch_mode": detection_batch_mode,
-                "batch_scope": "per_template" if detection_batch_mode != DETECTION_BATCH_MODE_GLOBAL else "global_text_image",
+                "batch_scope": "staged_text_image",
+                "staged_batch": staged_debug,
+                "selection_rule": "all_anchors_then_count_then_template_id",
                 "image_batch_schema_available": True,
                 "image_batch_schema_source": "/api/v1/image-classification-batches images[] + categories, response data.results[]",
                 "template_order": template_order_debug,
                 "early_exit": early_exit,
                 "templates_checked": len(candidates),
                 "templates_available": len(templates),
+                "page_count_prefilter": {
+                    "query_page_count": len(page_image_paths),
+                    "eligible_template_count": len(ordered_templates) - len(page_count_rejected_ids),
+                    "rejected_template_ids": sorted(page_count_rejected_ids),
+                },
+                "aspect_ratio_prefilter": {
+                    "relative_tolerance": aspect_tolerance,
+                    "query_page_aspects": query_aspects,
+                    "eligible_template_count": len(eligible_templates),
+                    "rejected_template_ids": sorted(aspect_rejected_ids),
+                    "template_checks": aspect_checks,
+                },
                 "anchors_checked": sum(len(candidate.get("verification_details") or []) for candidate in candidates),
                 "global_text_batch": global_text_debug,
                 "global_image_batch": global_image_debug,
-                "model_request_count": (
-                    int((global_text_debug or {}).get("text_model_request_count") or 0)
-                    if detection_batch_mode == DETECTION_BATCH_MODE_GLOBAL
-                    else sum(
-                        len({
-                            int(field.get("page_number") or 1)
-                            for field in candidate.get("verification_details") or []
-                            if isinstance(field, dict) and field.get("anchor_type") == "text"
-                        })
-                        for candidate in candidates
-                    )
-                ) + (
-                    int((global_image_debug or {}).get("image_model_request_count") or 0)
-                    if detection_batch_mode == DETECTION_BATCH_MODE_GLOBAL
-                    else sum(
-                        int((((candidate.get("verification") or {}).get("timing") or {}).get("image_batch") or {}).get("image_model_request_count") or 0)
-                        for candidate in candidates
-                    )
-                ),
+                "model_request_count": staged_debug["model_call_count"],
                 "total_ms": _ms(timing.get("anchor_strategy_total")),
             },
             "timing": _detection_timing_debug(timing, pages, total_started, request_cache=request_cache),
@@ -1820,6 +1862,8 @@ def _benchmark_timing_debug(
     return {
         "schema_version": 1,
         "total_detection_ms": total_elapsed_ms,
+        "stage_count": (timing.get("anchor_strategy_staged_batch_debug") or {}).get("stage_count"),
+        "roi_crop_count": (timing.get("anchor_strategy_staged_batch_debug") or {}).get("roi_crop_count"),
         "verification_strategy": strategy,
         "siglip_preprocess_ms": global_image_siglip_timing["siglip_preprocess_ms"],
         "siglip_inference_ms": global_image_siglip_timing["siglip_inference_ms"],
@@ -2090,10 +2134,14 @@ def _detection_timing_debug(
         "model_timing_missing_reason": model_summary["model_timing_missing_reason"],
         "model_call_count": model_summary["model_call_count"],
         "model_calls": model_summary["model_calls"],
+        "stage_count": (timing.get("anchor_strategy_staged_batch_debug") or {}).get("stage_count"),
+        "roi_crop_count": (timing.get("anchor_strategy_staged_batch_debug") or {}).get("roi_crop_count"),
         "verification_breakdown": verification_breakdown,
     })
     result = {
         "total_detection_ms": total_elapsed_ms,
+        "stage_count": (timing.get("anchor_strategy_staged_batch_debug") or {}).get("stage_count"),
+        "roi_crop_count": (timing.get("anchor_strategy_staged_batch_debug") or {}).get("roi_crop_count"),
         "prepare_pages_ms": _ms(timing.get("prepare_pages")),
         "prepare_pages_breakdown": {
             "pdf_convert_ms": _ms(timing.get("prepare_pdf_convert")),
@@ -2208,6 +2256,7 @@ def _detection_timing_debug(
         "model_intervals_overlap", "model_timing_missing_reason", "model_call_count", "model_calls",
         "timing_missing_reasons", "frontend_to_backend_ms", "backend_to_frontend_ms", "frontend_render_ms", "end_to_end_ms",
         "siglip_inference_ms", "text_det_inference_ms", "text_rec_inference_ms", "model_inference_total_ms",
+        "stage_count", "roi_crop_count",
     ):
         result["benchmark"][key] = result[key]
     return result

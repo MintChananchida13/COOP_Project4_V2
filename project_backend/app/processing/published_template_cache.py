@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from app.core.db import connect as connect_db
 from app.core.json_utils import jsonb_load
+from app.processing import document_aspect
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,7 @@ def _load_entries(template_id: Optional[str] = None) -> Dict[str, PublishedTempl
             return {}
 
         template_ids = [str(row["id"]) for row in template_rows]
+        page_aspects = document_aspect.load_template_page_aspects(conn, template_ids)
         placeholders = ", ".join("?" for _ in template_ids)
         layout_rows = conn.execute(
             f"""
@@ -298,6 +300,7 @@ def _load_entries(template_id: Optional[str] = None) -> Dict[str, PublishedTempl
     for row in template_rows:
         item = _row_to_dict(row)
         tid = str(item["id"])
+        item["page_aspect_ratios"] = page_aspects.get(tid, {})
         entries[tid] = PublishedTemplateEntry(
             template_id=tid,
             status=str(item.get("status") or ""),
@@ -410,6 +413,7 @@ def get_verification_anchor_templates(anchor_types: Optional[set[str]] = None) -
                     "text_anchor_weight": metadata.get("text_anchor_weight"),
                     "image_anchor_weight": metadata.get("image_anchor_weight"),
                     "page_count": metadata.get("page_count"),
+                    "page_aspect_ratios": copy.deepcopy(metadata.get("page_aspect_ratios") or {}),
                     "field_count": entry.field_count,
                     "verification_anchors": anchors,
                     "text_anchors": [field for field in anchors if str(field.get("data_type") or "").lower() == "text" and field.get("expected_text")],

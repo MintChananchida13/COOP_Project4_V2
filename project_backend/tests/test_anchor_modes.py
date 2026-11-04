@@ -84,7 +84,7 @@ class AnchorModeTests(unittest.TestCase):
         templates = [dict(template_id=name, page_count=2, verification_anchors=[
             dict(id=name, data_type='text', expected_text=name)]) for name in ['first', 'best', 'failed']]
         scores = {'first': .8, 'best': .95, 'failed': .99}
-        verify = Mock(side_effect=lambda template_id, *args, **kwargs: {'id': template_id})
+        verify = Mock(side_effect=lambda template_id, *args, **kwargs: {'checked_fields': [{'passed': template_id != 'failed', 'score': scores[template_id]}]})
         namespace = dict(time=time, normalize_verification_strategy=services.normalize_verification_strategy,
             verification_anchor_types=lambda strategy: {'text', 'image'},
             VERIFICATION_STRATEGY_STANDARD='standard', VERIFICATION_STRATEGY_STRICT='strict',
@@ -124,7 +124,7 @@ class AnchorModeTests(unittest.TestCase):
             _fetch_verification_fields_cached=Mock(return_value=([field], False, {})),
             _run_parallel_anchor_batches=Mock(return_value=({}, {}, {}, {}, {})),
             verification_service=SimpleNamespace(verify_template=Mock(return_value=dict(
-                passed=True, score=1, text_anchor_score=1, image_anchor_score=1, checked_fields=[])),
+                passed=True, score=1, text_anchor_score=1, image_anchor_score=1, checked_fields=[{'passed': True, 'score': 1}])),
                 DEFAULT_VERIFICATION_THRESHOLD=.75),
             DEFAULT_FINAL_CONFIDENCE_THRESHOLD=.75,
             _auto_roi_region_items=lambda page: {'page_index': page['page_index'], 'regions': [{'id': 'auto'}]},
@@ -144,19 +144,21 @@ class AnchorModeTests(unittest.TestCase):
         self.assertEqual([page['page_index'] for page in result['main_page_auto_roi_pages']], [1, 3])
         self.assertEqual(result['main_page_auto_roi_total_regions'], 2)
 
-    def test_score_uses_normalized_text_image_weights_and_ignores_layout(self):
+    def test_final_gate_ignores_weights_and_threshold_when_every_anchor_passes(self):
         service = load({'_candidate_from_anchor_strategy'}, dict(
             DEFAULT_FINAL_CONFIDENCE_THRESHOLD=.75,
             _detection_preview_url=lambda path: path, _runtime_ms=lambda value: value, _ms=lambda value: value))
         template = dict(template_id='template', final_confidence_threshold=.5,
                         text_anchor_weight=.6, image_anchor_weight=.4)
         fields = [dict(data_type='text'), dict(data_type='image')]
-        verification = dict(passed=True, score=1, text_anchor_score=.8, image_anchor_score=.6)
+        verification = dict(passed=True, score=1, text_anchor_score=.8, image_anchor_score=.6,
+                            checked_fields=[{'passed': True, 'score': .8}, {'passed': True, 'score': .6}])
         for layout_weight in [0, .5, 1]:
             candidate = service._candidate_from_anchor_strategy({**template, 'layout_weight': layout_weight},
                 verification, fields, {1: 'page.png'}, 'standard', {})
-            self.assertEqual(candidate['final_score'], .72)
-            self.assertEqual(candidate['effective_matching_weights'], dict(layout=0, text_anchor=.6, image_anchor=.4))
+            self.assertEqual(candidate['final_score'], 1)
+            self.assertTrue(candidate['final_passed'])
+            self.assertEqual(candidate['effective_matching_weights'], dict(layout=0, text_anchor=0, image_anchor=0))
 
     def test_only_two_public_modes_and_legacy_settings_fall_back_to_standard(self):
         self.assertEqual(services.VERIFICATION_STRATEGIES, {'standard', 'strict'})

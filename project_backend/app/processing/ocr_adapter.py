@@ -879,7 +879,9 @@ def ocr_rois(
                 }
             else:
                 step_started = time.perf_counter()
-                crop = _crop_roi_from_image(image, item.get("roi") or item)
+            crop = _crop_roi_from_image(image, item.get("roi") or item)
+            if timing is not None:
+                timing["roi_crop_count"] = int(timing.get("roi_crop_count") or 0) + 1
                 bgr_crop = cv2.cvtColor(np.array(crop), cv2.COLOR_RGB2BGR)
                 text_items.append((key, bgr_crop))
                 if timing is not None:

@@ -38,12 +38,32 @@ Keep `GATEWAY_URL` as the host base URL, without adding `/paddle` to it.
 
 ## Template verification and publishing
 
+Template search first filters by page count, then compares width/height ratios
+using the final confirmed AdjustZone images. Portrait and landscape must match;
+`TEMPLATE_ASPECT_RATIO_TOLERANCE=0.08` permits up to 8% relative ratio difference.
+Template page `image_width`, `image_height`, and `image_aspect_ratio` are persisted
+when the page image is saved or replaced, and copied into the published cache.
+Search reads these numbers without reopening template images. Backend startup
+adds the columns and backfills unchecked existing pages once, before loading the
+cache. Unreadable/local-missing/remote-only images retain null dimensions and
+remain eligible for anchor verification; replacing their image retries measurement.
+Restart Backend after this update; the first startup can take longer during backfill.
+
 Only `standard` and `strict` are supported. Both use Text/Image Anchors:
 
-- `standard` runs Text OCR and Image verification concurrently, evaluates all
-  templates, and selects the highest-scoring passing template.
-- `strict` finishes Text checks before Image checks for each template. A failed
-  Text check skips that template's Image verification.
+- Both modes use staged batches: one next anchor per surviving template per
+  stage, in stored page/anchor order. Any failed anchor rejects the template,
+  including anchors previously marked optional. Completed templates stop running.
+- `standard` runs the Text and Image batches concurrently inside each stage.
+- `strict` runs the Text batch before the Image batch inside each stage.
+- Match requires every in-scope anchor to pass. The winner has the most anchors;
+  ties use ascending `template_id`. Weights/final confidence thresholds no longer
+  choose the winner. Response score fields remain 1 for complete passes and 0
+  otherwise for compatibility, not weighted confidence. Main-page scope and
+  extraction after matching are unchanged.
+- `debug.anchor_strategy.staged_batch` records stage mappings, actual processed
+  anchors, crop counts and model call counts. Public timing/benchmark payloads
+  also expose `stage_count` and `roi_crop_count`. See `benchmark/STAGED_BATCH.md`.
 
 `POST /admin/templates/{id}/prepublish-simulation` checks stored page images,
 anchor ROIs, expected text, and enabled image categories. It returns `passed`,
