@@ -930,12 +930,8 @@ export default function AdminSettingsPage() {
                           {model.id === activeModelId && <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-black text-emerald-700">ใช้งานอยู่</span>}
                         </div>
                         <div className="mt-3 grid gap-2 text-xs font-semibold text-slate-500">
-                          <div><span className="font-black text-slate-700">Model Name</span><br />{model.modelName || "—"}</div>
-                          <div><span className="font-black text-slate-700">Model ID</span><br />{model.runtimeModelId || model.id}</div>
-                          <div><span className="font-black text-slate-700">Version</span><br />{model.modelVersion || "—"}</div>
-                          <div><span className="font-black text-slate-700">สถานะ</span><br />ตั้งค่าการเรียก API ไว้ใน backend</div>
-                          <div><span className="font-black text-slate-700">Single API Path</span><br />{model.singleApiPath}</div>
-                          <div><span className="font-black text-slate-700">Batch API Path</span><br />{model.batchApiPath}</div>
+                          <div className="break-all font-bold text-slate-700"><span>Single API Path</span><br />{model.singleApiPath}</div>
+                          <div className="break-all font-bold text-slate-700"><span>Batch API Path</span><br />{model.batchApiPath}</div>
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-2 sm:justify-end">
