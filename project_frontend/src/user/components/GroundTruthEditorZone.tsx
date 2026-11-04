@@ -1804,7 +1804,7 @@ export default function GroundTruthEditorZone({
                             </div>
 
                             <div className="min-w-0">
-                              <p className="mb-1 text-[10px] font-semibold text-slate-400">OCR ต้นฉบับ · อ่านอย่างเดียว</p>
+                              <p className="mb-1 text-[10px] font-semibold text-slate-400">OCR ต้นฉบับ</p>
                               <div
                                 className="min-h-7 w-full max-w-full rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium leading-5 text-slate-700 normal-case break-all"
                                 style={{ textTransform: "none", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
