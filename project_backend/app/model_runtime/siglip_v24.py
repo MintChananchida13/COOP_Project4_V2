@@ -1,20 +1,8 @@
-"""Load the same pure policy shipped with the repository's API Service."""
+﻿"""SigLIP V2.4 policy configuration."""
 
-import importlib.util
 import os
-from pathlib import Path
-import sys
+from app.model_runtime import siglip_policy as policy
 
-_name = "coop_shared_siglip_v24"
-if _name not in sys.modules:
-    _path = Path(__file__).resolve().parents[3] / "API_Service_Kaggle/app/siglip_policy.py"
-    _spec = importlib.util.spec_from_file_location(_name, _path)
-    if _spec is None or _spec.loader is None:
-        raise ImportError("Shared SigLIP V2.4 policy is missing from the repository")
-    _module = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(_module)
-    sys.modules[_name] = _module
-policy = sys.modules[_name]
 SCORING_VERSION = policy.SCORING_VERSION
 
 
