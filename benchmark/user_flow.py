@@ -283,7 +283,7 @@ def login_user(page, frontend_url):
 
 
 def reset_document(page):
-    page.wait_for_timeout(2000)
+    page.wait_for_timeout(5000)
     page.get_by_role("button", name="เอกสารใหม่", exact=True).click(timeout=30000)
     page.locator(UPLOAD_INPUT).wait_for(timeout=30000)
 
@@ -479,8 +479,11 @@ def main():
     cases = input_cases(arguments.input, arguments.expected_mode)
     if not cases:
         parser.error(f"No supported images/PDFs in {arguments.input}")
-    if urlparse(arguments.frontend).hostname not in {"localhost", "127.0.0.1"}:
-        parser.error("Frontend must be local; use http://localhost:3000")
+    frontend = urlparse(arguments.frontend)
+    allowed_local = frontend.scheme == "http" and frontend.netloc in {"localhost:3000", "127.0.0.1:3000"}
+    allowed_deployed = frontend.scheme == "https" and frontend.netloc == "coop-project4-v2.vercel.app"
+    if not (allowed_local or allowed_deployed) or frontend.username or frontend.password:
+        parser.error("Frontend must be http://localhost:3000 or https://coop-project4-v2.vercel.app")
     from playwright.sync_api import Error, sync_playwright
 
     rows = []
@@ -493,7 +496,7 @@ def main():
             try:
                 login_page = context.pages[0] if context.pages else context.new_page()
                 login_user(login_page, arguments.frontend)
-                print("Logged in. Measuring Template detection only; each result waits 2 seconds before New Document.")
+                print("Logged in. Measuring Template detection only; each result waits 5 seconds before New Document.")
                 completed = run_cases(login_page, arguments, cases, rows, browser_state)
             finally:
                 if not browser_state["closed"]:

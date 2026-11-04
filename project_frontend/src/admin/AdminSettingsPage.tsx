@@ -882,8 +882,7 @@ export default function AdminSettingsPage() {
                 <p className="mt-2 text-xs leading-5 text-slate-500">ระบบจะส่งภาพทดสอบไปยัง API แบบ Single และ Batch จริงก่อนบันทึก โมเดลต้องพร้อมให้บริการที่เครื่องโมเดลแล้ว</p>
                 <div className="mt-4 grid gap-3">
                   {[
-                    ["Display Name", "displayName"],
-                    ...(!editingModel.draft.id ? [["Model Name (optional)", "modelName"], ["Model ID (optional)", "runtimeModelId"], ["Version (required with Model ID)", "modelVersion"]] : []),
+                    ["Model Name", "displayName"],
                     ["Single API Path", "singleApiPath"],
                     ["Batch API Path", "batchApiPath"],
                   ].map(([label, key]) => (
