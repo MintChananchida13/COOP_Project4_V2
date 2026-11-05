@@ -6,7 +6,11 @@ change or write the Template-search benchmark or its reports.
 It logs in, uploads each document, confirms AdjustZone and finds a Template as
 setup. Then it clicks **อ่านข้อมูลที่เลือก** and measures selected-ROI OCR through
 the result editor. Template-search time is excluded. Enabled/default-selected
-ROIs are used unchanged. Files with no matched Template are `SKIP_NO_TEMPLATE`.
+ROIs are used unchanged when matched. When no Template matches, the runner clicks
+**ตีกรอบ ROI อัตโนมัติ** once (the existing action analyzes all pages), waits for
+workspace ROIs, then clicks **อ่านข้อมูลที่เลือก**. Auto ROI preparation is separate
+from OCR timing. No regions gives `SKIP_NO_ROI`; a failed Auto ROI gives
+`AUTO_ROI_FAILED` and stops the runner.
 
 ## Run from the repository root (PowerShell)
 
@@ -40,6 +44,10 @@ openpyxl (`benchmark/requirements.txt`). No additional packages are required.
 | OCR Stages | Decode, Crop, Crop Save, Fix Text Batch, Flexible, Table, Image durations and counts |
 | OCR Model Calls | Only actual calls made during Extraction; no Template-search calls |
 | Metric Notes | Definitions and interpretation limits |
+
+`roi_source` identifies `template` or `auto_roi`. For the Auto ROI path,
+`auto_roi_setup_ms`, `auto_roi_page_count` and `auto_roi_region_count` describe
+preparation. Its layout calls are excluded from OCR Model Calls and OCR wall time.
 
 Timing fields remain blank when not measured; a missing Gateway inference is not
 zero. `TIMING_INCOMPLETE` means OCR completed but the Frontend/Backend extraction

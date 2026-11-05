@@ -4,6 +4,7 @@ from datetime import datetime
 import json
 import math
 import os
+import re
 from pathlib import Path
 import tempfile
 import time
@@ -15,6 +16,7 @@ import user_flow
 ROOT = Path(__file__).resolve().parent
 OCR_BUTTON = 'อ่านข้อมูลที่เลือก'
 EDITOR_HEADING = 'ตรวจสอบและแก้ไขผล OCR'
+AUTO_ROI_BUTTON = 'ตีกรอบ ROI อัตโนมัติ'
 
 # Keep only OCR telemetry and counts; never copy recognized text or source images.
 CAPTURE = r"""(() => {
@@ -160,6 +162,42 @@ def run_ocr(page, timeout_ms):
             'capture_errors': snapshot.get('errors') or [], '_pages': records}
 
 
+def prepare_auto_roi(page, timeout_ms):
+    """The existing Auto ROI button analyzes all document pages in one action."""
+    started = time.monotonic()
+    with page.expect_response(lambda response: urlparse(response.url).path == '/api/layout/analyze'
+                              and response.request.method == 'POST', timeout=timeout_ms) as pending:
+        page.get_by_role('button', name=AUTO_ROI_BUTTON, exact=True).click(timeout=timeout_ms)
+    response = pending.value
+    result = response.json()
+    if not response.ok or result.get('success') is not True:
+        raise RuntimeError(result.get('detail') or result.get('error') or 'Auto ROI request failed')
+    pages = result.get('pages') or []
+    region_count = sum(len(item.get('regions') or []) for item in pages)
+    if region_count:
+        # Wait for converted workspace ROIs, not just completion of the HTTP request.
+        page.get_by_text(re.compile(r'^สร้าง ROI อัตโนมัติ \d+ รายการจาก')).wait_for(timeout=timeout_ms)
+    return {'auto_roi_setup_ms': round((time.monotonic() - started) * 1000, 2),
+            'auto_roi_page_count': len(pages), 'auto_roi_region_count': region_count}
+
+
+def run_after_detection(page, setup, timeout_ms):
+    if setup.get('status') != 'PASS':
+        return {'status': 'SETUP_FAILED', 'error': setup.get('error')}
+    if setup.get('matched') is True:
+        return {'roi_source': 'template', **run_ocr(page, timeout_ms)}
+    if setup.get('matched') is not False:
+        return {'status': 'SETUP_FAILED', 'error': 'Template result has no boolean matched value'}
+    try:
+        preparation = prepare_auto_roi(page, timeout_ms)
+    except Exception as error:
+        return {'status': 'AUTO_ROI_FAILED', 'roi_source': 'auto_roi', 'error': str(error)[:500]}
+    if not preparation['auto_roi_region_count']:
+        return {'status': 'SKIP_NO_ROI', 'roi_source': 'auto_roi', **preparation,
+                'error': 'Auto ROI found no regions; OCR not run'}
+    return {'roi_source': 'auto_roi', **preparation, **run_ocr(page, timeout_ms)}
+
+
 def cell(value):
     if isinstance(value, (dict, list)):
         value = json.dumps(value, ensure_ascii=False)
@@ -195,8 +233,9 @@ def save_report(path, rows):
     notes = workbook.create_sheet('Metric Notes')
     notes.append(['metric', 'meaning'])
     for metric, meaning in (
-        ('scope', 'Selected-ROI OCR only. Upload/AdjustZone/template search are setup and excluded.'),
-        ('selection', 'Uses enabled/default-selected ROIs from the matched template; no fields are toggled by this runner.'),
+        ('scope', 'Selected-ROI OCR only. Upload/AdjustZone/template search/Auto ROI are setup and excluded from OCR wall time.'),
+        ('selection', 'Uses template ROIs when matched; otherwise clicks Auto ROI for all pages, then runs selected-ROI OCR.'),
+        ('auto_roi_setup_ms', 'Auto ROI preparation only, reported separately and never included in OCR wall time or OCR Model Calls.'),
         ('ocr_ui_wall_ms', 'Click to observed result editor, including all page jobs. Observation interval is 100 ms.'),
         ('frontend_total_ms', 'One page JSON serialization through result receipt, before rendering.'),
         ('processing_ms', 'Backend OCR processing only; excludes job load, queue and final result persistence.'),
@@ -258,17 +297,12 @@ def main():
                     for run_number in range(1, args.repeats + 1):
                         setup = user_flow.run_case(page, path, None, args.timeout_seconds * 1000)
                         identity = {'file': str(path), 'run_number': run_number, 'template_id': setup.get('template_id')}
-                        if setup['status'] != 'PASS':
-                            row = {'status': 'SETUP_FAILED', 'error': setup.get('error')}
-                        elif not setup.get('matched'):
-                            row = {'status': 'SKIP_NO_TEMPLATE', 'error': 'No matched template; selected-ROI OCR not run'}
-                        else:
-                            row = run_ocr(page, args.timeout_seconds * 1000)
+                        row = run_after_detection(page, setup, args.timeout_seconds * 1000)
                         rows.append({**identity, **row})
                         args.output = save_report(args.output, rows)
                         print(f'{path.name} [{run_number}/{args.repeats}]: {row["status"]}')
                         # A timed-out OCR request must not contaminate a later run.
-                        if row['status'] in ('FAIL', 'SETUP_FAILED'):
+                        if row['status'] in ('FAIL', 'SETUP_FAILED', 'AUTO_ROI_FAILED'):
                             return 1
                         page.evaluate('() => {window.__ocrOnlyRun = null;}')
                         user_flow.reset_document(page)
