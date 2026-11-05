@@ -28,7 +28,7 @@ is logged after completion and is not written back with a second database update
 Browser DevTools Console shows `[OCR timing] extraction completed` per processed
 page: JSON encoding, create-request round trip, backend job-create time, poll count,
 poll-request time, accumulated poll sleep, client total and backend timing.
-The existing page loop and 1-second polling interval are unchanged.
+The page loop is unchanged; OCR job polling waits 500 ms between requests.
 
 `poll_wait_ms` includes sleeping while OCR is still running; it is NOT a pure
 post-completion delay. `create_request_ms` includes upload, network and backend

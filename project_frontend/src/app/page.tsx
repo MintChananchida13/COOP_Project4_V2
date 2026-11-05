@@ -1751,7 +1751,7 @@ async function runAiProcessJob(
 
   for (;;) {
     const waitStartedAt = performance.now();
-    await wait(1000);
+    await wait(500);
     pollWaitMs += performance.now() - waitStartedAt;
     const pollStartedAt = performance.now();
     pollCount += 1;
@@ -3175,21 +3175,19 @@ function HomeWorkspace() {
             const isTableRoi = roiFieldType === "table";
             const resItem = responseByRoiId.get(roi.id) || responseItems[rIdx];
             if (resItem) {
-              const parsedHtmlStructured = parseHtmlTableStructured(typeof resItem.table_html === "string" ? resItem.table_html : undefined);
               const responseStructured =
                 resItem.table_structured && typeof resItem.table_structured === "object"
                   ? (resItem.table_structured as StructuredTableResult)
                   : resItem.tableStructured && typeof resItem.tableStructured === "object"
                     ? (resItem.tableStructured as StructuredTableResult)
-                    : parsedHtmlStructured || undefined;
+                    : parseHtmlTableStructured(typeof resItem.table_html === "string" ? resItem.table_html : undefined) || undefined;
               const responseRowsFromCells = rowsFromStructuredCells(responseStructured);
-              const responseTableRows = Array.isArray(resItem.table_rows)
-                ? resItem.table_rows.map((row: unknown) => (Array.isArray(row) ? row.map((cell) => String(cell ?? "")) : []))
-                : null;
               const rawTableRows =
                 responseRowsFromCells ||
                 responseStructured?.rows ||
-                responseTableRows ||
+                (Array.isArray(resItem.table_rows)
+                  ? resItem.table_rows.map((row: unknown) => (Array.isArray(row) ? row.map((cell) => String(cell ?? "")) : []))
+                  : null) ||
                 parseHtmlTableRows(typeof resItem.table_html === "string" ? resItem.table_html : undefined);
               const finalTableStructured = isTableRoi
                 ? responseStructured?.cells?.length
@@ -3199,8 +3197,9 @@ function HomeWorkspace() {
                     : responseStructured || createEmptyStructuredTable()
                 : responseStructured;
               const finalTableRows = isTableRoi ? rawTableRows || finalTableStructured?.rows || [["Column 1"], [""]] : rawTableRows;
-              const tableMarkdown = rawTableRows && rawTableRows.length > 0 ? tableRowsToMarkdown(rawTableRows) : "";
-              const extractedText = String(resItem.text || tableMarkdown || "");
+              const extractedText = String(resItem.text || (
+                rawTableRows && rawTableRows.length > 0 ? tableRowsToMarkdown(rawTableRows) : ""
+              ) || "");
               const responseRoiId = Number(resItem.roiId ?? roi.id);
               const resolvedBlocks = Array.isArray(resItem.resolved_blocks)
                 ? (resItem.resolved_blocks as Record<string, any>[])

@@ -2734,8 +2734,9 @@ def _rows_from_html(table_html: str) -> List[List[str]]:
     return _normalize_table_rows(parser.rows)
 
 
-def _markdown_table(rows: List[List[str]]) -> str:
-    rows = _normalize_table_rows(rows)
+def _markdown_table(rows: List[List[str]], *, normalized: bool = False) -> str:
+    if not normalized:
+        rows = _normalize_table_rows(rows)
     if not rows:
         return ""
     column_count = max(len(row) for row in rows)
@@ -2807,8 +2808,9 @@ def _ocr_mapping_audit(items: List[Dict[str, Any]], cells: List[Dict[str, Any]])
             "items": source_items}
 
 
-def _structured_from_cells(rows: List[List[str]], cells: List[Dict[str, Any]]) -> Dict[str, Any]:
-    rows = _normalize_table_rows(rows)
+def _structured_from_cells(rows: List[List[str]], cells: List[Dict[str, Any]], *, normalized: bool = False) -> Dict[str, Any]:
+    if not normalized:
+        rows = _normalize_table_rows(rows)
     column_count = max((len(row) for row in rows), default=0)
     normalized_rows = [row + [""] * (column_count - len(row)) for row in rows]
     return {
@@ -2819,8 +2821,8 @@ def _structured_from_cells(rows: List[List[str]], cells: List[Dict[str, Any]]) -
     }
 
 
-def _extract_table_html(output: Any) -> str:
-    for item in _collect_dicts(output):
+def _extract_table_html(output: Any, collected: Optional[List[Dict[str, Any]]] = None) -> str:
+    for item in collected if collected is not None else _collect_dicts(output):
         for key in ("html", "pred_html", "table_html", "structure_html"):
             value = item.get(key)
             if isinstance(value, str) and "<table" in value.lower():
@@ -2833,8 +2835,8 @@ def _extract_table_html(output: Any) -> str:
     return ""
 
 
-def _extract_table_rows(output: Any, table_html: str = "") -> List[List[str]]:
-    for item in _collect_dicts(output):
+def _extract_table_rows(output: Any, table_html: str = "", collected: Optional[List[Dict[str, Any]]] = None) -> List[List[str]]:
+    for item in collected if collected is not None else _collect_dicts(output):
         for key in ("rows", "table_rows", "tableCells"):
             value = item.get(key)
             if isinstance(value, list) and value and all(isinstance(row, list) for row in value):
@@ -2847,13 +2849,16 @@ def _fallback_result_from_remote_output(
     image: np.ndarray,
     started: float,
     reason: str,
+    collected: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     height, width = image.shape[:2]
-    table_html = _extract_table_html(output)
-    rows = _extract_table_rows(output, table_html)
-    structured = _structured_from_cells(rows, [])
+    if collected is None:
+        collected = _collect_dicts(output)
+    table_html = _extract_table_html(output, collected)
+    rows = _extract_table_rows(output, table_html, collected)
+    structured = _structured_from_cells(rows, [], normalized=True)
     return {
-        "text": _markdown_table(rows),
+        "text": _markdown_table(rows, normalized=True),
         "confidence": 0.0,
         "segments": [],
         "attempts": [{"step": "remote_table_default_parser", "fallback_reason": reason}],
@@ -2873,7 +2878,7 @@ def _fallback_result_from_remote_output(
             "input_size": [int(width), int(height)],
             "row_count": len(rows),
             "column_count": max((len(row) for row in rows), default=0),
-            "raw_result_count": len(_collect_dicts(output)),
+            "raw_result_count": len(collected),
             "raw_result_count_kind": "nested_dictionary_count",
             "elapsed_seconds": round(time.perf_counter() - started, 3),
         },
@@ -2882,12 +2887,19 @@ def _fallback_result_from_remote_output(
 
 def _table_result_candidates(output: Any, collected: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     candidates: List[Dict[str, Any]] = []
+    seen: set[int] = set()
+    def append_once(candidate: Dict[str, Any]) -> None:
+        if id(candidate) not in seen:
+            seen.add(id(candidate))
+            candidates.append(candidate)
     for item in collected if collected is not None else _collect_dicts(output):
         table_res_list = item.get("table_res_list")
         if isinstance(table_res_list, list):
-            candidates.extend(table for table in table_res_list if isinstance(table, dict))
+            for candidate in table_res_list:
+                if isinstance(candidate, dict):
+                    append_once(candidate)
         if isinstance(item.get("cell_box_list"), list):
-            candidates.append(item)
+            append_once(item)
     return candidates
 
 
@@ -2967,8 +2979,8 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
         format_started = time.perf_counter()
         backend_cells = _backend_cells(cells)
         rows = _rows_from_html(table_html)
-        structured = _structured_from_cells(rows, backend_cells)
-        text = _markdown_table(rows)
+        structured = _structured_from_cells(rows, backend_cells, normalized=True)
+        text = _markdown_table(rows, normalized=True)
         format_ms = (time.perf_counter() - format_started) * 1000
         audit_started = time.perf_counter()
         ocr_audit = _ocr_mapping_audit(recognized_items, backend_cells)
@@ -3026,7 +3038,7 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
         + (f" Last reconstruction error: {last_error}" if last_error else "")
     )
     logger.info("embedded table rules unavailable; falling back to remote output parser: %s", reason)
-    return _fallback_result_from_remote_output(output, image, started, reason)
+    return _fallback_result_from_remote_output(output, image, started, reason, collected)
 
 
 def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:

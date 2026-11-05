@@ -138,3 +138,28 @@ fields except measured timing were equal in the benchmark. Unit tests freeze
 the clock and compare entire reconstruction and fallback responses exactly,
 including debug/audit. These local results are not new measurements of the
 22363.88 ms deployed run; rerun the same document for a live comparison.
+
+## Reuse formatting and fallback results
+
+Table rows are now normalized once on the internal result path. Structured/Markdown
+formatters reuse those rows; their default entry points still normalize unprepared
+input. Structured rows remain separate lists so later edits cannot mutate the
+original table_rows by aliasing.
+
+The fallback HTML parser, row extractor and dictionary count now reuse the
+inventory already scanned by the primary path. Candidate collection removes only
+duplicate references to the same object, keeping the first occurrence. Distinct
+but equal dictionaries remain separate candidates. This is per-call bookkeeping,
+not a result cache. The Reconstruction algorithm and fallback selection are unchanged.
+
+A synthetic 600x600 numeric-array comparison, five alternating repetitions,
+measured successful formatting 84.70 -> 81.33 ms (row normalizations 3 -> 1) and
+fallback 324.91 -> 79.99 ms (scans 4 -> 1, row normalizations 3 -> 1). Full responses
+except measured timing matched. This is a local measurement, not a prediction of
+Gateway or deployed end-to-end latency.
+
+Frontend response preparation lazily parses HTML only without structured data,
+converts table_rows only if higher-priority rows are absent, and generates Markdown
+only without an existing OCR text value. Existing fallback priority and values stay
+the same. All API fields, including diagnostics, are retained. Gateway payload
+trimming is not attempted without evidence of the actual unused fields.

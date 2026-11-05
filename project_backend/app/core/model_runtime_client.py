@@ -39,7 +39,7 @@ MODEL_RUNTIME_GATEWAY_PATH: Dict[ModelRuntimeKind, str] = {
     ModelRuntimeKind.LAYOUT: "/paddle/api/v1/document-layouts",
     ModelRuntimeKind.TEXT_DETECTION: "/paddle/api/v1/text-detections?version=v6",
     ModelRuntimeKind.TEXT_RECOGNITION: "/paddle/api/v1/text-recognitions",
-    ModelRuntimeKind.TABLE: "/paddle/api/v1/table-model-results?ocr_version=5&det_model=baseline&rec_model=thai_ft_v3",
+    ModelRuntimeKind.TABLE: "/paddle/api/v1/table-model-results?det_version=6&rec_version=5&det_model=baseline&rec_model=thai_ft_v3",
     ModelRuntimeKind.IMAGE_VERIFICATION: "/paddle/api/v1/image-verifications",
 }
 
