@@ -31,8 +31,7 @@ const readValue = (value: unknown) => (typeof value === "number" || typeof value
 const readScore = (value: unknown) => (typeof value === "number" ? formatScore(value) : "N/A");
 const isImageVerificationField = (field: Record<string, unknown>) =>
   field.anchor_type === "image" ||
-  field.verification_method === "image_feature" ||
-  field.match_type === "image_feature";
+  field.verification_method === "image_feature";
 const readPreviewValue = (field: Record<string, unknown>, keys: string[]) => {
   for (const key of keys) {
     const value = field[key];
@@ -1014,7 +1013,6 @@ export default function AdminDetectionLabPage() {
                             <th className="px-3 py-2">Field</th>
                             <th className="px-3 py-2">Expected</th>
                             <th className="px-3 py-2">Actual</th>
-                            <th className="px-3 py-2">Match</th>
                             <th className="px-3 py-2">Score</th>
                             <th className="px-3 py-2">Reason</th>
                           </tr>
@@ -1025,7 +1023,6 @@ export default function AdminDetectionLabPage() {
                               <td className="px-3 py-2">{readText(field.field_name)}</td>
                               <td className="px-3 py-2 align-top">{renderVerificationExpected(field)}</td>
                               <td className="px-3 py-2 align-top">{renderVerificationActual(field)}</td>
-                              <td className="px-3 py-2">{readText(field.match_type)}</td>
                               <td className="px-3 py-2">{readScore(field.field_score ?? field.score)}</td>
                               <td className="px-3 py-2">{readText(field.failure_reason || field.error)}</td>
                             </tr>

@@ -12,7 +12,6 @@ import threading
 import time
 import unicodedata
 from datetime import datetime, timezone
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.request import Request, urlopen
@@ -1988,7 +1987,6 @@ def _template_field_row_to_api(row: Any) -> Dict[str, Any]:
         "default_selected": bool(item.get("default_selected", False)),
         "use_for_verification": bool(item.get("use_for_verification", False)),
         "expected_text": item.get("expected_text"),
-        "match_type": item.get("match_type"),
         "required_for_verification": bool(item.get("required_for_verification", item.get("required", False))),
         "extraction_method": _normalize_extraction_method(item["extraction_method"]),
         "roi_mode": item.get("roi_mode") or "fix",
@@ -3438,9 +3436,7 @@ def _resolve_image_category_id(conn: Any, value: Optional[str]) -> Optional[str]
 
 
 class VerificationService:
-    FUZZY_THRESHOLD = 0.85
-    DEFAULT_VERIFICATION_THRESHOLD = 0.60
-    LOW_TEXT_SIMILARITY_GUARD = 0.25
+    DEFAULT_VERIFICATION_THRESHOLD = 1.0
     ZERO_WIDTH_CHARS = {
         "\u200b",
         "\u200c",
@@ -3491,13 +3487,11 @@ class VerificationService:
                     0 AS default_selected,
                     1 AS use_for_verification,
                     va.expected_text,
-                    va.match_type,
                     va.required AS required_for_verification,
                     'fixed_roi' AS extraction_method,
                     'fix' AS roi_mode,
                     NULL AS expected_content,
                     NULL AS anchor_text,
-                    va.regex_pattern,
                     NULL AS roi_padding,
                     va.weight AS verification_weight,
                     {category_column} AS image_category,
@@ -3543,90 +3537,46 @@ class VerificationService:
         normalized = "".join(normalized.lower().split())
         return normalized
 
-    def _normalize_for_similarity(self, value: Optional[str]) -> str:
-        normalized = self._normalize_text(value)
-        normalized = re.sub(r"[^\w]", "", normalized, flags=re.UNICODE)
-        return normalized
-
-    def _similarity(self, left: str, right: str) -> float:
-        if not left and not right:
-            return 1.0
-        if not left or not right:
-            return 0.0
-        return SequenceMatcher(None, left, right).ratio()
+    @staticmethod
+    def _levenshtein_distance(left: str, right: str) -> int:
+        # Keep only one row, using the shorter string for the columns.
+        if len(left) < len(right):
+            left, right = right, left
+        previous = list(range(len(right) + 1))
+        for row, left_char in enumerate(left, 1):
+            current = [row]
+            for column, right_char in enumerate(right, 1):
+                current.append(min(
+                    current[-1] + 1,
+                    previous[column] + 1,
+                    previous[column - 1] + (left_char != right_char),
+                ))
+            previous = current
+        return previous[-1]
 
     def _score_match(
         self,
         expected_text: Optional[str],
         actual_text: Optional[str],
-        match_type: Optional[str],
         ocr_confidence: float,
-        verification_threshold: Optional[float] = None,
     ) -> Dict[str, Any]:
         expected = self._normalize_text(expected_text)
         actual = self._normalize_text(actual_text)
-        expected_for_similarity = self._normalize_for_similarity(expected_text)
-        actual_for_similarity = self._normalize_for_similarity(actual_text)
-        base_similarity = self._similarity(expected_for_similarity, actual_for_similarity)
-        normalized_match_type = (match_type or "contains").strip().lower()
-        threshold = verification_threshold or self.DEFAULT_VERIFICATION_THRESHOLD
-
-        if not expected:
-            text_similarity_score = 0.0
-        elif not actual:
-            text_similarity_score = 0.0
-        elif normalized_match_type == "exact":
-            threshold = max(threshold, 0.95)
-            text_similarity_score = 1.0 if actual == expected else base_similarity
-        elif normalized_match_type == "regex":
-            try:
-                text_similarity_score = 1.0 if re.search(expected, actual, flags=re.IGNORECASE) else 0.0
-            except re.error:
-                text_similarity_score = 0.0
-        elif normalized_match_type == "fuzzy":
-            text_similarity_score = base_similarity
-        else:
-            normalized_match_type = "contains"
-            if expected in actual:
-                text_similarity_score = 1.0
-            elif actual in expected:
-                length_ratio = len(actual_for_similarity) / max(len(expected_for_similarity), 1)
-                if length_ratio >= 0.75:
-                    text_similarity_score = max(base_similarity, 0.90)
-                elif length_ratio >= 0.50:
-                    text_similarity_score = max(base_similarity, 0.70)
-                else:
-                    text_similarity_score = base_similarity
-            elif base_similarity >= 0.70:
-                text_similarity_score = max(base_similarity, 0.75)
-            else:
-                text_similarity_score = base_similarity
-
-        text_similarity_score = round(float(text_similarity_score), 4)
-        if text_similarity_score < self.LOW_TEXT_SIMILARITY_GUARD:
-            field_score = 0.0
-            failure_reason = "low_text_similarity"
-        else:
-            field_score = round(text_similarity_score, 4)
-
-        passed = field_score >= threshold
-        if passed:
-            failure_reason = "passed"
-        elif text_similarity_score >= self.LOW_TEXT_SIMILARITY_GUARD:
-            failure_reason = "below_threshold"
-
+        max_errors = len(expected) // 4
+        passed = bool(expected and actual) and self._levenshtein_distance(expected, actual) <= max_errors
+        score = 1.0 if passed else 0.0
         return {
-            "match_type": normalized_match_type,
             "normalized_expected": expected,
             "normalized_actual": actual,
-            "text_similarity_score": text_similarity_score,
-            "text_match_score": field_score,
+            # Retain score fields for existing result consumers, without similarity calculations.
+            "text_similarity_score": score,
+            "text_match_score": score,
             "ocr_confidence": round(float(ocr_confidence or 0.0), 4),
-            "field_score": field_score,
-            "verification_threshold": round(float(threshold), 4),
-            "score": field_score,
+            "field_score": score,
+            "verification_threshold": 1.0,
+            "score": score,
             "passed": passed,
-            "failure_reason": failure_reason,
+            "failure_reason": "passed" if passed else "below_threshold",
         }
 
     def _score_image_anchor(self, field: Dict[str, Any], image_path: str, timing: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -4245,15 +4195,12 @@ class VerificationService:
             else:
                 field_error = f"No query page image available for page {page_number}"
 
-            verification_threshold = self.DEFAULT_VERIFICATION_THRESHOLD
+            verification_threshold = 1.0
             match = self._score_match(
                 expected_text,
                 actual_text,
-                field.get("match_type"),
                 ocr_confidence,
-                verification_threshold,
             ) if not field_error else {
-                "match_type": (field.get("match_type") or "contains").strip().lower(),
                 "normalized_expected": self._normalize_text(expected_text),
                 "normalized_actual": self._normalize_text(actual_text),
                 "text_similarity_score": 0.0,
@@ -4283,7 +4230,6 @@ class VerificationService:
                     "ocr_confidence": match["ocr_confidence"],
                     "field_score": match["field_score"],
                     "verification_threshold": match["verification_threshold"],
-                    "match_type": match["match_type"],
                     "required": bool(field["required_for_verification"]),
                     "passed": match["passed"],
                     "score": match["field_score"],
@@ -5211,7 +5157,7 @@ class AdminTemplateService:
             UPDATE verification_anchors
             SET template_page_id = ?, anchor_name = ?, anchor_type = ?,
                 roi_x_ratio = ?, roi_y_ratio = ?, roi_width_ratio = ?, roi_height_ratio = ?, roi_points_json = ?,
-                required = ?, weight = ?, expected_text = ?, match_type = ?, regex_pattern = ?,
+                required = ?, weight = ?, expected_text = ?,
                 image_category_id = ?, sort_order = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)
             """,
@@ -5227,8 +5173,6 @@ class AdminTemplateService:
                 bool(payload.required_for_verification),
                 payload.verification_weight or 1.0,
                 payload.expected_text,
-                payload.match_type,
-                payload.regex_pattern,
                 image_category_id,
                 payload.sort_order,
                 field_id,
@@ -5332,10 +5276,10 @@ class AdminTemplateService:
                         INSERT INTO verification_anchors (
                             id, template_page_id, anchor_name, anchor_type,
                             roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_points_json,
-                            required, weight, expected_text, match_type, regex_pattern,
+                            required, weight, expected_text,
                             image_category_id, sort_order, created_at, updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                         """,
                         (
                             next_field_id,
@@ -5350,8 +5294,6 @@ class AdminTemplateService:
                             bool(payload.required_for_verification),
                             payload.verification_weight or 1.0,
                             payload.expected_text,
-                            payload.match_type,
-                            payload.regex_pattern,
                             image_category_id,
                             payload.sort_order,
                         ),
@@ -5503,9 +5445,9 @@ class AdminTemplateService:
                        ef.id, ef.field_name, ef.display_label,
                        ef.roi_x_ratio, ef.roi_y_ratio, ef.roi_width_ratio, ef.roi_height_ratio, ef.roi_points_json,
                        ef.data_type, 1 AS user_selectable, 1 AS default_selected, 0 AS use_for_verification,
-                       NULL AS expected_text, NULL AS match_type, 0 AS required_for_verification,
+                       NULL AS expected_text, 0 AS required_for_verification,
                        ef.extraction_method, ef.roi_mode, ef.expected_content,
-                       NULL AS anchor_text, NULL AS regex_pattern, NULL AS roi_padding,
+                       NULL AS anchor_text, NULL AS roi_padding,
                        1.0 AS verification_weight, NULL AS image_category,
                        ef.sort_order, ef.created_at, ef.updated_at
                 FROM extraction_fields ef
@@ -5521,9 +5463,9 @@ class AdminTemplateService:
                        va.id, va.anchor_name AS field_name, va.anchor_name AS display_label,
                        va.roi_x_ratio, va.roi_y_ratio, va.roi_width_ratio, va.roi_height_ratio, va.roi_points_json,
                        va.anchor_type AS data_type, 0 AS user_selectable, 0 AS default_selected, 1 AS use_for_verification,
-                       va.expected_text, va.match_type, va.required AS required_for_verification,
+                       va.expected_text, va.required AS required_for_verification,
+                       NULL AS anchor_text, NULL AS roi_padding,
                        'fixed_roi' AS extraction_method, 'fix' AS roi_mode, NULL AS expected_content,
-                       NULL AS anchor_text, va.regex_pattern, NULL AS roi_padding,
                        va.weight AS verification_weight, COALESCE(ivc.value, va.image_category_id) AS image_category,
                        va.sort_order, va.created_at, va.updated_at
                 FROM verification_anchors va
@@ -6245,10 +6187,10 @@ class AdminTemplateService:
                     INSERT INTO verification_anchors (
                         id, template_page_id, anchor_name, anchor_type,
                         roi_x_ratio, roi_y_ratio, roi_width_ratio, roi_height_ratio, roi_points_json,
-                        required, weight, expected_text, match_type, regex_pattern,
+                        required, weight, expected_text,
                         image_category_id, sort_order, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
                     (
                         field_id,
@@ -6263,8 +6205,6 @@ class AdminTemplateService:
                         bool(payload.required_for_verification),
                         payload.verification_weight or 1.0,
                         payload.expected_text,
-                        payload.match_type,
-                        payload.regex_pattern,
                         image_category_id,
                         payload.sort_order,
                     ),
@@ -6282,9 +6222,9 @@ class AdminTemplateService:
                    ef.id, ef.field_name, ef.display_label,
                    ef.roi_x_ratio, ef.roi_y_ratio, ef.roi_width_ratio, ef.roi_height_ratio, ef.roi_points_json,
                    ef.data_type, 1 AS user_selectable, 1 AS default_selected, 0 AS use_for_verification,
-                   NULL AS expected_text, NULL AS match_type, 0 AS required_for_verification,
+                   NULL AS expected_text, 0 AS required_for_verification,
                    ef.extraction_method, ef.roi_mode, ef.expected_content,
-                   NULL AS anchor_text, NULL AS regex_pattern, NULL AS roi_padding,
+                   NULL AS anchor_text, NULL AS roi_padding,
                    1.0 AS verification_weight, NULL AS image_category,
                    ef.sort_order, ef.created_at, ef.updated_at
             FROM extraction_fields ef
@@ -6301,9 +6241,9 @@ class AdminTemplateService:
                    va.id, va.anchor_name AS field_name, va.anchor_name AS display_label,
                    va.roi_x_ratio, va.roi_y_ratio, va.roi_width_ratio, va.roi_height_ratio, va.roi_points_json,
                    va.anchor_type AS data_type, 0 AS user_selectable, 0 AS default_selected, 1 AS use_for_verification,
-                   va.expected_text, va.match_type, va.required AS required_for_verification,
+                       va.expected_text, va.required AS required_for_verification,
+                       NULL AS anchor_text, NULL AS roi_padding,
                    'fixed_roi' AS extraction_method, 'fix' AS roi_mode, NULL AS expected_content,
-                   NULL AS anchor_text, va.regex_pattern, NULL AS roi_padding,
                    va.weight AS verification_weight, COALESCE(ivc.value, va.image_category_id) AS image_category,
                    va.sort_order, va.created_at, va.updated_at
             FROM verification_anchors va
@@ -6333,13 +6273,11 @@ class AdminTemplateService:
             "default_selected": patch.get("default_selected", current["default_selected"]),
             "use_for_verification": patch.get("use_for_verification", current["use_for_verification"]),
             "expected_text": patch.get("expected_text", current.get("expected_text")),
-            "match_type": patch.get("match_type", current.get("match_type")),
             "required_for_verification": patch.get("required_for_verification", current["required_for_verification"]),
             "extraction_method": patch.get("extraction_method", current["extraction_method"]),
             "roi_mode": patch.get("roi_mode", current.get("roi_mode") or "fix"),
             "expected_content": patch.get("expected_content", current.get("expected_content")),
             "anchor_text": patch.get("anchor_text", current.get("anchor_text")),
-            "regex_pattern": patch.get("regex_pattern", current.get("regex_pattern")),
             "roi_padding": patch.get("roi_padding", current.get("roi_padding")),
             "verification_weight": patch.get("verification_weight", current.get("verification_weight")),
             "image_category": patch.get("image_category", current.get("image_category")),
@@ -6366,7 +6304,7 @@ class AdminTemplateService:
                         UPDATE verification_anchors
                         SET template_page_id = ?, anchor_name = ?, anchor_type = ?,
                             roi_x_ratio = ?, roi_y_ratio = ?, roi_width_ratio = ?, roi_height_ratio = ?, roi_points_json = ?,
-                            required = ?, weight = ?, expected_text = ?, match_type = ?, regex_pattern = ?,
+                            required = ?, weight = ?, expected_text = ?,
                             image_category_id = ?, sort_order = ?, updated_at = CURRENT_TIMESTAMP
                         WHERE id = ? AND template_page_id IN (SELECT id FROM template_pages WHERE template_version_id = ?)
                         """,
@@ -6382,8 +6320,6 @@ class AdminTemplateService:
                             bool(merged_payload.required_for_verification),
                             merged_payload.verification_weight or 1.0,
                             merged_payload.expected_text,
-                            merged_payload.match_type,
-                            merged_payload.regex_pattern,
                             image_category_id,
                             merged_payload.sort_order,
                             field_id,

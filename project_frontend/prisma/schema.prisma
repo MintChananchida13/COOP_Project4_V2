@@ -99,11 +99,13 @@ model TemplateField {
   defaultSelected         Boolean  @default(false) @map("default_selected")
   useForVerification      Boolean  @default(false) @map("use_for_verification")
   expectedText            String?  @map("expected_text")
-  matchType               String?  @map("match_type")
+  /// Legacy archive; ignored by verification and excluded from generated client.
+  matchType               String?  @map("match_type") @ignore
   requiredForVerification Boolean  @default(false) @map("required_for_verification")
   extractionMethod        String   @default("fixed_roi") @map("extraction_method")
   anchorText              String?  @map("anchor_text")
-  regexPattern            String?  @map("regex_pattern")
+  /// Legacy archive; retained to preserve existing database values.
+  regexPattern            String?  @map("regex_pattern") @ignore
   roiPadding              Float?   @map("roi_padding")
   verificationWeight      Float?   @default(1.0) @map("verification_weight")
   imageCategory           String?  @map("image_category")

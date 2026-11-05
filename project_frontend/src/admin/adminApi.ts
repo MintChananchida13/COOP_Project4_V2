@@ -569,7 +569,6 @@ interface ApiTemplateField {
   default_selected: boolean;
   use_for_verification: boolean;
   expected_text?: string | null;
-  match_type?: string | null;
   required_for_verification: boolean;
   extraction_method: string;
   roi_mode?: "fix" | "flexible" | null;
@@ -1389,7 +1388,6 @@ const mapApiTemplateField = (field: ApiTemplateField): TemplateField => {
     defaultSelected: field.default_selected,
     useForVerification: field.use_for_verification,
     expectedText: field.expected_text || undefined,
-    matchType: field.match_type || undefined,
     requiredForVerification: field.required_for_verification,
     extractionMethod: normalizeExtractionMethod(field.extraction_method),
     roiMode: field.roi_mode === "flexible" ? "flexible" : "fix",
@@ -2930,7 +2928,6 @@ const templateFieldToVerificationTestPayload = (field: TemplateField) => ({
   default_selected: field.defaultSelected ?? false,
   use_for_verification: true,
   expected_text: field.expectedText,
-  match_type: field.matchType,
   required_for_verification: field.requiredForVerification ?? false,
   extraction_method: normalizeExtractionMethod(field.extractionMethod),
   roi_mode: field.roiMode === "flexible" ? "flexible" : "fix",
@@ -3048,7 +3045,6 @@ const fieldToApiPayload = (
   default_selected: field.defaultSelected ?? true,
   use_for_verification: field.useForVerification ?? false,
   expected_text: field.expectedText,
-  match_type: field.matchType,
   required_for_verification: field.requiredForVerification ?? false,
   extraction_method: normalizeExtractionMethod(field.extractionMethod),
   roi_mode: field.roiMode === "flexible" ? "flexible" : "fix",
@@ -3083,7 +3079,6 @@ export const updateTemplateFieldApi = async (templateId: string, fieldId: string
     default_selected: patch.defaultSelected,
     use_for_verification: patch.useForVerification,
     expected_text: patch.expectedText,
-    match_type: patch.matchType,
     required_for_verification: patch.requiredForVerification,
     extraction_method: patch.extractionMethod ? normalizeExtractionMethod(patch.extractionMethod) : undefined,
     roi_mode: patch.roiMode,

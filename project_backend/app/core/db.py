@@ -684,6 +684,7 @@ _POSTGRES_SCHEMA = [
         required BOOLEAN NOT NULL DEFAULT FALSE,
         weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
         expected_text TEXT,
+        -- Legacy archive only; text verification always uses normalized Levenshtein.
         match_type TEXT,
         regex_pattern TEXT,
         image_category_id TEXT REFERENCES image_verification_categories(id) ON DELETE SET NULL,

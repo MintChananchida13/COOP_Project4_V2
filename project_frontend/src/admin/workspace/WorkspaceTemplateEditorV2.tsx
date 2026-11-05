@@ -593,7 +593,6 @@ export default function WorkspaceTemplateEditorV2({
             roiPadding: 0,
             verificationWeight: 1,
             expectedText: "",
-            matchType: "contains",
           });
           setSelectedId(stableNumericId(`anchor:${optimisticFieldId}`));
         } else if (mode === "ignore_regions") {

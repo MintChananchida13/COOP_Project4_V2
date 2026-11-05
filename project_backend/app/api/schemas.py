@@ -288,13 +288,11 @@ class TemplateFieldCreate(BaseModel):
     default_selected: bool = False
     use_for_verification: bool = False
     expected_text: Optional[str] = None
-    match_type: Optional[str] = None
     required_for_verification: bool = False
     extraction_method: str = "fixed_roi"
     roi_mode: str = Field(default="fix", validation_alias=AliasChoices("roi_mode", "roiMode"))
     expected_content: Optional[str] = Field(default=None, validation_alias=AliasChoices("expected_content", "expectedContent"))
     anchor_text: Optional[str] = None
-    regex_pattern: Optional[str] = None
     roi_padding: Optional[float] = None
     verification_weight: Optional[float] = Field(default=1.0, ge=0)
     image_category: Optional[str] = None
@@ -312,13 +310,11 @@ class TemplateFieldUpdate(BaseModel):
     default_selected: Optional[bool] = None
     use_for_verification: Optional[bool] = None
     expected_text: Optional[str] = None
-    match_type: Optional[str] = None
     required_for_verification: Optional[bool] = None
     extraction_method: Optional[str] = None
     roi_mode: Optional[str] = Field(default=None, validation_alias=AliasChoices("roi_mode", "roiMode"))
     expected_content: Optional[str] = Field(default=None, validation_alias=AliasChoices("expected_content", "expectedContent"))
     anchor_text: Optional[str] = None
-    regex_pattern: Optional[str] = None
     roi_padding: Optional[float] = None
     verification_weight: Optional[float] = Field(default=None, ge=0)
     image_category: Optional[str] = None

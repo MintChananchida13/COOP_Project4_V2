@@ -1063,7 +1063,6 @@ def _load_anchor_strategy_templates(anchor_types: Optional[set[str]] = None, req
                 va.anchor_name AS field_name,
                 va.anchor_name AS display_label,
                 va.expected_text,
-                va.match_type,
                 va.required AS required_for_verification,
                 va.weight AS verification_weight,
                 va.roi_x_ratio,
@@ -1143,7 +1142,6 @@ def _load_anchor_strategy_templates(anchor_types: Optional[set[str]] = None, req
                 "data_type": row["data_type"],
                 "image_category": row["image_category"],
                 "expected_text": row["expected_text"],
-                "match_type": row["match_type"],
                 "required_for_verification": bool(row["required_for_verification"]),
                 "verification_weight": row["verification_weight"],
             }

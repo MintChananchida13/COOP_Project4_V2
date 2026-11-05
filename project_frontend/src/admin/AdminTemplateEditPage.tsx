@@ -585,7 +585,6 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
       defaultSelected: defaults?.defaultSelected ?? true,
       useForVerification: defaults?.useForVerification ?? false,
       expectedText: defaults?.expectedText || "",
-      matchType: defaults?.matchType || "",
       requiredForVerification: defaults?.requiredForVerification ?? false,
       extractionMethod:
         defaults?.extractionMethod ||
@@ -746,7 +745,6 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
         defaultSelected: defaults.defaultSelected ?? true,
         useForVerification: false,
         expectedText: "",
-        matchType: "",
         requiredForVerification: false,
         extractionMethod:
           defaults.extractionMethod ||
@@ -794,7 +792,6 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
           defaultSelected: defaults.defaultSelected ?? true,
           useForVerification: false,
           expectedText: "",
-          matchType: "",
           requiredForVerification: false,
           extractionMethod:
             defaults.extractionMethod ||

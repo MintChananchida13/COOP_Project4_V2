@@ -216,12 +216,12 @@ const readPrepublishValue = (record: Record<string, unknown>, keys: string[]) =>
 };
 
 const isImageVerificationRecord = (record: Record<string, unknown>) => {
-  const typeText = String(readPrepublishValue(record, ["anchor_type", "verification_method", "match_type", "type"]) || "").toLowerCase();
+  const typeText = String(readPrepublishValue(record, ["anchor_type", "verification_method", "type"]) || "").toLowerCase();
   return typeText.includes("image");
 };
 
 const prepublishAnchorType = (record: Record<string, unknown>) =>
-  String(readPrepublishValue(record, ["anchor_type", "type", "verification_method", "match_type"]) || "").toLowerCase();
+  String(readPrepublishValue(record, ["anchor_type", "type", "verification_method"]) || "").toLowerCase();
 
 const candidateHasAnchorType = (candidate: PrepublishCandidate, anchorType: "text" | "image") =>
   (candidate.verificationDetails || []).some((detail) => prepublishAnchorType(detail) === anchorType);
@@ -499,7 +499,7 @@ function DraftCandidateCard({
                             {String(readPrepublishValue(detail, ["field_name", "anchor_name", "name", "display_label"]) || `Anchor ${index + 1}`)}
                           </td>
                           <td className="px-3 py-2 font-semibold text-slate-600">
-                            {String(readPrepublishValue(detail, ["anchor_type", "verification_method", "match_type"]) || "verification")}
+                            {String(readPrepublishValue(detail, ["anchor_type", "verification_method"]) || "verification")}
                           </td>
                           <td className="px-3 py-2 font-black text-slate-900">
                             {formatPrepublishScore(readVerificationRecordScore(detail))}
@@ -532,7 +532,7 @@ function DraftCandidateCard({
                       {String(readPrepublishValue(detail, ["field_name", "anchor_name", "name", "display_label"]) || `Detail ${index + 1}`)}
                     </div>
                     <div className="mt-1 flex flex-wrap gap-2 text-[10px]">
-                      <span>{String(readPrepublishValue(detail, ["anchor_type", "verification_method", "match_type"]) || "verification")}</span>
+                      <span>{String(readPrepublishValue(detail, ["anchor_type", "verification_method"]) || "verification")}</span>
                       <span>Score {formatPrepublishScore(readVerificationRecordScore(detail))}</span>
                       <span>Weight {String(readPrepublishValue(detail, ["weight", "verification_weight"]) || "N/A")}</span>
                       <span>{String(readPrepublishValue(detail, ["status", "decision", "failure_reason"]) || "N/A")}</span>

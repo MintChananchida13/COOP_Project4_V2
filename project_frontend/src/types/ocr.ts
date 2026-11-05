@@ -219,7 +219,6 @@ export interface TemplateField {
   defaultSelected: boolean;
   useForVerification: boolean;
   expectedText?: string;
-  matchType?: string;
   requiredForVerification: boolean;
   extractionMethod: string;
   roiMode?: 'fix' | 'flexible';
