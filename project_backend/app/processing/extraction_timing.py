@@ -17,12 +17,19 @@ def call(stage, function, *args, **kwargs):
     if stage == 'fixed_text_batch':
         kwargs.setdefault('timing', {})
     started = time.perf_counter()
+    result = None
     try:
-        return function(*args, **kwargs)
+        result = function(*args, **kwargs)
+        return result
     finally:
         item = state['stages'].setdefault(stage, {'elapsed_ms': 0.0, 'count': 0})
         item['elapsed_ms'] += (time.perf_counter() - started) * 1000
         item['count'] += 1
+        if stage == 'table_roi' and isinstance(result, dict):
+            phases = (result.get('table_debug') or {}).get('post_processing_timing') or {}
+            for key, value in phases.items():
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    item[key] = item.get(key, 0.0) + value
         if stage == 'fixed_text_batch':
             measurements = kwargs.get('timing') or {}
             state['ocr_counts'] = {key: measurements.get(key) for key in (

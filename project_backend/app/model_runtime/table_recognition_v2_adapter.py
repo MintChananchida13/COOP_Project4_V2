@@ -2662,6 +2662,11 @@ def _collect_dicts(value: Any) -> List[Dict[str, Any]]:
     if isinstance(value, (list, tuple)):
         rows: List[Dict[str, Any]] = []
         for item in value:
+            # Raw model outputs may contain millions of pixel/coordinate values.
+            # Scalars cannot contribute dictionaries, so avoid recursive calls
+            # and attribute probing for every individual number.
+            if item is None or isinstance(item, (str, int, float, bool, np.generic)):
+                continue
             rows.extend(_collect_dicts(item))
         return rows
     item = _as_dict(value)
@@ -2824,13 +2829,12 @@ def _fallback_result_from_remote_output(
             "raw_result_count": len(_collect_dicts(output)),
             "elapsed_seconds": round(time.perf_counter() - started, 3),
         },
-        "raw_results": _json_safe(_collect_dicts(output)),
     }
 
 
-def _table_result_candidates(output: Any) -> List[Dict[str, Any]]:
+def _table_result_candidates(output: Any, collected: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     candidates: List[Dict[str, Any]] = []
-    for item in _collect_dicts(output):
+    for item in collected if collected is not None else _collect_dicts(output):
         table_res_list = item.get("table_res_list")
         if isinstance(table_res_list, list):
             candidates.extend(table for table in table_res_list if isinstance(table, dict))
@@ -2883,10 +2887,14 @@ def _write_temp_image(image: np.ndarray) -> tuple[Optional[Path], bool]:
 
 
 def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, started: float) -> Dict[str, Any]:
+    post_started = time.perf_counter()
     height, width = image.shape[:2]
-    raw_result_count = len(_collect_dicts(output))
+    scan_started = time.perf_counter()
+    collected = _collect_dicts(output)
+    scan_ms = (time.perf_counter() - scan_started) * 1000
+    raw_result_count = len(collected)
     last_error: Optional[str] = None
-    for table_result in _table_result_candidates(output):
+    for table_result in _table_result_candidates(output, collected):
         cell_boxes = table_result.get("cell_box_list") or []
         if not isinstance(cell_boxes, list) or not cell_boxes:
             continue
@@ -2894,6 +2902,7 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
         if not recognized_items:
             continue
 
+        rules_started = time.perf_counter()
         try:
             cells, table_html = reconstruct_table_from_ocr(
                 cell_boxes,
@@ -2906,6 +2915,8 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
             logger.info("embedded table rules failed: %s", error)
             continue
 
+        rules_ms = (time.perf_counter() - rules_started) * 1000
+        format_started = time.perf_counter()
         backend_cells = _backend_cells(cells)
         rows = _rows_from_html(table_html)
         structured = _structured_from_cells(rows, backend_cells)
@@ -2924,6 +2935,12 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
             "column_count": max((len(row) for row in rows), default=0),
             "raw_result_count": raw_result_count,
             "elapsed_seconds": round(time.perf_counter() - started, 3),
+            "post_processing_timing": {
+                "output_scan_ms": round(scan_ms, 2),
+                "structure_rules_ms": round(rules_ms, 2),
+                "format_results_ms": round((time.perf_counter() - format_started) * 1000, 2),
+                "total_ms": round((time.perf_counter() - post_started) * 1000, 2),
+            },
             "central_rules": {
                 "source": "embedded_table_rules",
                 "cell_box_count": len(cell_boxes),
@@ -2946,7 +2963,6 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
             "table_structured": structured,
             "table_selected_method": "embedded_table_rules",
             "table_debug": debug,
-            "raw_results": _json_safe(_collect_dicts(output)),
         }
 
     reason = (
@@ -2971,10 +2987,13 @@ def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
             "table_debug": {"status": "empty_image", "runtime_called": True},
         }
     runtime_timing: Dict[str, Any] = {}
+    remote_started = time.perf_counter()
     output = _predict_table_model(image, timing=runtime_timing)
+    remote_ms = (time.perf_counter() - remote_started) * 1000
     result = _reconstruct_with_test_structure_rules(output, image, started)
     table_debug = result.get("table_debug")
     if isinstance(table_debug, dict):
+        table_debug.setdefault("post_processing_timing", {})["remote_call_ms"] = round(remote_ms, 2)
         table_debug["runtime_client"] = runtime_timing
         gateway_timing = runtime_timing.get("gateway_timing")
         if isinstance(gateway_timing, dict):

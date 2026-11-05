@@ -49,6 +49,11 @@ openpyxl (`benchmark/requirements.txt`). No additional packages are required.
 `auto_roi_setup_ms`, `auto_roi_page_count` and `auto_roi_region_count` describe
 preparation. Its layout calls are excluded from OCR Model Calls and OCR wall time.
 
+After the Table optimization, `table_roi` rows in OCR Stages also include
+`remote_call_ms`, `output_scan_ms`, `structure_rules_ms`, `format_results_ms` and
+`total_ms` when reported. They are nested measurements, not additional elapsed
+time. They separate adapter/Gateway work from local table reconstruction.
+
 Timing fields remain blank when not measured; a missing Gateway inference is not
 zero. `TIMING_INCOMPLETE` means OCR completed but the Frontend/Backend extraction
 capture is absent; update both services. A missing inference alone is documented
