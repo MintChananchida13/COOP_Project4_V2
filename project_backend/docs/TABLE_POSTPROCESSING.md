@@ -32,3 +32,47 @@ the live improvement must be measured by rerunning the same OCR benchmark.
 
 The existing report also routed Demo 2 to Table despite the document having no
 table. That is a separate Auto ROI classification issue and is not changed here.
+
+## Remote timing and OCR correctness audit
+
+`remote_call_ms` wraps `_predict_table_model`, before reconstruction starts.
+`http_request_ms` starts just before urlopen and ends after response read/decode.
+Remote-minus-HTTP therefore includes encoding, request JSON, response JSON,
+validation and client diagnostics. It cannot be labeled model inference or
+reconstruction. In the reported sample, 17790.66 - 7803.54 = 9987.12 ms is
+unattributed non-HTTP time until the additional phases are recorded.
+
+Table field-size diagnostics previously called json.dumps over nested raw output
+at several levels. They now record shallow type/count metadata without computing
+serialized sizes (`bytes=null`, `field_size_measurement=metadata_only`). Other
+runtime kinds keep the original sizing. Actual payload/response byte counts remain
+measured. The model timing summary exports encode/parse/diagnostic/client spans;
+read/decode, queue and inference are nested spans and must not be summed with HTTP.
+Missing Gateway inference/queue stays unknown. Calls are deduplicated by call ID.
+
+A synthetic replay of an identical 3,961,305-byte response, with mocked HTTP and
+600 x 600 RGB raw pixels (median of 3), measured client time 266.12 -> 69.81 ms and
+field-sizing overhead 194.68 -> 0.02 ms. Returned output was identical and call
+count remained one. This does not establish the exact deployed cause of all
+9987.12 ms; rerun the real document to measure the new phase fields.
+
+`raw_result_count` counts nested dictionaries, not OCR detections. The additional
+`raw_result_count_kind` makes that explicit. `recognized_item_count` is rec_texts
+length. A regression fixture demonstrates 43 dictionaries and 33 OCR tokens with
+all 33 retained. Their difference alone does not imply ten dropped OCR tokens.
+
+Nested rec_polys ([[x,y], ...]) are now accepted by bbox conversion; individual
+invalid/missing rec_boxes can fall back to rec_polys at the same index, preserving
+text/score alignment. Table formatting preserves literal normalized text instead
+of applying generic noise cleanup to rows, cells or Markdown. Non-table OCR is
+unchanged. No extra detection/recognition or runtime calls are introduced.
+
+`table_debug.ocr_mapping_audit` records each source token's index/text/score/bbox
+and its assigned row/column, including unassigned tokens. Compare this with each
+cell's existing recognizedItems to distinguish raw recognition errors from cell
+mapping/formatting. Prefixes such as `9เอกสารข้อความ`, `99Oทดสอบ` and suffixes such
+as `นตารางข้อมูลa` are never guessed away. If already present in a raw OCR token,
+their spelling cannot be corrected reliably by geometry-only reconstruction.
+The latest deployed raw result was unavailable during this change, so its exact
+token-level cause remains unconfirmed. Trace data is returned with the existing
+debug object, not added to timing logs/workbooks.

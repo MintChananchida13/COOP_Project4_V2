@@ -53,6 +53,13 @@ After the Table optimization, `table_roi` rows in OCR Stages also include
 `remote_call_ms`, `output_scan_ms`, `structure_rules_ms`, `format_results_ms` and
 `total_ms` when reported. They are nested measurements, not additional elapsed
 time. They separate adapter/Gateway work from local table reconstruction.
+`remote_non_http_ms`, `image_encode_ms`, `json_serialize_ms`, `json_parse_ms`,
+`response_diagnostics_ms` and `ocr_audit_ms` further identify client overhead.
+HTTP read/decode time is already inside HTTP round-trip time. Queue/inference
+metrics are Gateway-reported subsets, not additive to HTTP wait. Blank Gateway
+values mean unavailable, not zero. Source OCR-to-cell traces remain in the job's
+`extracted_data[].table_debug.ocr_mapping_audit`; the timing workbook deliberately
+does not export OCR content.
 
 Timing fields remain blank when not measured; a missing Gateway inference is not
 zero. `TIMING_INCOMPLETE` means OCR completed but the Frontend/Backend extraction

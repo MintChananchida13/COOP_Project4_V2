@@ -110,7 +110,7 @@ class ExtractionTimingTests(unittest.TestCase):
             crop_opencv_region=lambda *args: image, _save_cropped_roi=save,
             recognize_text_crops_with_detection=batch, process_flexible_text_roi=flex,
             process_roi_with_engine=engine, PaddleThaiOcrUnavailableError=RuntimeError,
-            normalize_ocr_text=lambda text: text or '', without_image_payloads=lambda result: result)
+            normalize_ocr_text=lambda text, **kwargs: text or '', without_image_payloads=lambda result: result)
         exec(compile(ast.Module(body=[function], type_ignores=[]), 'main.py', 'exec'), namespace)
         def roi(index, kind='text', mode='fix'):
             return SimpleNamespace(roiId=index, fieldName=str(index), type=kind, roiMode=mode,

@@ -39,7 +39,7 @@ MODEL_RUNTIME_GATEWAY_PATH: Dict[ModelRuntimeKind, str] = {
     ModelRuntimeKind.LAYOUT: "/paddle/api/v1/document-layouts",
     ModelRuntimeKind.TEXT_DETECTION: "/paddle/api/v1/text-detections?version=v6",
     ModelRuntimeKind.TEXT_RECOGNITION: "/paddle/api/v1/text-recognitions",
-    ModelRuntimeKind.TABLE: "/paddle/api/v1/table-model-results",
+    ModelRuntimeKind.TABLE: "/paddle/api/v1/table-model-results?ocr_version=5&det_model=baseline&rec_model=thai_ft_v3",
     ModelRuntimeKind.IMAGE_VERIFICATION: "/paddle/api/v1/image-verifications",
 }
 
@@ -135,12 +135,14 @@ def _json_size_bytes(value: Any) -> int:
         return 0
 
 
-def _field_size_summary(value: Any, limit: int = 12) -> List[Dict[str, Any]]:
+def _field_size_summary(value: Any, limit: int = 12, *, measure_bytes: bool = True) -> List[Dict[str, Any]]:
     if not isinstance(value, dict):
         return []
     items = []
     for key, field_value in value.items():
-        size_bytes = _json_size_bytes(field_value)
+        # Table raw output can contain full pixel arrays. Diagnostic sizing must
+        # not re-serialize those arrays at each nested response level.
+        size_bytes = _json_size_bytes(field_value) if measure_bytes else None
         item: Dict[str, Any] = {
             "field": str(key),
             "bytes": size_bytes,
@@ -301,6 +303,7 @@ def _post_predict(
     )
 
     if timing is not None:
+        diagnostics_started = time.perf_counter()
         result_value = parsed.get("result")
         if result_value is None and "data" in parsed:
             result_value = parsed.get("data")
@@ -310,22 +313,25 @@ def _post_predict(
         if isinstance(gateway_timing, dict):
             timing["gateway_timing"] = gateway_timing
 
-        timing["response_field_sizes"] = _field_size_summary(parsed)
+        measure_bytes = kind != ModelRuntimeKind.TABLE
+        timing["field_size_measurement"] = "serialized_bytes" if measure_bytes else "metadata_only"
+        timing["response_field_sizes"] = _field_size_summary(parsed, measure_bytes=measure_bytes)
 
         if isinstance(result_value, dict):
-            timing["result_field_sizes"] = _field_size_summary(result_value)
+            timing["result_field_sizes"] = _field_size_summary(result_value, measure_bytes=measure_bytes)
             raw_value = result_value.get("raw")
             if isinstance(raw_value, dict):
-                timing["raw_field_sizes"] = _field_size_summary(raw_value)
+                timing["raw_field_sizes"] = _field_size_summary(raw_value, measure_bytes=measure_bytes)
                 layout_items = raw_value.get("layout")
                 if (
                     isinstance(layout_items, list)
                     and layout_items
                     and isinstance(layout_items[0], dict)
                 ):
-                    timing["layout_item_field_sizes"] = _field_size_summary(layout_items[0])
+                    timing["layout_item_field_sizes"] = _field_size_summary(layout_items[0], measure_bytes=measure_bytes)
 
         timing["model"] = runtime_model
+        timing["response_diagnostics_ms"] = round((time.perf_counter() - diagnostics_started) * 1000.0, 2)
         timing["total_runtime_client_ms"] = round(
             (time.perf_counter() - started) * 1000.0, 2
         )
@@ -427,9 +433,13 @@ def remote_recognize_table_raw(image: np.ndarray, timing: Optional[Dict[str, Any
     if not is_runtime_configured(ModelRuntimeKind.TABLE):
         return None
 
+    encode_started = time.perf_counter()
+    image_data_url = _image_to_data_url(image)
+    if timing is not None:
+        timing["image_encode_ms"] = round((time.perf_counter() - encode_started) * 1000.0, 2)
     return _post_predict(
         ModelRuntimeKind.TABLE,
-        {"image": _image_to_data_url(image)},
+        {"image": image_data_url},
         timeout=240.0,
         timing=timing,
     )

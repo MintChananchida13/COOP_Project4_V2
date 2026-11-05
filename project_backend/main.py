@@ -1371,7 +1371,8 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
                 ocr_result = extraction_timing.call(f"{pipeline_type}_roi", process_roi_with_engine, crop_img, roi)
             else:
                 ocr_result = extraction_timing.call(f"{pipeline_type}_roi", process_roi_with_engine, crop_img, roi)
-            extracted_text = normalize_ocr_text(ocr_result.get("text"))
+            extracted_text = (normalize_ocr_text(ocr_result.get("text"), cleanup_noise=False)
+                              if pipeline_type == "table" else normalize_ocr_text(ocr_result.get("text")))
             confidence_score = float(ocr_result.get("confidence") or 0.0)
             if not extracted_text and (roi.type or "").lower() != "image":
                 extracted_text = "(ไม่พบข้อความในพื้นที่ที่กำหนด)"

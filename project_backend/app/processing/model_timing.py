@@ -142,6 +142,11 @@ def summarize_model_calls(value: Any) -> dict[str, Any]:
                 "model_timings": (call.get("gateway_timing") or {}).get("model_timings"),
                 "conflicting_record": call.get("conflicting_record", False),
                 "http_request_ms": call.get("http_request_ms"),
+                **{key: call.get(key) for key in (
+                    "image_encode_ms", "json_serialize_ms", "response_read_ms", "response_decode_ms",
+                    "json_parse_ms", "response_diagnostics_ms", "total_runtime_client_ms",
+                    "payload_bytes", "response_bytes", "field_size_measurement",
+                )},
                 "model_load_ms": (call.get("gateway_timing") or {}).get("model_load_ms"),
                 "queue_wait_ms": (call.get("gateway_timing") or {}).get("queue_wait_ms"),
                 "inference_lock_wait_ms": (call.get("gateway_timing") or {}).get("inference_lock_wait_ms"),

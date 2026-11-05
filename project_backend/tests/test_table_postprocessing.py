@@ -71,6 +71,65 @@ class TablePostprocessingTests(unittest.TestCase):
         self.assertEqual(stage['structure_rules_ms'], 6)
         self.assertEqual(stage['remote_call_ms'], 14)
 
+    def test_nested_recognition_polygons_keep_bbox_text_index_alignment(self):
+        polygon = [[104, 4], [190, 4], [190, 30], [104, 30]]
+        items = table.extract_recognized_items({'table_ocr_pred': {
+            'rec_boxes': [[4, 4, 90, 30], None], 'rec_polys': [None, polygon],
+            'rec_texts': ['first', 'second'], 'rec_scores': [.8, .9]}})
+        self.assertEqual(table.box_from_values(items[1]['bbox']), [104, 4, 190, 30])
+        self.assertEqual(items[1]['text'], 'second')
+        self.assertEqual(items[1]['score'], .9)
+        self.assertIsNone(table.box_from_values([[0], None, [2], [3]]))
+
+    def test_table_polygons_are_mapped_without_losing_text(self):
+        output = self.output()
+        ocr = output['table_res_list'][0]['table_ocr_pred']
+        boxes = ocr.pop('rec_boxes')
+        ocr['rec_polys'] = [[[x, y], [right, y], [right, bottom], [x, bottom]]
+                            for x, y, right, bottom in boxes]
+        result = table._reconstruct_with_test_structure_rules(output, np.zeros((80, 200, 3), dtype=np.uint8), time.perf_counter())
+        self.assertEqual(result['table_rows'], [['Name', 'Value'], ['Example', '123']])
+        self.assertEqual(result['table_debug']['ocr_mapping_audit']['unassigned_source_count'], 0)
+
+    def test_literal_ocr_noise_and_real_single_letters_are_preserved_and_traced(self):
+        output = self.output()
+        texts = ['9เอกสารข้อความ', '99Oทดสอบ', 'นตารางข้อมูลa', 'ข้อความ a 9']
+        output['table_res_list'][0]['table_ocr_pred']['rec_texts'] = texts
+        result = table._reconstruct_with_test_structure_rules(output, np.zeros((80, 200, 3), dtype=np.uint8), time.perf_counter())
+        self.assertEqual(result['table_rows'], [texts[:2], texts[2:]])
+        self.assertEqual([item['text'] for item in result['table_debug']['ocr_mapping_audit']['items']], texts)
+        self.assertTrue(all(item['assigned_cells'] for item in result['table_debug']['ocr_mapping_audit']['items']))
+        self.assertIn('ข้อความ a 9', result['text'])
+        self.assertEqual(result['table_structured']['cells'][-1]['text'], texts[-1])
+
+    def test_unmapped_text_is_visible_in_audit_without_deleting_source(self):
+        items = [{'text': 'real data', 'bbox': [1, 2, 3, 4], 'score': .8}]
+        original = copy.deepcopy(items)
+        audit = table._ocr_mapping_audit(items, [])
+        self.assertEqual(audit['unassigned_source_count'], 1)
+        self.assertEqual(items, original)
+
+    def test_dictionary_count_is_not_recognition_count(self):
+        output = self.output()
+        # Root + table + table_ocr_pred + 40 metadata dictionaries = 43.
+        output.pop('input_img')
+        output['metadata'] = [{} for _ in range(40)]
+        boxes, text_boxes, texts = [], [], []
+        for row in range(11):
+            for col in range(3):
+                x, y = col * 100, row * 40
+                boxes.append([x, y, x + 100, y + 40])
+                text_boxes.append([x + 4, y + 4, x + 90, y + 30])
+                texts.append(f'{row}-{col}')
+        table_result = output['table_res_list'][0]
+        table_result['cell_box_list'] = boxes
+        table_result['table_ocr_pred'] = {'rec_boxes': text_boxes, 'rec_texts': texts, 'rec_scores': [.9] * 33}
+        result = table._reconstruct_with_test_structure_rules(output, np.zeros((440, 300, 3), dtype=np.uint8), time.perf_counter())
+        self.assertEqual(result['table_debug']['raw_result_count'], 43)
+        self.assertEqual(result['table_debug']['central_rules']['recognized_item_count'], 33)
+        self.assertEqual(result['table_debug']['raw_result_count_kind'], 'nested_dictionary_count')
+        self.assertEqual(result['table_debug']['ocr_mapping_audit']['source_ocr_count'], 33)
+
 
 if __name__ == '__main__':
     unittest.main()

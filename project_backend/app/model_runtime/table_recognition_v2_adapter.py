@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 import cv2
 import numpy as np
 
-from app.processing.ocr_postprocess import normalize_ocr_text, normalize_table_rows
+from app.processing.ocr_postprocess import normalize_ocr_text
 from app.core.model_runtime_client import (
     ModelRuntimeKind,
     ModelRuntimeUnavailableError,
@@ -61,10 +61,14 @@ STRUCTURE_RULES = TableStructureRules()
 
 
 def box_from_values(values: Any) -> list[float] | None:
+    if isinstance(values, np.ndarray):
+        values = values.tolist()
     if not isinstance(values, (list, tuple)) or len(values) < 4:
         return None
 
     try:
+        if isinstance(values[0], (list, tuple)):
+            values = [coordinate for point in values for coordinate in point[:2]]
         numbers = [float(value) for value in values]
     except (TypeError, ValueError):
         return None
@@ -272,15 +276,19 @@ def map_ocr_to_cells(
 
 def extract_recognized_items(table_result: dict[str, Any]) -> list[dict[str, Any]]:
     ocr_result = table_result.get("table_ocr_pred") or {}
-    boxes = ocr_result.get("rec_boxes") or ocr_result.get("rec_polys") or []
+    boxes = ocr_result.get("rec_boxes") or []
+    polygons = ocr_result.get("rec_polys") or []
     texts = ocr_result.get("rec_texts") or []
     scores = ocr_result.get("rec_scores") or []
 
     items = []
     for index, text in enumerate(texts):
+        box = boxes[index] if index < len(boxes) else None
+        if box_from_values(box) is None and index < len(polygons):
+            box = polygons[index]
         items.append(
             {
-                "bbox": boxes[index] if index < len(boxes) else None,
+                "bbox": box,
                 "text": text,
                 "score": scores[index] if index < len(scores) else None,
             }
@@ -2700,6 +2708,14 @@ class _TableHtmlParser(HTMLParser):
             self._row = None
 
 
+def _normalize_table_rows(rows: List[List[Any]]) -> List[List[str]]:
+    # Keep literal OCR content. Generic noise cleanup can remove real single
+    # letters/digits in tables; table correctness must not rely on such rules.
+    normalized = [[normalize_ocr_text(cell, cleanup_noise=False) for cell in row] for row in rows]
+    width = max((len(row) for row in normalized), default=0)
+    return [row + [""] * (width - len(row)) for row in normalized]
+
+
 def _rows_from_html(table_html: str) -> List[List[str]]:
     parser = _TableHtmlParser()
     try:
@@ -2707,11 +2723,11 @@ def _rows_from_html(table_html: str) -> List[List[str]]:
         parser.close()
     except Exception:
         return []
-    return normalize_table_rows(parser.rows)
+    return _normalize_table_rows(parser.rows)
 
 
 def _markdown_table(rows: List[List[str]]) -> str:
-    rows = normalize_table_rows(rows)
+    rows = _normalize_table_rows(rows)
     if not rows:
         return ""
     column_count = max(len(row) for row in rows)
@@ -2738,7 +2754,7 @@ def _backend_cells(cells: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for cell in cells:
         if not isinstance(cell, dict):
             continue
-        text = normalize_ocr_text(cell.get("text") or "")
+        text = normalize_ocr_text(cell.get("text") or "", cleanup_noise=False)
         next_cell: Dict[str, Any] = {
             "row": int(cell.get("row_index", cell.get("row", 0)) or 0),
             "col": int(cell.get("column_index", cell.get("col", 0)) or 0),
@@ -2760,8 +2776,31 @@ def _backend_cells(cells: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return result
 
 
+def _ocr_mapping_audit(items: List[Dict[str, Any]], cells: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Trace source tokens to cells without changing, removing or re-recognizing text."""
+    assignments: Dict[Any, List[Dict[str, int]]] = {}
+    for cell in cells:
+        for item in cell.get("recognizedItems") or []:
+            box = box_from_values(item.get("bbox"))
+            if box is None:
+                continue
+            key = (tuple(round(value, 2) for value in box), str(item.get("text", "")).strip())
+            assignments.setdefault(key, []).append({"row": cell["row"], "col": cell["col"]})
+    source_items = []
+    for index, item in enumerate(items):
+        box = box_from_values(item.get("bbox"))
+        raw_text = str(item.get("text", ""))
+        key = (tuple(round(value, 2) for value in box), raw_text.strip()) if box else None
+        source_items.append({"source_index": index, "text": raw_text, "score": item.get("score"),
+            "bbox": box, "assigned_cells": assignments.get(key, [])})
+    return {"source_ocr_count": len(items),
+            "valid_bbox_count": sum(item["bbox"] is not None for item in source_items),
+            "unassigned_source_count": sum(not item["assigned_cells"] for item in source_items),
+            "items": source_items}
+
+
 def _structured_from_cells(rows: List[List[str]], cells: List[Dict[str, Any]]) -> Dict[str, Any]:
-    rows = normalize_table_rows(rows)
+    rows = _normalize_table_rows(rows)
     column_count = max((len(row) for row in rows), default=0)
     normalized_rows = [row + [""] * (column_count - len(row)) for row in rows]
     return {
@@ -2791,7 +2830,7 @@ def _extract_table_rows(output: Any, table_html: str = "") -> List[List[str]]:
         for key in ("rows", "table_rows", "tableCells"):
             value = item.get(key)
             if isinstance(value, list) and value and all(isinstance(row, list) for row in value):
-                return normalize_table_rows([[normalize_ocr_text(cell) for cell in row] for row in value])
+                return _normalize_table_rows(value)
     return _rows_from_html(table_html)
 
 
@@ -2827,6 +2866,7 @@ def _fallback_result_from_remote_output(
             "row_count": len(rows),
             "column_count": max((len(row) for row in rows), default=0),
             "raw_result_count": len(_collect_dicts(output)),
+            "raw_result_count_kind": "nested_dictionary_count",
             "elapsed_seconds": round(time.perf_counter() - started, 3),
         },
     }
@@ -2920,6 +2960,11 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
         backend_cells = _backend_cells(cells)
         rows = _rows_from_html(table_html)
         structured = _structured_from_cells(rows, backend_cells)
+        text = _markdown_table(rows)
+        format_ms = (time.perf_counter() - format_started) * 1000
+        audit_started = time.perf_counter()
+        ocr_audit = _ocr_mapping_audit(recognized_items, backend_cells)
+        audit_ms = (time.perf_counter() - audit_started) * 1000
         confidence_values = [
             float(item.get("score"))
             for item in recognized_items
@@ -2934,11 +2979,14 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
             "row_count": len(rows),
             "column_count": max((len(row) for row in rows), default=0),
             "raw_result_count": raw_result_count,
+            "raw_result_count_kind": "nested_dictionary_count",
+            "ocr_mapping_audit": ocr_audit,
             "elapsed_seconds": round(time.perf_counter() - started, 3),
             "post_processing_timing": {
                 "output_scan_ms": round(scan_ms, 2),
                 "structure_rules_ms": round(rules_ms, 2),
-                "format_results_ms": round((time.perf_counter() - format_started) * 1000, 2),
+                "format_results_ms": round(format_ms, 2),
+                "ocr_audit_ms": round(audit_ms, 2),
                 "total_ms": round((time.perf_counter() - post_started) * 1000, 2),
             },
             "central_rules": {
@@ -2951,7 +2999,7 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
             "adapter_rule_source": "embedded_table_rules",
         }
         return {
-            "text": _markdown_table(rows),
+            "text": text,
             "confidence": sum(confidence_values) / len(confidence_values) if confidence_values else 0.0,
             "segments": [],
             "attempts": [{"step": "embedded_table_rules_reconstruction"}],
@@ -2993,7 +3041,12 @@ def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
     result = _reconstruct_with_test_structure_rules(output, image, started)
     table_debug = result.get("table_debug")
     if isinstance(table_debug, dict):
-        table_debug.setdefault("post_processing_timing", {})["remote_call_ms"] = round(remote_ms, 2)
+        phases = table_debug.setdefault("post_processing_timing", {})
+        phases["remote_call_ms"] = round(remote_ms, 2)
+        http_ms = runtime_timing.get("http_request_ms")
+        phases["remote_non_http_ms"] = round(max(0, remote_ms - http_ms), 2) if isinstance(http_ms, (int, float)) else None
+        for key in ("image_encode_ms", "json_serialize_ms", "json_parse_ms", "response_diagnostics_ms"):
+            phases[key] = runtime_timing.get(key)
         table_debug["runtime_client"] = runtime_timing
         gateway_timing = runtime_timing.get("gateway_timing")
         if isinstance(gateway_timing, dict):
