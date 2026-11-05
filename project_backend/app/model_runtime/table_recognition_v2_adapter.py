@@ -2660,25 +2660,33 @@ def _as_dict(value: Any) -> Optional[Dict[str, Any]]:
 
 
 def _collect_dicts(value: Any) -> List[Dict[str, Any]]:
-    if value is None:
-        return []
-    if isinstance(value, dict):
-        nested = [value]
-        for item in value.values():
-            nested.extend(_collect_dicts(item))
-        return nested
-    if isinstance(value, (list, tuple)):
-        rows: List[Dict[str, Any]] = []
-        for item in value:
-            # Raw model outputs may contain millions of pixel/coordinate values.
-            # Scalars cannot contribute dictionaries, so avoid recursive calls
-            # and attribute probing for every individual number.
-            if item is None or isinstance(item, (str, int, float, bool, np.generic)):
-                continue
-            rows.extend(_collect_dicts(item))
-        return rows
-    item = _as_dict(value)
-    return [item] if item else []
+    # One accumulator per scan: no temporary result list for every RGB pixel,
+    # numeric row or nested container. Preserve depth-first order and identity.
+    nodes: List[Dict[str, Any]] = []
+    scalar_types = {type(None), str, int, float, bool}
+    container_types = {dict, list, tuple}
+
+    def visit(item: Any) -> None:
+        if type(item) in scalar_types:
+            return
+        if isinstance(item, dict):
+            nodes.append(item)
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                child_type = type(child)
+                if child_type not in scalar_types:
+                    # Match the previous list handling of NumPy scalar values.
+                    if child_type in container_types or not isinstance(child, (str, int, float, bool, np.generic)):
+                        visit(child)
+        else:
+            converted = _as_dict(item)
+            if converted:
+                nodes.append(converted)
+
+    visit(value)
+    return nodes
 
 
 class _TableHtmlParser(HTMLParser):

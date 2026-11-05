@@ -86,3 +86,19 @@ node test_ocr_capture.cjs
 
 The tests cover multiple pages, job mapping, partial failures, missing telemetry,
 Excel export, locked-file recovery, OCR-only capture and isolation of late results.
+
+## Offline Table scan comparison
+
+From the repository root:
+
+```powershell
+python benchmark/table_scan_perf.py --repeats 5
+```
+
+This separate tool compares the original and optimized Output Scan against
+identical JSON. It writes `benchmark/output/table_scan_performance.json`, makes
+no model/network calls, and checks the full Table response except timing fields.
+JSON parsing uses the same standard-library decoder on both sides. Use
+`--response-json PATH --width WIDTH --height HEIGHT` to replay saved unwrapped
+Table API data with the ROI's original dimensions. Its default data is synthetic;
+it does not claim to reproduce deployed HTTP/queue/inference latency.

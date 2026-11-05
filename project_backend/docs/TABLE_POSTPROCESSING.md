@@ -76,3 +76,65 @@ their spelling cannot be corrected reliably by geometry-only reconstruction.
 The latest deployed raw result was unavailable during this change, so its exact
 token-level cause remains unconfirmed. Trace data is returned with the existing
 debug object, not added to timing logs/workbooks.
+
+## Output Scan optimization (no OCR/rule changes)
+
+The latest sample has processing 22363.88 ms, Table ROI 22109.81 ms, HTTP/table
+wait 13399.19 ms, JSON parse 3799.40 ms, scan 2601.16 ms and audit 0.41 ms.
+These spans have the following nesting:
+
+```text
+Processing
+  Table ROI
+    Remote call
+      Image encode / request serialization
+      HTTP (includes response read/decode; Gateway queue/inference if reported)
+      JSON parse
+      Client diagnostics
+    Local post-processing
+      Output Scan
+      embedded_table_rules
+      Format results
+      OCR Mapping Audit
+```
+
+Do not add parent totals to children. HTTP wait is not pure inference or network
+latency. The sample's 254.07 ms Processing-minus-Table-ROI is outside the Table
+ROI span. The available measurements cannot break HTTP into network, queue and
+inference. Those values are not estimated.
+
+The previous scanner allocated a list at each nested container and copied the
+descendant dictionary references back through ancestor lists. It also performed
+the full isinstance chain for each primitive numeric entry. The replacement
+uses a single request-local output accumulator and fast exact-type dispatch for
+JSON scalars; dictionary traversal, candidate order, shared object identity and
+wrapper handling stay the same. No result cache, models or model calls are added.
+
+The JSON parser is intentionally unchanged. The sample proves parsing is costly,
+but replacing it with a different decoder could change numeric/Unicode handling;
+no such change is included. Reading/decode, JSON parse and diagnostics keep their
+existing, separate timing boundaries. OCR content, embedded rules and output
+structure are unchanged in this optimization.
+
+Reproduce an offline comparison from the repository root:
+
+```powershell
+python benchmark/table_scan_perf.py --repeats 5
+```
+
+It can also read saved, unwrapped Table API JSON with `--response-json PATH`
+and the original ROI `--width WIDTH --height HEIGHT`. No HTTP requests occur.
+The default synthetic fixture contains 33 OCR tokens and 600 x 600 RGB numeric
+data (3963445 response bytes). Five alternating, fresh-parse runs measured:
+
+| Median ms | Before | After |
+| --- | ---: | ---: |
+| Output Scan | 157.44 | 82.82 |
+| Entire local post-processing (includes scan) | 174.32 | 99.97 |
+| JSON parse (same parser) | 72.80 | 68.11 |
+
+Parser differences are run-to-run noise, not a parser improvement. All response
+fields except measured timing were equal in the benchmark. Unit tests freeze
+the clock and compare entire reconstruction and fallback responses exactly,
+including debug/audit. These local results are not new measurements of the
+22363.88 ms deployed run; rerun the same document for a live comparison.
