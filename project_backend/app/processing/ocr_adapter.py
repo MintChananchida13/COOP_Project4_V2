@@ -620,9 +620,10 @@ def recognize_text_crop_with_detection(
 
 
 def recognize_text_crops_with_detection(
-    text_items: List[Tuple[str, Any]], source: str = "unknown"
+    text_items: List[Tuple[str, Any]], source: str = "unknown",
+    timing: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Dict[str, Any]]:
-    return _recognize_text_crops_with_detection(text_items, source=source)
+    return _recognize_text_crops_with_detection(text_items, source=source, timing=timing)
 
 
 def recognize_text_roi(

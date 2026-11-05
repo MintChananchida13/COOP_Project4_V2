@@ -11,6 +11,29 @@ from app.processing import extraction_timing
 
 
 class ExtractionTimingTests(unittest.TestCase):
+    def test_real_batch_wrapper_accepts_and_forwards_extraction_timing(self):
+        from unittest.mock import patch
+        from app.processing import ocr_adapter
+
+        crops = [('field', np.ones((5, 5, 3), dtype=np.uint8))]
+        expected = {'field': {'text': 'read successfully', 'confidence': .9}}
+        def recognize(items, source, timing):
+            self.assertIs(items, crops)
+            self.assertEqual(source, 'fixed_text')
+            timing.update(text_detection_batch_size=1, text_recognition_batch_size=1)
+            return expected
+
+        @extraction_timing.measure_processing
+        def process():
+            return {'results': extraction_timing.call('fixed_text_batch',
+                ocr_adapter.recognize_text_crops_with_detection, crops, source='fixed_text')}
+
+        with patch.object(ocr_adapter, '_recognize_text_crops_with_detection', side_effect=recognize) as batch:
+            result = process()
+        self.assertIs(result['results'], expected)
+        batch.assert_called_once()
+        self.assertEqual(result['extraction_timing']['fixed_text_counts']['text_detection_batch_size'], 1)
+
     def runtime(self, call_id):
         @extraction_timing.instrument_runtime
         def runtime(*, timing=None):
