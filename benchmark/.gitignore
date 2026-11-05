@@ -1,5 +1,6 @@
 input/
 output/
 browser-profile/
+ocr-browser-profile/
 __pycache__/
 .venv/

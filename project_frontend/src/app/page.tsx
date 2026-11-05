@@ -1702,12 +1702,35 @@ async function runAiProcessJob(
   if (diagnostics) {
     console.info("[OCR diagnostic] POST /api/ai/process", diagnostics);
   }
+  const startedAt = performance.now();
+  const serializeStartedAt = performance.now();
+  const requestBody = JSON.stringify({ ...payload, async_mode: true });
+  const serializeMs = performance.now() - serializeStartedAt;
+  let pollCount = 0;
+  let pollRequestMs = 0;
+  let pollWaitMs = 0;
+  const reportTiming = (result: Record<string, unknown>, jobId?: string, jobCreateMs?: number) => {
+    console.info("[OCR timing] extraction completed", {
+      ...diagnostics,
+      job_id: jobId,
+      frontend_total_ms: performance.now() - startedAt,
+      request_json_ms: serializeMs,
+      create_request_ms: createRequestMs,
+      backend_job_create_ms: jobCreateMs,
+      poll_count: pollCount,
+      poll_request_ms: pollRequestMs,
+      poll_wait_ms: pollWaitMs,
+      backend: result?.extraction_timing,
+    });
+  };
+  const createStartedAt = performance.now();
   const response = await fetch(`${ADMIN_API_BASE_URL}/api/ai/process`, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ ...payload, async_mode: true }),
+    body: requestBody,
   });
   const created = await response.json();
+  const createRequestMs = performance.now() - createStartedAt;
   if (!response.ok || !created.success) {
     throwIfMaintenanceResponse(created);
     throw new Error(created?.detail || created?.error || "สร้าง OCR Job ไม่สำเร็จ");
@@ -1716,6 +1739,7 @@ async function runAiProcessJob(
     if (diagnostics) {
       console.info("[OCR diagnostic] /api/ai/process completed without job", diagnostics);
     }
+    reportTiming(created);
     return created;
   }
   if (diagnostics) {
@@ -1726,11 +1750,16 @@ async function runAiProcessJob(
   }
 
   for (;;) {
+    const waitStartedAt = performance.now();
     await wait(1000);
+    pollWaitMs += performance.now() - waitStartedAt;
+    const pollStartedAt = performance.now();
+    pollCount += 1;
     const pollResponse = await fetch(`${ADMIN_API_BASE_URL}/api/ai/jobs/${created.job_id}`, {
       headers: authHeaders(),
     });
     const job = await pollResponse.json();
+    pollRequestMs += performance.now() - pollStartedAt;
     if (!pollResponse.ok || !job.success) {
       throw new Error(job?.detail || job?.error || "ตรวจสถานะ OCR Job ไม่สำเร็จ");
     }
@@ -1741,6 +1770,7 @@ async function runAiProcessJob(
           job_id: created.job_id,
         });
       }
+      reportTiming(job.result, created.job_id, created.job_create_ms);
       return job.result;
     }
     if (job.status === "failed") {

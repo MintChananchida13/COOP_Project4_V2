@@ -43,7 +43,7 @@ from app.core.json_utils import jsonb_dump, jsonb_load
 from app.core.model_runtime_client import configured_runtimes
 from app.business.image_verification_category_service import ensure_image_verification_categories_table
 from app.business.services import GlobalSettingsService
-from app.processing import document_aspect, published_template_cache
+from app.processing import document_aspect, published_template_cache, extraction_timing
 from app.processing.search_benchmark_middleware import SearchBenchmarkMiddleware
 
 # Force UTF-8 console output on Windows.
@@ -1209,8 +1209,10 @@ def run_ocr_job(job_id: str) -> None:
             time.perf_counter() - started,
             len(result.get("extracted_data") or []) if isinstance(result, dict) else 0,
         )
+        save_started = time.perf_counter()
         update_ocr_job_status(job_id, "completed", result=result)
-        logger.info("OCR job marked completed: job_id=%s", job_id)
+        logger.info("OCR job marked completed: job_id=%s result_store_ms=%.2f",
+                    job_id, (time.perf_counter() - save_started) * 1000)
     except Exception as error:
         logger.exception("OCR job failed before completion update: job_id=%s", job_id)
         try:
@@ -1221,8 +1223,9 @@ def run_ocr_job(job_id: str) -> None:
         clear_layout_analysis_cache()
 
 
+@extraction_timing.measure_processing
 def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
-    _, opencv_img = decode_base64_image(payload.image)
+    _, opencv_img = extraction_timing.call("image_decode", decode_base64_image, payload.image)
     h_img, w_img = opencv_img.shape[:2]
     results = []
 
@@ -1231,7 +1234,7 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
             temp_path = temp_file.name
         try:
             cv2.imwrite(temp_path, opencv_img)
-            text_detection = detect_text_boxes(temp_path)
+            text_detection = extraction_timing.call("full_page_detection", detect_text_boxes, temp_path)
         finally:
             Path(temp_path).unlink(missing_ok=True)
 
@@ -1246,14 +1249,14 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
 
             crop_img = opencv_img[y : y + h, x : x + w]
             ocr_result = (
-                recognize_text_roi(crop_img, source="full_page_auto_text")
+                extraction_timing.call("full_page_text_roi", recognize_text_roi, crop_img, source="full_page_auto_text")
                 if crop_img.size > 0
                 else {"text": "", "confidence": 0.0, "segments": [], "raw_segments": []}
             )
             text = str(ocr_result.get("text") or "")
             conf = float(ocr_result.get("confidence") or 0.0)
             filename = f"line_{idx + 1}_{uuid.uuid4().hex[:6]}.png"
-            filepath = _save_cropped_roi(filename, crop_img)
+            filepath = extraction_timing.call("crop_save", _save_cropped_roi, filename, crop_img)
 
             results.append(
                 {
@@ -1281,8 +1284,8 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
     else:
         prepared_items: List[Dict[str, Any]] = []
         for idx, roi in enumerate(payload.rois):
-            polygon_crop = crop_opencv_polygon_region(opencv_img, roi.points)
-            crop_img = polygon_crop if polygon_crop is not None else crop_opencv_region(
+            polygon_crop = extraction_timing.call("polygon_crop", crop_opencv_polygon_region, opencv_img, roi.points)
+            crop_img = polygon_crop if polygon_crop is not None else extraction_timing.call("rectangular_crop", crop_opencv_region,
                 opencv_img,
                 int(roi.x),
                 int(roi.y),
@@ -1293,7 +1296,7 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
                 continue
 
             filename = f"{roi.fieldName}_{idx}_{uuid.uuid4().hex[:6]}.png"
-            filepath = _save_cropped_roi(filename, crop_img)
+            filepath = extraction_timing.call("crop_save", _save_cropped_roi, filename, crop_img)
             field_type = (roi.type or "text").lower()
             extraction_method = (roi.extractionMethod or "paddle_thai_ocr").lower()
             if extraction_method == "typhoon_ocr":
@@ -1330,7 +1333,7 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
                 ocr_by_index.update(
                     {
                         int(key): result
-                        for key, result in recognize_text_crops_with_detection(
+                        for key, result in extraction_timing.call("fixed_text_batch", recognize_text_crops_with_detection,
                             text_items, source="fixed_text"
                         ).items()
                     }
@@ -1363,11 +1366,11 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
                     "raw_segments": [],
                 }
             elif pipeline_type == "flexible_text":
-                ocr_result = process_flexible_text_roi(crop_img)
+                ocr_result = extraction_timing.call("flexible_text_roi", process_flexible_text_roi, crop_img)
             elif pipeline_type == "image":
-                ocr_result = process_roi_with_engine(crop_img, roi)
+                ocr_result = extraction_timing.call(f"{pipeline_type}_roi", process_roi_with_engine, crop_img, roi)
             else:
-                ocr_result = process_roi_with_engine(crop_img, roi)
+                ocr_result = extraction_timing.call(f"{pipeline_type}_roi", process_roi_with_engine, crop_img, roi)
             extracted_text = normalize_ocr_text(ocr_result.get("text"))
             confidence_score = float(ocr_result.get("confidence") or 0.0)
             if not extracted_text and (roi.type or "").lower() != "image":
@@ -1415,9 +1418,12 @@ async def process_document(payload: DocumentPayload, background_tasks: Backgroun
     try:
         _ensure_processing_available_for_context(payload.context)
         if payload.async_mode:
+            create_started = time.perf_counter()
             job_id = create_ocr_job(payload)
+            create_ms = round((time.perf_counter() - create_started) * 1000, 2)
+            logger.info("OCR job created: job_id=%s job_create_ms=%.2f", job_id, create_ms)
             background_tasks.add_task(run_ocr_job, job_id)
-            return {"success": True, "job_id": job_id, "status": "queued"}
+            return {"success": True, "job_id": job_id, "status": "queued", "job_create_ms": create_ms}
         return process_document_payload(payload)
     except PaddleThaiOcrUnavailableError as err:
         print("Paddle Thai OCR processing error:")
