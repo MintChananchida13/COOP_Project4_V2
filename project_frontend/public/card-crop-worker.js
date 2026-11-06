@@ -188,7 +188,7 @@
   }
   function detectImage(cv,rgba){
     const photo=detectPhoto(cv,rgba);if(photo&&!photo.suggested)return photo;
-    const result=detect(cv,rgba);
+    const result=detectBoundary(cv,rgba,false);
     if(result.box){const [x0,y0,x1,y1]=result.box,aspect=rgba.cols/rgba.rows,area=(x1-x0)*(y1-y0)/(rgba.cols*rgba.rows);
       // Faint internal lines may form a rectangle. Content outside that
       // rectangle is evidence that automatically cropping it is unsafe.
@@ -197,7 +197,49 @@
     }
     return result.box?result:photo?{box:null,reason:'weak_boundary'}:result;
   }
-  function detect(cv,rgba){
+  // Build once per PDF page, not once per candidate. Local contrast preserves
+  // faint print; connected components and their spatial grouping distinguish
+  // text/figures/rules from isolated scanner specks. No OCR or edge-density test.
+  function pdfContentComponents(cv,gray){
+    const W=gray.cols,H=gray.rows,A=W*H;
+    const ink=new cv.Mat(),labels=new cv.Mat(),stats=new cv.Mat(),centers=new cv.Mat();
+    const grouped=new cv.Mat(),groupLabels=new cv.Mat(),groupStats=new cv.Mat(),groupCenters=new cv.Mat();
+    const kernel=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(Math.max(5,Math.round(W*.012)),Math.max(3,Math.round(H*.003))));
+    try {
+      cv.adaptiveThreshold(gray,ink,255,cv.ADAPTIVE_THRESH_GAUSSIAN_C,cv.THRESH_BINARY_INV,31,9);
+      cv.connectedComponentsWithStats(ink,labels,stats,centers,8,cv.CV_32S);
+      const keep=new Uint8Array(stats.rows),minimum=Math.max(5,Math.round(A*.000004));
+      const rim=Math.max(2,Math.round(Math.min(W,H)*.005));
+      for(let i=1;i<stats.rows;i++){
+        const offset=i*5,x=stats.data32S[offset],y=stats.data32S[offset+1],w=stats.data32S[offset+2],h=stats.data32S[offset+3],area=stats.data32S[offset+4];
+        // Ignore only thin marks wholly within the scanner's outer rim.
+        const rimLine=(w<=rim&&(x+w<=rim||x>=W-rim))||(h<=rim&&(y+h<=rim||y>=H-rim));
+        if(area>=minimum&&!rimLine)keep[i]=1;
+      }
+      for(let p=0;p<ink.data.length;p++)if(!keep[labels.data32S[p]])ink.data[p]=0;
+      // Join nearby glyphs into lines, retaining the ORIGINAL ink count/bounds.
+      cv.dilate(ink,grouped,kernel);
+      cv.connectedComponentsWithStats(grouped,groupLabels,groupStats,groupCenters,8,cv.CV_32S);
+      const groups=Array.from({length:groupStats.rows},()=>({x:W,y:H,right:0,bottom:0,ink:0}));
+      for(let y=0,p=0;y<H;y++)for(let x=0;x<W;x++,p++)if(ink.data[p]){
+        const g=groups[groupLabels.data32S[p]];
+        g.x=Math.min(g.x,x);g.y=Math.min(g.y,y);g.right=Math.max(g.right,x+1);g.bottom=Math.max(g.bottom,y+1);g.ink++;
+      }
+      return groups.filter(g=>g.ink>=Math.max(12,A*.000015)&&
+        ((g.right-g.x>=Math.max(12,W*.02)&&g.bottom-g.y>=3)||
+         (g.bottom-g.y>=Math.max(12,H*.02)&&g.right-g.x>=3)));
+    } finally {
+      for(const m of [ink,labels,stats,centers,grouped,groupLabels,groupStats,groupCenters,kernel])m.delete();
+    }
+  }
+  function losesPdfContent(groups,b,W,H){
+    // A small tolerance covers anti-aliasing and the detected border thickness.
+    const pad=Math.max(3,Math.round(Math.min(W,H)*.004));
+    const left=b.x-pad,top=b.y-pad,right=b.x+b.width+pad,bottom=b.y+b.height+pad;
+    return groups.some(g=>g.x<left||g.y<top||g.right>right||g.bottom>bottom);
+  }
+  function detect(cv,rgba){return detectBoundary(cv,rgba,true);}
+  function detectBoundary(cv,rgba,preservePdfContent){
     const garbage=[];const mat=()=>{const m=new cv.Mat();garbage.push(m);return m;};
     try {
       const H=rgba.rows,W=rgba.cols,scale=Math.min(1,1600/Math.max(H,W)),dw=Math.max(1,Math.round(W*scale)),dh=Math.max(1,Math.round(H*scale));
@@ -210,6 +252,7 @@
       if(formEvidence(cv,rgba))return {box:null,reason:'ruled_form_page'};
       const lines={hs:rects(cv,binary,Math.max(18,Math.round(dw*.035)),1),vs:rects(cv,binary,1,Math.max(18,Math.round(dh*.035)))};
       const band=Math.max(2,Math.round(Math.min(dw,dh)*.004)),candidates=[];
+      let contentGroups=null;
       function consider(b,source,edges,vertices,rect){
         const {x,y,width:w,height:h}=b;if(w<25||h<15||x<0||y<0||x+w>dw||y+h>dh)return;
         const aspect=w/h,area=w*h/(dw*dh);if(area<cfg.minArea||area>cfg.maxArea||aspect<cfg.minAspect||aspect>cfg.maxAspect)return;
@@ -219,6 +262,10 @@
         if(!faintPath&&(rect<cfg.minRect||vertices!==4))return;
         if(faintPath&&strong===2&&ss.filter(v=>v>=cfg.third).length<3)return;
         if(structureReject(struct,b)||tableReject(cv,binary,b)||gridReject(lines,b,dw,dh))return;
+        if(preservePdfContent){
+          if(contentGroups===null)contentGroups=pdfContentComponents(cv,gray);
+          if(losesPdfContent(contentGroups,b,dw,dh))return;
+        }
         const score=.35*edge+.25*rect+.25*Math.min(1,1-Math.abs(aspect-1.58)/.5)+.15*strong/4;
         candidates.push({box:[Math.round(x*W/dw),Math.round(y*H/dh),Math.round((x+w)*W/dw),Math.round((y+h)*H/dh)],score:Math.round(score*10000)/10000,source});
       }
