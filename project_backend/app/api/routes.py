@@ -539,9 +539,9 @@ def get_processing_log(log_id: str) -> ApiResponse:
 
 
 @router.get("/admin/processing-logs/{log_id}/pages/{page_number}")
-def get_processing_log_page(log_id: str, page_number: int, kind: str = Query("source")) -> FileResponse:
-    path = processing_logs.page_image_path(log_id, page_number, kind=kind)
-    return FileResponse(path)
+def get_processing_log_page(log_id: str, page_number: int, kind: str = Query("source")) -> Response:
+    data, mime_type = processing_logs.page_image_content(log_id, page_number, kind=kind)
+    return Response(data, media_type=mime_type, headers={"Cache-Control": "private, no-cache"})
 
 
 @router.delete("/admin/processing-logs/{log_id}", response_model=ApiResponse)

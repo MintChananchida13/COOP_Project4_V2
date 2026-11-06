@@ -196,7 +196,8 @@ Processing Logs persist user run snapshots for Admin review:
 - OCR original results
 - Ground Truth values
 - timing metadata
-- stored page images under `app/storage/processing_logs/{logId}/...`
+- page images stored as Base64 in PostgreSQL `processing_log_images`; existing
+  local images are backfilled when viewed (see `project_backend/docs/PROCESSING_LOG_IMAGES.md`)
 
 Admin Processing Log Detail supports preview, ROI overlay, result filtering, image fields, export, and manage-log actions.
 

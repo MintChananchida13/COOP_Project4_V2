@@ -851,6 +851,18 @@ _POSTGRES_SCHEMA = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS processing_log_images (
+        log_id TEXT NOT NULL REFERENCES processing_logs(id) ON DELETE CASCADE,
+        page_number INTEGER NOT NULL CHECK (page_number > 0),
+        kind TEXT NOT NULL CHECK (kind IN ('source', 'processing')),
+        mime_type TEXT NOT NULL,
+        image_base64 TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (log_id, page_number, kind)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS notifications (
         id TEXT NOT NULL PRIMARY KEY,
         audience TEXT NOT NULL DEFAULT 'user',

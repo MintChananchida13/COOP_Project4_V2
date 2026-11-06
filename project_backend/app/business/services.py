@@ -1335,19 +1335,35 @@ class ProcessingLogService:
         source: Path,
         destination_dir: Path,
         filename: str,
+        *, conn: Any, log_id: str, page_number: int, kind: str,
     ) -> tuple[str, str]:
-        destination_dir.mkdir(parents=True, exist_ok=True)
         destination = (destination_dir / filename).resolve()
         if destination_dir.resolve() != destination.parent:
             raise HTTPException(status_code=400, detail="Invalid processing log page path")
-        shutil.copyfile(source, destination)
-        return _relative_storage_reference(destination), _mime_type_from_extension(destination.suffix.lower())
+        mime_type = _mime_type_from_extension(destination.suffix.lower())
+        self._store_log_image(conn, log_id, page_number, kind,
+                              base64.b64encode(source.read_bytes()).decode("ascii"), mime_type)
+        return _relative_storage_reference(destination), mime_type
+
+    def _store_log_image(self, conn: Any, log_id: str, page_number: int, kind: str,
+                         encoded: str, mime_type: str) -> None:
+        conn.execute(
+            """INSERT INTO processing_log_images (log_id, page_number, kind, mime_type, image_base64)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT (log_id, page_number, kind) DO UPDATE SET
+                   mime_type = EXCLUDED.mime_type, image_base64 = EXCLUDED.image_base64,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE processing_log_images.image_base64 IS DISTINCT FROM EXCLUDED.image_base64
+                  OR processing_log_images.mime_type IS DISTINCT FROM EXCLUDED.mime_type""",
+            (log_id, page_number, kind, mime_type, encoded),
+        )
 
     def _persist_detection_query_pages(
         self,
         log_id: str,
         source_pages: List[Dict[str, Any]],
         template_detection: Dict[str, Any],
+        *, conn: Any,
     ) -> List[Dict[str, Any]]:
         query_id = str(template_detection.get("queryId") or template_detection.get("query_id") or "").strip()
         if not query_id:
@@ -1379,12 +1395,11 @@ class ProcessingLogService:
                 continue
             page_number = int(match.group(1))
             extension = source.suffix.lower()
-            for existing in source_pages_dir.glob(f"page_{page_number}.*"):
-                existing.unlink(missing_ok=True)
             source_reference, mime_type = self._copy_processing_log_image(
                 source,
                 source_pages_dir,
                 f"page_{page_number}{extension}",
+                conn=conn, log_id=log_id, page_number=page_number, kind="source",
             )
 
             page = pages_by_number.get(page_number, {"pageNumber": page_number})
@@ -1448,12 +1463,11 @@ class ProcessingLogService:
                 if not match:
                     continue
                 extension = source.suffix.lower()
-                for existing in processing_pages_dir.glob(f"page_{page_number}.*"):
-                    existing.unlink(missing_ok=True)
                 stored_reference, mime_type = self._copy_processing_log_image(
                     source,
                     processing_pages_dir,
                     f"page_{page_number}{extension}",
+                    conn=conn, log_id=log_id, page_number=page_number, kind="processing",
                 )
                 page.update(
                     {
@@ -1470,13 +1484,12 @@ class ProcessingLogService:
 
         return [pages_by_number[key] for key in sorted(pages_by_number)] if copied_any else source_pages
 
-    def _persist_page_files(self, log_id: str, source_pages: List[Dict[str, Any]], page_files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _persist_page_files(self, log_id: str, source_pages: List[Dict[str, Any]], page_files: List[Dict[str, Any]], *, conn: Any) -> List[Dict[str, Any]]:
         if not page_files:
             return source_pages
 
         log_dir = _safe_processing_log_dir(log_id)
         pages_dir = log_dir / "source_pages"
-        pages_dir.mkdir(parents=True, exist_ok=True)
 
         pages_by_number: Dict[int, Dict[str, Any]] = {}
         for page in source_pages:
@@ -1503,18 +1516,14 @@ class ProcessingLogService:
                 continue
 
             image_bytes, mime_type = _decode_data_url_image(data_url)
+            del image_bytes  # Validation is complete; store the supplied Base64 without re-encoding it.
             extension = _image_extension_from_mime(mime_type)
             filename = f"page_{page_number}{extension}"
             destination = (pages_dir / filename).resolve()
             if pages_dir.resolve() != destination.parent:
                 raise HTTPException(status_code=400, detail="Invalid processing log page path")
 
-            for existing in pages_dir.glob(f"page_{page_number}.*"):
-                if existing.resolve() != destination:
-                    existing.unlink(missing_ok=True)
-            temporary = destination.with_suffix(destination.suffix + ".tmp")
-            temporary.write_bytes(image_bytes)
-            temporary.replace(destination)
+            self._store_log_image(conn, log_id, page_number, "source", data_url.split(",", 1)[1], mime_type)
 
             page = pages_by_number.get(page_number, {"pageNumber": page_number})
             page.update(
@@ -1643,35 +1652,25 @@ class ProcessingLogService:
                 ),
             )
             row = cursor.fetchone()
-        stored_id = row["id"] if row else log_id
-        stored_source_pages = self._persist_detection_query_pages(stored_id, source_pages, template_detection)
-        persisted_page_numbers = {
-            int(page.get("pageNumber") or page.get("page_number") or 0)
-            for page in stored_source_pages
-            if isinstance(page, dict)
-            and (
-                page.get("imageReferenceStatus") == "persisted"
-                or page.get("image_reference_status") == "persisted"
-                or page.get("sourceReference")
-                or page.get("source_reference")
-                or page.get("storageReference")
-                or page.get("storage_reference")
-            )
-        }
-        fallback_page_files: List[Dict[str, Any]] = []
-        for page_file in data.get("page_files") or []:
-            if not isinstance(page_file, dict):
-                continue
-            try:
-                page_number = int(page_file.get("pageNumber") or page_file.get("page_number") or 0)
-            except (TypeError, ValueError):
-                continue
-            if page_number not in persisted_page_numbers:
-                fallback_page_files.append(page_file)
-        if fallback_page_files:
-            stored_source_pages = self._persist_page_files(stored_id, stored_source_pages, fallback_page_files)
-        if stored_source_pages != source_pages:
-            with _connect() as conn:
+            stored_id = row["id"] if row else log_id
+            stored_source_pages = self._persist_detection_query_pages(stored_id, source_pages, template_detection, conn=conn)
+            persisted_page_numbers = {int(image["page_number"]) for image in conn.execute(
+                "SELECT page_number FROM processing_log_images WHERE log_id = ? AND kind = 'source'", (stored_id,)
+            ).fetchall()}
+            fallback_page_files: List[Dict[str, Any]] = []
+            for page_file in data.get("page_files") or []:
+                if not isinstance(page_file, dict):
+                    continue
+                try:
+                    page_number = int(page_file.get("pageNumber") or page_file.get("page_number") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if page_number not in persisted_page_numbers:
+                    fallback_page_files.append(page_file)
+            if fallback_page_files:
+                stored_source_pages = self._persist_page_files(stored_id, stored_source_pages, fallback_page_files, conn=conn)
+            stored_source_pages = self._log_image_metadata(conn, stored_id, stored_source_pages)
+            if stored_source_pages != source_pages:
                 conn.execute(
                     """
                     UPDATE processing_logs
@@ -1687,6 +1686,48 @@ class ProcessingLogService:
             "updated_at": row["updated_at"] if row else None,
             "source_pages": stored_source_pages,
         }
+
+    def _log_image_metadata(self, conn: Any, log_id: str, pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Keep stable Preview URLs in snapshots without returning Base64 in JSON."""
+        rows = conn.execute("SELECT page_number, kind, mime_type FROM processing_log_images WHERE log_id = ?",
+                            (log_id,)).fetchall()
+        if not rows:
+            return pages
+        mapped = {int(page.get("pageNumber") or page.get("page_number") or 0): dict(page)
+                  for page in pages if isinstance(page, dict)}
+        for image in rows:
+            number, kind, mime = int(image["page_number"]), image["kind"], image["mime_type"]
+            page = mapped.setdefault(number, {"pageNumber": number})
+            reference = f"processing_logs/{log_id}/{kind}_pages/page_{number}{_image_extension_from_mime(mime)}"
+            preview = f"/admin/processing-logs/{log_id}/pages/{number}?kind={kind}"
+            if kind == "source":
+                page.update(sourceReference=reference, storageReference=reference, previewUrl=preview,
+                    sourcePreviewUrl=preview, sourceMimeType=mime, mimeType=mime, imageReferenceStatus="persisted")
+                page.setdefault("roiCoordinateSpace", "source")
+            else:
+                page.update(processingReference=reference, processingPreviewUrl=preview,
+                            processingMimeType=mime, roiCoordinateSpace="processing")
+        return [mapped[number] for number in sorted(mapped) if number > 0]
+
+    def page_image_content(self, log_id: str, page_number: int, kind: str = "source") -> tuple[bytes, str]:
+        normalized_kind = "processing" if str(kind or "").strip().lower() == "processing" else "source"
+        with _connect() as conn:
+            row = conn.execute("""SELECT image_base64, mime_type FROM processing_log_images
+                                  WHERE log_id = ? AND page_number = ? AND kind = ?""",
+                               (log_id, page_number, normalized_kind)).fetchone()
+        if row:
+            try:
+                return base64.b64decode(row["image_base64"], validate=True), row["mime_type"]
+            except (ValueError, TypeError) as error:
+                raise HTTPException(status_code=500, detail="Stored Processing Log image is invalid") from error
+        # Existing local logs stay readable and are preserved in PostgreSQL on first view.
+        path = self.page_image_path(log_id, page_number, normalized_kind)
+        data = path.read_bytes()
+        mime_type = _mime_type_from_extension(path.suffix.lower())
+        with _connect() as conn:
+            self._store_log_image(conn, log_id, page_number, normalized_kind,
+                                  base64.b64encode(data).decode("ascii"), mime_type)
+        return data, mime_type
 
     def page_image_path(self, log_id: str, page_number: int, kind: str = "source") -> Path:
         normalized_kind = "processing" if str(kind or "").strip().lower() == "processing" else "source"
@@ -1732,6 +1773,42 @@ class ProcessingLogService:
                 raise HTTPException(status_code=404, detail="Processing log page image not found")
             return path
         raise HTTPException(status_code=404, detail="Processing log page image not found")
+
+    def migrate_log_images(self, log_id: str, *, dry_run: bool = True) -> Dict[str, Any]:
+        """Backfill available legacy files; report lost images without changing snapshots."""
+        with _connect() as conn:
+            row = conn.execute("SELECT source_pages_json FROM processing_logs WHERE id = ?", (log_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Processing log not found")
+            stored = {(int(image["page_number"]), image["kind"]) for image in conn.execute(
+                "SELECT page_number, kind FROM processing_log_images WHERE log_id = ?", (log_id,)).fetchall()}
+        result = {"log_id": log_id, "dry_run": dry_run, "available": 0, "migrated": 0, "missing": []}
+        pages = jsonb_load(row["source_pages_json"], [])
+        for page in pages if isinstance(pages, list) else []:
+            if not isinstance(page, dict):
+                continue
+            try:
+                number = int(page.get("pageNumber") or page.get("page_number") or 0)
+            except (ValueError, TypeError):
+                continue
+            if number < 1:
+                continue
+            for kind in ("source", "processing"):
+                keys = (("sourceReference", "source_reference", "storageReference", "storage_reference")
+                        if kind == "source" else ("processingReference", "processing_reference"))
+                if (number, kind) in stored or not any(page.get(key) for key in keys):
+                    continue
+                try:
+                    self.page_image_path(log_id, number, kind)
+                except (HTTPException, OSError):
+                    result["missing"].append({"page": number, "kind": kind})
+                    continue
+                result["available"] += 1
+                if not dry_run:
+                    self.page_image_content(log_id, number, kind)
+                    stored.add((number, kind))
+                    result["migrated"] += 1
+        return result
 
     def delete(self, log_id: str) -> Dict[str, Any]:
         with _connect() as conn:

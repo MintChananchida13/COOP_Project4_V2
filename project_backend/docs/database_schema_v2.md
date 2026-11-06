@@ -282,6 +282,15 @@ Readable verification anchor list with template name, version, page, anchor name
 
 ## Runtime Caches
 
+### Processing Log images
+
+`processing_log_images` stores image Base64 and MIME type separately from Log
+metadata, keyed by `(log_id, page_number, kind)`, where kind is `source` or
+`processing`. The foreign key to `processing_logs` cascades on deletion. Log JSON
+responses contain Preview URLs only; the existing image endpoint reads one image
+at a time. Startup creates this additional table without deleting existing data.
+See `PROCESSING_LOG_IMAGES.md` for compatibility and legacy-file migration.
+
 The database remains source of truth, but current runtime uses:
 
 - PostgreSQL `ThreadedConnectionPool` with age/idle recycling
