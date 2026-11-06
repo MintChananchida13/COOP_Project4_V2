@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Literal, Tuple
 from pathlib import Path
 import cv2
 import numpy as np
+from app.model_runtime.text_response_contract import normalize_batch, normalize_single, TextResponseContractError
 
 from app.core.model_runtime_client import (
     ModelRuntimeKind,
@@ -1278,7 +1279,11 @@ def analyze_layout_signature(image: np.ndarray, timing: Optional[Dict[str, Any]]
 
 def _text_detection_result_from_remote(remote_result: Dict[str, Any], image: np.ndarray) -> Dict[str, Any]:
     height, width = image.shape[:2]
-    raw_items = _text_detection_items_from_response(remote_result.get("result", remote_result))
+    try:
+        normalized = normalize_single(remote_result, 'det')
+    except TextResponseContractError as error:
+        raise LayoutAnalysisUnavailableError(f"Invalid DET response contract: {error}") from error
+    raw_items = _text_detection_items_from_response(normalized)
     parsed_items: List[Dict[str, Any]] = []
     for item in raw_items:
         box = _extract_box(item)
@@ -1327,7 +1332,7 @@ def _text_detection_result_from_remote(remote_result: Dict[str, Any], image: np.
 
     return {
         "engine": "text_detection_model_runtime",
-        "model": _TEXT_DETECTION_MODEL_NAME,
+        "model": normalized.get("model") or _TEXT_DETECTION_MODEL_NAME,
         "image_width": width,
         "image_height": height,
         "regions": regions,
@@ -1389,29 +1394,13 @@ def detect_text_boxes_batch(images: List[np.ndarray], timing: Optional[Dict[str,
         raise LayoutAnalysisUnavailableError(str(error)) from error
     except Exception as error:
         raise LayoutAnalysisUnavailableError(str(error)) from error
-    if not isinstance(remote_result, dict):
-        raise LayoutAnalysisUnavailableError("TextDetection batch runtime returned an invalid response.")
-    raw_results = remote_result.get("results")
-    if not isinstance(raw_results, list):
-        raise LayoutAnalysisUnavailableError("TextDetection batch runtime returned an invalid batch response.")
-    ordered_results = [
-        raw_results[index] if index < len(raw_results) else None
-        for index in range(len(images))
-    ]
+    try:
+        ordered_results = normalize_batch(remote_result, 'det', len(images))
+    except TextResponseContractError as error:
+        raise LayoutAnalysisUnavailableError(f"Invalid DET response contract: {error}") from error
     step_started = time.perf_counter()
     results = [
-        _text_detection_result_from_remote(
-            item.get("result") if isinstance(item, dict) and isinstance(item.get("result"), dict) else item,
-            image,
-        )
-        if isinstance(item, dict)
-        else {
-            "engine": "text_detection_model_runtime",
-            "model": _TEXT_DETECTION_MODEL_NAME,
-            "image_width": int(image.shape[1]),
-            "image_height": int(image.shape[0]),
-            "regions": [],
-        }
+        _text_detection_result_from_remote(item, image)
         for item, image in zip(ordered_results, images)
     ]
     if timing is not None:

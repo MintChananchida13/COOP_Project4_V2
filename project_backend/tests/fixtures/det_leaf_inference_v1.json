@@ -1,0 +1,26 @@
+{
+  "data": {
+    "contract_version": "leaf-inference-v1",
+    "kind": "text_detection",
+    "raw_output": [
+      {
+        "input_path": "/tmp/example.png",
+        "page_index": null,
+        "dt_polys": [[[0, 1], [135, 1], [135, 23], [0, 23]]],
+        "dt_scores": [0.8652826579402793]
+      }
+    ],
+    "model_selection": {
+      "kind": "detection",
+      "version": "v6",
+      "variant": "baseline",
+      "model_name": "PP-OCRv6_medium_det",
+      "local_weights": false
+    }
+  },
+  "meta": {
+    "api_version": "v1",
+    "service": "model-api-gateway",
+    "model": "pipeline-router-v1"
+  }
+}

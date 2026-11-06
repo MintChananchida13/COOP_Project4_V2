@@ -1,11 +1,13 @@
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 
 from app.processing.ocr_postprocess import normalize_ocr_text
+from app.model_runtime.text_response_contract import normalize_batch, normalize_single, TextResponseContractError
 from app.core.model_runtime_client import (
     ModelRuntimeKind,
     ModelRuntimeUnavailableError,
@@ -49,41 +51,9 @@ def _as_dict(value: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _walk_values(value: Any) -> List[Any]:
-    found = [value]
-    value_dict = _as_dict(value)
-    if value_dict is not None:
-        for child in value_dict.values():
-            found.extend(_walk_values(child))
-        return found
-    if isinstance(value, (list, tuple)):
-        for child in value:
-            found.extend(_walk_values(child))
-    return found
-
-
 def _extract_text_confidence(value: Any) -> Tuple[str, float]:
-    text_candidates: List[str] = []
-    confidence_candidates: List[float] = []
-
-    for item in _walk_values(value):
-        item_dict = _as_dict(item)
-        if not item_dict:
-            continue
-
-        for key in ("rec_text", "text", "label"):
-            candidate = item_dict.get(key)
-            if isinstance(candidate, str) and candidate.strip():
-                text_candidates.append(candidate.strip())
-
-        for key in ("rec_score", "confidence", "score", "prob"):
-            candidate_score = item_dict.get(key)
-            if isinstance(candidate_score, (int, float)):
-                confidence_candidates.append(float(candidate_score))
-
-    text = " ".join(dict.fromkeys(text_candidates)).strip()
-    confidence = sum(confidence_candidates) / len(confidence_candidates) if confidence_candidates else 0.0
-    return text, confidence
+    result = normalize_single(value, 'rec')
+    return result['rec_text'].strip(), result['rec_score']
 
 
 def _json_safe(value: Any) -> Any:
@@ -103,10 +73,10 @@ def _json_safe(value: Any) -> Any:
 
 
 def _result_from_output(output: Any) -> Dict[str, Any]:
-    text, confidence = _extract_text_confidence(output)
+    parsed = normalize_single(output, 'rec')
+    text, confidence = parsed['rec_text'].strip(), parsed['rec_score']
     normalized_text = normalize_ocr_text(text)
-    output_dict = _as_dict(output) or {}
-    runtime_model = output_dict.get("model") or TEXT_RECOGNITION_MODEL_NAME
+    runtime_model = parsed.get("model") or TEXT_RECOGNITION_MODEL_NAME
     result = {
         "text": normalized_text,
         "confidence": float(confidence),
@@ -173,18 +143,8 @@ def run_paddle_thai_ocr_batch(
             raise PaddleThaiOcrUnavailableError(str(error)) from error
         if remote_result is None:
             raise PaddleThaiOcrUnavailableError("Remote OCR runtime returned no result.")
-        if not isinstance(remote_result, dict):
-            raise PaddleThaiOcrUnavailableError("Remote OCR runtime returned an invalid response.")
-        results = remote_result.get("results")
-        if not isinstance(results, list):
-            raise PaddleThaiOcrUnavailableError("Remote OCR runtime returned an invalid batch response.")
-        ordered_results.extend(
-            results[index] if index < len(results) else None
-            for index in range(len(chunk))
-        )
-    return [
-        _result_from_output(item.get("result") if isinstance(item, dict) and isinstance(item.get("result"), dict) else item)
-        if isinstance(item, dict)
-        else {"text": "", "confidence": 0.0, "error": "invalid_batch_item"}
-        for item in ordered_results
-    ]
+        try:
+            ordered_results.extend(normalize_batch(remote_result, 'rec', len(chunk)))
+        except TextResponseContractError as error:
+            raise PaddleThaiOcrUnavailableError(f"Invalid REC response contract: {error}") from error
+    return [_result_from_output(item) for item in ordered_results]

@@ -133,6 +133,10 @@ Batch request:
 
 Backend owns crop ownership, segment merge, normalization, cleanup, and final text result shaping.
 
+DET/REC response-container compatibility is handled in Backend independently of
+model versions. See `TEXT_RESPONSE_CONTRACT.md` for the verified legacy/new paths,
+strict result-count validation, empty-result rules and live Batch verification limits.
+
 ## Table Recognition
 
 Endpoint:

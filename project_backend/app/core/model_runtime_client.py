@@ -349,7 +349,7 @@ def _post_predict(
     result = parsed.get("result")
     if result is None and "data" in parsed:
         result = parsed.get("data")
-    if kind == ModelRuntimeKind.TEXT_RECOGNITION and isinstance(result, dict) and runtime_model and "model" not in result:
+    if kind in {ModelRuntimeKind.TEXT_DETECTION, ModelRuntimeKind.TEXT_RECOGNITION} and isinstance(result, dict) and runtime_model and "model" not in result:
         result = {**result, "model": runtime_model}
     return result if isinstance(result, dict) else parsed
 
