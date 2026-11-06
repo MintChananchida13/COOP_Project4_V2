@@ -208,21 +208,28 @@
     try {
       cv.adaptiveThreshold(gray,ink,255,cv.ADAPTIVE_THRESH_GAUSSIAN_C,cv.THRESH_BINARY_INV,31,9);
       cv.connectedComponentsWithStats(ink,labels,stats,centers,8,cv.CV_32S);
-      const keep=new Uint8Array(stats.rows),minimum=Math.max(5,Math.round(A*.000004));
-      const rim=Math.max(2,Math.round(Math.min(W,H)*.005));
-      for(let i=1;i<stats.rows;i++){
-        const offset=i*5,x=stats.data32S[offset],y=stats.data32S[offset+1],w=stats.data32S[offset+2],h=stats.data32S[offset+3],area=stats.data32S[offset+4];
-        // Ignore only thin marks wholly within the scanner's outer rim.
-        const rimLine=(w<=rim&&(x+w<=rim||x>=W-rim))||(h<=rim&&(y+h<=rim||y>=H-rim));
-        if(area>=minimum&&!rimLine)keep[i]=1;
+      {
+        // Read WASM views once per JS-only phase; getters otherwise create a view
+        // for every pixel. Do not retain these across OpenCV allocations.
+        const inkPixels=ink.data,componentLabels=labels.data32S,componentStats=stats.data32S;
+        const keep=new Uint8Array(stats.rows),minimum=Math.max(5,Math.round(A*.000004));
+        const rim=Math.max(2,Math.round(Math.min(W,H)*.005));
+        for(let i=1;i<stats.rows;i++){
+          const offset=i*5,x=componentStats[offset],y=componentStats[offset+1],w=componentStats[offset+2],h=componentStats[offset+3],area=componentStats[offset+4];
+          // Ignore only thin marks wholly within the scanner's outer rim.
+          const rimLine=(w<=rim&&(x+w<=rim||x>=W-rim))||(h<=rim&&(y+h<=rim||y>=H-rim));
+          if(area>=minimum&&!rimLine)keep[i]=1;
+        }
+        for(let p=0;p<inkPixels.length;p++)if(!keep[componentLabels[p]])inkPixels[p]=0;
       }
-      for(let p=0;p<ink.data.length;p++)if(!keep[labels.data32S[p]])ink.data[p]=0;
       // Join nearby glyphs into lines, retaining the ORIGINAL ink count/bounds.
       cv.dilate(ink,grouped,kernel);
       cv.connectedComponentsWithStats(grouped,groupLabels,groupStats,groupCenters,8,cv.CV_32S);
+      // OpenCV may have grown WASM memory: acquire fresh views after its calls.
+      const groupedInk=ink.data,groupIds=groupLabels.data32S;
       const groups=Array.from({length:groupStats.rows},()=>({x:W,y:H,right:0,bottom:0,ink:0}));
-      for(let y=0,p=0;y<H;y++)for(let x=0;x<W;x++,p++)if(ink.data[p]){
-        const g=groups[groupLabels.data32S[p]];
+      for(let y=0,p=0;y<H;y++)for(let x=0;x<W;x++,p++)if(groupedInk[p]){
+        const g=groups[groupIds[p]];
         g.x=Math.min(g.x,x);g.y=Math.min(g.y,y);g.right=Math.max(g.right,x+1);g.bottom=Math.max(g.bottom,y+1);g.ink++;
       }
       return groups.filter(g=>g.ink>=Math.max(12,A*.000015)&&
