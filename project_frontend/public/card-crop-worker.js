@@ -4,7 +4,6 @@
   const cfg = { minArea:.05,maxArea:.70,minAspect:1.35,maxAspect:1.85,
     edge:.60,strong:.50,strongCount:3,faintEdge:.30,faintStrong:.25,faintCount:2,
     third:.15,minRect:.70,minScore:.50,border:.03 };
-  const val=(m,x,y)=>m.data[y*m.cols+x];
   const contours=(cv, mat, mode=cv.RETR_EXTERNAL)=>{
     const v=new cv.MatVector(), hierarchy=new cv.Mat(), out=[];
     try { cv.findContours(mat,v,hierarchy,mode,cv.CHAIN_APPROX_SIMPLE);
@@ -56,10 +55,12 @@
       cv.morphologyEx(roi,hor,cv.MORPH_OPEN,hk);
       cv.morphologyEx(roi,ver,cv.MORPH_OPEN,vk);
       function bands(mask,horizontal,margin){
-        const size=horizontal?mask.rows:mask.cols, length=horizontal?mask.cols:mask.rows,groups=[];
+        // No OpenCV allocations inside this scan: reuse the current WASM view.
+        const data=mask.data,cols=mask.cols,rows=mask.rows;
+        const size=horizontal?rows:cols, length=horizontal?cols:rows,groups=[];
         for(let i=0;i<size;i++){
           if(i<=margin||i>=size-margin)continue;
-          let count=0;for(let j=0;j<length;j++)if(horizontal?val(mask,j,i):val(mask,i,j))count++;
+          let count=0;for(let j=0;j<length;j++)if(data[horizontal?i*cols+j:j*cols+i])count++;
           if(count<length*.28)continue;
           const group=groups[groups.length-1];
           if(!group||i-group[group.length-1]>3)groups.push([i]);else group.push(i);
@@ -68,11 +69,12 @@
       }
       const ys=bands(hor,true,Math.max(3,Math.round(b.height*.04)));
       const xs=bands(ver,false,Math.max(3,Math.round(b.width*.04)));
+      const horData=hor.data,verData=ver.data,horCols=hor.cols,verCols=ver.cols;
       let intersections=0;
       for(const y of ys)for(const x of xs){
         let hasH=false,hasV=false;
         for(let yy=Math.max(0,y-3);yy<Math.min(b.height,y+4);yy++)for(let xx=Math.max(0,x-3);xx<Math.min(b.width,x+4);xx++){
-          hasH ||= Boolean(val(hor,xx,yy));hasV ||= Boolean(val(ver,xx,yy));
+          hasH ||= Boolean(horData[yy*horCols+xx]);hasV ||= Boolean(verData[yy*verCols+xx]);
         }
         if(hasH&&hasV)intersections++;
       }
