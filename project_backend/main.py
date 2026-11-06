@@ -43,7 +43,7 @@ from app.core.json_utils import jsonb_dump, jsonb_load
 from app.core.model_runtime_client import configured_runtimes
 from app.business.image_verification_category_service import ensure_image_verification_categories_table
 from app.business.services import GlobalSettingsService
-from app.processing import document_aspect, published_template_cache, extraction_timing
+from app.processing import document_aspect, published_template_cache, extraction_timing, memory_usage
 from app.processing.search_benchmark_middleware import SearchBenchmarkMiddleware
 
 # Force UTF-8 console output on Windows.
@@ -179,6 +179,7 @@ def _env_flag(name: str, default: str = "true") -> bool:
 
 @app.on_event("startup")
 async def startup_warmup() -> None:
+    memory_usage.checkpoint('startup_before_warmup')
     ensure_database_ready()
     with db_connect() as conn:
         ensure_image_verification_categories_table(conn)
@@ -196,12 +197,14 @@ async def startup_warmup() -> None:
         published_template_cache.load_all()
     except Exception as error:
         logger.exception("Published template cache startup load failed; detect will fall back to DB: %s", error)
+    memory_usage.checkpoint('startup_after_warmup')
     print(f"Using external model runtimes: {configured_runtimes()}")
     print("Main backend model warm-up skipped; backend owns process logic and calls model runtimes via HTTP.")
 
 
 @app.on_event("shutdown")
 async def shutdown_db_pool() -> None:
+    memory_usage.shutdown()
     close_postgres_pool()
 
 
@@ -1186,10 +1189,12 @@ def _mark_stale_ocr_job_failed(job: Dict[str, Any]) -> Dict[str, Any]:
     return refreshed or {**job, "status": "failed", "error_message": message, "completed_at": datetime.now(timezone.utc)}
 
 
+@memory_usage.serialized
 def run_ocr_job(job_id: str) -> None:
     job = get_ocr_job(job_id)
     if not job:
         return
+    del job
     try:
         logger.info("OCR job started: job_id=%s", job_id)
         update_ocr_job_status(job_id, "processing")
@@ -1197,10 +1202,12 @@ def run_ocr_job(job_id: str) -> None:
             row = conn.execute("SELECT request_json FROM ocr_jobs WHERE id = ?", (job_id,)).fetchone()
         if not row:
             raise RuntimeError("OCR job request payload not found.")
-        payload_data = jsonb_load(row["request_json"])
+        payload_data = memory_usage.call('ocr_job_request_decode', jsonb_load, row["request_json"])
         if not isinstance(payload_data, dict):
             raise RuntimeError("OCR job request payload is invalid.")
         payload = DocumentPayload(**payload_data)
+        del row, payload_data
+        memory_usage.checkpoint('ocr_job_request_loaded')
         started = time.perf_counter()
         result = process_document_payload(payload)
         logger.info(
@@ -1210,7 +1217,7 @@ def run_ocr_job(job_id: str) -> None:
             len(result.get("extracted_data") or []) if isinstance(result, dict) else 0,
         )
         save_started = time.perf_counter()
-        update_ocr_job_status(job_id, "completed", result=result)
+        memory_usage.call('ocr_result_store', update_ocr_job_status, job_id, "completed", result=result)
         logger.info("OCR job marked completed: job_id=%s result_store_ms=%.2f",
                     job_id, (time.perf_counter() - save_started) * 1000)
     except Exception as error:
@@ -1223,9 +1230,14 @@ def run_ocr_job(job_id: str) -> None:
         clear_layout_analysis_cache()
 
 
+@memory_usage.serialized
 @extraction_timing.measure_processing
 def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
-    _, opencv_img = extraction_timing.call("image_decode", decode_base64_image, payload.image)
+    pil_image, opencv_img = extraction_timing.call("image_decode", decode_base64_image, payload.image)
+    if pil_image is not None:
+        pil_image.close()
+    del pil_image
+    memory_usage.checkpoint('ocr_pil_image_released')
     h_img, w_img = opencv_img.shape[:2]
     results = []
 
@@ -1353,13 +1365,14 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
                         "error": str(error),
                     }
 
+        text_items.clear()
         for item in prepared_items:
             idx = int(item["index"])
             roi = item["roi"]
-            crop_img = item["crop_img"]
+            crop_img = item.pop("crop_img")
             pipeline_type = str(item["pipeline_type"])
             if pipeline_type == "text":
-                ocr_result = ocr_by_index.get(idx) or {
+                ocr_result = ocr_by_index.pop(idx, None) or {
                     "text": "",
                     "confidence": 0.0,
                     "segments": [],
@@ -1423,7 +1436,9 @@ async def process_document(payload: DocumentPayload, background_tasks: Backgroun
             job_id = create_ocr_job(payload)
             create_ms = round((time.perf_counter() - create_started) * 1000, 2)
             logger.info("OCR job created: job_id=%s job_create_ms=%.2f", job_id, create_ms)
-            background_tasks.add_task(run_ocr_job, job_id)
+            # Persisted jobs queue only their ID. Do not keep the HTTP request
+            # and its image body alive while waiting for the heavy-work worker.
+            background_tasks.add_task(memory_usage.enqueue, run_ocr_job, job_id)
             return {"success": True, "job_id": job_id, "status": "queued", "job_create_ms": create_ms}
         return process_document_payload(payload)
     except PaddleThaiOcrUnavailableError as err:

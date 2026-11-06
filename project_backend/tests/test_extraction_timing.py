@@ -95,6 +95,7 @@ class ExtractionTimingTests(unittest.TestCase):
         function = next(node for node in source.body if isinstance(node, ast.FunctionDef)
                         and node.name == 'process_document_payload')
         image = np.ones((20, 20, 3), dtype=np.uint8)
+        decoded_pil = Mock()
         def recognize(items, source, timing):
             self.assertEqual(source, 'fixed_text')
             timing.update(text_detection_batch_size=len(items), text_recognition_batch_size=3)
@@ -104,8 +105,8 @@ class ExtractionTimingTests(unittest.TestCase):
         engine = Mock(return_value={'text': 'table/image'})
         save = Mock(return_value='crop.png')
         namespace = dict(Dict=Dict, List=List, Any=Any, DocumentPayload=object,
-            extraction_timing=extraction_timing, np=np, uuid=__import__('uuid'),
-            decode_base64_image=lambda _: (None, image),
+            extraction_timing=extraction_timing, memory_usage=__import__('app.processing.memory_usage', fromlist=['serialized']), np=np, uuid=__import__('uuid'),
+            decode_base64_image=lambda _: (decoded_pil, image),
             crop_opencv_polygon_region=lambda *args: None,
             crop_opencv_region=lambda *args: image, _save_cropped_roi=save,
             recognize_text_crops_with_detection=batch, process_flexible_text_roi=flex,
@@ -122,6 +123,7 @@ class ExtractionTimingTests(unittest.TestCase):
         self.assertEqual([r['text'] for r in result['extracted_data']],
                          ['OCR-0', 'OCR-1', 'flex', 'table/image', 'table/image'])
         self.assertEqual((batch.call_count, flex.call_count, engine.call_count, save.call_count), (1, 1, 2, 5))
+        decoded_pil.close.assert_called_once()
         timing = result['extraction_timing']
         self.assertEqual(timing['fixed_text_counts']['text_recognition_batch_size'], 3)
         self.assertEqual(timing['stages']['crop_save']['count'], 5)

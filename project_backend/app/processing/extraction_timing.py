@@ -5,6 +5,7 @@ import logging
 import time
 
 from app.processing.model_timing import summarize_model_calls
+from app.processing import memory_usage
 
 _capture = ContextVar('extraction_timing', default=None)
 logger = logging.getLogger(__name__)
@@ -19,7 +20,7 @@ def call(stage, function, *args, **kwargs):
     started = time.perf_counter()
     result = None
     try:
-        result = function(*args, **kwargs)
+        result = memory_usage.call(stage, function, *args, **kwargs)
         return result
     finally:
         item = state['stages'].setdefault(stage, {'elapsed_ms': 0.0, 'count': 0})

@@ -18,6 +18,7 @@ from app.core.config import GATEWAY_URL
 from app.core.ocr_model_config import DEFAULT_OCR_MODEL_SETTINGS, normalize_saved_ocr_settings
 from app.core.db import connect as connect_db
 from app.core.json_utils import jsonb_load
+from app.processing import memory_usage
 
 
 logger = logging.getLogger(__name__)
@@ -218,11 +219,12 @@ def _post_predict(
     started = time.perf_counter()
     serialize_started = time.perf_counter()
     body = json.dumps(payload).encode("utf-8")
+    payload_bytes = len(body)
     if timing is not None:
         timing["model_call_id"] = uuid4().hex
         timing["model_kind"] = kind.value
         timing["json_serialize_ms"] = round((time.perf_counter() - serialize_started) * 1000.0, 2)
-        timing["payload_bytes"] = len(body)
+        timing["payload_bytes"] = payload_bytes
         timing["endpoint_path"] = urllib.request.urlparse(endpoint_url).path
     request = urllib.request.Request(
         endpoint_url,
@@ -235,23 +237,26 @@ def _post_predict(
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             read_started = time.perf_counter()
-            raw_bytes = response.read()
+            raw_bytes = memory_usage.call('gateway_response_read', response.read)
             read_elapsed = time.perf_counter() - read_started
             decode_started = time.perf_counter()
-            raw = raw_bytes.decode("utf-8")
+            raw = memory_usage.call('gateway_response_decode', raw_bytes.decode, "utf-8")
             decode_elapsed = time.perf_counter() - decode_started
         monotonic_ended = time.monotonic()
         if timing is not None:
             timing["response_read_ms"] = round(read_elapsed * 1000.0, 2)
             timing["response_decode_ms"] = round(decode_elapsed * 1000.0, 2)
             timing["response_bytes"] = len(raw_bytes)
+        # The decoded text is sufficient for the existing JSON decoder. Do not
+        # hold the bytes copy through parsing and reconstruction as well.
+        del raw_bytes
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")
         logger.info(
             "Model Runtime timing: kind=%s status=%s payload_bytes=%s elapsed=%.3fs",
             kind.value,
             error.code,
-            len(body),
+            payload_bytes,
             time.perf_counter() - started,
         )
         raise ModelRuntimeUnavailableError(f"{kind.value} runtime HTTP {error.code}: {detail}") from error
@@ -260,7 +265,7 @@ def _post_predict(
             "Model Runtime timing: kind=%s error=%s payload_bytes=%s elapsed=%.3fs",
             kind.value,
             error,
-            len(body),
+            payload_bytes,
             time.perf_counter() - started,
         )
         raise ModelRuntimeUnavailableError(f"{kind.value} runtime unavailable: {error}") from error
@@ -271,13 +276,18 @@ def _post_predict(
             timing["http_request_ms"] = round((timing["model_call_end_monotonic"] - monotonic_started) * 1000.0, 2)
             timing["model_call_interval_ms"] = timing["http_request_ms"]
 
+    # Request body and image-containing payload are no longer used after HTTP.
+    del body, request, payload
+    memory_usage.checkpoint('gateway_buffers_released')
     try:
         parse_started = time.perf_counter()
-        parsed = json.loads(raw)
+        parsed = memory_usage.call('gateway_json_parse', json.loads, raw)
         if timing is not None:
             timing["json_parse_ms"] = round((time.perf_counter() - parse_started) * 1000.0, 2)
     except json.JSONDecodeError as error:
         raise ModelRuntimeUnavailableError(f"{kind.value} runtime returned invalid JSON.") from error
+    del raw
+    memory_usage.checkpoint('gateway_json_text_released')
 
     if not parsed.get("success", True):
         detail = parsed.get("detail") or parsed.get("error") or "Model runtime request failed."
@@ -298,7 +308,7 @@ def _post_predict(
         "Model Runtime timing: kind=%s model=%s payload_bytes=%s elapsed=%.3fs",
         kind.value,
         runtime_model,
-        len(body),
+        payload_bytes,
         time.perf_counter() - started,
     )
 
@@ -434,7 +444,7 @@ def remote_recognize_table_raw(image: np.ndarray, timing: Optional[Dict[str, Any
         return None
 
     encode_started = time.perf_counter()
-    image_data_url = _image_to_data_url(image)
+    image_data_url = memory_usage.call('table_image_encode', _image_to_data_url, image)
     if timing is not None:
         timing["image_encode_ms"] = round((time.perf_counter() - encode_started) * 1000.0, 2)
     return _post_predict(

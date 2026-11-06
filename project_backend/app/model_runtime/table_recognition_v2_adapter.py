@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 import cv2
 import numpy as np
+from app.processing import memory_usage
 
 from app.processing.ocr_postprocess import normalize_ocr_text
 from app.core.model_runtime_client import (
@@ -1486,6 +1487,7 @@ def reconstruct_table_from_cell_boxes(
 
     column_count = len(x_boundaries) - 1
     row_count = len(y_boundaries) - 1
+    memory_usage.checkpoint('table_grid_before_allocation', rows=row_count, columns=column_count, cells=len(valid_boxes))
     occupied: dict[tuple[int, int], dict[str, Any]] = {}
     cells: list[dict[str, Any]] = []
 
@@ -2685,7 +2687,13 @@ def _collect_dicts(value: Any) -> List[Dict[str, Any]]:
             if converted:
                 nodes.append(converted)
 
-    visit(value)
+    try:
+        visit(value)
+    finally:
+        # The recursive closure references itself and the nodes list. Break
+        # that cycle so large raw output is freed by reference counting when
+        # its caller finishes, rather than waiting for cyclic GC.
+        del visit
     return nodes
 
 
@@ -2950,7 +2958,7 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
     post_started = time.perf_counter()
     height, width = image.shape[:2]
     scan_started = time.perf_counter()
-    collected = _collect_dicts(output)
+    collected = memory_usage.call('table_output_scan', _collect_dicts, output)
     scan_ms = (time.perf_counter() - scan_started) * 1000
     raw_result_count = len(collected)
     last_error: Optional[str] = None
@@ -2961,10 +2969,11 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
         recognized_items = extract_recognized_items(table_result)
         if not recognized_items:
             continue
+        memory_usage.checkpoint('table_structure_input', cell_count=len(cell_boxes), ocr_count=len(recognized_items))
 
         rules_started = time.perf_counter()
         try:
-            cells, table_html = reconstruct_table_from_ocr(
+            cells, table_html = memory_usage.call('table_structure_rules', reconstruct_table_from_ocr,
                 cell_boxes,
                 recognized_items,
                 (int(width), int(height)),
@@ -3041,6 +3050,7 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
     return _fallback_result_from_remote_output(output, image, started, reason, collected)
 
 
+@memory_usage.serialized
 def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
     started = time.perf_counter()
     if image is None or image.size == 0:
@@ -3058,7 +3068,9 @@ def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
     remote_started = time.perf_counter()
     output = _predict_table_model(image, timing=runtime_timing)
     remote_ms = (time.perf_counter() - remote_started) * 1000
-    result = _reconstruct_with_test_structure_rules(output, image, started)
+    result = memory_usage.call('table_reconstruction', _reconstruct_with_test_structure_rules, output, image, started)
+    del output
+    memory_usage.checkpoint('table_raw_output_released')
     table_debug = result.get("table_debug")
     if isinstance(table_debug, dict):
         phases = table_debug.setdefault("post_processing_timing", {})
