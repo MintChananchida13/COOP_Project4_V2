@@ -1,5 +1,7 @@
 # DET / REC response normalization
 
+Source review: 2026-11-10. Container validation checked against app/model_runtime/text_response_contract.py and current fixtures. No new live single/batch captures were collected; historical capture/validation statements below retain their original scope.
+
 ## Scope
 
 Only Backend DET/REC adapters normalize OCR payload containers. Model selection,
@@ -92,6 +94,7 @@ Run:
 
 ```powershell
 cd project_backend
-python -m unittest tests.test_text_response_contract tests.test_ocr_compact_response
+python -m unittest discover -s tests -p "test_text_response_contract.py"
+python -m unittest discover -s tests -p "test_ocr_compact_response.py"
 python -m unittest discover -s tests
 ```

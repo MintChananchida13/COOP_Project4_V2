@@ -1,5 +1,7 @@
 # Local Development
 
+Source review: 2026-11-10 against this checkout. Documentation review only; no live database, model or deployment validation was performed.
+
 ## Backend Environment
 
 Create `project_backend/.env.local` from `project_backend/env.local.example`.
@@ -11,7 +13,7 @@ MODEL_GATEWAY_API_KEY=replace-with-model-gateway-api-key
 DB_POOL_MIN_CONNECTIONS=1
 DB_POOL_MAX_CONNECTIONS=10
 DB_POOL_RECYCLE_SECONDS=300
-DB_POOL_MAX_IDLE_SECONDS=120
+DB_POOL_MAX_IDLE_SECONDS=60
 DETECTION_COORDINATE_DEBUG=false
 ```
 
@@ -145,7 +147,7 @@ Run:
 
 ```powershell
 cd project_frontend
-npm install
+npm ci
 npm run dev
 ```
 
@@ -185,9 +187,17 @@ Backend endpoints should call only Gateway endpoints, not leaf service URLs.
 After starting services:
 
 1. Login as user and upload one document.
-2. Confirm detect-dev returns a `queryId` and persists `storage/detection_queries/{queryId}/page_1.png`.
+2. Confirm AdjustZone submits final image pages with `confirmedImages=1`; detect-dev returns HTTP 202 and a `job_id`. Poll until completed, then inspect the result/queryId and page references under `storage/detection_queries/{queryId}/`.
 3. Verify matched and no-match flows can reach OCR.
 4. Save/visit Processing Log detail in Admin.
 5. Toggle System Maintenance schedule in Admin Settings.
 6. Confirm User processing receives maintenance block while active and resets to Upload after maintenance ends.
 7. Publish or update a template during Maintenance enforcement and confirm the change is pending until maintenance start.
+
+## Configuration, health and deployment caveats
+
+The actual local env loader reads `project_backend/.env.local`, then `project_backend/app/.env.local`, without overriding process variables. It does not read the repository-root `.env.local`. Start Backend from its own directory. Do not overwrite an existing env file when copying examples.
+
+`/health/models` reports configured runtime URLs only. Verify Gateway auth and actual single/batch inference separately. `NEXT_PUBLIC_API_URL` is browser-visible; never place Gateway/DB secrets there. `next.config.ts` also contains a fixed `/backend` rewrite target; review it separately for deployment.
+
+Use one Backend process until shared detection/prepublish job storage and cache invalidation exist. Application login/role checks remain mock/permissive, with additional token-helper import issues; see section 15 of [Developer Guide](DEVELOPER_GUIDE_TH.md). This documentation update does not fix authentication or certify production readiness.

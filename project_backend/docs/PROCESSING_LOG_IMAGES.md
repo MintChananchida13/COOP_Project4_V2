@@ -1,5 +1,7 @@
 # Processing Log images in PostgreSQL
 
+Source review: 2026-11-10. PostgreSQL image persistence, preview/backfill and migration paths checked against current source. No database migration, image backfill or restore was executed in this documentation review.
+
 Processing Log images are now stored as Base64 in `processing_log_images`.
 Template images, login, OCR, Template matching, ROI coordinates and Ground Truth
 behavior are unchanged. No Object Storage SDK, bucket or storage credentials are required.

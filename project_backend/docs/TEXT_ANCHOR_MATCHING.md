@@ -1,5 +1,7 @@
 # Text verification anchors
 
+Source review: 2026-11-10. Current literal normalization/Levenshtein rules checked against app/business/services.py. This documentation review did not run live OCR. V2.4 is the active image policy; see ../SIGLIP_V24_IMPLEMENTATION.md.
+
 All text anchors use the same rule, including existing templates:
 
 1. Normalize both expected and OCR text with NFKC, lowercase, whitespace removal,

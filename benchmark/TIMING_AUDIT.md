@@ -1,10 +1,11 @@
 # Timing audit and measurement contract
 
+Source review: 2026-11-10. Current sources are Backend model_timing/search_benchmark, Frontend page.tsx and benchmark/user_flow.py. Prior root-cause reports, workbook findings and test counts are historical; external API_Service_Kaggle source is not present in this checkout.
+
 Frontend boundary update: see [Result Visibility](RESULT_VISIBILITY.md).
 `end_to_end_ms` now stops at Result Visibility Ready (paint-ready estimate, NOT
 Actual Paint). `frontend_flow_complete_ms` and `frontend_commit_end_to_end_ms`
-preserve handler/commit boundaries. The original frontend definitions below are
-historical; backend/model timing definitions are unchanged.
+preserve handler/commit boundaries. The metric table below uses current console/workbook names; historical change reports are retained separately. Backend/model timing definitions are unchanged.
 
 Code/tests only: no browser, login, benchmark, real inference or Kaggle runtime
 was executed for this change.
@@ -40,12 +41,13 @@ Backend paths below are relative to `project_backend/app/`.
 
 | Metric | Source / start and end | Calculation / status |
 | --- | --- | --- |
-| `end_to_end_ms` | Frontend `page.tsx`, boundary confirmation to detection/template preparation completion log | Browser `performance.now()` delta; not actual paint |
+| `end_to_end_ms` | Frontend page.tsx, boundary confirmation to observed Result Visibility Ready | Browser performance.now() delta; paint-ready estimate, not Actual Paint |
 | `total_runtime_ms` | `processing/detection_service.py`, worker start to timing snapshot | `perf_counter()` delta; same as `total_detection_ms` |
 | `backend_runtime_ms` | Detection summary | Total minus complete HTTP interval union; derived wall time outside waits, NOT CPU time |
 | `frontend_to_backend_ms` | Browser/backend | null; one-way latency unknown |
 | `backend_to_frontend_ms` | Backend/browser | null; one-way latency unknown |
-| `frontend_render_ms` | Browser | null; paint not instrumented |
+| `frontend_render_ms` | Browser flow completion to React commit | Same as frontend_state_to_commit_ms; not CPU render time |
+| `result_ready_ms` | Browser commit to observed readiness | Visibility helper frontend_render_ms is mapped to this key by page.tsx; not Actual Paint |
 | `backend_to_model_ms` | Backend/API | null; HTTP minus inference is NOT network-only duration |
 | `layout_runtime_ms` | API Layout component operation start/end | Sum unique component inference; excludes nested DET |
 | `text_detection_runtime_ms` | API DET operation/component start/end | Sum standalone and nested DET, counted once |
@@ -99,8 +101,7 @@ Historical candidate durations without Call IDs cannot be reliably deduplicated.
 - absent model call: not proof of zero work; cache/no-call cannot always be distinguished.
 - conflicting duplicate: reported unknown rather than silently accepted.
 
-Standard and Text-Only share the same collector. Unused models remain null in
-Text-Only. Model Calls retains file, run number, repeat count and actual mode.
+Standard/Strict use the same collector. Historical Text-Only labels remain readable for old results/CLI compatibility; they are not additional currently supported Backend verification strategies. Unused models remain null. Model Calls retains file, run number, repeat count and actual mode.
 Old column positions remain; new columns append. `timing_missing_reasons` is JSON;
 metadata remains bool/int/string; durations are finite nonnegative numbers or blank.
 Formula-like strings are escaped. No dependencies or model logic changed.
@@ -152,3 +153,9 @@ it does not execute real inference or validate a live Kaggle service.
 - `benchmark/test_user_flow.py`
 - `benchmark/README.md`
 - `benchmark/TIMING_AUDIT.md`
+
+## Search and post-search tracing in the current checkout
+
+backend_search_ms covers the detection job. backend_post_search_ms unions traced post-search Backend request intervals; backend_total_active_ms unions search and post-search, using Backend monotonic clocks. These are elapsed intervals including I/O/model waits, not CPU time. Missing/unmatched required spans return null. When no post-search requests occur, the measured union is zero; state is process-local.
+
+request_round_trip_ms includes POST/server work. polling_wait_ms includes sleeps/nonterminal polls, while result_fetch_ms measures the terminal poll. request_network_ms remains null because one-way latency cannot be isolated. Layout telemetry includes traced subsequent ROI/Layout requests, deduplicated by call ID. With later Layout calls, overall queue may remain null while search_model_queue_wait_ms preserves the job-only scope. Ground-truth correctness is separate from completed-flow PASS. See README.md and RESULT_VISIBILITY.md.

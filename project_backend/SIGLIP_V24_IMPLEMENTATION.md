@@ -1,141 +1,129 @@
 # SigLIP Single Prompt V2.4 implementation
 
-## Experimental category removal update
+Source review: 2026-11-10. This is the current Backend contract, not a new live
+inference, accuracy, benchmark or external-service validation report.
 
-At the user's request, `numbers` is now removed from the shared prompt registry
-and active policy: **8 Positive + 7 Negative = 15 ordered logits**. References
-to 16 logits/eight Negatives below describe the original V2.4 implementation.
-Negative competition now accepts a Negative lead up to and including 0.8 raw-logit units; optional gates are unchanged. The V2.3
-comparison rules now use the same reduced prompt registry, so comparisons are
-not an exact replay of the original 16-category experiment. Tests verify the
-removed category is absent, reject stale 16-logit vectors, and retain rejection
-when the strongest Negative leads by more than 0.8. Restart/update both API and Backend together;
-mixed revisions are not supported. Accuracy effects are not verified and
-removing this Negative does not guarantee a portrait will pass.
+## Current sources and prompt registry
 
-## Decision flow
+- `app/model_runtime/siglip_policy.py`: pure decision policy and trace validation.
+- `app/model_runtime/siglip_v24.py`: environment configuration.
+- `app/model_runtime/siglip_v23.py`: fixed prompts and V2.3 comparison helper.
+- `app/model_runtime/siglip_image_verification_adapter.py`: crop result adaptation.
+- `app/core/model_runtime_client.py`: authenticated Gateway single/batch calls.
+- `app/business/image_verification_category_service.py`: selectable categories.
 
-The checkpoint, eight Positive and seven Negative single prompts, model
-forward pass, crops, and category order are unchanged. The active version is
-`siglip-single-prompt-v2.4`.
+The policy is local to Backend. This checkout has no `API_Service_Kaggle` sibling
+and no `src/shared/SiglipDecisionDetails.tsx`; do not require those files to deploy
+this Backend. External Gateway/Leaf implementations must be checked separately.
 
-1. Validate 15 finite, ordered raw logits.
-2. Rank Positive categories by raw logit; find the highest Negative logit.
-3. Reject as `other` only when the strongest Negative exceeds the highest Positive by more than 0.8 raw-logit units.
-4. Apply explicitly configured relative-confidence and relative-margin gates,
-   in that order. Both are disabled by default: no validated new thresholds
-   were provided.
-5. Accept only the original Positive Rank 1, otherwise return `other` with a
-   decision reason. Never substitute another Positive category.
+Canonical order is **8 Positive + 7 Negative = 15 finite ordered logits**:
 
-| Gate | Units / comparison | Default | Rejection reason |
-| --- | --- | --- | --- |
-| Negative competition | Negative top logit <= Positive top logit + 0.8 | Enabled | `negative_category_won` |
-| Relative confidence | Positive softmax top share >= configured minimum | Disabled | `confidence_gate_failed` |
-| Relative margin | Positive softmax top share minus second share >= configured minimum | Disabled | `margin_gate_failed` |
+| Positive order | Negative order |
+| --- | --- |
+| emblem | printed_text |
+| thai_garuda | table |
+| company_logo | blank |
+| document_stamp | background |
+| portrait | illustration |
+| signature | pattern |
+| barcode | bar_chart |
+| qr_code | |
 
-Disabled gates report `not_applied`, not `true`. An enabled gate skipped because
-an earlier gate failed reports `not_evaluated`. Comparisons use unrounded values.
-Positive ties preserve canonical category order; with the margin gate disabled
-they can be accepted if the strongest Negative is within the 0.8 tolerance. Positive/Negative ties pass the Negative gate.
+`numbers` is removed. Stale 16-logit vectors are rejected. Negatives are not
+selectable image Anchor categories. All eight positives compete even when only
+one target category is requested; disabled/invalid targets cannot pass.
 
-The active policy removes the Garuda-to-Emblem override below 2.0, the
-Garuda/Negative gap below 2.0 rejection, and the Emblem raw-logit floor -6.3.
-There are no category-specific exceptions. The original implementation remains
-available only through the explicitly named V2.3 comparison helper/tests.
+## Decision order
 
-## Score definitions
+Scoring version: `siglip-single-prompt-v2.4`.
 
-For raw logit `z`, raw pair score is `sigmoid(z)` in [0,1]. It remains display
-metadata, not a new acceptance gate. Positive relative share is
-`exp(z_i - max_positive) / sum_positive(exp(z_j - max_positive))` in [0,1].
-It is **not a calibrated confidence probability**. UI percentages multiply it
-by 100. Raw ranking and UI share ranking are monotonic for the same vector.
+1. Validate 15 finite numeric logits, excluding booleans.
+2. Rank positives and find the strongest negative; ties preserve canonical order.
+3. Reject as `other` if `negative_top > positive_top + 0.8`.
+4. If configured, require positive relative share >= confidence threshold.
+5. If configured and the preceding gates pass, require positive top1-minus-top2
+   relative share >= margin threshold.
+6. Accept only the original Positive Rank 1; never substitute another positive.
 
-`positive_negative_margin` and `positive_top1_top2_margin` are raw-logit
-differences. Optional margin gating instead uses `positive_relative_margin`,
-the dimensionless difference between the two Positive softmax shares. These
-units are not interchangeable. `raw_top1/2` refer to Positive ranks; Negative
-ranking is reported separately. Legacy `siglip_score_margin` retains its
-target-relative raw-logit meaning and is not silently used as a relative gate.
+The comparison uses unrounded values. A Negative lead of exactly 0.8 is allowed.
+The V2.3 Garuda/Emblem substitution, Garuda gap guard and Emblem -6.3 floor do not
+apply to active V2.4.
 
-Backend environment variables for opt-in, independently validated thresholds:
+| Gate | Default | Failure reason |
+| --- | --- | --- |
+| Negative competition | Enabled, tolerance 0.8 raw-logit units | negative_category_won |
+| Relative confidence | Disabled | confidence_gate_failed |
+| Relative margin | Disabled | margin_gate_failed |
+
+Disabled gates report `not_applied`; enabled gates skipped due to earlier failure
+report `not_evaluated`. Default acceptance reports `positive_rank1_accepted`.
+
+## Configuration and score units
+
+Optional environment variables:
 
 - `SIGLIP_V24_CONFIDENCE_MIN_RELATIVE_SCORE`
 - `SIGLIP_V24_MARGIN_MIN_RELATIVE_SCORE`
 
-Leave both unset/blank for defaults. Explicit zero is not interpreted as missing.
-Finite values in [0,1] are required. No new threshold is enabled by this change.
-Old category `match_threshold` / `margin_threshold` fields remain compatible
-metadata, not inputs to these new gates.
+Leave unset/blank to disable. Explicit zero is a valid configured threshold;
+finite numbers in [0,1] are required. Old category match_threshold/margin_threshold
+are compatibility metadata, not these V2.4 gates.
 
-## API, Backend and UI
+Sigmoid(raw logit) is display metadata. Positive softmax share is computed only
+across eight positives; it is not a calibrated confidence probability. Raw
+positive_negative_margin and positive_top1_top2_margin use logit units, while
+positive_relative_margin is a dimensionless share difference. Do not interchange
+them or recalculate the final prediction from rounded UI percentages.
 
-`API_Service_Kaggle/app/siglip_policy.py` is the canonical model-free policy.
-Backend loads that same file via `app/model_runtime/siglip_v24.py`, supplies
-the explicit optional `decision_config` in single/batch requests, and validates
-the returned decision against the same policy/vector/config. This validation
-does not rerun the model or apply a second set of decision rules. The fingerprint
-identifies vector/order/config consistency; it is not a security signature.
+## Gateway and trace contract
 
-For the project's canonical 16 categories, API results preserve logits/device
-and add a `decision` trace. Custom category callers retain the raw-only legacy
-response. A raw-only older API response is evaluated with the shared V2.4
-policy, never V2.3. An inconsistent provided trace fails closed with
-`decision_contract_error` rather than selecting another prediction.
+Host base GATEWAY_URL has no /paddle suffix. Current routes are
+`/paddle/api/v1/image-verifications` and
+`/paddle/api/v1/image-classification-batches`, authenticated with
+MODEL_GATEWAY_API_KEY. Requests include canonical prompts and optional
+`decision_config`; preserve batch order and cardinality.
 
-Backend propagates the trace as `siglip_decision` and additive diagnostic fields,
-including all requested ranking, gate, reason, version and final-category fields.
-The verification editor distinguishes Raw Ranking, Final Prediction, Decision
-Reason and Verification PASS/FAIL. It labels relative share as not probability
-and displays disabled gates explicitly. Legacy responses without a trace remain
-renderable. UI does not recalculate prediction from displayed percentages.
+`consume_decision` checks a supplied trace against policy/vector/config and its
+fingerprint. Inconsistency fails with a contract error. A supported raw-only
+response is evaluated locally with V2.4, never V2.3. The fingerprint checks
+consistency, not security or model identity. No extra inference is performed.
 
-Expected category is compared against the final prediction. Binary evidence,
-field/image-anchor score aggregation, required anchors, retrieval floors,
-verification weights and final template decisions are otherwise unchanged.
-A passing SigLIP classification alone does not guarantee template acceptance.
+Backend exposes `siglip_decision` plus ranking/reason/gate metadata. Expected
+category must match final prediction for the image Anchor to pass. Template
+acceptance additionally requires every in-scope Anchor; complete passes are
+ranked by Anchor count then template ID. Legacy weights/confidence thresholds
+do not select the Template winner.
 
-## Synthetic examples, not actual query replay
+## Synthetic boundary examples
 
-| Input | V2.4 result with default gates |
-| --- | --- |
-| Garuda 8.1, Emblem 6.5818, all others -30 | `thai_garuda`; raw margin 1.5182 no longer substitutes Emblem |
-| Portrait -8.1219, Barcode -9.7214, best Negative -8 | `other`: `negative_category_won` |
-| Same Portrait positives, all Negatives -20 | `portrait`: `positive_rank1_accepted` |
+With every unspecified logit very low and optional gates disabled:
 
-The Garuda fixture reproduces approximately 0.8203 relative share and 0.9997
-sigmoid. The Portrait fixture demonstrates Negative competition, not a replay
-of the incomplete supplied 16-logit vector or an assertion about its exact
-0.6463 share. Low absolute sigmoid alone is not a configured default gate.
+| Positive top | Strongest Negative | Result |
+| --- | --- | --- |
+| portrait = -8.1219 | -8.0 | portrait (lead 0.1219 is within tolerance) |
+| portrait = -8.1219 | -7.0 | other (lead 1.1219 exceeds tolerance) |
+| thai_garuda = 8.1; emblem = 6.5818 | -20 | thai_garuda, no substitution |
 
-## Changes and validation
+These explain policy boundaries, not model predictions on actual documents.
 
-- API: `app/siglip_policy.py`, `app/main.py`, `tests/test_contract.py`.
-- Backend: `app/model_runtime/siglip_v24.py`,
-  `app/model_runtime/siglip_image_verification_adapter.py`,
-  `app/core/model_runtime_client.py`, `app/business/services.py`.
-- Backend tests/docs: `tests/test_siglip_v24.py`,
-  `tests/test_siglip_v23_audit.py`, `SIGLIP_V23_AUDIT.md`, this report.
-- Frontend: `src/admin/adminApi.ts`,
-  `src/admin/workspace/WorkspaceTemplateEditorV2.tsx`,
-  `src/shared/SiglipDecisionDetails.tsx`, `tests/siglipV24.test.cjs`.
+## Deployment and validation
 
-Local automated validation: Backend unittest suite 68 passed; API contract and
-timing tests 11 passed plus 4 subtests; Frontend mapping/SSR diagnostic tests
-2 passed; TypeScript no-emit check passed. Tests use mock logits/model forwards,
-not real inference. Coverage includes all Positive/Negative categories, ties,
-gate boundaries, legacy comparison, single/batch, trace consistency, image
-anchor/final-template decisions and UI diagnostics.
+Deploy Backend policy/registry/adapter consistently and ensure the external
+Gateway accepts the same 15 prompts/order and optional config. Restart Backend
+and rebuild Frontend when its mapping/UI changes. No sibling API source loader
+is required. Fixed category initialization can delete legacy values and set
+existing foreign keys to null; review [category behavior](docs/SIGLIP_V23.md)
+and back up the DB before rollout.
 
-Deploy from a complete repository checkout: Backend's shared-policy loader
-requires the sibling API directory. Restart both API and Backend and rebuild
-the Frontend after updating code. No dependency changes or reinstall are needed.
+From `project_backend`, use the installed environment:
 
-**Not Verified:** real Kaggle inference, actual crops/queries, browser behavior,
-benchmark, accuracy, false-positive/negative rates, threshold calibration and
-resource usage. Negative competition preserves explicit rejection but cannot
-guarantee rejection of every irrelevant image. Disabling the former absolute
-and category-specific guards changes rejection behavior; evaluate a labeled
-held-out set (all categories and unknowns) before deployment. No claim that
-V2.4 is more accurate than V2.3 is supported yet. No commit/push performed.
+```powershell
+python -m unittest discover -s tests -p 'test_siglip*.py'
+```
+
+These tests use fixtures/mocked logits; they do not establish live Gateway/model
+accuracy. For production, validate single/batch ordering, malformed and empty
+responses, optional gates and trace mismatch, then evaluate a labeled set of all
+positive classes and unknowns. No accuracy improvement or resource budget is
+claimed by this documentation review. Previous test counts/deploy claims from
+other checkouts are not current verification evidence.

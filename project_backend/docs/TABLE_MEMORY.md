@@ -1,5 +1,7 @@
 # Table Recognition V2 memory investigation
 
+Source review: 2026-11-10. Worker/diagnostics design checked against app/processing/memory_usage.py, main.py and the Table adapter. Before/after samples below are historical controlled tests; no Render memory or live response measurement was obtained in this review.
+
 ## Evidence and scope
 
 The reported failing document is `THAI_TABLE_081413.png`: 1998 x 546 RGBA,

@@ -1,5 +1,7 @@
 # OCR Template Management Project
 
+Source review: 2026-11-10 against this checkout. Documentation review only; no live database, model or deployment validation was performed.
+
 Document Intelligence platform for template-based OCR, ROI management, template detection, verification, extraction, review, processing logs, and export.
 
 ## Current Architecture
@@ -13,7 +15,7 @@ The backend is a process and business service. It must not load PaddleOCR, Paddl
 The backend owns:
 
 - Template lifecycle, versioning, publish review, and pending maintenance changes
-- User upload, normalization, layout signature, template retrieval, verification, ROI projection, extraction, and processing logs
+- User upload, confirmed-page preparation, page-count/aspect prefilters, staged anchor verification, ROI projection, extraction, and processing logs
 - ROI geometry, crop orchestration, OCR/table/image post-processing, scoring, and final decisions
 - PostgreSQL access, request-scoped caches, process-level published template cache, and system settings
 
@@ -23,18 +25,18 @@ Leaf model services own only model loading and raw inference.
 
 | Model | Leaf Service | Gateway Endpoint |
 | --- | --- | --- |
-| Layout | PP-DocLayoutV3 `:8001` | `/api/v1/document-layouts` |
-| Text Detection | PP-OCRv6 medium det `:8002` | `/api/v1/text-detections` |
-| Text Recognition | Thai Recognition `:8004` | `/api/v1/text-recognitions`, `/api/v1/text-recognition-batches` |
-| Table | TableRecognitionPipelineV2 `:8013` | `/api/v1/table-model-results` |
-| Image Verification | SigLIP `:8009` | `/api/v1/image-verifications` |
+| Layout | PP-DocLayoutV3 `:8001` | `/paddle/api/v1/document-layouts` |
+| Text Detection | PP-OCRv6 medium det `:8002` | `/paddle/api/v1/text-detections` |
+| Text Recognition | Thai Recognition `:8004` | `/paddle/api/v1/text-recognitions`, `/paddle/api/v1/text-recognition-batches` |
+| Table | TableRecognitionPipelineV2 `:8013` | `/paddle/api/v1/table-model-results` |
+| Image Verification | SigLIP `:8009` | `/paddle/api/v1/image-verifications` |
 
-Layout signature calls use `layout_only=true` so the Layout pipeline runs PP-DocLayoutV3 only and does not run Text Detection.
+User matching and publishing no longer require Layout Signatures. Auto ROI can request Layout-only inference (`use_text_detection=False`). The retained diagnostic signature helper uses combined Layout+DET; it is not the publish pipeline.
 
 ## Project Structure
 
 ```text
-COOP_Project4_Server/
+COOP_Project4_New/
   README.md
   PROJECT_MEMORY.md
   LOCAL_DEVELOPMENT.md
@@ -88,12 +90,10 @@ Authorization: Bearer <MODEL_GATEWAY_API_KEY>
 Upload document
 -> Adjust/confirm page images
 -> /api/templates/detect-dev
--> Normalize pages
--> Layout Analysis
--> Layout Signature
+-> Prepare confirmed pages (normalization depends on context)
 -> Published Template Retrieval
--> Candidate Gate
--> Verification
+-> Page-count / orientation / aspect-ratio gates
+-> Staged Text/Image Anchor Verification
 -> Matched / No Match
 ```
 
@@ -101,7 +101,7 @@ Matched:
 
 ```text
 Reuse matched template
--> Optional alignment decision using precomputed layout signatures
+-> ROI preparation / optional alignment as required by the processing flow
 -> ROI projection
 -> Extraction test
 -> Text/Table/Image processing
@@ -128,6 +128,8 @@ Verification strategy labels in UI:
 
 Internal values remain `standard` and `strict`.
 
+Both require all in-scope anchors to pass. Each stage schedules one next anchor per surviving template. Standard runs Text/Image batches concurrently; Strict runs Text before Image. Winner: most anchors among complete passes, then ascending template ID. Legacy weights/final confidence do not choose the winner. See [Staged Batch](benchmark/STAGED_BATCH.md).
+
 ## Admin Flow
 
 ```text
@@ -141,10 +143,10 @@ Create Template / Template Request
 -> Refresh published template cache
 ```
 
-Template publish stores layout signatures on `template_pages`. Published template data is cached in process memory for detect hot paths:
+Publish validates stored page images and Anchor readiness; it does not generate Layout Signatures. Prepublish document testing compares the selected draft with active templates and requires the draft to pass and rank first. Use `publish-jobs`; `embedding-jobs` paths are deprecated aliases. Published data is cached in process memory:
 
-- layout signatures
-- template metadata and thresholds
+- page geometry and image references (legacy layout rows may remain)
+- template metadata and compatibility thresholds
 - field count
 - verification fields and anchors
 - page image references used by alignment
@@ -266,3 +268,9 @@ Before production deploy:
 - verify `/health`, `/health/db`, and `/health/models`
 - smoke test upload, detect, matched extraction, no-match Auto ROI, processing log save/detail, maintenance mode, template pending apply, and export
 - keep model inference out of backend
+
+## Developer documentation and deployment limits
+
+Start with [Developer Guide (Thai)](DEVELOPER_GUIDE_TH.md), [Local Development](LOCAL_DEVELOPMENT.md), [runtime architecture](project_backend/docs/model_runtime_architecture.md) and [runtime database schema](project_backend/docs/database_schema_v2.md).
+
+`/health/models` checks configuration, not live inference. Detection/prepublish jobs and caches are process-local; multi-worker deployments require shared job storage/invalidation. Current User/Admin authentication includes mock/permissive behavior and is not production authorization; review section 15 of the Developer Guide before exposing APIs. Frontend Prisma files describe older schema names and are not the current Backend data layer.

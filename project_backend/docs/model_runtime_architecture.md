@@ -1,233 +1,105 @@
 # Model Runtime Architecture
 
+Source review: 2026-11-10. Describes the checked-out Backend; external Gateway/Leaf
+implementations and live inference were not verified in this documentation review.
+
 ## Ownership
 
-The backend owns system and process logic:
+Frontend -> Backend/Process Service -> Model API Gateway -> Leaf services.
+Backend owns template decisions, staged verification, ROI geometry, crops, OCR
+cleanup, table reconstruction, SigLIP decisions, database, caches and Maintenance.
+Leaf services own model loading and raw inference. Backend must not load model
+weights, call Leaf URLs directly or fall back to local inference.
 
-- Template detection and final candidate decisions
-- Fixed and flexible ROI handling
-- Crop orchestration
-- Auto ROI post-processing
-- Reading order
-- Text merge, normalization, and cleanup
-- Table quality gates and fallback shaping
-- Image verification decision logic after raw SigLIP output
-- Database access and persistent state
-- System Maintenance enforcement
+## Configuration and routes
 
-The Gateway routes backend requests to leaf model services. Leaf services own model loading and raw inference only.
+Set DATABASE_URL, GATEWAY_URL and MODEL_GATEWAY_API_KEY. GATEWAY_URL is a host base
+such as http://127.0.0.1:8080 without /paddle. Requests use
+`Authorization: Bearer <MODEL_GATEWAY_API_KEY>`. Never expose the key to Browser.
 
-## Environment Variables
+Source: app/core/model_runtime_client.py and app/core/ocr_model_config.py.
 
-```powershell
-$env:GATEWAY_URL="http://127.0.0.1:8080"
-$env:MODEL_GATEWAY_API_KEY="replace-with-model-gateway-api-key"
-```
+| Operation | Default Gateway path |
+| --- | --- |
+| Layout | /paddle/api/v1/document-layouts |
+| DET single | /paddle/api/v1/text-detections?version=v6 |
+| DET batch | /paddle/api/v1/text-detection-batches?version=v6 |
+| REC single | /paddle/api/v1/text-recognitions |
+| REC batch | /paddle/api/v1/text-recognition-batches |
+| Table | /paddle/api/v1/table-model-results?det_version=6&rec_version=5&det_model=baseline&rec_model=thai_ft_v3 |
+| SigLIP single | /paddle/api/v1/image-verifications |
+| SigLIP batch | /paddle/api/v1/image-classification-batches |
 
-Every backend request to Gateway includes:
+DET/REC paths can change with active saved settings. Legacy paths starting
+/api/v1/ are prefixed with /paddle by the client. Do not duplicate this in services.
+Defaults are ocr_det_v6_medium and thai_ocr_v5_mobile. Adding configuration does
+not install weights. Admin add/edit/check sends a synthetic image through both
+single and batch APIs and checks identity, including model_selection.model_name
+in leaf-inference-v1 responses. No /ocr-models registry/warmup is performed.
 
-```text
-Authorization: Bearer <MODEL_GATEWAY_API_KEY>
-```
+Backend GET /health/models checks URL configuration only, not authentication,
+reachability, inference, response contracts or accuracy.
 
-Do not hard-code leaf service URLs in backend process or service code.
+## Layout and detection
 
-## Gateway Endpoints
+User matching uses page-count/orientation/aspect prefilters followed by staged
+Text/Image Anchors. Publish and prepublish simulation do not generate or require
+Layout Signatures. Removed embedding-generation routes must not be reintroduced;
+embedding-jobs aliases now refer to Publish jobs.
 
-The backend expects Gateway to expose:
+Auto ROI still uses Layout. analyze_layout(use_text_detection=False) requests
+layout_only=true; its default use_text_detection=True requests layout_only=false.
+Raw-layout cache keys separate these modes. Do not add redundant full-page DET
+to User search.
 
-```text
-GET  /health
-POST /api/v1/document-layouts
-POST /api/v1/text-detections
-POST /api/v1/text-recognitions
-POST /api/v1/text-recognition-batches
-POST /api/v1/table-model-results
-POST /api/v1/image-verifications
-```
+The retained diagnostic analyze_layout_signature() requests layout_only=false
+and expects raw.layout and raw.text_detection. This compatibility helper is not
+the current publish pipeline. Run Simulation does not regenerate signatures.
 
-Standard response:
+## DET / REC
 
-```json
-{
-  "success": true,
-  "model": "model-name",
-  "result": {}
-}
-```
+Single requests send image; batch requests send images. Backend validates result
+count/order/boundaries, rejects ambiguous or missing results and normalizes
+supported legacy/new containers independently of model version. See
+[TEXT_RESPONSE_CONTRACT.md](TEXT_RESPONSE_CONTRACT.md). Backend owns crop mapping,
+reading order, segment merge and cleanup. Wrapper changes must not add inference.
 
-The backend may tolerate older wrapper shapes in some adapters, but new runtimes should use `result`.
+## Table
 
-## Layout
+The Table adapter inventories remote output, applies Backend structure rules,
+maps OCR tokens and formats rows/HTML/Markdown/structured cells. See
+[TABLE_POSTPROCESSING.md](TABLE_POSTPROCESSING.md) and [TABLE_MEMORY.md](TABLE_MEMORY.md).
+HTTP wait and local processing are nested spans, not independent inference times.
 
-Endpoint:
+## Image verification / SigLIP
 
-```text
-POST /api/v1/document-layouts
-```
+The active Backend-local V2.4 policy is app/model_runtime/siglip_policy.py,
+configured by siglip_v24.py. Prompts come from siglip_v23.py: eight Positive plus
+seven Negative prompts, 15 ordered finite logits; numbers is absent.
 
-Request:
+V2.4 keeps Positive Rank 1 when the highest Negative is no more than 0.8 logit
+units above it and configured relative gates pass. Optional gates default to
+unset. Expected category must equal final prediction. V2.3 guards are comparison
+helpers only. Sigmoid/softmax displays are not calibrated confidence.
 
-```json
-{
-  "image": "data:image/png;base64,...",
-  "layout_only": true
-}
-```
+A supplied trace must match vector/config/policy fingerprint; supported raw-only
+responses are evaluated locally with V2.4. The fingerprint is a consistency check,
+not a security signature. See [V2.4 details](../SIGLIP_V24_IMPLEMENTATION.md).
 
-`layout_only` defaults to `false`.
+This checkout has no API_Service_Kaggle directory and no sibling policy loader.
+External Gateway/Leaf services must provide compatible routes, prompt order,
+cardinality and contracts; their implementation cannot be verified from this repo.
 
-- `layout_only=true`: run PP-DocLayoutV3 only. Do not call Text Detection in the Layout pipeline.
-- `layout_only=false`: preserve full document-layout pipeline behavior.
+## Runtime limits and validation
 
-Layout Signature generation calls with `layout_only=true`. Normal `analyze_layout()` behavior must remain unchanged unless explicitly requested.
+Published cache, verification settings and detection/prepublish jobs use
+process-local state. Shared invalidation/job storage is required before scaling
+workers. PostgreSQL remains persistent source of truth.
 
-Expected result contains layout items with labels and boxes. Accepted box keys include `bbox`, `box`, `layout_bbox`, `coordinate`, `coordinates`, `dt_polys`, `poly`, `points`, or `{ "x", "y", "width", "height" }`.
+Gateway authentication is separate from application authentication. User/Admin
+auth currently includes mock/permissive behavior; see section 15 of the
+[Developer Guide](../../DEVELOPER_GUIDE_TH.md) before exposing APIs.
 
-Backend normalizes labels to `text`, `table`, or `image`.
-
-## Text Detection
-
-Endpoint:
-
-```text
-POST /api/v1/text-detections
-```
-
-Request:
-
-```json
-{
-  "image": "data:image/png;base64,..."
-}
-```
-
-Runtime returns raw detection polygons or boxes. Backend owns filtering, conversion to ROI geometry, crop planning, and reading order.
-
-Text Detection is still used for extraction inside ROI crops and OCR flows. It should not be reintroduced as a redundant full-page adaptive projection pass in User Detection.
-
-## Text Recognition
-
-Endpoints:
-
-```text
-POST /api/v1/text-recognitions
-POST /api/v1/text-recognition-batches
-```
-
-Single request:
-
-```json
-{
-  "image": "data:image/png;base64,..."
-}
-```
-
-Batch request:
-
-```json
-{
-  "images": ["data:image/png;base64,..."]
-}
-```
-
-Backend owns crop ownership, segment merge, normalization, cleanup, and final text result shaping.
-
-DET/REC response-container compatibility is handled in Backend independently of
-model versions. See `TEXT_RESPONSE_CONTRACT.md` for the verified legacy/new paths,
-strict result-count validation, empty-result rules and live Batch verification limits.
-
-## Table Recognition
-
-Endpoint:
-
-```text
-POST /api/v1/table-model-results
-```
-
-Runtime must only run table model inference and serialize raw output. Backend owns:
-
-- table quality gates
-- semi-table reconstruction
-- OCR assignment
-- structure recovery
-- final table post-processing
-- export shaping
-
-## Image Verification / SigLIP
-
-Endpoint:
-
-```text
-POST /api/v1/image-verifications
-```
-
-Request:
-
-```json
-{
-  "image": "data:image/png;base64,...",
-  "categories": [
-    {
-      "value": "signature",
-      "label": "Signature",
-      "prompt": "This is a photo of a handwritten signature.",
-      "match_threshold": 0.45,
-      "margin_threshold": 0.04,
-      "evidence_temperature": 1.0,
-      "enabled": true
-    }
-  ]
-}
-```
-
-Runtime must return raw logits or equivalent scores in the same order as categories. Backend owns ranking, thresholding, percentages, `passed`, status, and failure reason.
-
-## Performance Notes
-
-Keep model/runtime instrumentation metadata-only. Do not log image payloads or large raw model artifacts.
-
-Known performance-sensitive paths:
-
-- Layout response size and serialization
-- Text Detection latency for crop OCR
-- Template retrieval hot path
-- Verification field/anchor loading
-- Alignment image loading and signature comparison
-
-Published Template Cache and request-scoped caches are backend concerns, not model runtime concerns.
-
-
-### Matching layout signatures
-
-`analyze_layout_signature` requests `layout_only=false` and consumes both
-`result.raw.layout` and `result.raw.text_detection` from the same gateway call.
-The runtime uses PP-DocLayoutV3 and PP-OCRv6_medium_det; no recognition is added.
-Layout and DET branches are parsed separately to avoid losing DET polygons or
-interpreting them twice. Raw signature caching has its own combined-model key.
-A missing response branch raises an explicit unavailable error.
-
-After deploying this change, regenerate stored Template Layout Signatures
-(including published references) before comparing new signatures with them.
-For a draft, Run Simulation regenerates the stored signature. This change does
-not automatically rewrite existing database signatures or alter matching thresholds.
-
-
-Simulation consistency:
-- Template generation calls the analyzer through the shared runtime module and
-  rejects a Layout-only result instead of persisting it as a combined signature.
-- `region_sources` records accepted source-region counts (`layout`,
-  `text_detection`) in the stored signature and generated-page summary. These
-  are source counts, distinct from the final count if masks filter regions.
-- Simulation passes only when all pages generate nonempty signatures.
-- After commit, invalidate Admin detail caches and refresh the published-template
-  cache. Frontend simulation also discards cached Admin/User template bundles
-  after any in-flight loads finish, before retrieving the new page data.
-
-The real-model diagnostic runs in a separate process. Its successful output
-proves that process generated combined regions; it does not prove that an
-already-running web process uses the same loaded function. Validate the actual
-Simulation response after deploying: `model` must be the combined model name,
-`region_sources` must be present, and a subsequent template GET must contain the
-same stored model and region count. Existing templates still require signature
-regeneration; do not lower thresholds to compensate for mixed signature versions.
+Log counts/timing, not image payloads/secrets. Validate single/batch order, empty
+results, identity and errors against the deployed Gateway. Fixtures do not
+establish live compatibility or accuracy.

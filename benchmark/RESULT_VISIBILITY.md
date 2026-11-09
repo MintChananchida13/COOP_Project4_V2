@@ -1,5 +1,7 @@
 # Detection result visibility readiness
 
+Source review: 2026-11-10. Observer behavior checked against resultVisibility.ts and page.tsx. The current console mapping differs from the original helper naming, as specified below. Prior validation counts are historical, not a new browser/test run.
+
 ## Meaning and boundaries
 
 **Paint-ready estimate is NOT Actual Paint.** DOM commit, successful image decode
@@ -16,11 +18,14 @@ server-side timestamp or proof the whole response body has arrived.
 | `frontend_response_to_commit_ms` | Completed Response -> post-DOM-commit layout-effect checkpoint | Existing measured interval, unchanged |
 | `frontend_preview_ready_ms` | Completed Response -> observation of required image load/decode completion | Actual readiness observation; not decode CPU time or paint; null if no preview is required |
 | `frontend_ui_ready_ms` | Completed Response -> second frame with result summary present, CSS-visible/in viewport and overlay absent | UI-only paint-ready estimate; does not wait for preview decoding |
-| `frontend_render_ms` | Post-DOM-commit checkpoint -> final readiness checkpoint | Paint-ready estimate including image wait/frames, NOT React render CPU time or Actual Paint |
+| `frontend_render_ms` (console/workbook) | Handler flow completion -> post-DOM-commit checkpoint | Same interval as frontend_state_to_commit_ms; not React render CPU time or Actual Paint |
+| `result_ready_ms` (console/workbook) | Post-DOM-commit checkpoint -> final readiness checkpoint | Paint-ready estimate including image wait/frames; helper visibilityTiming names this interval frontend_render_ms |
 | `frontend_result_visible_ms` | Completed Response -> final readiness checkpoint | Combined UI+preview paint-ready estimate, not guaranteed visibility |
 | `end_to_end_ms` | Boundary confirmation handler starts -> final readiness checkpoint | End-to-end to combined paint readiness; excludes console logging, Excel save and reset |
 | `frontend_commit_end_to_end_ms` | Boundary confirmation -> commit checkpoint | Preserves the previous commit-boundary end-to-end measurement |
 | `frontend_flow_complete_ms` | Boundary confirmation -> final handler logging request | Preserves the original pre-commit end-to-end boundary |
+
+The helper in resultVisibility.ts returns commit-to-ready as frontend_render_ms, but page.tsx explicitly exports it under result_ready_ms and overrides frontend_render_ms with completionMetrics.frontend_state_to_commit_ms. Read console/workbook keys using the table above, not the helper field name alone.
 
 JSON, mapping, preparation, backend/model metrics remain available. These are
 nested/overlapping intervals: do not sum them to reconstruct end-to-end time.

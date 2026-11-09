@@ -1,5 +1,7 @@
 # Table post-processing optimization
 
+Source review: 2026-11-10. Current adapter still uses request-local output inventory, formatting/fallback reuse and mapping audit. Numerical before/after samples below are historical/synthetic evidence, not new measurements or a current deployed baseline.
+
 The adapter now scans remote output once on the successful reconstruction path,
 reuses that dictionary inventory for candidate selection, and avoids recursive
 dictionary probing of primitive values inside raw numeric arrays. The dictionary

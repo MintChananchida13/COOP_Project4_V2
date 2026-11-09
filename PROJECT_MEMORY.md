@@ -1,5 +1,7 @@
 # Project Memory
 
+Source review: 2026-11-10 against this checkout. Documentation review only; no live database, model or deployment validation was performed.
+
 # Intelligent Document Template Management System
 
 This file is project-level memory. It records architecture, invariants, and rules that should not be changed casually.
@@ -42,11 +44,11 @@ Backend must call Gateway only.
 
 | Capability | Gateway Endpoint |
 | --- | --- |
-| Layout / PP-DocLayoutV3 | `/api/v1/document-layouts` |
-| Text Detection | `/api/v1/text-detections` |
-| Text Recognition | `/api/v1/text-recognitions`, `/api/v1/text-recognition-batches` |
-| Table Recognition | `/api/v1/table-model-results` |
-| Image Verification / SigLIP | `/api/v1/image-verifications` |
+| Layout / PP-DocLayoutV3 | `/paddle/api/v1/document-layouts` |
+| Text Detection | `/paddle/api/v1/text-detections` |
+| Text Recognition | `/paddle/api/v1/text-recognitions`, `/paddle/api/v1/text-recognition-batches` |
+| Table Recognition | `/paddle/api/v1/table-model-results` |
+| Image Verification / SigLIP | `/paddle/api/v1/image-verifications` |
 
 Leaf services own raw inference only. Backend owns interpretation, filtering, scoring, quality gates, and final output shaping.
 
@@ -71,7 +73,7 @@ A template version may include:
 
 - pages
 - normalized/sample page images
-- layout signatures
+- optional legacy layout signatures (not required by current matching/publish)
 - extraction fields
 - verification anchors
 - ignore regions
@@ -84,7 +86,7 @@ Published template data is loaded into process-level RAM cache for detection hot
 
 Current published cache covers:
 
-- layout signatures
+- optional legacy layout signatures (not required by current matching/publish)
 - template metadata and thresholds
 - field count
 - verification fields and anchors
@@ -97,23 +99,21 @@ Process-local cache is acceptable for the current deployment. Multi-worker/multi
 ```text
 Upload/confirm image
 -> prepare pages
--> normalize
--> layout analysis
--> layout signature
--> layout retrieval from published templates
--> candidate gate
--> verification
+-> prepare/normalize according to confirmed-image context
+-> published template retrieval
+-> page-count/orientation/aspect gates
+-> staged Text/Image Anchor verification
 -> final decision
 -> ROI load/projection or Auto ROI
 ```
 
 Important current optimizations:
 
-- Layout signature path calls Layout with `layout_only=true`.
+- Matching and publish do not require Layout Signatures. The retained diagnostic signature analyzer requests combined Layout+DET (`layout_only=false`). Auto ROI supports Layout-only requests independently.
 - Published Template Cache removes stable template reads from the hot path.
 - Verification strategy is cached in process memory.
 - Request-scoped cache reuses template metadata, field count, and verification fields inside one detection request.
-- Alignment reuses precomputed query/template layout signatures.
+- Preserve image/coordinate references for ROI projection; do not restore signature generation as a publish requirement.
 - User detection no longer runs redundant full-page adaptive Text Detection for ROI projection.
 - Coordinate debug is disabled unless `DETECTION_COORDINATE_DEBUG=true`.
 
@@ -147,6 +147,8 @@ User-facing labels:
 - `strict` -> `แบบเข้มงวด (strict)`
 
 Do not rename internal values without migration and API changes.
+
+Both modes require every in-scope Anchor, including previously optional ones. Each stage schedules one next Anchor per surviving template. Standard runs Text/Image batches concurrently; Strict runs Text then Image. A complete pass with the most Anchors wins, ties use ascending template_id. Legacy weights/thresholds do not select the winner. Text Anchors use normalized literal Levenshtein matching, not regex/match_type.
 
 ## 9. Extraction Pipeline
 
@@ -202,7 +204,7 @@ They should preserve:
 - OCR original
 - Ground Truth
 - timing
-- page image files under processing log storage
+- page images in PostgreSQL `processing_log_images`, separated into source/processing; legacy local images can be backfilled
 
 Admin detail must not fabricate missing candidates or results. If data is absent, trace persistence first.
 
@@ -240,11 +242,7 @@ Detection queries should persist page images under:
 storage/detection_queries/{queryId}/page_N.png
 ```
 
-Processing Logs copy required pages into:
-
-```text
-app/storage/processing_logs/{logId}/...
-```
+Processing Log images are persisted in PostgreSQL `processing_log_images`. Legacy files may remain under `app/storage/processing_logs/{logId}/...` and are backfilled on preview or by the migration script. New logical references do not require a local file. Preserve source/processing coordinate spaces.
 
 Do not send page base64 from frontend for Processing Log persistence.
 
@@ -269,7 +267,7 @@ Authenticated image previews should use authenticated fetch -> blob/object URL a
 - Template versioning
 - Detection mode
 - Main page number
-- Layout signature
+- Legacy layout signature data and diagnostic helpers (no active publish dependency)
 - Published Template Cache
 - Verification anchors
 - Image verification categories
@@ -293,3 +291,9 @@ For frontend changes:
 ```powershell
 npx tsc --noEmit --pretty false
 ```
+
+## Current source boundaries
+
+Runtime schema is `app/core/db.py` (template_groups/template_versions/extraction_fields/verification_anchors); old Frontend Prisma schema is not the runtime source. Publish jobs validate Anchor readiness and respect Maintenance pending changes. SigLIP uses the local V2.4 policy with 8 Positive + 7 Negative prompts, tolerance 0.8 and optional relative gates disabled by default. No sibling API source directory is required.
+
+Current application auth remains mock/permissive: UI role cookies are not Backend authorization, several routes have no auth dependencies, and context=admin is not a verified privilege. See the Developer Guide before public deployment. Detection/prepublish jobs are process-local as well as caches; do not assume multi-worker polling works. Historical validation counts in older reports are not a current test run.

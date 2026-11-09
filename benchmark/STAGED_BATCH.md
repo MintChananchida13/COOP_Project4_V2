@@ -1,5 +1,7 @@
 # Staged anchor verification comparison
 
+Source review: 2026-11-10. Scheduling/winner rules checked against app/processing/staged_verification.py. Dated live/simulated results below remain historical observations, not newly repeated performance results.
+
 Search keeps page-count/orientation/aspect prefilters. One next anchor from each
 surviving template enters each stage, in stored page/anchor order. Text ROI OCR
 uses Detection -> Recognition; Image ROI uses SigLIP. Any failed/error/missing
@@ -33,9 +35,9 @@ Live mode calls the existing Gateway adapters. Manifest fields:
 - `pages`: page number to final AdjustZone image path, relative to the manifest.
 - `templates`: eligible (already prefiltered) template metadata, each with
   `verification_anchors` in stored order. Anchors use the existing backend schema
-  (`id`, `page_number`, `data_type`, `roi`, `expected_text`, `match_type`,
+  (`id`, `page_number`, `data_type`, `roi`, `expected_text`,
   `field_name`, `display_label`, `required_for_verification`, `verification_weight`,
-  and `image_category` for image anchors).
+  and `image_category` for image anchors). Legacy `match_type`/`regex_pattern` fields are ignored; expected text is literal and uses normalized Levenshtein matching.
 - `strategy`: standard or strict (default standard).
 - Optional `ocr_paths`: text_detection/text_recognition, each with single/batch
   paths. Explicit fixture paths avoid reading the production settings database.
@@ -96,5 +98,4 @@ browser end-to-end comparison was performed in this change.
 Validation: backend staged tests cover early rejection, mixed models, optional
 failure, missing batch output, unequal anchor counts, multiple pages, duplicate
 anchor IDs across templates, deterministic selection, and no prepublish reruns.
-One pre-existing benchmark reset-delay test expects 2000 ms and also fails against
-HEAD; it is unrelated to added metric columns.
+Historical note: the earlier report observed a reset-delay test expecting 2000 ms. Current user_flow.py uses 5000 ms; this documentation review did not rerun that test or establish its present pass/fail status.

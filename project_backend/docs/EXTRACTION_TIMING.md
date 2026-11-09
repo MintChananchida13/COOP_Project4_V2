@@ -1,5 +1,7 @@
 # OCR extraction timing
 
+Source review: 2026-11-10. Timing boundaries checked against app/processing/extraction_timing.py, main.py and the Frontend client. No inference or latency measurements were performed in this review.
+
 Run the normal selected-ROI OCR flow. No extra model request is made for timing.
 The completed `/api/ai/jobs/{job_id}` response contains
 `result.extraction_timing`; synchronous `/api/ai/process` responses contain it
