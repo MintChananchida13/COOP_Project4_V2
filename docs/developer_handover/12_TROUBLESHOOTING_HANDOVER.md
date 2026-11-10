@@ -27,6 +27,17 @@
 | Log ไม่มีภาพ | page_files, DB image rows, temporary query cleanup | ใช้ persisted images; ไม่พึ่ง query directory หลัง Detection |
 | แก้รหัส DB แต่ Login ไม่เปลี่ยน | mockAccounts ใน Browser | พัฒนา auth flow ให้ครบก่อนใช้ DB users เป็นตัวจริง |
 
+### Model API Service
+
+| อาการ | จุดตรวจ/แนวทาง |
+| --- | --- |
+| Gateway 401 หรือ process start ไม่ผ่าน | MODEL_GATEWAY_API_KEY ของ Backend/Gateway และ INTERNAL_API_TOKEN ระหว่าง model services; production ต้อง non-placeholder >=32 characters |
+| Gateway health ผ่านแต่ model request ไม่ได้ | health ไม่โหลด weights; services แสดง configured inventory; readiness อาจ degraded และไม่ required บริการนั้น |
+| SigLIP raw_logits_required ทั้งที่ HTTP 200 | C1: ปรับ Backend ให้อ่าน output จริง ใช้ single decision หรือ batch scoring แบบเดียวกับ service โดยไม่แก้ Model Service |
+| REC timeout แล้วยังใช้ resource | Fair queue ไม่ interrupt native inference; cleanup หลัง call กลับ |
+
+ประเด็น Model API integration ที่ต้องดำเนินการต่อเหลือ SigLIP ตาม C1 โดยปรับ Backend ให้รองรับ output/scoring ของ service เดิม ดู [แนวทางดำเนินการต่อ](13_MODEL_API_SERVICE.md#13-ประเด็นที่ต้องดำเนินการต่อ) ไม่แก้ Model Service หรือข้าม validator เพื่อให้ผลผ่าน
+
 ## 3. ตัวอย่างตรวจ DB แบบไม่แก้ข้อมูล
 
 แทน OCR_JOB_ID/PROCESSING_RUN_ID ด้วยค่าจากงานจริง:
@@ -73,6 +84,10 @@ ORDER BY pli.page_number, pli.kind;
 - Deployment topology, reverse proxy/TLS และขั้นตอน rollback
 - ผู้รับผิดชอบ auth, Maintenance/pending operations และเหตุขัดข้อง
 
+สำหรับ Model API ให้ส่งมอบ model_variants.json ที่ตรง environment, paths/mounts ของ weights, selected services/profiles, token rotation procedure และวิธีดู model-side logs เพิ่มเติม ซอร์สมีแล้วแต่สิ่งเหล่านี้ยังต้องยืนยันจากผู้ดูแล environment
+
+API_Service ปัจจุบันเป็น Git working tree แยกและยัง untracked ใน parent repository ต้องส่งต่อวิธี checkout subproject ด้วย ไม่ถือว่าการส่ง commit ของเอกสารจะรวม Model API source โดยอัตโนมัติ
+
 ## 6. สิ่งที่ยืนยันได้จาก Source Code
 
 | ส่วน | ขอบเขตที่ตรวจ |
@@ -84,34 +99,37 @@ ORDER BY pli.page_number, pli.kind;
 | Detection | Prepared images, page/aspect gates, staged Text/Image verification และ winner order |
 | OCR/model client | Pipeline selection, DET/REC contract, Table mapping และ outbound Gateway paths |
 | Jobs/Logs | Persistence vs memory state, stale check, snapshots, image storage/cleanup |
-| Testing | Test files/runners, package scripts และ benchmark CLI behavior |
+| Testing | Unit/regression files, test runners, package scripts และ integration smoke workflow |
+| API_Service | Gateway/leaf/pipeline entry points, model loaders, contracts, queues, auth, telemetry, setup/launch scripts และ deployment examples |
+| Backend ↔ Model API | Routes/methods, image envelopes, selectors และ batch normalization; งานต่อด้าน SigLIP อยู่ใน C1 |
 
 การตรวจนี้เป็น source-based handover ไม่เท่ากับการรันทดสอบทุก branch เอกสารอธิบาย workflow/จุดพัฒนา ไม่ใช่รายการ audit ทุก symbol ใน repository
 
-### ผลการตรวจเอกสารชุดส่งมอบ
+### การตรวจเอกสารส่งมอบ
 
-| รายการ | ผลตรวจ |
+เอกสารมีครบ 13 ไฟล์ โดย API catalogue แสดง 96 route declarations ที่อยู่ในขอบเขตส่งมอบ ตัวอย่าง request/response แยกจากผลทดสอบจริง และ source references ใช้ค้น implementation ที่เกี่ยวข้อง ตรวจลิงก์ ตาราง JSON และโครงสร้าง Mermaid หลังปรับเนื้อหา โดยไม่แก้ Source Code, Database หรือ Configuration
+
+### สถานะการใช้งานที่ผู้ดูแลระบบยืนยัน
+
+| ส่วน | สถานะสำหรับการส่งมอบ |
 | --- | --- |
-| ไฟล์ส่งมอบ | ครบ 12 ไฟล์ตามชื่อที่กำหนด |
-| ลิงก์ไฟล์และ Markdown tables | ไม่พบลิงก์ปลายทางหายหรือจำนวนคอลัมน์ไม่ตรง |
-| Endpoint catalogue | ครบ 97 route declarations จาก main.py/routes.py |
-| ตัวอย่าง JSON | อ่านได้ทั้ง 16 ชุด; 10 ชุดที่อ้าง DTO ผ่าน model_validate จาก class declaration จริง |
-| ตัวอย่างที่ไม่มี DTO โดยตรง | ตรวจ DET/REC leaves ด้วย normalize_single และตรวจรูปแบบ acknowledgement/ground truth กับโค้ดที่เกี่ยวข้อง |
-| Mermaid | ตรวจไวยากรณ์ย่อยที่ใช้ใน diagram ทั้ง 9 ชุด รวม node/entity references และ block structure; ไม่ได้ทดสอบ render ด้วย engine ปลายทาง |
-| Secrets | ไม่เปิด private environment และไม่พบ secret patterns ที่ตรวจในเอกสาร; ใช้ placeholder ใน config examples |
-| การเปลี่ยนไฟล์เดิม | เทียบ snapshot ไฟล์เดิม 261 ไฟล์ ไม่พบการเปลี่ยนระหว่างงานนี้; เพิ่มเฉพาะเอกสารชุดใหม่ |
+| Model Selection | ไม่พบปัญหาในการใช้งานปัจจุบัน; คงคำอธิบาย selectors/settings ตาม source |
+| Layout | ไม่พบปัญหาในการใช้งานปัจจุบัน; คงรายละเอียด Layout/DET workflow |
+| Table V2 | ผู้ดูแลยืนยันว่าทดสอบแล้วทำงานปกติ |
+| Batch processing | ผู้ดูแลยืนยันว่าทดสอบแล้วทำงานปกติ |
+| SigLIP | ยังต้องปรับ Backend ให้รองรับ Model Service ปัจจุบัน; ยังไม่ถือว่าแก้ไขแล้ว |
 
-เครื่องตรวจ DTO ใช้ Pydantic 2.14.1 การผ่าน validation นี้ไม่ใช่ผล integration บน environment ที่ติดตั้ง dependency versions ตาม requirements.txt ครบทั้งหมด และไม่ได้เชื่อม DB หรือเรียก inference ระหว่างตรวจ
+สถานะข้างต้นเป็นข้อมูลการใช้งานที่ผู้ดูแลให้ ไม่ใช่ผลรันทดสอบใหม่จากการแก้เอกสาร การส่งมอบครอบคลุม application และ Model API ที่เปิดแยก process บน Windows/Linux
 
 ## 7. ส่วนที่ยังขาดข้อมูลหรือไม่สามารถยืนยันได้
 
 | ส่วน | สถานะ/ข้อมูลที่ต้องขอหรือทดสอบ |
 | --- | --- |
 | Production topology และสถานะ deploy ปัจจุบัน | Not Verified: ไม่มีข้อมูล runtime จากเครื่องใช้งานจริง |
-| รุ่น Python/Node/PostgreSQL ที่รับรอง | Not Verified: dependency files ไม่ pin runtime ครบ |
-| Gateway/Leaf implementation, GPU/checkpoints | External Dependency: ไม่มีซอร์สบริการภายนอกใน checkout ที่ตรวจ |
+| รุ่น runtime ที่รับรอง | API_Service Windows setup ระบุ Python 3.12 และ Linux 3.10–3.12; application Node/PostgreSQL และ installed versions จริงยังไม่ยืนยัน |
+| Gateway/Leaf implementation | Implemented ใน API_Service; งานต่อด้าน SigLIP คือปรับ Backend โดยไม่แก้ service |
+| GPU/checkpoints/driver และ model artifacts จริง | External Dependency / Not Verified: ตรวจ loader/catalog ได้ แต่ไม่โหลดโมเดลหรือยืนยัน availability |
 | Active DB records/model settings จริง | Not Verified: ไม่เชื่อม DB หรืออ่าน private environment เพื่อยืนยัน |
-| OCR accuracy, throughput, latency, concurrent capacity | Not Verified: ไม่ได้รัน benchmark/inference ใหม่ |
 | Auth สำหรับใช้งานจริง | Mock/Incomplete: Browser mock, Backend role dependencies/token import issues ตามคู่มือ 05 |
 | Recovery หลัง force termination/multi-worker consistency | ยังไม่มีหลักประกันจาก process-local state/current startup ต้องออกแบบและทดสอบเพิ่ม |
 | Backup/restore, retention, TLS, monitoring alerts | Not Verified: ต้องมี runbook และผลทดสอบจาก environment |
@@ -126,6 +144,7 @@ ORDER BY pli.page_number, pli.kind;
 4. ใช้ [Database](06_DATABASE_DESIGN.md), [Template](07_TEMPLATE_MANAGEMENT.md), [Detection](08_TEMPLATE_DETECTION.md) และ [OCR](09_OCR_AI_PIPELINE.md) เมื่อเริ่มแก้ domain
 5. ตรวจสถานะงานและภาพด้วย [Jobs/Logs](10_PROCESSING_JOBS_LOGS.md)
 6. รันการตรวจที่สัมพันธ์กับงานตาม [Testing/Deployment](11_TESTING_DEPLOYMENT.md) แล้วบันทึกผลจริงแยกจากตัวอย่างในคู่มือ
+7. ใช้ [Model API Service](13_MODEL_API_SERVICE.md) ดูแล services/weights ตาม environment ที่ส่งมอบ และดำเนินงาน C1 ฝั่ง Backend พร้อมผลทดสอบก่อนปิดงาน SigLIP
 
 ## 9. Source References
 
@@ -138,3 +157,5 @@ ORDER BY pli.page_number, pli.kind;
 | [Runtime client](../../project_backend/app/core/model_runtime_client.py) | Gateway errors/identity |
 | [Frontend API](../../project_frontend/src/admin/adminApi.ts) | URL, polling, mapping และ caches |
 | [Browser session](../../project_frontend/src/auth/session.ts) | mockAccounts |
+| [Model Gateway](../../API_Service/services/gateway/main.py) / [Model contracts](../../API_Service/shared/inference_adapters.py) | Routing และ producer output |
+| [Service settings](../../API_Service/core/service_settings.py) | URLs สำหรับ Gateway/pipelines/leaves |

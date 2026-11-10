@@ -15,8 +15,10 @@ flowchart LR
     U["User / Admin Browser"] --> F["Next.js Frontend"]
     F --> B["FastAPI Backend"]
     B --> D[("PostgreSQL")]
-    B --> G["External Model Gateway"]
-    G --> M["Layout / Text DET-REC / Table / SigLIP"]
+    B --> G["API_Service Model Gateway"]
+    G --> P["Composition pipelines"]
+    G --> M["Model services: Layout / DET-REC / Table / SigLIP"]
+    P --> M
 ```
 
 | ส่วน | ความรับผิดชอบ |
@@ -24,9 +26,11 @@ flowchart LR
 | Frontend | รับภาพ/PDF, ปรับภาพ, จัดการ ROI, แสดงและตรวจทานผล, สร้างไฟล์ export |
 | Backend | API, Matching, Verification, OCR orchestration, jobs, settings และ persistence |
 | PostgreSQL | Template/version/page/field, settings, OCR/Publish jobs และ snapshots/log images |
-| Model Gateway | HTTP inference ที่ Backend เรียก; implementation ของบริการนี้เป็น External Dependency |
+| API_Service | มีซอร์ส Gateway, pipelines และ model inference services; รันเป็นบริการแยกจาก Backend |
 
 Frontend ติดต่อ Backend ผ่าน NEXT_PUBLIC_API_URL Backend ใช้ GATEWAY_URL และ runtime client ติดต่อโมเดล ไม่ได้เปิด Gateway/Leaf servers ให้จาก main.py
+
+ซอร์ส Model API อยู่ใน workspace แล้ว ส่วน weights/cache, GPU/driver และบริการที่ deploy จริงยังเป็น dependency ที่ต้องเตรียม สถานะใช้งานที่ผู้ดูแลยืนยันคือ Table V2 และ Batch ทำงานปกติ ส่วน Model Selection และ Layout ไม่มีปัญหาที่รายงาน ประเด็นที่ต้องดำเนินการต่อใน Model API integration เหลือ SigLIP โดยปรับ Backend ให้รองรับ service ปัจจุบัน ดู [แนวทางดำเนินการต่อ](13_MODEL_API_SERVICE.md#13-ประเด็นที่ต้องดำเนินการต่อ)
 
 ## 3. ความสามารถและสถานะ
 
@@ -40,7 +44,8 @@ Frontend ติดต่อ Backend ผ่าน NEXT_PUBLIC_API_URL Backend ใ
 | หน้า Login และ Browser session | Mock | ตรวจ mockAccounts; ไม่เรียก Backend login |
 | Template test endpoint แบบเดิม | Stub | /admin/templates/{template_id}/test คืน test_mode_stubbed |
 | Layout/alignment helpers รุ่นเดิม | Legacy ในบริบท Matching | current Detection คืนจาก Anchor strategy; alignment skipped |
-| Model inference infrastructure | External Dependency | ต้องเตรียม Gateway ที่ contract ตรงกัน |
+| Model Gateway/pipelines/leaves | Implemented / Configurable | อยู่ใน API_Service; แนวทางปรับ SigLIP ฝั่ง Backend อยู่คู่มือ 13 |
+| Model weights และ GPU/runtime infrastructure | External Dependency / Not Verified | มี loader/config แต่ยังไม่โหลดหรือรันทดสอบจริง |
 | Production capacity/accuracy/availability | Not Verified | ไม่มีผลทดสอบใหม่หรือ deployment state ให้ยืนยัน |
 
 ## 4. Workflow ที่เชื่อมทุกส่วน
@@ -90,6 +95,7 @@ flowchart TD
 | [10](10_PROCESSING_JOBS_LOGS.md) | สถานะงาน snapshots และภาพ |
 | [11](11_TESTING_DEPLOYMENT.md) | วิธีทดสอบและข้อกำหนดการติดตั้ง |
 | [12](12_TROUBLESHOOTING_HANDOVER.md) | แก้ปัญหา สิ่งที่ต้องส่งต่อ และข้อมูลที่ยังขาด |
+| [13](13_MODEL_API_SERVICE.md) | Gateway/model services, setup, inference contracts และงานต่อด้าน SigLIP |
 
 ## 7. Source References
 
@@ -100,3 +106,5 @@ flowchart TD
 | [page.tsx](../../project_frontend/src/app/page.tsx) | handleBatchConfirm, handleRunOCR และ export handlers |
 | [services.py](../../project_backend/app/business/services.py) | AdminTemplateService, VerificationService, ProcessingLogService |
 | [runtime client](../../project_backend/app/core/model_runtime_client.py) | ModelRuntimeKind, _post_predict |
+| [Model Gateway](../../API_Service/services/gateway/main.py) | _forward, _forward_multiple และ readiness |
+| [Model service topology](../../API_Service/core/topology.py) | SERVICE_DESCRIPTORS |

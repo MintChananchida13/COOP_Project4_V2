@@ -2,7 +2,7 @@
 
 ## 1. App และ Request Lifecycle
 
-main.py สร้าง FastAPI app, CORS, SearchBenchmarkMiddleware และ include router โดยไม่มี prefix กลาง API ด้าน Template/Settings/Logs อยู่ routes.py ส่วน OCR/Layout อยู่ main.py
+main.py สร้าง FastAPI app, CORS และ include router โดยไม่มี prefix กลาง API ด้าน Template/Settings/Logs อยู่ routes.py ส่วน OCR/Layout อยู่ main.py
 
 ```mermaid
 sequenceDiagram
@@ -11,12 +11,15 @@ sequenceDiagram
     participant S as Domain Service
     participant D as PostgreSQL
     participant G as Model Gateway
+    participant M as API_Service Model Service
     F->>R: HTTP request
     R->>R: Validate schema/context
     R->>S: Domain operation
     S->>D: Read/write metadata or job
     opt Processing requires inference
         S->>G: HTTP model request
+        G->>M: Forward to pipeline or leaf
+        M-->>G: data/meta or model error
         G-->>S: Model output
     end
     S-->>R: Domain result
@@ -125,9 +128,23 @@ Authentication ยังไม่สมบูรณ์: /auth/me คืน mock,
 
 ชื่อ endpoint ลงท้าย dev ไม่ได้บอกว่าไม่ถูกใช้ เช่น detect-dev อยู่ใน current User flow ส่วน test_template คืน stub ต้องดู implementation ของแต่ละ endpoint
 
+### 7.1 Outbound API ไป API_Service
+
+Backend ส่ง POST JSON image/images ไป GATEWAY_URL พร้อม MODEL_GATEWAY_API_KEY แล้ว _post_predict คลี่ data จาก Model API envelope ให้ adapter ใช้ ส่วน Gateway ส่ง multipart ต่อไป services โดยใช้ INTERNAL_API_TOKEN รายการใน catalogue ด้านล่างเป็น inbound Backend APIs เท่านั้น ไม่รวม Model API endpoints
+
+| Outbound path | Model-side ปลายทาง | ผลตรวจ integration |
+| --- | --- | --- |
+| text-detections/text-detection-batches | Unified DET leaf ผ่าน Gateway | version/model และ raw_output มีเส้นทาง consumer รองรับ |
+| text-recognitions/text-recognition-batches | REC leaf ผ่าน Gateway | อ่านผลแต่ละภาพตามลำดับด้วย batch normalizer |
+| document-layouts | Layout composition pipeline | เตรียม regions จาก Layout และ Text Detection ตาม pipeline |
+| table-model-results | Integrated Table V2 | อ่านตารางด้วย DET/REC และ structure models ตาม selection; ผู้ดูแลยืนยันใช้งานปกติ |
+| image-verifications/image-classification-batches | Verification pipeline/SigLIP leaf | C1: ต้องปรับ Backend ให้รับ output และ scoring ของ Model Service ปัจจุบัน |
+
+การเลือกโมเดลใช้ saved model settings ของ Backend และ selectors ของ Gateway ตาม route ส่วน HTTP errors จาก Model API ถูกแปลงเป็น ModelRuntimeUnavailableError ก่อนเข้า adapter/route ของ Backend Model Selection และ Layout ไม่มีปัญหาที่รายงานในการใช้งานปัจจุบัน รายละเอียด contract และแผนปรับ Backend ด้าน SigLIP อยู่ใน [13_MODEL_API_SERVICE.md](13_MODEL_API_SERVICE.md)
+
 ## 8. Endpoint Catalogue
 
-รายการด้านล่างมาจาก route declarations ใน main.py และ routes.py ครอบคลุม endpoints ที่ประกาศ รวม Mock/Stub/dev helpers ที่ยังอยู่ ไม่รวม StaticFiles mount และ /docs, /openapi.json ที่ FastAPI สร้างให้ คอลัมน์ schema ระบุ body model; เครื่องหมาย — หมายถึงไม่มี typed body model ใน signature ไม่ได้แปลว่าไม่มี query/raw body
+รายการด้านล่างมาจาก route declarations ใน main.py และ routes.py แสดง endpoints ที่เกี่ยวข้องกับขอบเขตส่งมอบ รวม Mock/Stub/dev helpers ที่ยังอยู่ ไม่รวม StaticFiles mount และ /docs, /openapi.json ที่ FastAPI สร้างให้ คอลัมน์ schema ระบุ body model; เครื่องหมาย — หมายถึงไม่มี typed body model ใน signature ไม่ได้แปลว่าไม่มี query/raw body
 
 | Method | Path | Body schema / input |
 | --- | --- | --- |
@@ -142,7 +159,6 @@ Authentication ยังไม่สมบูรณ์: /auth/me คืน mock,
 | GET | `/health/db` | - |
 | POST | `/api/templates/detect-dev` | raw Request/form/query |
 | GET | `/api/templates/detect-dev/jobs/{job_id}` | raw Request/form/query |
-| GET | `/api/benchmark/template-search/{trace_id}` | - |
 | POST | `/processing-logs` | ProcessingLogUpsertRequest |
 | GET | `/admin/processing-logs` | - |
 | GET | `/admin/processing-logs/{log_id}` | - |
@@ -240,3 +256,4 @@ Authentication ยังไม่สมบูรณ์: /auth/me คืน mock,
 | [Main](../../project_backend/main.py) | ROIModel, DocumentPayload, process_document, get_ai_process_job, analyze_document_layout |
 | [Services](../../project_backend/app/business/services.py) | Domain implementation และ HTTPException ของ service |
 | [Auth service](../../project_backend/app/auth/auth_service.py) | create_access_token, current_user, current_admin |
+| [Runtime HTTP client](../../project_backend/app/core/model_runtime_client.py) / [Model Gateway](../../API_Service/services/gateway/main.py) | Outbound selection, envelope และ routing |

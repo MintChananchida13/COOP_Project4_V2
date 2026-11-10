@@ -2,7 +2,7 @@
 
 ## 1. Overview และขอบเขตโมเดล
 
-Backend รับภาพกับ ROI แล้วเลือก adapter ตามชนิดงาน ก่อนส่งภาพ crop ไป Model Gateway ผลโมเดลถูก normalize และ map เป็น extracted_data ให้ Frontend Model Gateway เป็น External Dependency คู่มือนี้อธิบาย contract ฝั่ง client ไม่รับรอง checkpoint/ฮาร์ดแวร์ของบริการภายนอก
+Backend รับภาพกับ ROI แล้วเลือก adapter ตามชนิดงาน ก่อนส่งภาพ crop ไป Model Gateway ผลโมเดลถูก normalize และ map เป็น extracted_data ให้ Frontend ขณะนี้มีซอร์ส Gateway/pipelines/leaves ใน API_Service แล้ว แต่ยังเป็น runtime แยกจาก Backend และ weights/GPU/registry access ต้องเตรียมภายนอก ดู [13_MODEL_API_SERVICE.md](13_MODEL_API_SERVICE.md) สำหรับ service-side implementation และประเด็นที่ต้องดำเนินการต่อด้าน SigLIP
 
 ## 2. OCR Request และ Response
 
@@ -39,7 +39,7 @@ poll GET /api/ai/jobs/{job_id} จน completed แล้วอ่าน result.
 | Field ของผล ROI | ความหมาย |
 | --- | --- |
 | roiId, fieldName | ใช้จับคู่พื้นที่ใน UI |
-| text, confidence | ข้อความ/คะแนนจาก pipeline; ไม่ใช่ accuracy benchmark |
+| text, confidence | ข้อความและคะแนนจาก pipeline ตามผลโมเดล |
 | type, extraction_method, roi_mode, expected_content | metadata จาก ROI |
 | raw_segments, ocr_attempts, ocr_preprocessing | diagnostics ที่ response mapping เลือกส่ง |
 | ocr_engine, ocr_model | engine/model ที่ adapter รายงาน |
@@ -137,13 +137,21 @@ DET/REC paths เลือกจาก active saved model settings มี built-
 
 runtime client ใช้ JSON body image หรือ images เป็น data URLs ใส่ Authorization เมื่อ key ไม่ว่าง timeout ปกติ 120 วินาที และ wrappers ของ batch DET/REC, Table, SigLIP ใช้ 240 วินาที ไม่พบ retry ใน _post_predict
 
+### สถานะ Integration และแนวทางปรับ SigLIP
+
+Gateway อ่าน JSON แล้วส่ง multipart ต่อด้วย INTERNAL_API_TOKEN ก่อนคลี่ upstream data และห่อ data/meta ใหม่ DET/REC default raw_output อ่านด้วย Backend normalizers ตามลำดับภาพ Model Selection และ Layout ไม่มีปัญหาที่รายงาน ขณะที่ Table V2 และ Batch ผู้ดูแลระบบยืนยันว่าทดสอบแล้วทำงานปกติ ข้อมูลนี้เป็นสถานะที่ผู้ดูแลให้ ไม่ใช่ผลรันใหม่ในการปรับเอกสาร
+
+ประเด็นที่ต้องดำเนินการต่อเหลือ C1 — SigLIP: ปรับ Backend single adapter ให้ใช้ผล passed/predicted_category/scoring_version และ verifications ที่ Model Service คืนโดยตรง ส่วน batch adapter ให้อ่าน raw_output[].logits_per_image จับคู่กับ categories/prompts และใช้กฎ target-rank-1 ให้ตรง verify_classification ของ Model Service ไม่เปลี่ยน output หรือ scoring ฝั่ง service และไม่เพียงดึง logits แล้วใช้ V2.4 เดิมตัดสินซ้ำ
+
+สถานะยังไม่ดำเนินการแก้โค้ด ดูขั้นตอน mapping, validation และเกณฑ์ทดสอบใน [ประเด็นที่ต้องดำเนินการต่อ](13_MODEL_API_SERVICE.md#13-ประเด็นที่ต้องดำเนินการต่อ)
+
 ## 8. Error Handling และการพัฒนาต่อ
 
 HTTP/invalid JSON/success=false/model identity mismatch เป็น ModelRuntimeUnavailableError จาก client adapter แปลงเป็น error ตามชนิดงาน ส่วน DET/REC contract mismatch ไม่ถือเป็นผลว่างที่สำเร็จ
 
 Synchronous OCR route จับ Paddle/Layout unavailable เป็น 503 และ generic เป็น 500 Table error ไม่มี except เฉพาะ ส่วน async job จะบันทึก failed ดู [10](10_PROCESSING_JOBS_LOGS.md)
 
-เมื่อเพิ่มโมเดล/แก้ response ให้ตรวจ model identity, batch count, shape, order และ Frontend mapper ด้วย ไม่ทดแทน field ที่หายด้วยข้อความ/คะแนนที่แต่งขึ้น และไม่รายงาน client HTTP timing เป็น GPU inference time
+เมื่อเพิ่มโมเดล/แก้ response ให้ตรวจ model identity, batch count, shape, order และ Frontend mapper ด้วย ไม่ทดแทน field ที่หายด้วยข้อความ/คะแนนที่แต่งขึ้น และตรวจ error handling ของแต่ละ adapter
 
 ## 9. Source References
 
@@ -156,3 +164,5 @@ Synchronous OCR route จับ Paddle/Layout unavailable เป็น 503 แ�
 | [Text contract](../../project_backend/app/model_runtime/text_response_contract.py) | normalize_single, normalize_batch |
 | [Runtime client](../../project_backend/app/core/model_runtime_client.py) | _post_predict, remote wrappers, probe_ocr_model |
 | [Model settings](../../project_backend/app/core/ocr_model_config.py) | DEFAULT_OCR_MODEL_SETTINGS, normalize_saved_ocr_settings |
+| [Model Gateway](../../API_Service/services/gateway/main.py) | Routing, selectors และ data/meta envelope |
+| [Model adapters](../../API_Service/shared/inference_adapters.py) / [Verification scoring](../../API_Service/pipelines/verification/scoring.py) | Producer output และ binary-v3 |

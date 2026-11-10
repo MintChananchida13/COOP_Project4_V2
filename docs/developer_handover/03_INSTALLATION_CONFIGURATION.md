@@ -7,10 +7,10 @@
 | Python, pip และ venv | ติดตั้ง Backend dependencies |
 | Node.js และ npm | Frontend dependency/build/dev server |
 | PostgreSQL database | ต้องเชื่อมต่อได้และมีสิทธิ์ DDL ตาม bootstrap |
-| Model Gateway | External Dependency สำหรับทดสอบ inference |
+| API_Service และ weights/runtime | มีซอร์สใน workspace; ต้องติดตั้ง/รันเป็นบริการแยกเพื่อทดสอบ inference |
 | Browser ที่โหลด assets ภายนอกได้ | PDF.js ผ่าน CDN; root layout ใช้ next/font/google |
 
-รุ่น dependency หลักที่ประกาศ: FastAPI 0.110.0, Uvicorn 0.28.0, Pydantic 2.6.4, OpenCV 4.9.0.80, NumPy 1.26.4, Next.js 16.2.9, React 19.2.4 รุ่น Python/Node/PostgreSQL ที่ทีมรับรองยัง Not Verified เพราะไม่มี runtime pin ครบในไฟล์เหล่านี้
+รุ่น dependency หลักของ application ที่ประกาศ: FastAPI 0.110.0, Uvicorn 0.28.0, Pydantic 2.6.4, OpenCV 4.9.0.80, NumPy 1.26.4, Next.js 16.2.9, React 19.2.4 รุ่น Python/Node/PostgreSQL ที่ทีมรับรองสำหรับ application ยัง Not Verified เพราะไม่มี runtime pin ครบในไฟล์เหล่านี้ ส่วน API_Service มี constraints และ setup scripts แยกตามคู่มือ 13 ห้ามรวม requirements ทั้งสองส่วนลง environment เดียวโดยไม่ตรวจ compatibility
 
 ## 2. ติดตั้งตามลำดับ
 
@@ -62,7 +62,28 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 postinstall copy @techstark/opencv-js/dist/opencv.js ไป public/opencv.js ตรวจขั้นตอนนี้เมื่อหน้า Adjust ใช้ OpenCV ไม่ได้
 
-### 2.4 เริ่มบริการ
+### 2.4 เตรียม Model API Service
+
+ทำใน terminal แยกจาก API_Service คำสั่งเป็นขั้นตอนสำหรับผู้รับช่วง ไม่ได้รันติดตั้งหรือเริ่มโมเดลระหว่างจัดทำเอกสาร:
+
+```powershell
+cd D:\coop\COOP_Project4_New\API_Service
+scripts\setup-local.cmd all
+```
+
+Windows setup ใช้ Python 3.12 และสาม virtualenv แยก API/Paddle/SigLIP เตรียม .env.runtime จาก example พร้อม Gateway key/internal token ที่ถูกต้อง แล้วตรวจ model_variants.json และ weights paths ก่อน start:
+
+```powershell
+scripts\model-stack.cmd start core-stack
+scripts\model-stack.cmd start table-v2
+scripts\model-stack.cmd status all
+```
+
+Backend ใช้ GATEWAY_URL เช่น http://127.0.0.1:8080 และ MODEL_GATEWAY_API_KEY ที่ตรง Gateway ส่วน INTERNAL_API_TOKEN เป็นค่าของ Gateway/pipelines/leaves ไม่ส่งไป Browser core-stack ไม่รวม Table V2 จึงต้องเปิดเพิ่มสำหรับ Backend Table path
+
+คำสั่งข้างต้นไม่แก้ contract mismatches ให้เอง การติดตั้ง Linux, token requirements, service URLs และแนวทางปรับ SigLIP ฝั่ง Backend อยู่ใน [13_MODEL_API_SERVICE.md](13_MODEL_API_SERVICE.md) ตรวจ readiness หลังเตรียม warm-up ที่อนุญาตแล้ว; readiness อาจโหลด/ดาวน์โหลดโมเดล ไม่ใช่ read-only liveness check
+
+### 2.5 เริ่ม Application Backend และ Frontend
 
 Terminal Backend:
 
@@ -95,6 +116,8 @@ npm run dev
 | OCR_JOB_PROCESSING_TIMEOUT_SECONDS | 900; อย่างน้อย 60 | ปรับเกณฑ์ stale processing job ตอน poll |
 | DB_POOL_MIN_CONNECTIONS / DB_POOL_MAX_CONNECTIONS | 1 / 10 | ปรับ pool หลังประเมินจำนวน processes และ DB limit |
 
+API_Service launcher อ่าน .env.runtime หรือ MODEL_ENV_FILE ต่างจาก Backend ที่อ่าน .env.local การเปิด Uvicorn ของ model service โดยตรงไม่โหลดไฟล์ runtime ให้เอง ดูคู่มือ 13 สำหรับ effective URL/token/config ต่อ process
+
 Backend โหลด project_backend/.env.local ก่อน project_backend/app/.env.local และไม่ทับ key ที่มีใน process environment แล้ว ไฟล์ .env.local ที่ root repository ไม่ถูก loader นี้อ่าน GATEWAY_URL ถูกอ่านตอน import จึงควร restart Backend หลังเปลี่ยนค่า
 
 NEXT_PUBLIC_API_URL ใช้ใน Browser bundle จึงต้องมีค่าที่ถูกต้องในขั้น build/restart ที่เกี่ยวข้อง หากใช้เส้นทาง /backend/... ให้ตรวจ next.config.ts ซึ่งมี rewrite destination เขียนตายตัว ไม่อ่าน env ตัวนี้
@@ -116,6 +139,8 @@ Invoke-RestMethod http://localhost:8000/health/models
 
 ต่อจากนั้นใช้ภาพทดสอบใน User flow เพื่อยืนยัน Gateway contract ตาม [09](09_OCR_AI_PIPELINE.md) การได้ health/models=ok อย่างเดียวไม่รับรอง model availability
 
+Model API /health ไม่โหลด weights ส่วน /paddle/api/v1/readiness อาจโหลด weights และ probe หลาย upstream จึงต้องใช้ในขั้น warm-up ที่ได้รับอนุญาต ไม่แทน health ด้วย readiness ระหว่างตรวจเอกสารหรือ environment ที่ห้ามดาวน์โหลด
+
 ## 5. Startup และข้อผิดพลาดที่พบบ่อย
 
 startup ทำ DB bootstrap/seed → category initialization/geometry backfill → Maintenance/pending check → strategy/published cache load ไม่ warm up โมเดล DB/category initialization บางช่วงล้มแล้วทำให้ startup ไม่สำเร็จ ส่วน cache load บางช่วงจับ error แล้วใช้ fallback
@@ -136,3 +161,5 @@ startup ทำ DB bootstrap/seed → category initialization/geometry backfill �
 | [runtime client](../../project_backend/app/core/model_runtime_client.py) | runtime_url, _gateway_headers |
 | [next.config.ts](../../project_frontend/next.config.ts) | rewrites |
 | [Backend example](../../project_backend/env.local.example) / [Frontend example](../../project_frontend/env.local.example) | รูปแบบ config ตัวอย่าง |
+| [Model setup](../../API_Service/scripts/setup-local.cmd) / [Model launch](../../API_Service/scripts/model-stack.ps1) | Virtualenv และ service startup |
+| [Model constraints](../../API_Service/requirements/constraints.txt) / [ServiceURLs](../../API_Service/core/service_settings.py) | Dependencies และ model-side URLs |

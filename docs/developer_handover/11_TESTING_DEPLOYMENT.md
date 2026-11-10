@@ -4,11 +4,11 @@
 
 | ระดับ | ตรวจอะไร | สิ่งที่ต้องพร้อม |
 | --- | --- | --- |
-| Unit/regression | กฎ Matching, contracts, ROI mapping, timing และ helpers | Python/Node dependencies ของ tests |
+| Unit/regression | กฎ Matching, contracts, ROI mapping และ helpers | Python/Node dependencies ของ tests |
 | API integration | schema → route → service → DB/job/result | Backend และ DB แยกสำหรับทดสอบ |
 | Model integration | batch count, identity, outputs และ errors | Gateway ที่เข้าถึงได้ |
+| Model API source contracts | Gateway routing, leaf adapters, auth, queues และ upstream translation | API_Service dev dependencies/mocks ตาม test imports |
 | Browser flow | upload → detect → ROI → OCR → review/export/log | Frontend/Backend/DB/Gateway |
-| Benchmark | Detection flow และ measured timings ตาม script | Playwright, input และผลคาดหวัง |
 
 ชุด tests ใช้ mocks หลายจุด การผ่าน unit tests จึงไม่รับรอง Gateway availability หรือ accuracy ของเอกสารจริง การจัดทำเอกสารนี้ตรวจ source และ examples โดยไม่ได้เริ่ม integration services
 
@@ -42,9 +42,10 @@ package.json ไม่มี npm test script ไม่ควรใช้คำ�
 | ROI/Template mapping | templateRoiLoading.test.cjs, roiSelection.test.mjs |
 | Publish | test_anchor_publish.py, test_prepublish_active_ranking.py |
 | Logs/images | test_processing_log_images.py |
-| Model timing | test_model_timing_summary.py, test_model_runtime_timing.py |
 
 ไฟล์ที่ตารางย่อไม่ได้ใส่ path เต็มอยู่ใน project_backend/tests หรือ project_frontend/tests ตามนามสกุล ไม่ใช้ผลเก่าจากเอกสารอื่นแทนผลรันหลังแก้ไข
+
+API_Service ใช้ pytest/httpx จาก requirements-dev.txt แยกจาก Backend tests ตัวอย่างชุดที่อ้างถึงอยู่ tests/test_public_api_contract.py, test_inference_adapters.py, test_service_topology.py และ test_upstream_security.py วิธีรันด้วย model API virtualenv อยู่ [คู่มือ 13](13_MODEL_API_SERVICE.md) ใช้ test/development environment และตรวจ imports/fixtures ก่อนรัน ไม่ใช้ readiness/inference แทน unit test
 
 ## 3. Integration และ Smoke Test ตามลำดับ
 
@@ -60,48 +61,9 @@ package.json ไม่มี npm test script ไม่ควรใช้คำ�
 
 ใช้ข้อมูลทดสอบที่อนุญาตให้เก็บใน DB/logs และแยกจากข้อมูลใช้งานจริง การทดสอบที่สร้าง Template, jobs และ logs มีการเขียนข้อมูล ไม่ใช่ read-only smoke ทุกข้อ
 
-## 4. Browser Benchmark
+## 4. เตรียม Deployment
 
-ติดตั้ง dependencies ของ benchmark แยกจาก requirements หลัก ตัวอย่างจาก root:
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r benchmark\requirements.txt
-.\.venv\Scripts\python.exe -m playwright install chromium
-.\.venv\Scripts\python.exe benchmark\user_flow.py --input benchmark\input --frontend http://localhost:3000 --expected-mode standard --repeats 2
-```
-
-ต้องเตรียม input ภาพ/PDF จริง script เปิด persistent headed Chromium และเขียน Excel UserFlowTiming/ModelCalls การจับผลผูกกับ run/job ของเอกสารนั้นและรอ result visibility ก่อน reset
-
-script นี้หยุดหลัง Template Detection เสมอ --no-ocr เป็น compatibility option ไม่ใช่สวิตช์เพิ่ม OCR ได้ CLI ยังมีชื่อ mode ทดลองเดิม แต่ current Backend ใช้ standard/strict ตรวจ actual_mode ของผลด้วย script ไม่ได้เปลี่ยน strategy ของ Backend ให้ตาม expected-mode อัตโนมัติ
-
-ตัวอย่าง ground truth mapping สำหรับ option --ground-truth (ชื่อ key อ้าง relative input path):
-
-```json
-{
-  "sample.png":"TEMPLATE_VERSION_ID",
-  "unknown.png":null,
-  "presence_only.png":true
-}
-```
-
-PASS ของการเดิน flow ไม่ใช่ accuracy PASS ต้องดู match_correctness/matching_correctness ตาม ground truth และ errors ในแต่ละแถว URL ของ --frontend ถูก allowlist ใน script ไม่ใช่ domain ใดก็ได้
-
-## 5. การอ่าน Timing
-
-| Measurement | ใช้ตีความ |
-| --- | --- |
-| Client model HTTP timing | รวมช่วง request/response ตามที่วัด ไม่ใช่ pure inference |
-| Gateway inference fields | ใช้เมื่อ response ให้ค่าที่ valid; ถ้าไม่มีไม่แทนด้วย 0 |
-| model_wait_union_ms | Union ของช่วง calls; ต่างจาก sum เมื่อทำงานซ้อน |
-| model_wall_clock_ms | ตั้งแต่ model call แรกถึงสุดท้าย |
-| result visibility | DOM/control/preview checks และ animation frames; ไม่ใช่ physical display measurement |
-| Extraction timing | ช่วง process_document_payload; ไม่รวมทุกคิว/DB/log stage |
-
-ชื่อ backend_runtime_ms บาง object หมายถึง search elapsed แต่ helper backend_runtime_from_union หมายถึง total ลบ union ต้องระบุ source/path ของ metric ก่อนนำมาเปรียบเทียบ ไม่มี Benchmark results ใหม่ที่จัดทำเอกสารนี้รับรอง
-
-## 6. เตรียม Deployment
-
-repository ยืนยัน application commands ได้ แต่ topology, supervisor, reverse proxy, TLS, backup schedule และ Gateway deployment จริงยัง Not Verified ขั้นต่อไปเป็นแนวทางประกอบการติดตั้งที่ต้องปรับกับ environment จริง
+repository มี application commands พร้อม Model API launchers และ Nginx example ใน API_Service สำหรับติดตั้งแยก process บน Windows/Linux ขั้นตอนต่อไปใช้ค่าของ environment ที่ส่งมอบและไม่เปลี่ยน Model Service เพื่อแก้ SigLIP ส่วน topology/supervisor/TLS/backup จริงให้ยืนยันกับผู้ดูแลระบบ
 
 1. เตรียม PostgreSQL และ backup/restore procedure ของ environment
 2. ตั้ง Backend env และ URL/key ของ Gateway โดยเก็บ secrets ฝั่ง server
@@ -123,25 +85,34 @@ npm run build
 npm run start
 ```
 
-## 7. Scale, Restart และ Recovery
+### 4.1 Model API Deployment
+
+ใช้ virtualenv แยก API/Paddle/SigLIP ตาม setup scripts และเริ่ม Gateway ผ่าน services.gateway.main:app ไม่ใช่ app.py Linux manager รองรับ private binding, PID/log/cache/temp และหนึ่ง worker ต่อ service ส่วน Windows runner ใช้ environment names ต่างจาก Linux ตามคู่มือ 13
+
+core-stack ไม่เปิด Table V2 ที่ Backend เรียกจึงต้องวาง profile/process ให้ครบ แต่ไม่ควรเปิด all เพื่อแก้ทุกอย่างโดยไม่ประเมิน VRAM เพราะ integrated PaddleOCR/Table V2 โหลด submodels ซ้ำกับ leaves ได้
+
+ผู้ดูแลยืนยัน Table V2 และ Batch ทำงานปกติ ส่วน Model Selection และ Layout ไม่มีปัญหาที่รายงาน ให้ใช้เส้นทางเหล่านี้เป็น regression cases เมื่อปรับ Backend ด้าน SigLIP โดยไม่เปลี่ยน Model Service ดู [ประเด็นที่ต้องดำเนินการต่อ](13_MODEL_API_SERVICE.md#13-ประเด็นที่ต้องดำเนินการต่อ)
+
+Model API health/discovery ไม่โหลดโมเดล ส่วน readiness อาจโหลด weights/probe upstream จึงเป็น warm-up operation ที่ต้องได้รับอนุญาตและเผื่อ timeout ไม่ควรใช้เป็น liveness probe ถี่ ๆ แล้วคาดว่าไม่มีผลต่อ resource
+
+## 5. Scale, Restart และ Recovery
 
 single-process state ของ Detection jobs, published cache และ Maintenance events ทำให้เพิ่ม workers โดยตรงอาจเกิด poll 404 หรือ cache ต่างกัน ไม่รับรอง multi-worker consistency จากโค้ดนี้
 
 OCR queue จำกัด heavy-work thread หนึ่งต่อ process การเพิ่ม processes เพิ่มทั้ง worker และ connection pools ต้องคำนวณ DB limits และ memory ใหม่ OCR job อยู่ DB แต่ไม่มี startup recovery loop ใน current startup สำหรับ requeue งานที่ค้าง
 
+API_Service มี rate limiter/caches/REC fair queue ต่อ process เพิ่ม workers จึงเพิ่ม model copies/queue limits ด้วย Native inference ไม่ถูกยกเลิกเมื่อ HTTP client timeout โดยอัตโนมัติ ต้องพิจารณา Gateway→pipeline→leaf timeout ทั้ง chain ไม่ใช้ Backend timeout เดียวรับรอง recovery
+
 ก่อน restart ให้รู้ว่ามีงานค้างใดบ้างและเก็บ job IDs/logs ที่จำเป็น shutdown รอ memory worker แต่ force termination ไม่ให้หลักประกันเดียวกัน Rollback source อย่างเดียวไม่ย้อน DDL/UPDATE ที่ startup ทำไปแล้ว ต้องมีแผน database rollback/restore ที่ตรวจจริง
 
-## 8. Source References
+## 6. Source References
 
 | Source | Symbol/บทบาท |
 | --- | --- |
 | [Staged tests](../../project_backend/tests/test_staged_verification.py) | StagedVerificationTests |
 | [Text contract tests](../../project_backend/tests/test_text_response_contract.py) | TextResponseContractTests |
 | [Polling tests](../../project_frontend/tests/templatePollingCancellation.test.cjs) | node:test และ TypeScript extraction |
-| [Benchmark](../../benchmark/user_flow.py) | main, run_case, run_cases |
-| [Benchmark requirements](../../benchmark/requirements.txt) | Playwright/openpyxl |
-| [Timing](../../project_backend/app/processing/model_timing.py) | summarize_model_calls, backend_runtime_from_union |
-| [Visibility](../../project_frontend/src/shared/resultVisibility.ts) | observeResultVisibility |
 | [Package](../../project_frontend/package.json) | build/start/lint |
 | [Startup/shutdown](../../project_backend/main.py) | startup_warmup, shutdown_db_pool |
-
+| [Model tests](../../API_Service/tests/test_public_api_contract.py) / [Model adapters tests](../../API_Service/tests/test_inference_adapters.py) | Contract fixtures และ mocks |
+| [Model deployment](../../API_Service/scripts/model-stack.sh) / [Nginx](../../API_Service/deploy/nginx/nginx.conf) | Deployment implementations/examples |

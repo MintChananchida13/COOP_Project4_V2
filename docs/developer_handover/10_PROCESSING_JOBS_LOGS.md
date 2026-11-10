@@ -113,7 +113,23 @@ GlobalSettingsService ใช้ enforcement พร้อม scheduledStartAt/exp
 
 Maintenance SSE hub อยู่ใน process ใช้ Condition/version ส่งสถานะแรกและ event/keepalive Frontend มี boundary refresh ของตน ไม่ใช่ distributed event bus บาง settings read error fallback เป็น disabled จึงไม่ควรอ้างว่า gate fail closed ทุกกรณี
 
-## 8. Source References
+## 8. Model-side Processing และ Logging
+
+API_Service ไม่ใช้ ocr_jobs/processing_logs ของ application และไม่มี durable Model API job store REC fair queue เป็น process-local queue พร้อมหนึ่ง inference worker ต่อ REC process แบ่ง turns ด้วย REC_FAIR_CHUNK_SIZE และ cleanup ภาพเมื่อ native inference กลับแล้ว แม้ caller timeout/cancel ไม่ interrupt kernel ที่กำลังทำ
+
+Gateway/pipelines/leaves ใช้ X-Request-ID เชื่อม HTTP hops ภายใน แต่ Backend ไม่ได้ผูก model_call_id กับ header นี้อัตโนมัติ จึงต้องแยก request_id ของ Model API จาก processing_run_id/job_id ของ application
+
+| จุดตรวจ | ข้อมูล |
+| --- | --- |
+| RequestTelemetry | สถานะ, bytes, duration, receive/upstream/inference/admission stages; resources เป็น process snapshots ไม่ใช่ GPU VRAM ต่อ request |
+| Linux launcher | logs/{service}.log, {service}.debug.log และ {service}.audit.jsonl |
+| Windows launcher | {service}.windows.log และ {service}.windows.error.log |
+| Log rotation เมื่อเปิด file handlers | debug 20 MiB/3 backups; audit 20 MiB/10 backups |
+| Error propagation | upstream 4xx คง status, 5xx → 502; timeout → 504 ก่อน Backend แปลง error/job status ต่อ |
+
+Audit ไม่บันทึก token/document body แต่ access/debug อาจมี URL query/model paths ต้องรักษา permissions/retention และใช้ request_id ตรวจ error ของแต่ละ HTTP hop ดูรายละเอียดการอ่าน logs ใน [13_MODEL_API_SERVICE.md](13_MODEL_API_SERVICE.md)
+
+## 9. Source References
 
 | Source | Function/Class |
 | --- | --- |
@@ -124,3 +140,6 @@ Maintenance SSE hub อยู่ใน process ใช้ Condition/version ส�
 | [Maintenance hub](../../project_backend/app/business/maintenance_events.py) | maintenance_event_hub |
 | [User page](../../project_frontend/src/app/page.tsx) | queueProcessingLogSave, runAiProcessJob |
 | [Migration](../../project_backend/scripts/migrate_processing_log_images.py) | run |
+| [Model queue](../../API_Service/core/fair_queue.py) | FairInferenceQueue.submit/_work |
+| [Model telemetry](../../API_Service/core/telemetry.py) / [Audit](../../API_Service/core/audit.py) | RequestTelemetry, resources, emit |
+| [Model transport](../../API_Service/shared/upstream.py) | post_images, _internal_headers |

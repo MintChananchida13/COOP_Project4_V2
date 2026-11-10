@@ -70,11 +70,13 @@ VerificationService._score_match normalize NFKC, ลบ zero-width U+200B/U+200C
 
 ### Image Anchor
 
-SigLIP V2.4 ใช้ ordered raw logits ของ positives 8 และ negatives 7 categories มี positive categories: emblem, thai_garuda, company_logo, document_stamp, portrait, signature, barcode, qr_code
+โค้ด Backend ปัจจุบันยังใช้ SigLIP V2.4 กับ ordered raw logits ของ positives 8 และ negatives 7 categories มี positive categories: emblem, thai_garuda, company_logo, document_stamp, portrait, signature, barcode, qr_code
 
 negative gate คือ negative_top1_logit <= positive_top1_logit+0.8 จากนั้น optional relative confidence/margin gates หากตั้งค่า และ final category ต้องตรง target ที่ enabled
 
 SIGLIP_V24_CONFIDENCE_MIN_RELATIVE_SCORE กับ SIGLIP_V24_MARGIN_MIN_RELATIVE_SCORE ว่างหมายถึงไม่ใช้ gate; เมื่อกำหนดต้อง finite [0,1] ค่าความเชื่อมั่นที่แสดงไม่ใช่ calibrated probability หาก response decision trace ไม่ตรง shared policy จะเกิด contract error
+
+Model Service ปัจจุบันใช้ output/scoring อีก contract หนึ่ง งาน C1 คือปรับ Backend ให้รับ raw_output[].logits_per_image ใน batch และใช้กฎ target-rank-1 แบบเดียวกับ service หรือรับผล decision ของ single verification โดยตรง กฎ V2.4 ข้างต้นอธิบายโค้ด Backend ที่ยังมีอยู่ ไม่ใช่กฎเป้าหมายหลังปรับ และยังไม่ได้แก้ไขจริง ดู [แผน SigLIP](13_MODEL_API_SERVICE.md#13-ประเด็นที่ต้องดำเนินการต่อ)
 
 ## 7. ผลลัพธ์และการเลือกผู้ชนะ
 

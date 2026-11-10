@@ -9,7 +9,7 @@ COOP_Project4_New/
 │  ├─ src/admin/               Admin pages, API client และ types
 │  ├─ src/auth/                Browser session และ AuthGate
 │  ├─ src/user/                User components และ crop worker
-│  ├─ src/shared/              PDF, ROI, Canvas, timing และ helpers
+│  ├─ src/shared/              PDF, ROI, Canvas และ helpers
 │  ├─ src/types/               OCR types
 │  ├─ tests/                   Frontend regression/unit tests
 │  └─ public/                  Browser assets รวม OpenCV ที่ postinstall copy
@@ -19,11 +19,19 @@ COOP_Project4_New/
 │  ├─ app/business/            Domain services และ Maintenance events
 │  ├─ app/core/                DB, config, cache และ runtime HTTP client
 │  ├─ app/auth/                Backend user/password/token helpers
-│  ├─ app/processing/          Detection, ROI/OCR orchestration และ timing
+│  ├─ app/processing/          Detection และ ROI/OCR orchestration
 │  ├─ app/model_runtime/       HTTP-backed model adapters และ contracts
 │  ├─ scripts/                Processing Log image migration
 │  └─ tests/                   Backend tests
-├─ benchmark/                 Browser user-flow benchmark และผลรูปแบบ Excel
+├─ API_Service/
+│  ├─ services/*/main.py       Gateway, pipeline และ leaf FastAPI apps
+│  ├─ inference/              Model selection/loading/predict
+│  ├─ pipelines/              Layout, OCR, table และ verification composition
+│  ├─ core/ และ shared/       Auth, contracts, parsing, queues และ telemetry
+│  ├─ clients/                HTTPModelClient สำหรับ pipeline-to-leaf
+│  ├─ model_variants.json     Catalog ของ DET/REC variants และ paths
+│  ├─ scripts/                Windows/Linux setup และ process manager
+│  └─ tests/                  Model API contract/infrastructure tests
 └─ docs/developer_handover/    เอกสารชุดนี้
 ```
 
@@ -40,7 +48,9 @@ COOP_Project4_New/
 | project_frontend/src/proxy.ts | Redirect จาก role cookie ตาม path |
 | project_backend/main.py | FastAPI app, router/middleware/static mount, startup/shutdown |
 | project_backend/app/api/routes.py | HTTP APIs ด้าน Admin, Detection, settings และ logs |
-| benchmark/user_flow.py | Browser automation สำหรับวัด User detection flow |
+| API_Service/services/gateway/main.py | Gateway ที่ Backend ต้องชี้ GATEWAY_URL มาเรียก |
+| API_Service/services/*/main.py | Apps แยก process; module/พอร์ตอยู่ในคู่มือ 13 |
+| API_Service/app.py | Compatibility entry ของ PaddleOCR pipeline ไม่ใช่ Gateway |
 
 ## 3. แผนที่ Backend
 
@@ -83,6 +93,7 @@ services.py รวมหลาย domain ในไฟล์เดียว ค�
 | เพิ่มข้อมูล Field | schema → route → service/DB → adminApi mapping → editor/User mapper |
 | เปลี่ยน Matching | detection_service → staged_verification → VerificationService → candidate resolver/UI |
 | เปลี่ยน OCR result | adapter → main response mapping → types/handler → review/export/log snapshot |
+| เปลี่ยน Model API contract | Backend runtime client/adapter → Gateway route → service/inference adapter → consumer normalizer; แนวทางปรับ SigLIP ให้รองรับ service ปัจจุบันอยู่คู่มือ 13 |
 | เปลี่ยน settings | GlobalSettingsService → pending apply → cache invalidation → AdminSettingsPage |
 | เปลี่ยน Log images | Frontend pageFiles → ProcessingLogService → processing_log_images → preview API |
 
@@ -96,6 +107,8 @@ services.py รวมหลาย domain ในไฟล์เดียว ค�
 - project_frontend/prisma มีไฟล์ schema/migrations รุ่นอื่น แต่ Backend runtime ใช้ DDL ของ db.py เป็นจุดที่ต้องตรวจสำหรับระบบนี้
 - การมีไฟล์ legacy ไม่ยืนยันว่าถูกเรียกใน current User flow
 
+API_Service มี dependencies และ process manager ของตนเอง แยก virtualenv จาก application Backend การมี weights/ directory ไม่ยืนยันว่ามี weights ที่ใช้งานได้ ดู [Model API Service](13_MODEL_API_SERVICE.md) ก่อนย้าย model paths หรือเพิ่ม workers
+
 ## 7. Source References
 
 | Source | ใช้ตรวจ |
@@ -106,3 +119,5 @@ services.py รวมหลาย domain ในไฟล์เดียว ค�
 | [Services](../../project_backend/app/business/services.py) | Domain classes |
 | [OpenCV copy](../../project_frontend/scripts_copy_opencv.cjs) | การสร้าง public asset |
 | [Frontend rules](../../project_frontend/AGENTS.md) | กติกาการพัฒนา Frontend |
+| [Model entry](../../API_Service/app.py) / [Gateway](../../API_Service/services/gateway/main.py) | ความต่างของ default entry กับ Gateway |
+| [Model launchers](../../API_Service/scripts/model-stack.ps1) | Service/profile mapping |
