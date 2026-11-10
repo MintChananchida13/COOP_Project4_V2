@@ -14,6 +14,7 @@ from unittest.mock import patch, MagicMock
 from app.model_runtime import siglip_image_verification_adapter as adapter
 from app.model_runtime.siglip_v23 import SINGLE, NEGATIVE, classify, runtime_categories
 from app.core import model_runtime_client
+from siglip_contract_fixtures import decision, leaf, batch, payloads
 
 
 def raw(**values):
@@ -152,15 +153,15 @@ class SiglipV23AuditTests(unittest.TestCase):
     def test_api_single_batch_and_reordered_configs_keep_prompt_logit_alignment(self):
         garuda, portrait = raw(thai_garuda=8.1, emblem=6.5818), portrait_case(-8.0)
         with patch.object(adapter, "is_runtime_configured", return_value=True), \
-                patch.object(adapter, "remote_verify_image_logits", return_value={"logits": garuda}) as single, \
-                patch.object(adapter, "remote_verify_image_logits_batch", return_value={"results": [{"logits": garuda}, {"logits": portrait}]}) as batch:
+                patch.object(adapter, "remote_verify_image_logits", return_value=decision("thai_garuda", garuda, categories())) as single, \
+                patch.object(adapter, "remote_verify_image_logits_batch", return_value=batch(leaf(garuda, categories()), leaf(portrait, categories()))) as batch_call:
             individual = adapter.verify_image_category("a.png", "thai_garuda", list(reversed(categories())))
             results = adapter.verify_image_categories_batch(["a.png", "b.png"], [["thai_garuda", "emblem"], ["portrait"]], categories())
-        self.assertEqual(single.call_args.args[2], runtime_categories())
-        self.assertEqual(batch.call_args.args[1], runtime_categories())
+        self.assertEqual(single.call_args.args[2], payloads(categories()))
+        self.assertEqual(batch_call.call_args.args[1], payloads(categories()))
         self.assertEqual(individual.predicted_category, results[0][0].predicted_category)
-        self.assertEqual([item.passed for item in results[0]], [False, True])
-        self.assertEqual(results[1][0].predicted_category, "other")
+        self.assertEqual([item.passed for item in results[0]], [True, False])
+        self.assertEqual(results[1][0].predicted_category, "printed_text")
 
     def test_disabled_competitor_still_participates_in_fixed_eight_positive_logits(self):
         settings = [item for item in categories() if item["value"] != "emblem"]
@@ -175,17 +176,16 @@ class SiglipV23AuditTests(unittest.TestCase):
         response = MagicMock()
         response.__enter__.return_value = response
         response.read.side_effect = [
-            json.dumps({"success": True, "model": adapter.SIGLIP_MODEL_NAME, "result": {"logits": garuda, "device": "cpu"}}).encode(),
-            json.dumps({"success": True, "model": adapter.SIGLIP_MODEL_NAME,
-                        "result": {"results": [{"logits": garuda}, {"logits": portrait}]}}).encode(),
+            json.dumps({"data": decision("thai_garuda", garuda, categories()), "meta": {}}).encode(),
+            json.dumps({"data": batch(leaf(garuda, categories()), leaf(portrait, categories())), "meta": {}}).encode(),
         ]
         with patch.object(model_runtime_client, "GATEWAY_URL", "http://unit.invalid"), \
                 patch.object(model_runtime_client, "_path_to_data_url", return_value="image"), \
                 patch.object(model_runtime_client.urllib.request, "urlopen", return_value=response) as http:
             single = adapter.verify_image_category("a.png", "thai_garuda", categories())
-            batch = adapter.verify_image_categories_batch(["a.png", "b.png"], [["thai_garuda"], ["portrait"]], categories())
-        self.assertEqual(single.predicted_category, "emblem")
-        self.assertEqual([items[0].predicted_category for items in batch], ["emblem", "other"])
+            results = adapter.verify_image_categories_batch(["a.png", "b.png"], [["thai_garuda"], ["portrait"]], categories())
+        self.assertEqual(single.predicted_category, "thai_garuda")
+        self.assertEqual([items[0].predicted_category for items in results], ["thai_garuda", "printed_text"])
         self.assertEqual(http.call_count, 2)
         for call in http.call_args_list:
             payload = json.loads(call.args[0].data)

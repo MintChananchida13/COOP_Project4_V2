@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from app.model_runtime import siglip_image_verification_adapter as adapter
 from app.model_runtime.siglip_v23 import LABELS, NEGATIVE, SINGLE, classify, runtime_categories
+from siglip_contract_fixtures import decision, leaf, batch
 
 
 def logits(**scores):
@@ -92,11 +93,13 @@ class SiglipV23Tests(unittest.TestCase):
 
     def test_single_and_batch_send_same_fixed_prompt_order(self):
         raw = logits(qr_code=5)
-        with patch.object(adapter, "is_runtime_configured", return_value=True), patch.object(adapter, "remote_verify_image_logits", return_value={"logits": raw, "device": "cpu"}) as single, patch.object(adapter, "remote_verify_image_logits_batch", return_value={"results": [{"logits": raw}, {"logits": raw}], "device": "cpu"}) as batch:
+        settings = categories()
+        with patch.object(adapter, "is_runtime_configured", return_value=True), patch.object(adapter, "remote_verify_image_logits", return_value=decision("qr_code", raw, settings)) as single, patch.object(adapter, "remote_verify_image_logits_batch", return_value=batch(leaf(raw, settings), leaf(raw, settings))) as batch_call:
             result = adapter.verify_image_category("one.png", "qr_code", categories())
             results = adapter.verify_image_categories_batch(["one.png", "two.png"], [["qr_code"], ["barcode", "qr_code"]], categories())
-        self.assertEqual(single.call_args.args[2], runtime_categories())
-        self.assertEqual(batch.call_args.args[1], runtime_categories())
+        expected = adapter._runtime_category_payloads(adapter._normalize_categories(settings))
+        self.assertEqual(single.call_args.args[2], expected)
+        self.assertEqual(batch_call.call_args.args[1], expected)
         self.assertEqual(len(runtime_categories()), 15)
         self.assertTrue(result.passed)
         self.assertEqual([item.passed for item in results[1]], [False, True])

@@ -10,6 +10,7 @@ from unittest.mock import patch
 from app.model_runtime import siglip_image_verification_adapter as adapter
 from app.model_runtime.siglip_v23 import SINGLE, NEGATIVE, runtime_categories
 from app.model_runtime.siglip_v24 import gate_config, policy
+from siglip_contract_fixtures import leaf, batch
 
 
 def raw(**values):
@@ -129,14 +130,14 @@ class SiglipV24Tests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 policy.decide(scores)
 
-    def test_api_decision_is_consumed_and_corruption_is_not_accepted(self):
+    def test_legacy_api_decision_rejected_and_offline_policy_still_validates(self):
         scores = raw(thai_garuda=8.1, emblem=6.5818)
         decision = policy.decide(scores)
         with patch.object(adapter, "is_runtime_configured", return_value=True), \
                 patch.object(adapter, "remote_verify_image_logits", return_value={"logits": scores, "decision": decision}):
             result = adapter.verify_image_category("image.png", "thai_garuda", categories())
-        self.assertTrue(result.passed)
-        self.assertEqual(result.decision, decision)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.failure_reason, "invalid_service_response")
         changed = copy.deepcopy(decision)
         changed["final_predicted_category"] = "emblem"
         with self.assertRaises(ValueError):
@@ -146,12 +147,12 @@ class SiglipV24Tests(unittest.TestCase):
 
     def test_single_batch_compatibility_and_target_verification(self):
         scores = raw(thai_garuda=8.1, emblem=6.5818)
-        decision = policy.decide(scores)
         with patch.object(adapter, "is_runtime_configured", return_value=True), \
-                patch.object(adapter, "remote_verify_image_logits_batch", return_value={"results": [{"logits": scores, "decision": decision}]}):
+                patch.object(adapter, "remote_verify_image_logits_batch", return_value=batch(leaf(scores, categories()))):
             results = adapter.verify_image_categories_batch(["image.png"], [["thai_garuda", "emblem"]], list(reversed(categories())))[0]
         self.assertEqual([result.passed for result in results], [True, False])
-        self.assertEqual(results[0].decision, results[1].decision)
+        self.assertIsNone(results[0].decision)
+        self.assertEqual(results[0].scoring_version, "siglip-image-category-binary-v3")
         self.assertEqual(results[1].failure_reason, "predicted_category_mismatch")
         self.assertEqual(len(runtime_categories()), 15)
 

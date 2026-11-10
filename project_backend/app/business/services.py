@@ -3756,6 +3756,7 @@ class VerificationService:
                 "current_crop_preview_data_url": current_crop_preview_data_url,
                 "model_name": result.model_name,
                 "device": result.device,
+                "error": result.error,
             }
         finally:
             if cropped:

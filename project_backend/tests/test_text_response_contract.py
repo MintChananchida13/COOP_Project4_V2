@@ -206,7 +206,7 @@ class TextResponseContractTests(unittest.TestCase):
     def test_layout_table_and_siglip_are_not_subject_to_text_contract_normalization(self):
         data = {'raw_output': [{'arbitrary': 'preserved'}], 'predictions': [], 'regions': []}
         response = MagicMock()
-        response.__enter__.return_value.read.return_value = json.dumps({'data': data}).encode()
+        response.__enter__.return_value.read.return_value = json.dumps({'data': data, 'meta': {}}).encode()
         for kind in (client.ModelRuntimeKind.LAYOUT, client.ModelRuntimeKind.TABLE, client.ModelRuntimeKind.IMAGE_VERIFICATION):
             with self.subTest(kind=kind), patch.object(client, 'GATEWAY_URL', 'https://gateway.example'), \
                  patch.object(client.urllib.request, 'urlopen', return_value=response):

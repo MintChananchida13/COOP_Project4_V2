@@ -289,6 +289,17 @@ def _post_predict(
     del raw
     memory_usage.checkpoint('gateway_json_text_released')
 
+    if kind == ModelRuntimeKind.IMAGE_VERIFICATION:
+        # SigLIP's current gateway uses {data: object, meta: object}.
+        # Do not accept a legacy vector, null/list data, or an error envelope
+        # as a successful inference. Keep other model transports unchanged.
+        if not isinstance(parsed, dict):
+            raise ModelRuntimeUnavailableError("image_verification runtime returned an invalid response envelope.")
+        if parsed.get("error") is not None or parsed.get("success", True) is not True:
+            raise ModelRuntimeUnavailableError(f"image_verification runtime failed: {parsed.get('error') or parsed.get('detail')}")
+        if not isinstance(parsed.get("data"), dict) or not isinstance(parsed.get("meta"), dict) or "result" in parsed:
+            raise ModelRuntimeUnavailableError("image_verification runtime returned an invalid response envelope.")
+
     if not parsed.get("success", True):
         detail = parsed.get("detail") or parsed.get("error") or "Model runtime request failed."
         raise ModelRuntimeUnavailableError(f"{kind.value} runtime failed: {detail}")
@@ -460,7 +471,6 @@ def remote_verify_image_logits(
     categories: Optional[List[Dict[str, Any]]] = None,
     timing: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    from app.model_runtime.siglip_v24 import gate_config
     if not is_runtime_configured(ModelRuntimeKind.IMAGE_VERIFICATION):
         return None
     return _post_predict(
@@ -469,7 +479,6 @@ def remote_verify_image_logits(
             "image": _path_to_data_url(image_path),
             "image_category": image_category,
             "categories": categories or [],
-            "decision_config": gate_config(),
         },
         timeout=240.0,
         timing=timing,
@@ -481,7 +490,6 @@ def remote_verify_image_logits_batch(
     categories: Optional[List[Dict[str, Any]]] = None,
     timing: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    from app.model_runtime.siglip_v24 import gate_config
     if not is_runtime_configured(ModelRuntimeKind.IMAGE_VERIFICATION):
         return None
     encode_started = time.perf_counter()
@@ -496,7 +504,6 @@ def remote_verify_image_logits_batch(
         {
             "images": images,
             "categories": categories or [],
-            "decision_config": gate_config(),
         },
         timeout=240.0,
         path_override="/paddle/api/v1/image-classification-batches",

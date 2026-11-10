@@ -13,11 +13,12 @@ from app.core.model_runtime_client import (
 )
 from app.model_runtime.siglip_v23 import LABELS, NEGATIVE, SCORING_VERSION, SINGLE, classify, runtime_categories
 from app.model_runtime.siglip_v24 import SCORING_VERSION as V24_SCORING_VERSION, gate_config, policy
+from app.model_runtime import siglip_service_contract as service_contract
 
 
 SIGLIP_MODEL_NAME = "google/siglip-so400m-patch14-384"
 SIGLIP_MODEL_VERSION = "google/siglip-so400m-patch14-384"
-SIGLIP_SCORING_VERSION = V24_SCORING_VERSION
+SIGLIP_SCORING_VERSION = service_contract.SCORING_VERSION
 if tuple(SINGLE) != policy.POSITIVE or tuple(NEGATIVE) != policy.NEGATIVE:
     raise RuntimeError("SigLIP prompt and V2.4 policy category ordering disagree")
 
@@ -186,7 +187,8 @@ def _result_from_logits(
     legacy: bool = False,
     decision: Optional[Dict[str, Any]] = None,
 ) -> SiglipImageVerificationResult:
-    version = SCORING_VERSION if legacy else SIGLIP_SCORING_VERSION
+    # Offline compatibility helpers only; live responses use service_contract.
+    version = SCORING_VERSION if legacy else V24_SCORING_VERSION
     if not categories:
         return _empty_result(image_category, categories, "error", "no_active_categories", "No active SigLIP image categories are configured.", device, version)
     try:
@@ -297,8 +299,8 @@ def _result_from_logits(
         margin_threshold=round(float(target_category.margin_threshold), 4),
         model_name=SIGLIP_MODEL_NAME,
         model_version=SIGLIP_MODEL_VERSION,
-        scoring_version=SCORING_VERSION if legacy else SIGLIP_SCORING_VERSION,
-        version=SCORING_VERSION if legacy else SIGLIP_SCORING_VERSION,
+        scoring_version=version,
+        version=version,
         device=device,
         labels=labels,
         ui_percentages=ui_percentages,
@@ -307,6 +309,26 @@ def _result_from_logits(
         positive_negative_margin=round(positive_negative_margin, 4),
         decision=decision,
     )
+
+
+def _runtime_category_payloads(categories: List[SiglipCategoryConfig]) -> List[Dict[str, Any]]:
+    # Retain the full competitor set (including disabled positive categories)
+    # used previously, so disabling a target never removes a competing class.
+    # Only active registry categories are eligible as anchor targets.
+    configured = {item.value: item for item in categories}
+    payloads = []
+    for item in runtime_categories():
+        name = item["value"]
+        payload = {"match_threshold": .7, "margin_threshold": .05, **item,
+                   "label": LABELS.get(name, name)}
+        if name in configured:
+            payload.update(configured[name].to_dict())
+        payloads.append(payload)
+    return payloads
+
+
+def _invalid_service_result(category, categories, error, device="unavailable"):
+    return _empty_result(category, categories, "error", "invalid_service_response", str(error), device)
 
 
 def verify_image_category(
@@ -332,19 +354,15 @@ def verify_image_category(
         raise RuntimeError("GATEWAY_URL is not configured.")
 
     try:
-        remote_result = remote_verify_image_logits(image_path, category_value, runtime_categories(), timing=timing)
+        payloads = _runtime_category_payloads(active_categories)
+        remote_result = remote_verify_image_logits(image_path, category_value, payloads, timing=timing)
     except ModelRuntimeUnavailableError as error:
         raise RuntimeError(f"SigLIP model runtime unavailable: {error}") from error
 
-    if not isinstance(remote_result, dict):
-        raise RuntimeError("SigLIP model runtime returned an invalid response.")
-
-    raw_result = remote_result.get("raw") if isinstance(remote_result.get("raw"), dict) else {}
-    logits = remote_result.get("logits") or raw_result.get("logits")
-    if not isinstance(logits, list):
-        return _empty_result(category_value, active_categories, "error", "raw_logits_required", "V2.3 requires raw positive and negative logits")
-    device = str(remote_result.get("device") or "remote")
-    return _result_from_logits(logits, category_value, active_categories, device, decision=remote_result.get("decision"))
+    try:
+        return SiglipImageVerificationResult(**service_contract.parse_decision(remote_result, category_value, payloads))
+    except ValueError as error:
+        return _invalid_service_result(category_value, active_categories, error)
 
 
 def verify_image_categories_batch(
@@ -353,6 +371,10 @@ def verify_image_categories_batch(
     categories: Optional[List[Dict[str, Any]]] = None,
     timing: Optional[Dict[str, Any]] = None,
 ) -> List[List[SiglipImageVerificationResult]]:
+    if len(image_paths) != len(image_categories):
+        raise RuntimeError("Image batch request count does not match target category count.")
+    if not image_paths:
+        return []
     active_categories = _normalize_categories(categories or [])
     if not active_categories:
         return [
@@ -368,8 +390,6 @@ def verify_image_categories_batch(
             ]
             for category_values in image_categories
         ]
-    if len(image_paths) != len(image_categories):
-        raise RuntimeError("Image batch request count does not match target category count.")
     runtime_configured = is_runtime_configured(ModelRuntimeKind.IMAGE_VERIFICATION)
     if not runtime_configured:
         raise RuntimeError("GATEWAY_URL is not configured.")
@@ -377,7 +397,7 @@ def verify_image_categories_batch(
     try:
         remote_result = remote_verify_image_logits_batch(
             image_paths,
-            runtime_categories(),
+            _runtime_category_payloads(active_categories),
             timing=timing,
         )
     except ModelRuntimeUnavailableError as error:
@@ -385,33 +405,33 @@ def verify_image_categories_batch(
 
     if not isinstance(remote_result, dict):
         raise RuntimeError("SigLIP batch model runtime returned an invalid response.")
+    if remote_result.get("error") is not None:
+        raise RuntimeError(f"SigLIP batch model runtime failed: {remote_result['error']}")
     results = remote_result.get("results")
-    if results is None and isinstance(remote_result.get("data"), dict):
-        results = remote_result["data"].get("results")
-    if results is None and isinstance(remote_result.get("data"), list):
-        results = remote_result.get("data")
     if not isinstance(results, list):
         raise RuntimeError("SigLIP batch model runtime returned no results list.")
     if len(results) != len(image_paths):
         raise RuntimeError(f"SigLIP batch returned {len(results)} results for {len(image_paths)} images.")
+    count = remote_result.get("count")
+    if isinstance(count, bool) or not isinstance(count, int) or count != len(image_paths):
+        raise RuntimeError("SigLIP batch count does not match input count.")
 
     classified: List[List[SiglipImageVerificationResult]] = []
+    payloads = _runtime_category_payloads(active_categories)
     for raw_item, target_categories in zip(results, image_categories):
-        item = raw_item if isinstance(raw_item, dict) else {}
-        raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
-        logits = item.get("logits") or raw.get("logits")
-        device = str(item.get("device") or remote_result.get("device") or "remote")
         item_results: List[SiglipImageVerificationResult] = []
         for category_value in (target_categories or [""]):
             category = str(category_value or "").strip()
             if not category:
-                item_results.append(_empty_result(category, active_categories, "error", "category_missing", "Image anchor category is required.", device))
+                item_results.append(_empty_result(category, active_categories, "error", "category_missing", "Image anchor category is required."))
             elif not any(active.value == category for active in active_categories):
-                item_results.append(_empty_result(category, active_categories, "error", "category_not_found", f"Image category is not active: {category}", device))
-            elif isinstance(logits, list):
-                item_results.append(_result_from_logits(logits, category, active_categories, device, decision=item.get("decision")))
+                item_results.append(_empty_result(category, active_categories, "error", "category_not_found", f"Image category is not active: {category}"))
             else:
-                item_results.append(_empty_result(category, active_categories, "error", "raw_logits_required", "V2.3 requires raw positive and negative logits", device))
+                try:
+                    parsed = service_contract.score_classification(raw_item, category, payloads)
+                    item_results.append(SiglipImageVerificationResult(**parsed))
+                except ValueError as error:
+                    item_results.append(_invalid_service_result(category, active_categories, error))
         classified.append(item_results)
     return classified
 
@@ -422,6 +442,7 @@ def verify_image_category_from_logits(
     categories: List[Dict[str, Any]],
     device: str = "test",
 ) -> SiglipImageVerificationResult:
+    """Offline V2.4 compatibility helper; never used for live service results."""
     return _result_from_logits(logits, image_category, _normalize_categories(categories), device)
 
 
