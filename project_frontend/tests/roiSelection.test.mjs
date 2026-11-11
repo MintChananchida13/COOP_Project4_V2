@@ -9,7 +9,24 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const loaded = { exports: {} };
 new Function('exports', 'module', compiled)(loaded.exports, loaded);
-const { canvasPoint, selectionRect, intersectsSelection, groupTranslation, translateRoi } = loaded.exports;
+const { canvasPoint, selectionRect, intersectsSelection, groupTranslation, translateRoi, selectionBounds, resizeGroupRoi } = loaded.exports;
+
+test('group resize transforms positions, dimensions and polygon points together', () => {
+  const rois = [
+    { id: 1, x: 10, y: 20, width: 20, height: 10, points: [{ x: 10, y: 20 }, { x: 30, y: 30 }] },
+    { id: 2, x: 50, y: 40, width: 10, height: 20, fieldName: 'Name' },
+  ];
+  const from = selectionBounds(rois);
+  assert.deepEqual(from, { x: 10, y: 20, width: 50, height: 40 });
+  const to = { x: 0, y: 10, width: 100, height: 20 };
+  const resized = rois.map(roi => resizeGroupRoi(roi, from, to));
+  assert.deepEqual([resized[0].x, resized[0].y, resized[0].width, resized[0].height], [0, 10, 40, 5]);
+  assert.deepEqual(resized[0].points, [{ x: 0, y: 10 }, { x: 40, y: 15 }]);
+  assert.deepEqual([resized[1].x, resized[1].y, resized[1].width, resized[1].height], [80, 20, 20, 10]);
+  assert.equal(resized[1].fieldName, 'Name');
+  assert.equal(rois[0].x, 10);
+  assert.equal(selectionBounds([]), null);
+});
 
 test('pointer coordinates account for zoom and scrolled image positions', () => {
   for (const zoom of [0.5, 1, 2, 3]) {

@@ -2,6 +2,22 @@ import type { ROI } from "../../types/ocr";
 
 export interface SelectionRect { x: number; y: number; width: number; height: number }
 
+export function selectionBounds(rois: SelectionRect[]): SelectionRect | null {
+  if (!rois.length) return null;
+  const x = Math.min(...rois.map(roi => roi.x));
+  const y = Math.min(...rois.map(roi => roi.y));
+  return { x, y, width: Math.max(...rois.map(roi => roi.x + roi.width)) - x,
+    height: Math.max(...rois.map(roi => roi.y + roi.height)) - y };
+}
+
+export function resizeGroupRoi<T extends ROI>(roi: T, from: SelectionRect, to: SelectionRect): T {
+  const sx = to.width / from.width;
+  const sy = to.height / from.height;
+  const point = (p: { x: number; y: number }) => ({ x: to.x + (p.x - from.x) * sx, y: to.y + (p.y - from.y) * sy });
+  return { ...roi, ...point(roi), width: roi.width * sx, height: roi.height * sy,
+    ...(roi.points ? { points: roi.points.map(point) } : {}) };
+}
+
 /** DOM rect includes both the current CSS zoom and the viewport scroll offset. */
 export function canvasPoint(clientX: number, clientY: number, rect: SelectionRect,
   width: number, height: number) {

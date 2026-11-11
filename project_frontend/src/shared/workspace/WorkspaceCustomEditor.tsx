@@ -1,14 +1,14 @@
 ﻿"use client";
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Square, Trash2, Move, Hand, X, ArrowLeft, ZoomIn, ZoomOut, Maximize2, Cpu, FileText, Table, Image as ImageIcon, PenTool, ChevronUp, ChevronDown, Eye, EyeOff, Undo2, Redo2, Loader2, ScanSearch } from 'lucide-react';
+import { Square, Trash2, Move, X, ArrowLeft, ZoomIn, ZoomOut, Maximize2, Cpu, FileText, Table, Image as ImageIcon, PenTool, ChevronUp, ChevronDown, Eye, EyeOff, Undo2, Redo2, Loader2, ScanSearch } from 'lucide-react';
 import { Rnd } from "react-rnd";
 import { ROI } from '../../types/ocr';
 import { WorkspaceImageMetrics } from './roiGeometry';
 import { ADMIN_API_BASE_URL } from "@/admin/adminApi";
 import { authHeaders } from "@/auth/session";
 import { MousePointer2 } from 'lucide-react';
-import { canvasPoint, groupTranslation, intersectsSelection, selectionRect, translateRoi, type SelectionRect } from './roiSelection';
+import { canvasPoint, groupTranslation, intersectsSelection, selectionBounds, selectionRect, resizeGroupRoi, translateRoi, type SelectionRect } from './roiSelection';
 
 type SelectionGesture = {
   kind: 'marquee' | 'move';
@@ -213,6 +213,8 @@ export default function WorkspaceCustomEditor({
   const [marquee, setMarquee] = useState<SelectionRect | null>(null);
   const [groupDelta, setGroupDelta] = useState({ x: 0, y: 0 });
   const groupDeltaRef = useRef({ x: 0, y: 0 });
+  const [groupResize, setGroupResize] = useState<{ from: SelectionRect; to: SelectionRect; rois: ROI[] } | null>(null);
+  const groupResizeRef = useRef<{ from: SelectionRect; to: SelectionRect; rois: ROI[] } | null>(null);
 
   const selectIds = (ids: number[]) => {
     const primary = ids.includes(selectedId as number) ? selectedId : ids[0] ?? null;
@@ -488,6 +490,9 @@ export default function WorkspaceCustomEditor({
       return roiPage === Number(currentIndex);
     });
   }, [rois, currentIndex]);
+  const selectedPageRois = currentPageRois.filter(roi => selectedIds.has(roi.id));
+  const groupBounds = selectedPageRois.length > 1 && selectedPageRois.every(roi => roi.width > 0 && roi.height > 0)
+    ? selectionBounds(selectedPageRois) : null;
 
   const scrollDefaultRightPanelToRoi = (roiId: number) => {
     const container = defaultRightPanelScrollRef.current;
@@ -1046,14 +1051,6 @@ export default function WorkspaceCustomEditor({
         
         {/* Left toolbar */}
                 <div className="flex h-full flex-col items-center gap-3 rounded-xl border border-slate-200 bg-white py-4 shadow-sm select-none overflow-y-auto">
-          <button 
-            type="button"
-            onClick={() => { setActiveTool('pan'); setSelectedId(null); setActiveDrawPoints([]); }}
-            className={`p-2.5 rounded-lg transition-all ${activeTool === 'pan' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-100 hover:text-indigo-600'}`}
-            title="Hand Pan Tool (Hand)"
-          >
-            <Hand size={20} />
-          </button>
           {!readOnly && (
             <button
               type="button"
@@ -1264,7 +1261,9 @@ export default function WorkspaceCustomEditor({
               )}
                           
               <div className="absolute inset-0 top-0 left-0 w-full h-full pointer-events-auto">
-                {currentPageRois.map((roi, index) => {
+                {currentPageRois.map((originalRoi, index) => {
+                  const resizeOriginal = groupResize?.rois.find(item => item.id === originalRoi.id);
+                  const roi = resizeOriginal && groupResize ? resizeGroupRoi(resizeOriginal, groupResize.from, groupResize.to) : originalRoi;
                   const hasPoints = roi.points && roi.points.length > 0;
                   const selected = selectedIds.has(roi.id);
                   const moving = selectionGesture?.kind === 'move' && selectionGesture.rois.some(item => item.id === roi.id);
@@ -1311,7 +1310,7 @@ export default function WorkspaceCustomEditor({
                         activeTool !== 'pan' && activeTool !== 'select' && !selected ? 'pointer-events-none' : 'pointer-events-auto'
                       } ${hasPoints ? 'border-transparent bg-transparent shadow-none' : (selected ? "border-indigo-600 bg-indigo-600/10 shadow-md z-30 ring-2 ring-indigo-500/20" : "border-indigo-400/80 bg-indigo-50/5 hover:border-indigo-500 hover:bg-indigo-50/10 z-20")}`} ${selected ? 'outline outline-2 outline-sky-500' : ''}`}
                       resizeHandleClasses={{ topLeft: 'roi-resize-handle', topRight: 'roi-resize-handle', bottomLeft: 'roi-resize-handle', bottomRight: 'roi-resize-handle', top: 'roi-resize-handle', bottom: 'roi-resize-handle', left: 'roi-resize-handle', right: 'roi-resize-handle' }}
-                      resizeHandleStyles={!readOnly && selectedId === roi.id ? {
+                      resizeHandleStyles={!readOnly && selectedId === roi.id && selectedIds.size <= 1 ? {
                         topLeft: cornerHandleStyle,
                         topRight: cornerHandleStyle,
                         bottomLeft: cornerHandleStyle,
@@ -1321,7 +1320,7 @@ export default function WorkspaceCustomEditor({
                         left: leftHandleStyle,
                         right: rightHandleStyle,
                       } : {}}
-                      enableResizing={!readOnly && selectedId === roi.id}
+                      enableResizing={!readOnly && selectedId === roi.id && selectedIds.size <= 1}
                       disableDragging={readOnly || (selected && selectedIds.size > 1)}
                     >
                       <div className={`w-full h-full relative ${selected || activeTool === 'pan' || activeTool === 'select' ? 'pointer-events-auto' : 'pointer-events-none'}`}>
@@ -1437,6 +1436,49 @@ export default function WorkspaceCustomEditor({
                   </Rnd>
                 );
               })}
+              {!readOnly && groupBounds && groupBounds.width > 0 && groupBounds.height > 0 && (
+                <Rnd
+                  className="rnd-box-item"
+                  style={{ pointerEvents: 'none', zIndex: 40, border: '1px dashed #2563eb' }}
+                  position={{ x: (groupResize?.to ?? groupBounds).x, y: (groupResize?.to ?? groupBounds).y }}
+                  size={{ width: (groupResize?.to ?? groupBounds).width, height: (groupResize?.to ?? groupBounds).height }}
+                  scale={currentZoom}
+                  bounds="parent"
+                  disableDragging
+                  minWidth={Math.max(1, groupBounds.width / Math.min(...selectedPageRois.map(roi => roi.width)))}
+                  minHeight={Math.max(1, groupBounds.height / Math.min(...selectedPageRois.map(roi => roi.height)))}
+                  resizeHandleStyles={Object.fromEntries(Object.entries({
+                    topLeft: cornerHandleStyle, topRight: cornerHandleStyle, bottomLeft: cornerHandleStyle, bottomRight: cornerHandleStyle,
+                    top: topHandleStyle, bottom: bottomHandleStyle, left: leftHandleStyle, right: rightHandleStyle,
+                  }).map(([key, value]) => [key, { ...value, pointerEvents: 'auto' }]))}
+                  onResizeStart={(event) => {
+                    event.stopPropagation();
+                    const state = { from: groupBounds, to: groupBounds, rois: selectedPageRois };
+                    groupResizeRef.current = state;
+                    setGroupResize(state);
+                  }}
+                  onResize={(_event, _direction, ref, _delta, position) => {
+                    const state = groupResizeRef.current;
+                    if (!state) return;
+                    const next = { ...state, to: { ...position, width: parseFloat(ref.style.width), height: parseFloat(ref.style.height) } };
+                    groupResizeRef.current = next;
+                    setGroupResize(next);
+                  }}
+                  onResizeStop={(_event, _direction, ref, _delta, position) => {
+                    const state = groupResizeRef.current;
+                    if (state) {
+                      const to = { ...position, width: parseFloat(ref.style.width), height: parseFloat(ref.style.height) };
+                      const originals = new Map(state.rois.map(roi => [roi.id, roi]));
+                      setRois(previous => previous.map(roi => {
+                        const original = originals.get(roi.id);
+                        return original && (roi.pageIndex ?? 0) === currentIndex ? resizeGroupRoi(original, state.from, to) : roi;
+                      }));
+                    }
+                    groupResizeRef.current = null;
+                    setGroupResize(null);
+                  }}
+                />
+              )}
               </div>
             </div>
             </div>
