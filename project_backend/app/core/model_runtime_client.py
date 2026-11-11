@@ -37,7 +37,7 @@ class ModelRuntimeKind(str, Enum):
 
 
 MODEL_RUNTIME_GATEWAY_PATH: Dict[ModelRuntimeKind, str] = {
-    ModelRuntimeKind.LAYOUT: "/paddle/api/v1/document-layouts",
+    ModelRuntimeKind.LAYOUT: "/paddle/api/v1/layout-prediction-batches",
     ModelRuntimeKind.TEXT_DETECTION: "/paddle/api/v1/text-detections?version=v6",
     ModelRuntimeKind.TEXT_RECOGNITION: "/paddle/api/v1/text-recognitions",
     ModelRuntimeKind.TABLE: "/paddle/api/v1/table-model-results?det_version=6&rec_version=5&det_model=baseline&rec_model=thai_ft_v3",
@@ -368,8 +368,13 @@ def _post_predict(
 def remote_analyze_layout(
     image: np.ndarray,
     timing: Optional[Dict[str, Any]] = None,
-    layout_only: bool = False,
+    layout_only: bool = True,
 ) -> Optional[Dict[str, Any]]:
+    """Return one Layout leaf result from a one-image batch, without DET.
+
+    layout_only remains accepted for existing callers; this transport always
+    uses the layout-only leaf endpoint.
+    """
     if not is_runtime_configured(ModelRuntimeKind.LAYOUT):
         return None
     encode_started = time.perf_counter()
@@ -381,11 +386,23 @@ def remote_analyze_layout(
             timing["image_shape"] = [int(image.shape[1]), int(image.shape[0])]
         except Exception:
             pass
-    return _post_predict(
+    batch = _post_predict(
         ModelRuntimeKind.LAYOUT,
-        {"image": image_data_url, "layout_only": layout_only},
+        {"images": [image_data_url]},
         timing=timing,
     )
+    if not isinstance(batch, dict) or batch.get("error") is not None:
+        raise ModelRuntimeUnavailableError("Layout batch runtime returned an invalid response.")
+    results = batch.get("results")
+    if type(batch.get("count")) is not int or batch["count"] != 1 or not isinstance(results, list) or len(results) != 1:
+        raise ModelRuntimeUnavailableError("Layout batch runtime must return exactly one result for one image.")
+    layout = results[0]
+    if (not isinstance(layout, dict) or layout.get("error") is not None
+            or layout.get("contract_version") != "leaf-inference-v1" or layout.get("kind") != "layout"
+            or not isinstance(layout.get("raw_output"), list)
+            or any(not isinstance(item, dict) for item in layout["raw_output"])):
+        raise ModelRuntimeUnavailableError("Layout batch runtime returned an invalid layout leaf contract.")
+    return layout
 
 
 def remote_detect_text_boxes(image_path: str, timing: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:

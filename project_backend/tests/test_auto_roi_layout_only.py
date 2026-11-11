@@ -50,7 +50,7 @@ class AutoRoiLayoutOnlyTests(unittest.TestCase):
                 patch.object(service, "remote_analyze_layout", return_value={"raw": {"layout": []}}) as remote, \
                 patch.object(service, "remote_detect_text_boxes", return_value={"raw": []}) as detector:
             service.analyze_layout(image, use_text_detection=True)
-        self.assertEqual(remote.call_args.kwargs, {"layout_only": False})
+        self.assertEqual(remote.call_args.kwargs, {"layout_only": True})
         detector.assert_called_once_with("unused.png")
         temp_file.assert_called_once()
         write_image.assert_called_once()

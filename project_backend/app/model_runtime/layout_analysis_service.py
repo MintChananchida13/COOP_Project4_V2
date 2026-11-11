@@ -39,7 +39,7 @@ class LayoutRegion:
 
 _LAYOUT_MODEL_NAME = "PP-DocLayoutV3"
 _TEXT_DETECTION_MODEL_NAME = "PP-OCRv6_medium_det"
-LAYOUT_SIGNATURE_MODEL = f"{_LAYOUT_MODEL_NAME}+{_TEXT_DETECTION_MODEL_NAME}"
+LAYOUT_SIGNATURE_MODEL = _LAYOUT_MODEL_NAME
 AUTO_ROI_EXPAND_TOP_PX = float(os.getenv("AUTO_ROI_EXPAND_TOP_PX", "6"))
 AUTO_ROI_EXPAND_BOTTOM_PX = float(os.getenv("AUTO_ROI_EXPAND_BOTTOM_PX", "6"))
 AUTO_ROI_EXPAND_LEFT_PX = float(os.getenv("AUTO_ROI_EXPAND_LEFT_PX", "6"))
@@ -994,7 +994,8 @@ def analyze_layout(
                 " and TextDetection" if use_text_detection else "",
             )
             try:
-                layout_result = remote_analyze_layout(image, layout_only=not use_text_detection)
+                # This function invokes DET separately below when requested.
+                layout_result = remote_analyze_layout(image, layout_only=True)
             except ModelRuntimeUnavailableError as error:
                 raise LayoutAnalysisUnavailableError(str(error)) from error
             except Exception as error:
@@ -1179,7 +1180,7 @@ def analyze_layout_signature(image: np.ndarray, timing: Optional[Dict[str, Any]]
         raise ValueError("Invalid image for layout signature analysis.")
 
     height, width = image.shape[:2]
-    source_mode = "layout_signature_layout_det_v6"
+    source_mode = "layout_signature_layout_only_batch_v1"
     cache_started = time.perf_counter()
     cache_key = _layout_cache_key(image, source_mode)
     raw_items = _get_cached_layout_raw_items(image, source_mode, cache_key=cache_key)
@@ -1188,10 +1189,10 @@ def analyze_layout_signature(image: np.ndarray, timing: Optional[Dict[str, Any]]
         timing["raw_cache_hit"] = raw_items is not None
     if raw_items is None:
         _require_runtime(ModelRuntimeKind.LAYOUT)
-        logger.info("Using remote Layout + TextDetection runtime for layout signature")
+        logger.info("Using remote Layout-only runtime for layout signature")
         try:
             runtime_timing: Dict[str, Any] = {}
-            layout_result = remote_analyze_layout(image, timing=runtime_timing, layout_only=False)
+            layout_result = remote_analyze_layout(image, timing=runtime_timing, layout_only=True)
             if timing is not None:
                 timing["runtime_client"] = runtime_timing
                 gateway_timing = runtime_timing.get("gateway_timing")
@@ -1206,24 +1207,23 @@ def analyze_layout_signature(image: np.ndarray, timing: Optional[Dict[str, Any]]
         if not isinstance(layout_result, dict):
             raise LayoutAnalysisUnavailableError("Layout runtime returned an invalid response.")
         postprocess_started = time.perf_counter()
-        # Parse each branch separately: treating DET output as layout would
-        # duplicate text boxes, while parsing only layout drops the DET boxes.
-        result = layout_result.get("result", layout_result)
-        raw = result.get("raw") if isinstance(result, dict) else None
-        if not isinstance(raw, dict) or "layout" not in raw or "text_detection" not in raw:
-            raise LayoutAnalysisUnavailableError("Layout signature requires both Layout and TextDetection results.")
-        raw_layout_items = _walk_layout_items(raw["layout"])
-        layout_items = _layout_detection_items_from_response(raw["layout"])
-        text_items = _text_detection_items_from_response(raw["text_detection"])
-        raw_items = [*[{**item, "source": "layout"} for item in layout_items],
-                     *[{**item, "source": "text_detection"} for item in text_items]]
+        # Consume only the leaf Layout output. Text regions predicted by Layout
+        # remain valid, but no TextDetection boxes enter this signature.
+        if (layout_result.get("contract_version") != "leaf-inference-v1"
+                or layout_result.get("kind") != "layout" or layout_result.get("error") is not None
+                or not isinstance(layout_result.get("raw_output"), list)
+                or any(not isinstance(item, dict) for item in layout_result["raw_output"])):
+            raise LayoutAnalysisUnavailableError("Layout signature requires a valid Layout leaf response.")
+        raw_layout_items = _walk_layout_items(layout_result["raw_output"])
+        layout_items = _layout_detection_items_from_response(layout_result["raw_output"])
+        raw_items = [{**item, "source": "layout"} for item in layout_items]
         if timing is not None:
             timing["response_postprocess_ms"] = round((time.perf_counter() - postprocess_started) * 1000.0, 2)
             timing["raw_model_item_count"] = len(raw_layout_items)
             timing["layout_item_count"] = len(layout_items)
-            timing["text_detection_item_count"] = len(text_items)
+            timing["text_detection_item_count"] = 0
         logger.info(
-            "Layout+DET signature trace: raw_model_items=%s combined_items=%s raw_summary=%s filtered_summary=%s",
+            "Layout-only signature trace: raw_model_items=%s layout_items=%s raw_summary=%s filtered_summary=%s",
             len(raw_layout_items),
             len(raw_items),
             _debug_item_summary(raw_layout_items, width, height),
