@@ -9,7 +9,20 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const loaded = { exports: {} };
 new Function('exports', 'module', compiled)(loaded.exports, loaded);
-const { canvasPoint, selectionRect, intersectsSelection, groupTranslation, translateRoi, selectionBounds, resizeGroupRoi } = loaded.exports;
+const { canvasPoint, selectionRect, intersectsSelection, groupTranslation, translateRoi, selectionBounds, resizeGroupRoi, movePolygonPoint } = loaded.exports;
+
+test('moving a polygon vertex updates its bounds and keeps other points and metadata', () => {
+  const roi = { id: 7, x: 10, y: 10, width: 20, height: 20, fieldName: 'Polygon',
+    points: [{ x: 10, y: 10 }, { x: 30, y: 10 }, { x: 30, y: 30 }] };
+  const moved = movePolygonPoint(roi, 0, { x: 5, y: 15 });
+  assert.deepEqual(moved.points, [{ x: 5, y: 15 }, { x: 30, y: 10 }, { x: 30, y: 30 }]);
+  assert.deepEqual([moved.x, moved.y, moved.width, moved.height], [5, 10, 25, 20]);
+  assert.equal(moved.fieldName, 'Polygon');
+  assert.equal(roi.points[0].x, 10);
+  assert.equal(movePolygonPoint(roi, -1, { x: 0, y: 0 }), roi);
+  const narrow = { ...roi, points: [{ x: 10, y: 10 }, { x: 10, y: 30 }, { x: 30, y: 30 }] };
+  assert.equal(movePolygonPoint(narrow, 2, { x: 10, y: 20 }), narrow);
+});
 
 test('group resize transforms positions, dimensions and polygon points together', () => {
   const rois = [

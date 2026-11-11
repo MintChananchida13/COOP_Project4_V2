@@ -2,6 +2,16 @@ import type { ROI } from "../../types/ocr";
 
 export interface SelectionRect { x: number; y: number; width: number; height: number }
 
+export function movePolygonPoint<T extends ROI>(roi: T, index: number, point: { x: number; y: number }): T {
+  if (!roi.points || index < 0 || index >= roi.points.length) return roi;
+  const points = roi.points.map((item, i) => i === index ? point : item);
+  const x = Math.min(...points.map(item => item.x));
+  const y = Math.min(...points.map(item => item.y));
+  const width = Math.max(...points.map(item => item.x)) - x;
+  const height = Math.max(...points.map(item => item.y)) - y;
+  return width > 1 && height > 1 ? { ...roi, x, y, width, height, points } : roi;
+}
+
 export function selectionBounds(rois: SelectionRect[]): SelectionRect | null {
   if (!rois.length) return null;
   const x = Math.min(...rois.map(roi => roi.x));

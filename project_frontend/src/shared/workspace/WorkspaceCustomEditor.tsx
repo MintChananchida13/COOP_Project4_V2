@@ -8,7 +8,7 @@ import { WorkspaceImageMetrics } from './roiGeometry';
 import { ADMIN_API_BASE_URL } from "@/admin/adminApi";
 import { authHeaders } from "@/auth/session";
 import { MousePointer2 } from 'lucide-react';
-import { canvasPoint, groupTranslation, intersectsSelection, selectionBounds, selectionRect, resizeGroupRoi, translateRoi, type SelectionRect } from './roiSelection';
+import { canvasPoint, groupTranslation, intersectsSelection, movePolygonPoint, selectionBounds, selectionRect, resizeGroupRoi, translateRoi, type SelectionRect } from './roiSelection';
 
 type SelectionGesture = {
   kind: 'marquee' | 'move';
@@ -292,6 +292,9 @@ export default function WorkspaceCustomEditor({
   const imageRef = useRef<HTMLImageElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const [vertexDrag, setVertexDrag] = useState<{ roi: ROI; index: number; page: number } | null>(null);
+  const [vertexPreview, setVertexPreview] = useState<ROI | null>(null);
+  const vertexPreviewRef = useRef<ROI | null>(null);
   const defaultRightPanelScrollRef = useRef<HTMLDivElement | null>(null);
   const defaultRightPanelRoiRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
@@ -490,6 +493,49 @@ export default function WorkspaceCustomEditor({
       return roiPage === Number(currentIndex);
     });
   }, [rois, currentIndex]);
+
+  useEffect(() => {
+    if (!vertexDrag) return;
+    const clear = () => {
+      vertexPreviewRef.current = null;
+      setVertexPreview(null);
+      setVertexDrag(null);
+    };
+    const update = (event: MouseEvent) => {
+      const canvas = containerRef.current;
+      if (!canvas) return;
+      const point = canvasPoint(event.clientX, event.clientY, canvas.getBoundingClientRect(), canvas.offsetWidth, canvas.offsetHeight);
+      const preview = movePolygonPoint(vertexDrag.roi, vertexDrag.index, point);
+      vertexPreviewRef.current = preview;
+      setVertexPreview(preview);
+    };
+    const finish = (event: MouseEvent) => {
+      update(event);
+      const result = vertexPreviewRef.current;
+      if (result && vertexDrag.page === currentIndex) {
+        setRois(previous => previous.map(roi => roi.id === result.id && (roi.pageIndex ?? 0) === vertexDrag.page
+          ? { ...roi, x: result.x, y: result.y, width: result.width, height: result.height, points: result.points } : roi));
+      }
+      clear();
+    };
+    const keydown = (event: KeyboardEvent) => { if (event.key === 'Escape') clear(); };
+    window.addEventListener('mousemove', update);
+    window.addEventListener('mouseup', finish);
+    window.addEventListener('blur', clear);
+    window.addEventListener('keydown', keydown);
+    return () => {
+      window.removeEventListener('mousemove', update);
+      window.removeEventListener('mouseup', finish);
+      window.removeEventListener('blur', clear);
+      window.removeEventListener('keydown', keydown);
+    };
+  }, [vertexDrag, currentIndex, setRois]);
+
+  useEffect(() => {
+    vertexPreviewRef.current = null;
+    setVertexPreview(null);
+    setVertexDrag(null);
+  }, [currentIndex]);
   const selectedPageRois = currentPageRois.filter(roi => selectedIds.has(roi.id));
   const groupBounds = selectedPageRois.length > 1 && selectedPageRois.every(roi => roi.width > 0 && roi.height > 0)
     ? selectionBounds(selectedPageRois) : null;
@@ -1263,7 +1309,8 @@ export default function WorkspaceCustomEditor({
               <div className="absolute inset-0 top-0 left-0 w-full h-full pointer-events-auto">
                 {currentPageRois.map((originalRoi, index) => {
                   const resizeOriginal = groupResize?.rois.find(item => item.id === originalRoi.id);
-                  const roi = resizeOriginal && groupResize ? resizeGroupRoi(resizeOriginal, groupResize.from, groupResize.to) : originalRoi;
+                  const roi = vertexPreview?.id === originalRoi.id ? vertexPreview
+                    : resizeOriginal && groupResize ? resizeGroupRoi(resizeOriginal, groupResize.from, groupResize.to) : originalRoi;
                   const hasPoints = roi.points && roi.points.length > 0;
                   const selected = selectedIds.has(roi.id);
                   const moving = selectionGesture?.kind === 'move' && selectionGesture.rois.some(item => item.id === roi.id);
@@ -1334,6 +1381,27 @@ export default function WorkspaceCustomEditor({
                               strokeWidth="2"
                               strokeDasharray={selected ? "0" : "3,3"}
                             />
+                            {!readOnly && selected && selectedIds.size === 1 && roi.points.map((point, pointIndex) => (
+                              <circle
+                                key={pointIndex}
+                                cx={point.x - roi.x}
+                                cy={point.y - roi.y}
+                                r={6 / currentZoom}
+                                fill="white"
+                                stroke="#2563eb"
+                                strokeWidth={2 / currentZoom}
+                                style={{ pointerEvents: 'auto', cursor: 'move' }}
+                                aria-label={`ปรับจุดที่ ${pointIndex + 1} ของ ${roi.fieldName || 'Polygon'}`}
+                                onMouseDown={(event) => {
+                                  if (event.button !== 0) return;
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  vertexPreviewRef.current = originalRoi;
+                                  setVertexPreview(originalRoi);
+                                  setVertexDrag({ roi: originalRoi, index: pointIndex, page: currentIndex });
+                                }}
+                              />
+                            ))}
                           </svg>
                         )}
 
