@@ -5,8 +5,19 @@ import { disposeCardCropWorker, getCardCropWorker } from '../cardCropWorker';
 import { 
   RotateCw, Crop, Check, RefreshCw, Minus, Plus, Scissors, 
   ChevronLeft, ChevronRight, Maximize2, Sparkles, FlipHorizontal, FlipVertical,
-  RotateCcw
+  RotateCcw, ZoomIn, ZoomOut
 } from 'lucide-react';
+
+const PREVIEW_ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
+
+const previewPointToImage = (
+  clientX: number, clientY: number,
+  rect: Pick<DOMRect, "left" | "top" | "width" | "height">,
+  width: number, height: number,
+) => ({
+  x: Math.max(0, Math.min(width, (clientX - rect.left) * width / (rect.width || 1))),
+  y: Math.max(0, Math.min(height, (clientY - rect.top) * height / (rect.height || 1))),
+});
 
 interface PageConfig {
   rotation: number;
@@ -289,6 +300,10 @@ export default function AdjustZone({
   const [liveCropPreviewUrl, setLiveCropPreviewUrl] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [activeCornerIdx, setActiveCornerIdx] = useState<number | null>(null);
+  const [previewZoomIndex, setPreviewZoomIndex] = useState(2);
+  const previewZoom = PREVIEW_ZOOM_STEPS[previewZoomIndex];
+  const previewViewportRef = useRef<HTMLDivElement | null>(null);
+  const [previewMaxWidth, setPreviewMaxWidth] = useState<number | null>(null);
   const [cropError, setCropError] = useState<string | null>(null);
   const [autoDetecting, setAutoDetecting] = useState(false);
   const [savedCropUrls, setSavedCropUrls] = useState<Record<number, string>>({});
@@ -306,6 +321,16 @@ export default function AdjustZone({
   const autoBoundsRef = useRef<number[] | null>(null);
   const pendingAutoBoundsRef = useRef<number[] | null>(null);
   const editingFromCroppedRef = useRef(false);
+
+  useEffect(() => {
+    const viewport = previewViewportRef.current;
+    if (!viewport) return;
+    const updateWidth = () => setPreviewMaxWidth(Math.max(1, viewport.clientWidth - 48));
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     // Admin has its own AdjustZone flow. Multiple-page PDFs retain full pages.
@@ -649,8 +674,7 @@ export default function AdjustZone({
   const handleContainerMouseMove = (e: React.MouseEvent) => {
     if (activeCornerIdx === null || !rawImageRef.current) return;
     const rect = rawImageRef.current.getBoundingClientRect();
-    const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
-    const y = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
+    const { x, y } = previewPointToImage(e.clientX, e.clientY, rect, rawImageRef.current.clientWidth, rawImageRef.current.clientHeight);
 
     if (currentConfig.cropCorners) {
       const updatedCorners = currentConfig.cropCorners.map((c, idx) => 
@@ -771,8 +795,20 @@ return (
     <div className="grid grid-cols-1 gap-5 xl:grid-cols-12 xl:items-stretch">
       {/* Left Preview */}
       <div className="flex flex-col gap-4 xl:col-span-8 xl:h-[calc(100vh-140px)] xl:min-h-[720px]">
-        <div className="relative flex min-h-[520px] flex-1 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-[#edf2f7] p-6 shadow-inner sm:min-h-[640px] xl:min-h-0">
-          <div className="relative flex items-center justify-center w-full h-full">
+        <div className="relative min-h-[520px] flex-1 overflow-hidden rounded-xl border border-slate-200 bg-[#edf2f7] shadow-inner sm:min-h-[640px] xl:min-h-0">
+          <div role="group" aria-label="ปรับขนาดภาพตัวอย่าง" className="absolute right-3 top-3 z-50 flex items-center gap-1 rounded-lg border border-slate-200 bg-white/95 p-1 shadow-sm">
+            <button type="button" aria-label="ย่อภาพ" title="ย่อภาพ" disabled={previewZoomIndex === 0}
+              onClick={() => setPreviewZoomIndex(index => Math.max(0, index - 1))}
+              className="rounded-md p-2 text-slate-600 hover:bg-slate-100 disabled:opacity-30"><ZoomOut size={16} /></button>
+            <button type="button" aria-label="คืนขนาดภาพ 100 เปอร์เซ็นต์" title="คืนขนาดภาพ 100%"
+              onClick={() => setPreviewZoomIndex(2)} className="min-w-14 rounded-md px-1 py-2 text-xs font-semibold tabular-nums text-slate-700 hover:bg-slate-100">{Math.round(previewZoom * 100)}%</button>
+            <button type="button" aria-label="ขยายภาพ" title="ขยายภาพ" disabled={previewZoomIndex === PREVIEW_ZOOM_STEPS.length - 1}
+              onClick={() => setPreviewZoomIndex(index => Math.min(PREVIEW_ZOOM_STEPS.length - 1, index + 1))}
+              className="rounded-md p-2 text-slate-600 hover:bg-slate-100 disabled:opacity-30"><ZoomIn size={16} /></button>
+          </div>
+          <div ref={previewViewportRef} className="absolute inset-0 overflow-auto overscroll-contain p-6 pt-16">
+          <div className="flex min-h-full min-w-full w-max items-center justify-center">
+          <div className="relative shrink-0" style={{ zoom: previewZoom, maxWidth: previewMaxWidth ?? "100%" }}>
             {isCropped && liveCropPreviewUrl ? (
               <img
                 ref={croppedImageRef}
@@ -843,6 +879,8 @@ return (
                   )}
               </div>
             )}
+          </div>
+          </div>
           </div>
         </div>
 
