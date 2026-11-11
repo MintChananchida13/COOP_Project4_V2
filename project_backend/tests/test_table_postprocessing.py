@@ -109,6 +109,67 @@ class TablePostprocessingTests(unittest.TestCase):
         self.assertEqual(audit['unassigned_source_count'], 1)
         self.assertEqual(items, original)
 
+    def test_tiny_ocr_fragments_use_real_reported_boxes_even_with_high_confidence(self):
+        items = [
+            {'text': 'ทดสอบการสกัดข้อความด้วย Text OCR', 'bbox': [486, 65, 817, 84], 'score': .9958549738},
+            {'text': '9.', 'bbox': [622, 62, 631, 68], 'score': .9567728043},
+            {'text': 'ตารางข้อมูล', 'bbox': [115, 150, 221, 177], 'score': .9961839318},
+            {'text': '9', 'bbox': [172, 149, 183, 156], 'score': .3729420304},
+            {'text': 'ข้อมูลรวมทั้งหมด', 'bbox': [116, 192, 262, 219], 'score': .9550209045},
+            {'text': 'F', 'bbox': [205, 187, 210, 192], 'score': .6981261969},
+        ]
+        original = copy.deepcopy(items)
+        cells = [[475, 53, 910, 98], [107, 140, 349, 185], [107, 185, 349, 229]]
+        retained, excluded = table.remove_tiny_overlapping_ocr_fragments(items, cells)
+        self.assertEqual([item['text'] for item in retained], [items[i]['text'] for i in (0, 2, 4)])
+        self.assertEqual([item['text'] for item in excluded], ['9.', '9', 'F'])
+        self.assertTrue(all(item.get('mapping_warning') for item in excluded))
+        self.assertEqual(items, original)
+
+    def test_real_single_characters_and_outside_markers_are_preserved(self):
+        main = {'text': 'ข้อมูลรวมทั้งหมด', 'bbox': [116, 192, 262, 219], 'score': .955}
+        items = [main,
+                 {'text': '1', 'bbox': [80, 195, 94, 216], 'score': .99},  # adjacent cell
+                 {'text': 'F', 'bbox': [120, 193, 132, 215], 'score': .99},  # normal height
+                 {'text': '9.', 'bbox': [265, 187, 273, 192], 'score': .99},  # outside text
+                 {'text': 'A', 'bbox': [175, 203, 180, 208], 'score': .99},  # not at upper edge
+                 {'text': '๔', 'bbox': [48, 196, 70, 219], 'score': .99}]
+        cells = [[107, 185, 263, 229], [48, 185, 106, 229], [264, 185, 350, 229]]
+        retained, excluded = table.remove_tiny_overlapping_ocr_fragments(items, cells)
+        self.assertEqual(retained, items)
+        self.assertEqual(excluded, [])
+        low_conf_main = {**main, 'score': .4}
+        retained, excluded = table.remove_tiny_overlapping_ocr_fragments(
+            [low_conf_main, {'text': 'F', 'bbox': [205, 187, 210, 192], 'score': .7}], cells)
+        self.assertEqual(len(retained), 2)
+        self.assertEqual(excluded, [])
+        retained, excluded = table.remove_tiny_overlapping_ocr_fragments(
+            [main, {'text': 'F', 'bbox': [205, 187, 210, 192], 'score': .7}], [])
+        self.assertEqual(len(retained), 2)
+        self.assertEqual(excluded, [])
+        for score in (.95, None):
+            retained, excluded = table.remove_tiny_overlapping_ocr_fragments(
+                [main, {'text': 'F', 'bbox': [205, 187, 210, 192], 'score': score}], cells)
+            self.assertEqual(len(retained), 2)
+            self.assertEqual(excluded, [])
+
+    def test_reconstruction_removes_fragment_but_audit_keeps_source(self):
+        output = self.output()
+        ocr = output['table_res_list'][0]['table_ocr_pred']
+        ocr['rec_texts'][2] = 'ข้อมูลรวมทั้งหมด'
+        ocr['rec_boxes'].append([45, 40, 50, 44])
+        ocr['rec_texts'].append('F')
+        ocr['rec_scores'].append(.698)
+        result = table._reconstruct_with_test_structure_rules(output, np.zeros((80, 200, 3), dtype=np.uint8), time.perf_counter())
+        self.assertEqual(result['table_rows'][1][0], 'ข้อมูลรวมทั้งหมด')
+        self.assertEqual(result['table_structured']['cells'][2]['text'], 'ข้อมูลรวมทั้งหมด')
+        audit = result['table_debug']['ocr_mapping_audit']
+        fragment = next(item for item in audit['items'] if item['text'] == 'F')
+        self.assertEqual(fragment['assigned_cells'], [])
+        self.assertEqual(fragment['bbox'], [45.0, 40.0, 50.0, 44.0])
+        self.assertTrue(any('Ignored tiny OCR fragment' in warning for cell in result['table_structured']['cells']
+                            for warning in cell.get('mappingWarnings', [])))
+
     def test_dictionary_count_is_not_recognition_count(self):
         output = self.output()
         # Root + table + table_ocr_pred + 40 metadata dictionaries = 43.

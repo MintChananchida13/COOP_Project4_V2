@@ -1,5 +1,6 @@
 import logging
 import html
+import math
 import os
 import statistics
 import tempfile
@@ -738,6 +739,67 @@ def remove_low_confidence_ocr_artifacts(
                     ),
                 }
             )
+        else:
+            retained.append(item)
+    return retained, excluded
+
+
+def remove_tiny_overlapping_ocr_fragments(
+    recognized_items: list[dict[str, Any]],
+    cell_boxes: list[list[float]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Exclude tiny ASCII detections at the upper edge of a Thai text box.
+
+    These can be detached marks inside the larger OCR detection, even when the
+    small detection has high recognition confidence. Keep standalone characters,
+    normal-sized tokens and markers outside the interior of the Thai text box.
+    Raw items are retained separately in the existing OCR mapping audit.
+    """
+    retained, excluded = [], []
+    valid_cells = [box for raw in cell_boxes if (box := box_from_values(raw)) is not None]
+    for item in recognized_items:
+        box = box_from_values(item.get("bbox"))
+        text = str(item.get("text", "")).strip()
+        score = item.get("score")
+        marker = (not isinstance(score, bool) and isinstance(score, (int, float))
+                  and math.isfinite(score) and 0 <= score <= 1 and text.isascii() and (
+            (len(text) == 1 and text.isalnum())
+            or (len(text) == 2 and text[0].isdigit() and text[1] == ".")
+        ))
+        fragment = False
+        if box is not None and marker:
+            center_x = (box[0] + box[2]) / 2
+            height = box[3] - box[1]
+            for other in recognized_items:
+                if other is item:
+                    continue
+                main_box = box_from_values(other.get("bbox"))
+                main_text = str(other.get("text", "")).strip()
+                main_score = other.get("score")
+                if (main_box is None or len(main_text) < 4
+                        or not any("\u0e01" <= char <= "\u0e5b" for char in main_text)
+                        or isinstance(main_score, bool) or not isinstance(main_score, (int, float))
+                        or not math.isfinite(main_score) or main_score < 0.9):
+                    continue
+                main_width = main_box[2] - main_box[0]
+                main_height = main_box[3] - main_box[1]
+                center_y = (box[1] + box[3]) / 2
+                main_center_x = (main_box[0] + main_box[2]) / 2
+                main_center_y = (main_box[1] + main_box[3]) / 2
+                same_cell = any(
+                    cell[0] <= center_x <= cell[2] and cell[1] <= center_y <= cell[3]
+                    and cell[0] <= main_center_x <= cell[2] and cell[1] <= main_center_y <= cell[3]
+                    for cell in valid_cells
+                )
+                if (same_cell and score <= main_score - 0.02 and height <= main_height * 0.4
+                        and box[2] - box[0] <= main_width * 0.25
+                        and main_box[0] + main_width * 0.15 <= center_x <= main_box[2] - main_width * 0.15
+                        and main_box[1] - main_height * 0.3 <= box[1] <= main_box[1] + main_height * 0.3
+                        and main_box[1] - main_height * 0.1 <= box[3] <= main_box[1] + main_height * 0.3):
+                    fragment = True
+                    break
+        if fragment:
+            excluded.append({**item, "mapping_warning": "Ignored tiny OCR fragment at the upper edge of Thai text"})
         else:
             retained.append(item)
     return retained, excluded
@@ -2051,11 +2113,13 @@ def reconstruct_table_from_ocr(
     valid_items, low_confidence_artifacts = remove_low_confidence_ocr_artifacts(
         valid_items
     )
+    valid_items, overlapping_artifacts = remove_tiny_overlapping_ocr_fragments(valid_items, normalized_cell_boxes)
     valid_items, excluded_items = exclude_ocr_outside_cell_bounds(
         normalized_cell_boxes,
         valid_items,
     )
     excluded_items.extend(low_confidence_artifacts)
+    excluded_items.extend(overlapping_artifacts)
     if not valid_items:
         raise ValueError("Cannot reconstruct table: no valid OCR text boxes.")
 
