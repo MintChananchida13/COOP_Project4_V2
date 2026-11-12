@@ -64,48 +64,7 @@ const defaultRoi = (pageNumber: number): RoiRatio => ({
   heightRatio: 0.06,
 });
 
-const clampUnit = (value: number) => Math.max(0, Math.min(1, value));
-const roundWeight = (value: number) => Number(clampUnit(value).toFixed(4));
 const DEFAULT_FINAL_CONFIDENCE_THRESHOLD = 0.75;
-const DEFAULT_MATCHING_WEIGHTS = {
-  layoutWeight: 0,
-  textAnchorWeight: 0.5,
-  imageAnchorWeight: 0.5,
-};
-const MIN_DUAL_ANCHOR_WEIGHT = 0.2;
-
-const calculateMatchingWeights = ({
-  textAnchorCount,
-  imageAnchorCount,
-  preferredTextWeight,
-}: {
-  layoutWeight: number;
-  textAnchorCount: number;
-  imageAnchorCount: number;
-  preferredTextWeight?: number;
-}) => {
-  const hasText = textAnchorCount > 0;
-  const hasImage = imageAnchorCount > 0;
-  if (!hasText && !hasImage) {
-    return { layoutWeight: 0, textAnchorWeight: 0, imageAnchorWeight: 0 };
-  }
-  const layout = 0;
-  const remaining = roundWeight(1 - layout);
-  if (hasText && hasImage) {
-    const text = preferredTextWeight === undefined
-      ? roundWeight(remaining / 2)
-      : roundWeight(Math.max(MIN_DUAL_ANCHOR_WEIGHT, Math.min(remaining - MIN_DUAL_ANCHOR_WEIGHT, preferredTextWeight)));
-    return {
-      layoutWeight: layout,
-      textAnchorWeight: text,
-      imageAnchorWeight: roundWeight(remaining - text),
-    };
-  }
-  if (hasText) return { layoutWeight: layout, textAnchorWeight: remaining, imageAnchorWeight: 0 };
-  return { layoutWeight: layout, textAnchorWeight: 0, imageAnchorWeight: remaining };
-};
-
-const formatPercent = (value: number) => `${Math.round(value * 100)}%`;
 
 const defaultAdjustPageConfig = (): AdminAdjustPageConfig => ({
   rotation: 0,
@@ -137,9 +96,6 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
   const [showUpdateSuccessDialog, setShowUpdateSuccessDialog] = useState(false);
   const [currentPage, setCurrentPage] = useState(0);
   const [editorStage, setEditorStage] = useState<AdminEditorStage>("adjust");
-  const [finalConfidenceDraft, setFinalConfidenceDraft] = useState(DEFAULT_FINAL_CONFIDENCE_THRESHOLD);
-  const [layoutWeightDraft, setLayoutWeightDraft] = useState(DEFAULT_MATCHING_WEIGHTS.layoutWeight);
-  const [textWeightDraft, setTextWeightDraft] = useState(DEFAULT_MATCHING_WEIGHTS.textAnchorWeight);
   const [adjustPageConfigs, setAdjustPageConfigs] = useState<AdminAdjustPageConfig[]>([]);
   const localFieldSequenceRef = useRef(0);
   const fieldUpdateSequenceRef = useRef(new Map<string, number>());
@@ -209,25 +165,6 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
   useEffect(() => {
     selectedTemplateFieldsRef.current = selectedTemplateFields;
   }, [selectedTemplateFields]);
-
-  useEffect(() => {
-    if (!selectedTemplate) return;
-    setFinalConfidenceDraft(
-      typeof selectedTemplate.finalConfidenceThreshold === "number" && Number.isFinite(selectedTemplate.finalConfidenceThreshold)
-        ? selectedTemplate.finalConfidenceThreshold
-        : DEFAULT_FINAL_CONFIDENCE_THRESHOLD
-    );
-    setLayoutWeightDraft(
-      typeof selectedTemplate.layoutWeight === "number" && Number.isFinite(selectedTemplate.layoutWeight)
-        ? selectedTemplate.layoutWeight
-        : DEFAULT_MATCHING_WEIGHTS.layoutWeight
-    );
-    setTextWeightDraft(
-      typeof selectedTemplate.textAnchorWeight === "number" && Number.isFinite(selectedTemplate.textAnchorWeight)
-        ? selectedTemplate.textAnchorWeight
-        : DEFAULT_MATCHING_WEIGHTS.textAnchorWeight
-    );
-  }, [selectedTemplate?.id]);
 
   const flushFieldDrafts = async () => {
     if (!canPersistToBackend) {
@@ -382,41 +319,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
   const currentTemplatePage = selectedTemplatePages[safeCurrentPage];
   const extractionFieldCount = workspaceFields.filter((field) => !field.useForVerification).length;
   const verificationAnchorCount = workspaceFields.filter((field) => field.useForVerification).length;
-  const textAnchorCount = workspaceFields.filter((field) => field.useForVerification && field.dataType !== "image").length;
-  const imageAnchorCount = workspaceFields.filter((field) => field.useForVerification && field.dataType === "image").length;
   const isUpdatingPublishedTemplate = selectedTemplate?.status === "active";
-  const effectiveMatchingWeights = calculateMatchingWeights({
-    layoutWeight: layoutWeightDraft,
-    textAnchorCount,
-    imageAnchorCount,
-    preferredTextWeight: textWeightDraft,
-  });
-  const hasTextAnchors = textAnchorCount > 0;
-  const hasImageAnchors = imageAnchorCount > 0;
-  const remainingMatchingWeight = Math.max(0, 1 - effectiveMatchingWeights.layoutWeight);
-  const remainingMatchingPercent = Math.round(remainingMatchingWeight * 100);
-  const minDualAnchorPercent = hasTextAnchors && hasImageAnchors ? Math.round(MIN_DUAL_ANCHOR_WEIGHT * 100) : 0;
-  const maxDualAnchorPercent = hasTextAnchors && hasImageAnchors
-    ? Math.max(minDualAnchorPercent, remainingMatchingPercent - minDualAnchorPercent)
-    : remainingMatchingPercent;
-  const setTextAnchorWeightPercent = (percent: number) => {
-    if (!hasTextAnchors) return;
-    const minPercent = hasTextAnchors && hasImageAnchors ? minDualAnchorPercent : 0;
-    const maxPercent = hasTextAnchors && hasImageAnchors ? maxDualAnchorPercent : remainingMatchingPercent;
-    const nextPercent = Math.max(minPercent, Math.min(maxPercent, percent));
-    setTextWeightDraft(nextPercent / 100);
-  };
-  const setImageAnchorWeightPercent = (percent: number) => {
-    if (!hasImageAnchors) return;
-    if (!hasTextAnchors) {
-      setTextWeightDraft(0);
-      return;
-    }
-    const minPercent = hasTextAnchors && hasImageAnchors ? minDualAnchorPercent : 0;
-    const maxPercent = hasTextAnchors && hasImageAnchors ? maxDualAnchorPercent : remainingMatchingPercent;
-    const nextImagePercent = Math.max(minPercent, Math.min(maxPercent, percent));
-    setTextWeightDraft((remainingMatchingPercent - nextImagePercent) / 100);
-  };
   const processSteps = [
     {
       id: "adjust",
@@ -438,8 +341,8 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
     },
     {
       id: "decision",
-      label: "2.3 ตรวจสอบตั้งค่าเกณฑ์ Template",
-      description: "ตั้งค่าเกณฑ์ Final Score และน้ำหนัก Template",
+      label: "2.3 สรุปและอัปเดต Template",
+      description: "ตรวจสอบจำนวน ROI ก่อนอัปเดต",
       status: editorStage === "decision" ? "active" : "next",
     },
   ] as const;
@@ -708,18 +611,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
       await flushFieldDrafts();
       if (!selectedTemplate) return;
       const templateDraft = selectedTemplate;
-      const nextFinalThreshold = Math.max(0, Math.min(1, finalConfidenceDraft));
-      const nextWeights = calculateMatchingWeights({
-        layoutWeight: layoutWeightDraft,
-        textAnchorCount,
-        imageAnchorCount,
-        preferredTextWeight: textWeightDraft,
-      });
       const patch: Partial<Template> = {
-        finalConfidenceThreshold: nextFinalThreshold,
-        layoutWeight: nextWeights.layoutWeight,
-        textAnchorWeight: nextWeights.textAnchorWeight,
-        imageAnchorWeight: nextWeights.imageAnchorWeight,
         detectionMode: templateDraft.detectionMode,
         mainPageNumber: templateDraft.mainPageNumber,
       };
@@ -1010,125 +902,35 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
               onGenerateEmbedding={handleEnterTemplateTestMode}
               onRunTestMode={handleEnterTemplateTestMode}
               onBeforeRunTest={flushFieldDrafts}
-              testModeLabel={selectedTemplate?.status === "active" ? "ตั้งค่า" : "Test Mode"}
+              testModeLabel={selectedTemplate?.status === "active" ? "สรุปและอัปเดต" : "Test Mode"}
               onBackToAdjust={() => setEditorStage("adjust")}
             />
           ) : (
             <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
                   <p className="text-[11px] font-black uppercase tracking-wider text-indigo-600">2.3</p>
-                  <h2 className="mt-1 text-xl font-black text-slate-950">ตรวจสอบค่าเกณฑ์ตัดสิน</h2>
-                  <p className="mt-2 max-w-3xl text-sm font-semibold leading-6 text-slate-500">
-                    ตั้งเกณฑ์ Final Score และน้ำหนัก Text/Image Anchors สำหรับโหมด standard และ strict
-                  </p>
+                  <h2 className="mt-1 text-xl font-black text-slate-950">สรุปการแก้ไข Template</h2>
+                  <p className="mt-2 text-sm font-semibold text-slate-500">ตรวจสอบจำนวน ROI ก่อนอัปเดต Template</p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setEditorStage("roi")}
-                  className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-black text-slate-600 hover:bg-slate-50"
-                >
+                <button type="button" onClick={() => setEditorStage("roi")} className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-black text-slate-600 hover:bg-slate-50">
                   กลับไปแก้ ROI
                 </button>
               </div>
-
-              <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-                <div className="space-y-4">
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                    <h3 className="text-xs font-black uppercase tracking-wider text-slate-700">การตั้งค่าการตัดสินใจ</h3>
-                    <p className="mt-1 text-[11px] font-semibold leading-5 text-slate-500">
-                      ใช้เป็นเกณฑ์ตัดสิน Final Score ในขั้น New Document Test และตอน Publish
-                    </p>
-                    <label className="mt-3 block max-w-xs space-y-1">
-                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">Final Confidence Threshold</span>
-                      <input
-                        type="number"
-                        min="0"
-                        max="1"
-                        step="0.01"
-                        value={finalConfidenceDraft}
-                        onChange={(event) => setFinalConfidenceDraft(Math.max(0, Math.min(1, Number(event.target.value))))}
-                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-black text-slate-800"
-                      />
-                      <span className="block text-[10px] font-semibold text-slate-500">ค่าเดิม: {(selectedTemplate?.finalConfidenceThreshold ?? DEFAULT_FINAL_CONFIDENCE_THRESHOLD).toFixed(2)}</span>
-                    </label>
-                  </div>
-
-                  <div className="rounded-xl border border-slate-200 bg-white p-4">
-                    <h3 className="text-xs font-black uppercase tracking-wider text-slate-700">กำหนดค่าน้ำหนัก</h3>
-                    <p className="mt-1 text-[11px] font-semibold leading-5 text-slate-500">
-                      กำหนดน้ำหนัก Text และ Image รวมกันเป็น 100%
-                    </p>
-                    <div className="mt-4 grid gap-4 lg:grid-cols-3">
-                      <label className={`space-y-2 rounded-xl border p-3 transition ${hasTextAnchors ? "border-slate-100 bg-slate-50" : "border-slate-100 bg-slate-50/50 opacity-55"}`}>
-                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">Text</span>
-                        <input
-                          type="range"
-                          min={hasTextAnchors && hasImageAnchors ? minDualAnchorPercent : 0}
-                          max={hasTextAnchors && hasImageAnchors ? maxDualAnchorPercent : remainingMatchingPercent}
-                          step="1"
-                          value={Math.round(effectiveMatchingWeights.textAnchorWeight * 100)}
-                          onChange={(event) => setTextAnchorWeightPercent(Number(event.target.value))}
-                          disabled={!hasTextAnchors}
-                          className="w-full disabled:cursor-not-allowed"
-                        />
-                        <input
-                          type="number"
-                          min={hasTextAnchors && hasImageAnchors ? minDualAnchorPercent : 0}
-                          max={hasTextAnchors && hasImageAnchors ? maxDualAnchorPercent : remainingMatchingPercent}
-                          step="1"
-                          value={Math.round(effectiveMatchingWeights.textAnchorWeight * 100)}
-                          onChange={(event) => setTextAnchorWeightPercent(Number(event.target.value))}
-                          disabled={!hasTextAnchors}
-                          className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-black text-slate-700 disabled:bg-slate-100 disabled:text-slate-400"
-                        />
-                        <div className="text-[10px] font-bold text-slate-500">Effective {formatPercent(effectiveMatchingWeights.textAnchorWeight)}</div>
-                      </label>
-                      <label className={`space-y-2 rounded-xl border p-3 transition ${hasImageAnchors ? "border-slate-100 bg-slate-50" : "border-slate-100 bg-slate-50/50 opacity-55"}`}>
-                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">Image</span>
-                        <input
-                          type="range"
-                          min={hasTextAnchors && hasImageAnchors ? minDualAnchorPercent : 0}
-                          max={hasTextAnchors && hasImageAnchors ? maxDualAnchorPercent : remainingMatchingPercent}
-                          step="1"
-                          value={Math.round(effectiveMatchingWeights.imageAnchorWeight * 100)}
-                          onChange={(event) => setImageAnchorWeightPercent(Number(event.target.value))}
-                          disabled={!hasImageAnchors}
-                          className="w-full disabled:cursor-not-allowed"
-                        />
-                        <input
-                          type="number"
-                          min={hasTextAnchors && hasImageAnchors ? minDualAnchorPercent : 0}
-                          max={hasTextAnchors && hasImageAnchors ? maxDualAnchorPercent : remainingMatchingPercent}
-                          step="1"
-                          value={Math.round(effectiveMatchingWeights.imageAnchorWeight * 100)}
-                          onChange={(event) => setImageAnchorWeightPercent(Number(event.target.value))}
-                          disabled={!hasImageAnchors}
-                          className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-black text-slate-700 disabled:bg-slate-100 disabled:text-slate-400"
-                        />
-                        <div className="text-[10px] font-bold text-slate-500">คำนวณจากส่วนที่เหลือ</div>
-                      </label>
-                    </div>
-                  </div>
+              <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-4">
+                  <p className="text-xs font-bold text-indigo-700">Extraction ROI</p>
+                  <p className="mt-1 text-2xl font-black text-indigo-950">{extractionFieldCount}</p>
                 </div>
-
-                <aside className="space-y-3 rounded-xl border border-indigo-200 bg-indigo-50/70 p-4">
-                  <h3 className="text-xs font-black uppercase tracking-wider text-indigo-900">Effective Matching Weights</h3>
-                  <div className="grid gap-2">
-                    <div className="rounded-lg bg-white px-3 py-2 text-xs font-black text-slate-700">Text {formatPercent(effectiveMatchingWeights.textAnchorWeight)}</div>
-                    <div className="rounded-lg bg-white px-3 py-2 text-xs font-black text-slate-700">Image {formatPercent(effectiveMatchingWeights.imageAnchorWeight)}</div>
-                  </div>
-                  <div className="rounded-lg bg-white/80 px-3 py-2 text-[11px] font-semibold leading-5 text-indigo-800">
-                    Text Anchors: {textAnchorCount} · Image Anchors: {imageAnchorCount}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleConfirmTemplateUpdate}
-                    className="mt-2 w-full rounded-xl bg-emerald-600 px-4 py-3 text-xs font-black text-white shadow-sm hover:bg-emerald-700"
-                  >
-                    อัปเดต Template
-                  </button>
-                </aside>
+                <div className="rounded-xl border border-amber-100 bg-amber-50 p-4">
+                  <p className="text-xs font-bold text-amber-700">Verification ROI</p>
+                  <p className="mt-1 text-2xl font-black text-amber-950">{verificationAnchorCount}</p>
+                </div>
+              </div>
+              <div className="mt-5 flex justify-end">
+                <button type="button" onClick={handleConfirmTemplateUpdate} className="rounded-xl bg-emerald-600 px-5 py-3 text-xs font-black text-white shadow-sm hover:bg-emerald-700">
+                  อัปเดต Template
+                </button>
               </div>
             </section>
           )}
