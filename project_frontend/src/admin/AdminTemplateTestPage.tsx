@@ -19,7 +19,6 @@ import {
   fetchTemplateBundle,
   runPrepublishDetectionTest,
   runPrepublishSimulation,
-  updateTemplateApi,
 } from "./adminApi";
 
 const samplePage =
@@ -40,44 +39,8 @@ interface OcrPreviewResult {
 }
 
 const DEFAULT_FINAL_CONFIDENCE_THRESHOLD = 0.75;
-const DEFAULT_MATCHING_WEIGHTS = {
-  layoutWeight: 0,
-  textAnchorWeight: 0.5,
-  imageAnchorWeight: 0.5,
-};
-const MIN_DUAL_ANCHOR_WEIGHT = 0.2;
-
 const stableNumericId = (value: string) =>
   Math.abs(value.split("").reduce((hash, char) => (hash * 31 + char.charCodeAt(0)) | 0, 7));
-
-const clampUnit = (value: number) => Math.max(0, Math.min(1, value));
-
-const readMatchingWeights = (weights: {
-  layoutWeight?: number | null;
-  textAnchorWeight?: number | null;
-  imageAnchorWeight?: number | null;
-}) => ({
-  layoutWeight: clampUnit(Number.isFinite(weights.layoutWeight) ? Number(weights.layoutWeight) : DEFAULT_MATCHING_WEIGHTS.layoutWeight),
-  textAnchorWeight: clampUnit(Number.isFinite(weights.textAnchorWeight) ? Number(weights.textAnchorWeight) : DEFAULT_MATCHING_WEIGHTS.textAnchorWeight),
-  imageAnchorWeight: clampUnit(Number.isFinite(weights.imageAnchorWeight) ? Number(weights.imageAnchorWeight) : DEFAULT_MATCHING_WEIGHTS.imageAnchorWeight),
-});
-
-const normalizeMatchingWeights = (weights: {
-  layoutWeight?: number | null;
-  textAnchorWeight?: number | null;
-  imageAnchorWeight?: number | null;
-}) => {
-  const raw = readMatchingWeights(weights);
-  const total = raw.textAnchorWeight + raw.imageAnchorWeight;
-  if (total <= 0) return DEFAULT_MATCHING_WEIGHTS;
-  return {
-    layoutWeight: 0,
-    textAnchorWeight: Number((raw.textAnchorWeight / total).toFixed(4)),
-    imageAnchorWeight: Number((raw.imageAnchorWeight / total).toFixed(4)),
-  };
-};
-
-const formatWeightPercent = (value: number) => `${Math.round(value * 100)}%`;
 
 const compactTemplateNamePart = (value?: string | null) => String(value || "").trim();
 
@@ -121,40 +84,6 @@ const prepublishTemplateDisplayName = (candidate?: PrepublishCandidate | null) =
     return `${folderName}-${suffix}`;
   }
   return versionName || folderName || candidate.templateName || candidate.templateId || "N/A";
-};
-
-const roundWeight = (value: number) => Number(clampUnit(value).toFixed(4));
-
-const calculateMatchingWeights = ({
-  textAnchorCount,
-  imageAnchorCount,
-  preferredTextWeight,
-}: {
-  layoutWeight: number;
-  textAnchorCount: number;
-  imageAnchorCount: number;
-  preferredTextWeight?: number;
-}) => {
-  const hasText = textAnchorCount > 0;
-  const hasImage = imageAnchorCount > 0;
-  if (!hasText && !hasImage) {
-    return { layoutWeight: 0, textAnchorWeight: 0, imageAnchorWeight: 0 };
-  }
-
-  const layout = 0;
-  const remaining = roundWeight(1 - layout);
-  if (hasText && hasImage) {
-    const text = preferredTextWeight === undefined
-      ? roundWeight(remaining / 2)
-      : roundWeight(Math.max(MIN_DUAL_ANCHOR_WEIGHT, Math.min(remaining - MIN_DUAL_ANCHOR_WEIGHT, preferredTextWeight)));
-    return {
-      layoutWeight: layout,
-      textAnchorWeight: text,
-      imageAnchorWeight: roundWeight(remaining - text),
-    };
-  }
-  if (hasText) return { layoutWeight: layout, textAnchorWeight: remaining, imageAnchorWeight: 0 };
-  return { layoutWeight: layout, textAnchorWeight: 0, imageAnchorWeight: remaining };
 };
 
 const fieldToRoi = (field: TemplateField, metrics: WorkspaceImageMetrics): WorkspaceRoi & { kind: string; pageNumber: number } => {
@@ -299,130 +228,6 @@ function DraftOverviewMetric({ label, value, tone = "slate" }: { label: string; 
     <div className={`rounded-lg border px-3 py-2.5 ${toneClass}`}>
       <div className={`text-[9px] font-black uppercase tracking-wider ${labelClass}`}>{label}</div>
       <div className="mt-1 truncate text-sm font-black">{value}</div>
-    </div>
-  );
-}
-
-function MatchingWeightsPanel({
-  matchingWeights,
-  effectiveMatchingWeights,
-  textAnchorCount,
-  imageAnchorCount,
-  onTextChange,
-  onImageChange,
-  onWeightBlur,
-  onUseRecommended,
-}: {
-  matchingWeights: typeof DEFAULT_MATCHING_WEIGHTS;
-  effectiveMatchingWeights: typeof DEFAULT_MATCHING_WEIGHTS;
-  textAnchorCount: number;
-  imageAnchorCount: number;
-  onTextChange: (value: number) => void;
-  onImageChange: (value: number) => void;
-  onWeightBlur: () => void;
-  onUseRecommended: () => void;
-}) {
-  const hasText = textAnchorCount > 0;
-  const hasImage = imageAnchorCount > 0;
-  const hasAnyAnchor = hasText || hasImage;
-  const remaining = Math.round((1 - effectiveMatchingWeights.layoutWeight) * 100);
-  const textPercent = Math.round(effectiveMatchingWeights.textAnchorWeight * 100);
-  const imagePercent = Math.round(effectiveMatchingWeights.imageAnchorWeight * 100);
-  const textImageLocked = hasText && hasImage;
-  const dualAnchorMinPercent = textImageLocked ? MIN_DUAL_ANCHOR_WEIGHT * 100 : 0;
-  const dualAnchorMaxPercent = textImageLocked ? remaining - dualAnchorMinPercent : remaining;
-
-  return (
-    <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h4 className="text-[11px] font-black uppercase tracking-wider text-slate-700">ค่าน้ำหนัก Text/Image Anchors</h4>
-          <p className="mt-1 text-[11px] font-semibold leading-relaxed text-slate-500">
-            ใช้เฉพาะคะแนน Text และ Image รวมกันเป็น 100% ทั้งในโหมด standard และ strict
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onUseRecommended}
-          className="ui-stable-action rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black text-slate-700 hover:border-indigo-200 hover:text-indigo-700"
-        >
-          ใช้ค่าแนะนำ
-        </button>
-      </div>
-
-      <div className="mt-3 grid gap-2 md:grid-cols-2">
-        <label className="block rounded-lg border border-slate-100 bg-slate-50 p-3">
-          <span className="block text-[10px] font-black uppercase tracking-wider text-slate-500">Text</span>
-          <input
-            type="range"
-            min={dualAnchorMinPercent}
-            max={dualAnchorMaxPercent}
-            step="1"
-            value={textPercent}
-            disabled={!hasText || !textImageLocked}
-            onChange={(event) => onTextChange(Number(event.target.value) / 100)}
-            onMouseUp={onWeightBlur}
-            onTouchEnd={onWeightBlur}
-            className="mt-3 w-full accent-emerald-600 disabled:opacity-50"
-          />
-          <div className="mt-2 flex items-center gap-2">
-            <input
-              type="number"
-              min={dualAnchorMinPercent}
-              max={dualAnchorMaxPercent}
-              step="1"
-              value={textPercent}
-              disabled={!hasText || !textImageLocked}
-              onChange={(event) => onTextChange(Number(event.target.value) / 100)}
-              onBlur={onWeightBlur}
-              className="w-24 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm font-black text-slate-800 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
-            />
-            <span className="text-sm font-black text-slate-800">%</span>
-          </div>
-          <span className="mt-1 block text-[10px] font-semibold text-slate-500">
-            {!hasText ? "ไม่มี Text Anchor" : textImageLocked ? "เมื่อปรับ Text ระบบจะปรับ Image อัตโนมัติ" : "ใช้ค่าน้ำหนักที่เหลือทั้งหมด"}
-          </span>
-        </label>
-
-        <label className="block rounded-lg border border-slate-100 bg-slate-50 p-3">
-          <span className="block text-[10px] font-black uppercase tracking-wider text-slate-500">Image</span>
-          <input
-            type="range"
-            min={dualAnchorMinPercent}
-            max={dualAnchorMaxPercent}
-            step="1"
-            value={imagePercent}
-            disabled={!hasImage || !textImageLocked}
-            onChange={(event) => onImageChange(Number(event.target.value) / 100)}
-            onMouseUp={onWeightBlur}
-            onTouchEnd={onWeightBlur}
-            className="mt-3 w-full accent-sky-600 disabled:opacity-50"
-          />
-          <div className="mt-2 flex items-center gap-2">
-            <input
-              type="number"
-              min={dualAnchorMinPercent}
-              max={dualAnchorMaxPercent}
-              step="1"
-              value={imagePercent}
-              disabled={!hasImage || !textImageLocked}
-              onChange={(event) => onImageChange(Number(event.target.value) / 100)}
-              onBlur={onWeightBlur}
-              className="w-24 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm font-black text-slate-800 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
-            />
-            <span className="text-sm font-black text-slate-800">%</span>
-          </div>
-          <span className="mt-1 block text-[10px] font-semibold text-slate-500">
-            {!hasImage ? "ไม่มี Image Anchor" : textImageLocked ? "เมื่อปรับ Image ระบบจะปรับ Text อัตโนมัติ" : "ใช้ค่าน้ำหนักที่เหลือทั้งหมด"}
-          </span>
-        </label>
-      </div>
-
-      <div className="mt-3 rounded-lg bg-indigo-50 px-3 py-2 text-[11px] font-bold text-indigo-800">
-        ค่าน้ำหนักปัจจุบัน : Text {formatWeightPercent(effectiveMatchingWeights.textAnchorWeight)} / Image {formatWeightPercent(effectiveMatchingWeights.imageAnchorWeight)}
-        {!hasAnyAnchor && <span className="block text-[10px] text-indigo-600">ต้องเพิ่ม Text หรือ Image Anchor เพื่อทดสอบในฝั่ง admin</span>}
-        {hasText && hasImage && <span className="block text-[10px] text-indigo-600">Text และ Image รวมกันต้องเท่ากับค่าน้ำหนักที่เหลือ และแต่ละส่วนต้องไม่น้อยกว่า 20%</span>}
-      </div>
     </div>
   );
 }
@@ -668,23 +473,6 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
     return acc;
   }, {});
   const ocrPreviewPassed = Boolean(extractionFields.length > 0 || verificationAnchors.length > 0);
-  const finalConfidenceThreshold = typeof template?.finalConfidenceThreshold === "number" && Number.isFinite(template.finalConfidenceThreshold)
-    ? template.finalConfidenceThreshold
-    : DEFAULT_FINAL_CONFIDENCE_THRESHOLD;
-  const matchingWeights = useMemo(() => {
-    const configured = readMatchingWeights({
-      layoutWeight: template?.layoutWeight,
-      textAnchorWeight: template?.textAnchorWeight,
-      imageAnchorWeight: template?.imageAnchorWeight,
-    });
-    return calculateMatchingWeights({
-      layoutWeight: configured.layoutWeight,
-      textAnchorCount: textAnchors.length,
-      imageAnchorCount: imageAnchors.length,
-      preferredTextWeight: configured.textAnchorWeight,
-    });
-  }, [imageAnchors.length, template?.imageAnchorWeight, template?.layoutWeight, template?.textAnchorWeight, textAnchors.length]);
-  const effectiveMatchingWeights = matchingWeights;
   const simulationPassed = Boolean(simulation?.passed);
   const stepTwoCompleted = Boolean(simulationPassed);
   const detectionTestPassed = Boolean(detectionTest?.passed && detectionTest.draftTemplateRank === 1);
@@ -862,75 +650,6 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
     }
   };
 
-  const persistFinalConfidenceThreshold = async () => {
-    if (!template) return;
-    const nextThreshold = Math.max(0, Math.min(1, finalConfidenceThreshold));
-    setStatusMessage("");
-    setSimulationError("");
-    try {
-      const bundle = await updateTemplateApi(templateId, { finalConfidenceThreshold: nextThreshold });
-      applyTemplateBundle(bundle, "final-threshold-save");
-      setStatusMessage("Final confidence threshold saved.");
-    } catch (error) {
-      console.warn("Final confidence threshold save failed.", error);
-      setSimulationError(error instanceof Error ? error.message : "Final confidence threshold save failed.");
-    }
-  };
-
-  const updateMatchingWeightsDraft = (weights: typeof DEFAULT_MATCHING_WEIGHTS) => {
-    setTemplate((current) => current ? { ...current, ...weights } : current);
-  };
-
-  const updateTextWeightDraft = (value: number) => {
-    updateMatchingWeightsDraft(calculateMatchingWeights({
-      layoutWeight: matchingWeights.layoutWeight,
-      textAnchorCount: textAnchors.length,
-      imageAnchorCount: imageAnchors.length,
-      preferredTextWeight: value,
-    }));
-  };
-
-  const updateImageWeightDraft = (value: number) => {
-    const remaining = 1 - matchingWeights.layoutWeight;
-    updateMatchingWeightsDraft(calculateMatchingWeights({
-      layoutWeight: matchingWeights.layoutWeight,
-      textAnchorCount: textAnchors.length,
-      imageAnchorCount: imageAnchors.length,
-      preferredTextWeight: Math.max(0, remaining - value),
-    }));
-  };
-
-  const persistMatchingWeights = async (weights = matchingWeights) => {
-    if (!template) return;
-    const configured = calculateMatchingWeights({
-      layoutWeight: weights.layoutWeight,
-      textAnchorCount: textAnchors.length,
-      imageAnchorCount: imageAnchors.length,
-      preferredTextWeight: weights.textAnchorWeight,
-    });
-    const nextWeights = configured;
-    setStatusMessage("");
-    setSimulationError("");
-    try {
-      const bundle = await updateTemplateApi(templateId, nextWeights);
-      applyTemplateBundle(bundle, "matching-weights-save");
-      setStatusMessage("Matching weights saved.");
-    } catch (error) {
-      console.warn("Matching weights save failed.", error);
-      setSimulationError(error instanceof Error ? error.message : "Matching weights save failed.");
-    }
-  };
-
-  const applyRecommendedMatchingWeights = async () => {
-    const recommended = calculateMatchingWeights({
-      layoutWeight: DEFAULT_MATCHING_WEIGHTS.layoutWeight,
-      textAnchorCount: textAnchors.length,
-      imageAnchorCount: imageAnchors.length,
-    });
-    updateMatchingWeightsDraft(recommended);
-    await persistMatchingWeights(recommended);
-  };
-
   useEffect(() => {
     if (validationStep !== 2 || autoSimulationStartedRef.current || simulation || simulationAction !== null || !ocrPreviewPassed || !stepOneConfirmed) return;
     autoSimulationStartedRef.current = true;
@@ -1023,43 +742,6 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
             <DraftOverviewMetric label="Image Anchors" value={simulation?.draftSummary?.imageAnchorCount ?? imageAnchors.length} tone="orange" />
           </div>
         </div>
-        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-            <div>
-              <h4 className="text-[11px] font-black uppercase tracking-wider text-slate-700">การตั้งค่าการตัดสินใจ</h4>
-              <p className="mt-1 text-[11px] font-semibold text-slate-500">
-                ใช้เป็นเกณฑ์ตัดสิน Final Score ในขั้น New Document Test และตอน Publish
-              </p>
-            </div>
-            <label className="block w-full max-w-xs space-y-1">
-              <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">เกณฑ์คะแนนรวม</span>
-              <input
-                type="number"
-                min="0"
-                max="1"
-                step="0.01"
-                value={finalConfidenceThreshold}
-                onChange={(event) => {
-                  const value = Number(event.target.value);
-                  setTemplate((current) => current ? { ...current, finalConfidenceThreshold: Number.isFinite(value) ? value : DEFAULT_FINAL_CONFIDENCE_THRESHOLD } : current);
-                }}
-                onBlur={persistFinalConfidenceThreshold}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-black text-slate-800"
-              />
-              <span className="block text-[10px] font-semibold text-slate-500">ค่าเริ่มต้นที่แนะนำ: 0.75</span>
-            </label>
-          </div>
-        </div>
-        <MatchingWeightsPanel
-          matchingWeights={matchingWeights}
-          effectiveMatchingWeights={effectiveMatchingWeights}
-          textAnchorCount={textAnchors.length}
-          imageAnchorCount={imageAnchors.length}
-          onTextChange={updateTextWeightDraft}
-          onImageChange={updateImageWeightDraft}
-          onWeightBlur={() => persistMatchingWeights()}
-          onUseRecommended={applyRecommendedMatchingWeights}
-        />
         <div className="mt-4 flex justify-end">
           <button
             type="button"

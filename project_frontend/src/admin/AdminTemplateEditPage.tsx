@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import WorkspaceTemplateEditor from "./workspace/WorkspaceTemplateEditorV2";
 import AdjustZone from "../user/components/AdjustZone";
 import {
@@ -343,6 +343,22 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
     () => selectedTemplatePages.map((page) => page.normalizedImageUrl || page.sampleImageUrl || samplePage),
     [selectedTemplatePages]
   );
+  const adjustPageIndices = useMemo(() => {
+    if (selectedTemplate?.detectionMode !== "main_page") return selectedTemplatePages.map((_, index) => index);
+    const firstPageIndex = selectedTemplatePages.findIndex((page) => page.pageNumber === 1);
+    return selectedTemplatePages.length ? [firstPageIndex >= 0 ? firstPageIndex : 0] : [];
+  }, [selectedTemplate?.detectionMode, selectedTemplatePages]);
+  const adjustImages = useMemo(() => adjustPageIndices.map((index) => imageList[index]), [adjustPageIndices, imageList]);
+  const visibleAdjustConfigs = adjustPageIndices.map((index) => adjustPageConfigs[index] || defaultAdjustPageConfig());
+  const setVisibleAdjustConfigs = useCallback<React.Dispatch<React.SetStateAction<AdminAdjustPageConfig[]>>>((action) => {
+    setAdjustPageConfigs((current) => {
+      const visible = adjustPageIndices.map((index) => current[index] || defaultAdjustPageConfig());
+      const updated = typeof action === "function" ? action(visible) : action;
+      const next = [...current];
+      adjustPageIndices.forEach((index, visibleIndex) => { if (updated[visibleIndex]) next[index] = updated[visibleIndex]; });
+      return next;
+    });
+  }, [adjustPageIndices]);
 
   const workspacePages = selectedTemplatePages.map((page, index) => ({
     id: page.id,
@@ -431,10 +447,10 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
     if (finalImages.length === 0) return;
 
     const previousPages = selectedTemplatePages;
-    const nextPages = selectedTemplatePages.map((page, index) => ({
-      ...page,
-      normalizedImageUrl: finalImages[index] || page.normalizedImageUrl || page.sampleImageUrl || samplePage,
-    }));
+    const adjustedByIndex = new Map(adjustPageIndices.map((pageIndex, index) => [pageIndex, finalImages[index]]));
+    const nextPages = selectedTemplatePages.map((page, index) => adjustedByIndex.get(index)
+      ? { ...page, normalizedImageUrl: adjustedByIndex.get(index)! }
+      : page);
     setSelectedTemplatePages(nextPages);
     setCurrentPage(0);
     setEditorStage("roi");
@@ -446,7 +462,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
 
     try {
       let latestBundle: Awaited<ReturnType<typeof updateTemplatePageApi>> | null = null;
-      for (const page of nextPages) {
+      for (const page of adjustPageIndices.map((index) => nextPages[index])) {
         if (!page.id.startsWith("local_page_")) {
           latestBundle = await updateTemplatePageApi(templateId, page.id, {
             normalizedImageUrl: page.normalizedImageUrl,
@@ -959,11 +975,11 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
         <div className="space-y-4">
           {editorStage === "adjust" ? (
             <AdjustZone
-              imagesList={imageList}
-              currentIndex={safeCurrentPage}
-              onIndexChange={setCurrentPage}
-              pagesConfig={adjustPageConfigs}
-              setPagesConfig={setAdjustPageConfigs}
+              imagesList={adjustImages}
+              currentIndex={Math.max(0, adjustPageIndices.indexOf(safeCurrentPage))}
+              onIndexChange={(index) => setCurrentPage(adjustPageIndices[index] ?? 0)}
+              pagesConfig={visibleAdjustConfigs}
+              setPagesConfig={setVisibleAdjustConfigs}
               onBatchConfirm={(finalImages) => {
                 void handleConfirmAdjustedImages(finalImages);
               }}
