@@ -145,11 +145,11 @@ export default function TemplateFieldBasicForm({ field, onUpdate, onDelete, comp
         )}
       </div>
 
-      <div className={compact ? "grid grid-cols-1 gap-2" : "grid grid-cols-2 gap-2"}>
+      <div className="grid grid-cols-2 gap-2">
         <button type="button" onClick={handleSave} className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-black text-white">
           บันทึก Field
         </button>
-        <button type="button" onClick={() => onDelete(field.id)} className={`${compact ? "hidden" : ""} rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-black text-red-700`}>
+        <button type="button" onClick={() => onDelete(field.id)} className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-black text-red-700">
           ลบ Field
         </button>
       </div>

@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { ArrowLeft, GripVertical, Loader2, ScanSearch, Trash2 } from "lucide-react";
+import { ArrowLeft, GripVertical, Loader2, ScanSearch } from "lucide-react";
 import { DragEvent, SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WorkspacePage } from "../../shared/workspace/BaseWorkspace";
 import { authHeaders } from "../../auth/session";
@@ -1541,27 +1541,13 @@ export default function WorkspaceTemplateEditorV2({
                             <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] font-black uppercase text-slate-500">
                               {isFlexibleField ? "flex" : sourceField?.dataType || roi.type || "text"}
                             </span>
-                            {sourceField && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  onDeleteField(sourceField.id);
-                                  if (isSelected) setSelectedId(null);
-                                }}
-                                aria-label={`ลบ ROI ${sourceField.displayLabel || sourceField.fieldName}`}
-                                title="ลบ ROI"
-                                className="rounded-lg p-1.5 text-red-600 hover:bg-red-50"
-                              >
-                                <Trash2 size={14} />
-                              </button>
-                            )}
                           </div>
                           {isSelected && sourceField && (
                             <div className="border-t border-indigo-100 p-2">
                               <TemplateFieldBasicForm
                                 field={sourceField}
                                 onUpdate={onUpdateField}
-                                onDelete={onDeleteField}
+                                onDelete={(fieldId) => { onDeleteField(fieldId); setSelectedId(null); }}
                                 compact
                                 onSave={() => setSelectedId(null)}
                               />
