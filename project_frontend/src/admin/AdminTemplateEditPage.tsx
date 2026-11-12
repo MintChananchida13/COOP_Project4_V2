@@ -360,11 +360,16 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
     });
   }, [adjustPageIndices]);
 
-  const workspacePages = selectedTemplatePages.map((page, index) => ({
+  const workspacePages = adjustPageIndices.map((index) => ({
+    ...selectedTemplatePages[index],
+  })).map((page) => ({
     id: page.id,
-    src: imageList[index] || samplePage,
+    src: page.normalizedImageUrl || page.sampleImageUrl || samplePage,
     label: page.pageName || `Page ${page.pageNumber}`,
   }));
+  const workspacePageIds = new Set(workspacePages.map((page) => page.id));
+  const workspaceFields = selectedTemplateFields.filter((field) => workspacePageIds.has(field.templatePageId));
+  const workspaceIgnoreRegions = selectedIgnoreRegions.filter((region) => workspacePageIds.has(region.templatePageId));
 
   useEffect(() => {
     setAdjustPageConfigs((current) => {
@@ -375,10 +380,10 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
 
   const safeCurrentPage = Math.min(currentPage, Math.max(selectedTemplatePages.length - 1, 0));
   const currentTemplatePage = selectedTemplatePages[safeCurrentPage];
-  const extractionFieldCount = selectedTemplateFields.filter((field) => !field.useForVerification).length;
-  const verificationAnchorCount = selectedTemplateFields.filter((field) => field.useForVerification).length;
-  const textAnchorCount = selectedTemplateFields.filter((field) => field.useForVerification && field.dataType !== "image").length;
-  const imageAnchorCount = selectedTemplateFields.filter((field) => field.useForVerification && field.dataType === "image").length;
+  const extractionFieldCount = workspaceFields.filter((field) => !field.useForVerification).length;
+  const verificationAnchorCount = workspaceFields.filter((field) => field.useForVerification).length;
+  const textAnchorCount = workspaceFields.filter((field) => field.useForVerification && field.dataType !== "image").length;
+  const imageAnchorCount = workspaceFields.filter((field) => field.useForVerification && field.dataType === "image").length;
   const isUpdatingPublishedTemplate = selectedTemplate?.status === "active";
   const effectiveMatchingWeights = calculateMatchingWeights({
     layoutWeight: layoutWeightDraft,
@@ -935,7 +940,7 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
             </div>
             <div className="flex flex-wrap gap-2">
               <span className="rounded-full bg-sky-50 px-3 py-2 text-[11px] font-black text-sky-700">
-                Pages: {selectedTemplatePages.length}
+                Pages: {workspacePages.length}
               </span>
               <span className="rounded-full bg-indigo-50 px-3 py-2 text-[11px] font-black text-indigo-700">
                 ROI: {extractionFieldCount}
@@ -989,10 +994,10 @@ export default function AdminTemplateEditPage({ templateId }: { templateId: stri
             <WorkspaceTemplateEditor
               templateId={templateId}
               pages={workspacePages}
-              currentPage={safeCurrentPage}
-              onPageChange={setCurrentPage}
-              fields={selectedTemplateFields}
-              ignoreRegions={selectedIgnoreRegions}
+              currentPage={Math.max(0, adjustPageIndices.indexOf(safeCurrentPage))}
+              onPageChange={(index) => setCurrentPage(adjustPageIndices[index] ?? 0)}
+              fields={workspaceFields}
+              ignoreRegions={workspaceIgnoreRegions}
               onAddField={handleAddField}
               onUpdateField={handleUpdateField}
               onReorderFields={handleReorderFields}

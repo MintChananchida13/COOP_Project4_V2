@@ -449,12 +449,14 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
     };
   }, [testDocumentPreviewUrl]);
 
-  const safePages = pages.length > 0 ? pages : [{ id: "empty", templateId, pageNumber: 1, sampleImageUrl: samplePage, similarityThreshold: 0.5, finalConfidenceThreshold: DEFAULT_FINAL_CONFIDENCE_THRESHOLD }];
+  const reviewPages = template?.detectionMode === "main_page" ? pages.filter((page) => page.pageNumber === 1) : pages;
+  const safePages = reviewPages.length > 0 ? reviewPages : [{ id: "empty", templateId, pageNumber: 1, sampleImageUrl: samplePage, similarityThreshold: 0.5, finalConfidenceThreshold: DEFAULT_FINAL_CONFIDENCE_THRESHOLD }];
   const safeCurrentPage = Math.min(currentPage, Math.max(safePages.length - 1, 0));
   const currentPageNumber = safePages[safeCurrentPage]?.pageNumber || safeCurrentPage + 1;
   const currentPageImage = safePages[safeCurrentPage]?.normalizedImageUrl || safePages[safeCurrentPage]?.sampleImageUrl || samplePage;
-  const extractionFields = fields.filter((field) => !field.useForVerification);
-  const verificationAnchors = fields.filter((field) => field.useForVerification);
+  const reviewFields = template?.detectionMode === "main_page" ? fields.filter((field) => field.pageNumber === 1) : fields;
+  const extractionFields = reviewFields.filter((field) => !field.useForVerification);
+  const verificationAnchors = reviewFields.filter((field) => field.useForVerification);
   const textAnchors = verificationAnchors.filter((field) => field.dataType !== "image");
   const imageAnchors = verificationAnchors.filter((field) => field.dataType === "image");
   const currentPageFields = extractionFields.filter((field) => field.pageNumber === currentPageNumber);
@@ -463,7 +465,7 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
   const selectedRoiId = selectedFieldId
     ? stableNumericId(`${selectedField?.useForVerification ? "anchor" : "field"}:${selectedFieldId}`)
     : null;
-  const rois = useMemo(() => fields.map((field) => fieldToRoi(field, imageMetrics)), [fields, imageMetrics]);
+  const rois = useMemo(() => fields.filter((field) => template?.detectionMode !== "main_page" || field.pageNumber === 1).map((field) => fieldToRoi(field, imageMetrics)), [fields, imageMetrics, template?.detectionMode]);
   const resultsByPage = ocrResults.reduce<Record<number, OcrPreviewResult[]>>((acc, result) => {
     acc[result.pageNumber] = [...(acc[result.pageNumber] || []), result];
     return acc;
@@ -736,10 +738,10 @@ export default function AdminTemplateTestPage({ templateId }: { templateId: stri
           <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
             <DraftOverviewMetric label="Template Name" value={template.name} />
             <DraftOverviewMetric label="Status" value={simulation?.draftSummary?.status || template.status} tone="emerald" />
-            <DraftOverviewMetric label="Pages" value={simulation?.draftSummary?.pageCount ?? safePages.length} />
-            <DraftOverviewMetric label="Extraction Fields" value={simulation?.draftSummary?.extractionFieldCount ?? extractionFields.length} tone="indigo" />
-            <DraftOverviewMetric label="Text Anchors" value={simulation?.draftSummary?.textAnchorCount ?? textAnchors.length} tone="orange" />
-            <DraftOverviewMetric label="Image Anchors" value={simulation?.draftSummary?.imageAnchorCount ?? imageAnchors.length} tone="orange" />
+            <DraftOverviewMetric label="Pages" value={template.detectionMode === "main_page" ? safePages.length : simulation?.draftSummary?.pageCount ?? safePages.length} />
+            <DraftOverviewMetric label="Extraction Fields" value={template.detectionMode === "main_page" ? extractionFields.length : simulation?.draftSummary?.extractionFieldCount ?? extractionFields.length} tone="indigo" />
+            <DraftOverviewMetric label="Text Anchors" value={template.detectionMode === "main_page" ? textAnchors.length : simulation?.draftSummary?.textAnchorCount ?? textAnchors.length} tone="orange" />
+            <DraftOverviewMetric label="Image Anchors" value={template.detectionMode === "main_page" ? imageAnchors.length : simulation?.draftSummary?.imageAnchorCount ?? imageAnchors.length} tone="orange" />
           </div>
         </div>
         <div className="mt-4 flex justify-end">

@@ -95,6 +95,24 @@ class AnchorPublishTests(unittest.TestCase):
         self.db.execute('DELETE FROM verification_anchors')
         self.assertIn('text_or_image_anchor_required', self.readiness()['issues'])
 
+    def test_main_page_readiness_ignores_other_pages_but_all_pages_checks_them(self):
+        self.db.execute("INSERT INTO template_pages VALUES('other', 'template', 2, NULL, NULL)")
+        self.db.execute("UPDATE template_versions SET detection_mode='main_page', main_page_number=1")
+        result = self.readiness()
+        self.assertTrue(result['passed'])
+        self.assertEqual(result['page_count'], 1)
+        self.assertEqual([page['page_number'] for page in result['readiness_pages']], [1])
+        self.db.execute("UPDATE template_versions SET detection_mode='all_pages'")
+        result = self.readiness()
+        self.assertFalse(result['passed'])
+        self.assertIn('page_2: page_image_unavailable_or_invalid', result['issues'])
+
+    def test_main_page_readiness_rejects_missing_main_page(self):
+        self.db.execute("UPDATE template_versions SET detection_mode='main_page', main_page_number=2")
+        result = self.readiness()
+        self.assertFalse(result['passed'])
+        self.assertIn('main_page_unavailable', result['issues'])
+
     def queue_job(self):
         self.db.execute("UPDATE template_versions SET status='validated'")
         self.db.commit()

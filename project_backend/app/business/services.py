@@ -3090,6 +3090,8 @@ def _template_anchor_readiness(conn: Any, template_id: str) -> Dict[str, Any]:
     ).fetchall()
     main_page_only = template["detection_mode"] == "main_page"
     main_page = int(template["main_page_number"] or 1)
+    if main_page_only:
+        pages = [page for page in pages if int(page["page_number"]) == main_page]
     issues: List[str] = []
     page_results: List[Dict[str, Any]] = []
     for page in pages:
