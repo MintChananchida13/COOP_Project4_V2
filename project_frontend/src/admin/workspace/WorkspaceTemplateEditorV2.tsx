@@ -496,7 +496,7 @@ export default function WorkspaceTemplateEditorV2({
     verificationAnchors.length === 0
       ? "ต้องสร้าง Verification Anchor อย่างน้อย 1 รายการก่อนเข้าสู่ Test Mode"
       : textAnchorsMissingExpected.length > 0
-        ? `กรุณากรอก Expected Text ให้ครบ (${textAnchorsMissingExpected.length} รายการ)`
+        ? `กรุณากรอกข้อความอ้างอิงให้ครบ (${textAnchorsMissingExpected.length} รายการ)`
         : imageAnchorsMissingCategory.length > 0
           ? `กรุณาเลือกประเภทภาพให้ Anchor รูปภาพให้ครบ (${imageAnchorsMissingCategory.length} รายการ)`
         : "";
@@ -743,7 +743,7 @@ export default function WorkspaceTemplateEditorV2({
         })()}
         {method === "ocr_text" && (
           <label className="space-y-1 block">
-            <span className="text-[9px] font-black uppercase text-slate-400">Expected Text</span>
+            <span className="text-[9px] font-black uppercase text-slate-400">ข้อความอ้างอิง</span>
             <input
               required
               className={`${inputClass} ${!String(anchor.expectedText || "").trim() ? "border-red-300 bg-red-50/50 focus:border-red-500" : ""}`}
@@ -1591,13 +1591,10 @@ export default function WorkspaceTemplateEditorV2({
                       return (
                         <div
                           key={anchor.id}
-                          draggable
-                          onDragStart={(event) => handleFieldDragStart(event, anchor.id)}
                           onDragOver={(event) => {
                             if (draggingFieldId && draggingFieldId !== anchor.id) event.preventDefault();
                           }}
                           onDrop={(event) => handleFieldDrop(event, anchor, currentPageAnchors)}
-                          onDragEnd={() => setDraggingFieldId(null)}
                           className={`overflow-hidden rounded-lg border bg-white text-[11px] font-bold ${
                             draggingFieldId === anchor.id
                               ? "border-amber-400 opacity-60"
@@ -1606,7 +1603,12 @@ export default function WorkspaceTemplateEditorV2({
                                 : "border-slate-200 text-slate-600 hover:bg-slate-50"
                           }`}
                         >
-                          <div className="flex items-center gap-1.5 px-2 py-2">
+                          <div
+                            draggable
+                            onDragStart={(event) => handleFieldDragStart(event, anchor.id)}
+                            onDragEnd={() => setDraggingFieldId(null)}
+                            className="flex cursor-grab items-center gap-1.5 px-2 py-2 active:cursor-grabbing"
+                          >
                             <span className="inline-flex h-7 w-6 shrink-0 cursor-grab items-center justify-center rounded-md text-slate-400 active:cursor-grabbing" title="ลากเพื่อจัดลำดับ">
                               <GripVertical size={14} />
                             </span>
@@ -1626,7 +1628,7 @@ export default function WorkspaceTemplateEditorV2({
                                   <span className="rounded bg-red-100 px-1 py-0.5 text-red-700">ต้องเลือกประเภทภาพ</span>
                                 )}
                                 {anchorMethod(anchor) === "ocr_text" && !String(anchor.expectedText || "").trim() && (
-                                  <span className="rounded bg-red-100 px-1 py-0.5 text-red-700">ค่าที่ใช้ยืนยัน</span>
+                                  <span className="rounded bg-red-100 px-1 py-0.5 text-red-700">กรุณาใส่ข้อความ</span>
                                 )}
                               </div>
                             </button>
