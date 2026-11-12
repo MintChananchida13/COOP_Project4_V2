@@ -1513,13 +1513,10 @@ export default function WorkspaceTemplateEditorV2({
                       return (
                         <div
                           key={roi.id}
-                          draggable={Boolean(sourceField)}
-                          onDragStart={(event) => sourceField && handleFieldDragStart(event, sourceField.id)}
                           onDragOver={(event) => {
                             if (sourceField && draggingFieldId && draggingFieldId !== sourceField.id) event.preventDefault();
                           }}
                           onDrop={(event) => sourceField && handleFieldDrop(event, sourceField, currentPageExtractionFields)}
-                          onDragEnd={() => setDraggingFieldId(null)}
                           className={`rounded-lg border bg-white ${
                             draggingFieldId === sourceField?.id
                               ? "border-indigo-400 opacity-60"
@@ -1528,7 +1525,12 @@ export default function WorkspaceTemplateEditorV2({
                                 : "border-slate-200 hover:bg-slate-50"
                           }`}
                         >
-                          <div className="flex items-center gap-1.5 px-2 py-2 text-[11px] font-bold">
+                          <div
+                            draggable={Boolean(sourceField)}
+                            onDragStart={(event) => sourceField && handleFieldDragStart(event, sourceField.id)}
+                            onDragEnd={() => setDraggingFieldId(null)}
+                            className="flex cursor-grab items-center gap-1.5 px-2 py-2 text-[11px] font-bold active:cursor-grabbing"
+                          >
                             {sourceField && (
                               <span className="inline-flex h-7 w-6 shrink-0 cursor-grab items-center justify-center rounded-md text-slate-400 active:cursor-grabbing" title="ลากเพื่อจัดลำดับ">
                                 <GripVertical size={14} />
