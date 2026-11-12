@@ -149,6 +149,7 @@ export interface WorkspaceCustomEditorProps {
   getRoiLabelClassName?: (roi: ROI & { pageIndex?: number }, selected: boolean) => string;
   getRoiLabelText?: (roi: ROI & { pageIndex?: number }) => string;
   getRoiBadges?: (roi: ROI & { pageIndex?: number }) => string[];
+  canDeleteFromPopover?: (roi: ROI & { pageIndex?: number }) => boolean;
   allowedRoiTypes?: Array<"text" | "table" | "image">;
   onImageMetricsChange?: (metrics: WorkspaceImageMetrics) => void;
   onCanvasRoiSelect?: (roiId: number) => void;
@@ -194,6 +195,7 @@ export default function WorkspaceCustomEditor({
   getRoiLabelClassName,
   getRoiLabelText,
   getRoiBadges,
+  canDeleteFromPopover,
   allowedRoiTypes = ["text", "table", "image"],
   onImageMetricsChange,
   onCanvasRoiSelect,
@@ -1487,6 +1489,19 @@ export default function WorkspaceCustomEditor({
 
                           <div className="flex items-center justify-between border-t border-slate-100 pt-1.5 mt-0.5">
                             <span className="text-[8px] text-slate-400">ID: #{roi.id}</span>
+                            {canDeleteFromPopover?.(roi) && (
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  deleteROI(roi.id);
+                                  selectIds([]);
+                                }}
+                                className="ml-auto mr-2 rounded border border-red-200 bg-white px-2.5 py-0.5 text-[9px] font-bold text-red-600 hover:bg-red-50"
+                              >
+                                ลบ ROI
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={(e) => {

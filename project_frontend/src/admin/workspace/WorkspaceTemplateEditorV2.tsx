@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { ArrowLeft, GripVertical, Loader2, ScanSearch } from "lucide-react";
+import { ArrowLeft, GripVertical, Loader2, ScanSearch, Trash2 } from "lucide-react";
 import { DragEvent, SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WorkspacePage } from "../../shared/workspace/BaseWorkspace";
 import { authHeaders } from "../../auth/session";
@@ -1141,14 +1141,14 @@ export default function WorkspaceTemplateEditorV2({
     const nonTableBlocks = blocks.filter((block) => (block.dataType || block.type) !== "table");
     return (
       <div className="space-y-3">
-        <div className="grid gap-3 lg:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)]">
+        <div className="grid gap-3 lg:grid-cols-2">
           <div className="rounded-lg border border-slate-100 bg-white p-2">
-            <div className="text-[9px] font-black uppercase text-slate-400">ภาพพรีวิวที่ PP-DocLayoutV3 หาองค์ประกอบได้</div>
+            <div className="text-[9px] font-black uppercase text-slate-400">ภาพพรีวิวองค์ประกอบที่ตรวจพบ</div>
             {item.flexibleOverlayPreviewDataUrl ? (
               <img src={item.flexibleOverlayPreviewDataUrl} alt="" className="mt-2 max-h-[520px] w-full rounded-md bg-white object-contain ring-1 ring-slate-100" />
             ) : (
               <div className="mt-2 flex h-80 items-center justify-center rounded-md bg-slate-50 text-[10px] font-semibold text-slate-400">
-                ไม่มีภาพพรีวิวจาก PP-DocLayoutV3
+                ไม่มีภาพพรีวิว
               </div>
             )}
           </div>
@@ -1169,9 +1169,6 @@ export default function WorkspaceTemplateEditorV2({
                       <div className="flex flex-wrap justify-end gap-1">
                         <span className="rounded bg-white px-1.5 py-0.5 text-[8px] font-black uppercase text-slate-500">
                           {block.dataType || block.type || "text"}
-                        </span>
-                        <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[8px] font-black uppercase text-sky-700">
-                          PP-DocLayoutV3
                         </span>
                       </div>
                     </div>
@@ -1215,7 +1212,7 @@ export default function WorkspaceTemplateEditorV2({
         {tableBlocks.length > 0 && (
           <div className="space-y-3 rounded-lg border border-slate-100 bg-white p-3">
             <div className="flex items-center justify-between gap-2">
-              <div className="text-[9px] font-black uppercase text-slate-400">ตารางที่ PP-DocLayoutV3 แยกได้</div>
+              <div className="text-[9px] font-black uppercase text-slate-400">ตารางที่ตรวจพบ</div>
               <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[8px] font-black uppercase text-slate-500">
                 {tableBlocks.length} ตาราง
               </span>
@@ -1399,6 +1396,7 @@ export default function WorkspaceTemplateEditorV2({
         hideOcrActions
         hideStepProgress
         processingContext="admin"
+        canDeleteFromPopover={(roi) => step === "extraction_fields" && (roi as AdminRoi).workspaceKind === "extraction_fields"}
         rootClassName="max-w-7xl mx-auto space-y-3"
         onImageMetricsChange={setImageMetrics}
         getRoiBadges={(roi) => {
@@ -1491,7 +1489,7 @@ export default function WorkspaceTemplateEditorV2({
                         {isAutoDetecting ? "กำลังตีกรอบ ROI ทุกหน้า..." : "ตีกรอบ ROI อัตโนมัติทุกหน้า"}
                       </button>
                       <p className="text-[10px] font-semibold leading-relaxed text-slate-500">
-                        วิเคราะห์ Layout ทุกหน้าด้วย PP-DocLayoutV3 แล้วสร้าง Extraction ROI ใหม่ โดยลบ Extraction ROI เดิมของทุกหน้าก่อนทุกครั้ง
+                        วิเคราะห์ Layout ทุกหน้าแล้วสร้าง Extraction ROI ใหม่ โดยลบ Extraction ROI เดิมของทุกหน้าก่อนทุกครั้ง
                       </p>
                       {autoDetectStatus && (
                         <p className="rounded-lg bg-emerald-50 px-2.5 py-2 text-[10px] font-bold leading-relaxed text-emerald-700">
@@ -1543,6 +1541,20 @@ export default function WorkspaceTemplateEditorV2({
                             <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] font-black uppercase text-slate-500">
                               {isFlexibleField ? "flex" : sourceField?.dataType || roi.type || "text"}
                             </span>
+                            {sourceField && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onDeleteField(sourceField.id);
+                                  if (isSelected) setSelectedId(null);
+                                }}
+                                aria-label={`ลบ ROI ${sourceField.displayLabel || sourceField.fieldName}`}
+                                title="ลบ ROI"
+                                className="rounded-lg p-1.5 text-red-600 hover:bg-red-50"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            )}
                           </div>
                           {isSelected && sourceField && (
                             <div className="border-t border-indigo-100 p-2">
