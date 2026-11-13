@@ -212,7 +212,7 @@ def _post_predict(
     path_override: Optional[str] = None,
     timing: Optional[Dict[str, Any]] = None,
     multipart_images: Optional[List[bytes]] = None,
-) -> Dict[str, Any]:
+) -> Any:
     if path_override:
         gateway_url = GATEWAY_URL.strip().rstrip("/")
         endpoint_url = f"{gateway_url}{_gateway_api_path(path_override)}" if gateway_url else None
@@ -382,6 +382,8 @@ def _post_predict(
         result = parsed.get("data")
     if kind in {ModelRuntimeKind.TEXT_DETECTION, ModelRuntimeKind.TEXT_RECOGNITION} and isinstance(result, dict) and runtime_model and "model" not in result:
         result = {**result, "model": runtime_model}
+    if kind == ModelRuntimeKind.LAYOUT:
+        return result
     return result if isinstance(result, dict) else parsed
 
 
@@ -390,7 +392,7 @@ def remote_analyze_layout(
     timing: Optional[Dict[str, Any]] = None,
     layout_only: bool = True,
 ) -> Optional[Dict[str, Any]]:
-    """Return one Layout leaf result from a one-image batch, without DET.
+    """Return one raw Layout prediction from a one-image batch, without DET.
 
     layout_only remains accepted for existing callers; this transport always
     uses the layout-only leaf endpoint.
@@ -411,17 +413,15 @@ def remote_analyze_layout(
         {"images": [image_data_url]},
         timing=timing,
     )
-    if not isinstance(batch, dict) or batch.get("error") is not None:
-        raise ModelRuntimeUnavailableError("Layout batch runtime returned an invalid response.")
-    results = batch.get("results")
-    if type(batch.get("count")) is not int or batch["count"] != 1 or not isinstance(results, list) or len(results) != 1:
-        raise ModelRuntimeUnavailableError("Layout batch runtime must return exactly one result for one image.")
-    layout = results[0]
-    if (not isinstance(layout, dict) or layout.get("error") is not None
-            or layout.get("contract_version") != "leaf-inference-v1" or layout.get("kind") != "layout"
-            or not isinstance(layout.get("raw_output"), list)
-            or any(not isinstance(item, dict) for item in layout["raw_output"])):
-        raise ModelRuntimeUnavailableError("Layout batch runtime returned an invalid layout leaf contract.")
+    if not isinstance(batch, list) or len(batch) != 1:
+        raise ModelRuntimeUnavailableError("Layout runtime must return exactly one result for one image.")
+    layout = batch[0]
+    if not isinstance(layout, dict) or layout.get("error") is not None:
+        raise ModelRuntimeUnavailableError("Layout runtime returned an invalid prediction.")
+    prediction = layout.get("res", layout)
+    if not isinstance(prediction, dict) or not isinstance(prediction.get("boxes"), list):
+        raise ModelRuntimeUnavailableError("Layout prediction must contain a boxes list.")
+
     return layout
 
 

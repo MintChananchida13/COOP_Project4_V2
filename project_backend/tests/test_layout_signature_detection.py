@@ -7,9 +7,8 @@ from app.processing.layout_signature_service import build_layout_signature, comp
 
 class LayoutOnlySignatureTests(unittest.TestCase):
     def response(self):
-        return {"contract_version": "leaf-inference-v1", "kind": "layout", "raw_output": [
-            {"boxes": [{"label": "image", "coordinate": [5, 5, 35, 70], "score": .9},
-                       {"label": "text", "coordinate": [40, 10, 90, 30], "score": .95}]}]}
+        return {"boxes": [{"label": "image", "coordinate": [5, 5, 35, 70], "score": .9},
+                       {"label": "text", "coordinate": [40, 10, 90, 30], "score": .95}]}
 
     def test_layout_boxes_including_text_used_once_and_cached_without_detection(self):
         image = np.zeros((100,100,3), np.uint8)
@@ -43,7 +42,7 @@ class LayoutOnlySignatureTests(unittest.TestCase):
         for response in invalid:
             with self.subTest(response=response), patch.object(service, "_get_cached_layout_raw_items", return_value=None), \
                  patch.object(service, "_require_runtime"), patch.object(service, "remote_analyze_layout", return_value=response):
-                with self.assertRaisesRegex(service.LayoutAnalysisUnavailableError, "Layout leaf"):
+                with self.assertRaisesRegex(service.LayoutAnalysisUnavailableError, "raw Layout"):
                     service.analyze_layout_signature(np.zeros((100, 100, 3), np.uint8))
 
     def test_unrelated_detection_branch_is_not_added_to_layout_signature(self):

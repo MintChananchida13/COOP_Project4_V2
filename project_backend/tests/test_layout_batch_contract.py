@@ -9,15 +9,14 @@ from app.core import model_runtime_client as client
 from app.model_runtime import layout_analysis_service as service
 
 
-LAYOUT = {"contract_version": "leaf-inference-v1", "kind": "layout", "raw_output": [
-    {"boxes": [{"label": "image", "coordinate": [5, 5, 35, 70], "score": .9}]}]}
+LAYOUT = {"boxes": [{"label": "image", "coordinate": [5, 5, 35, 70], "score": .9}]}
 
 
 class LayoutBatchContractTests(unittest.TestCase):
     def test_http_endpoint_images_payload_and_single_result_unwrap(self):
         response = MagicMock()
         response.__enter__.return_value.read.return_value = json.dumps(
-            {"data": {"results": [LAYOUT], "count": 1}, "meta": {}}).encode()
+            {"data": [LAYOUT], "meta": {}}).encode()
         image = np.zeros((100, 100, 3), np.uint8)
         with patch.object(client, "GATEWAY_URL", "https://gateway.invalid"), \
              patch.object(client.urllib.request, "urlopen", return_value=response) as http:
@@ -33,11 +32,9 @@ class LayoutBatchContractTests(unittest.TestCase):
         self.assertTrue(payload["images"][0].startswith("data:image/png;base64,"))
 
     def test_invalid_batch_count_or_leaf_fails_without_detection(self):
-        invalid = [None, {}, {"count": 0, "results": []}, {"count": True, "results": [LAYOUT]},
-                   {"count": 2, "results": [LAYOUT, LAYOUT]}, {"count": 1, "results": []}]
-        for item in (None, {}, {**LAYOUT, "kind": "wrong"}, {**LAYOUT, "raw_output": None},
-                     {**LAYOUT, "raw_output": [None]}, {**LAYOUT, "error": "failed"}):
-            invalid.append({"count": 1, "results": [item]})
+        invalid = [None, {}, [], [LAYOUT, LAYOUT], [None], [{}],
+                   [{"boxes": None}], [{"boxes": [], "error": "failed"}],
+                   {"count": 1, "results": [LAYOUT]}]
         for value in invalid:
             with self.subTest(value=value), patch.object(client, "is_runtime_configured", return_value=True), \
                  patch.object(client, "_post_predict", return_value=value) as post:
@@ -51,7 +48,7 @@ class LayoutBatchContractTests(unittest.TestCase):
              patch.object(service, "LAYOUT_RAW_ITEMS_CACHE_SIZE", 16), \
              patch.object(service, "_require_runtime"), \
              patch.object(client, "is_runtime_configured", return_value=True), \
-             patch.object(client, "_post_predict", return_value={"count": 1, "results": [LAYOUT]}) as post:
+             patch.object(client, "_post_predict", return_value=[LAYOUT]) as post:
             timing = {}
             result = service.analyze_layout_signature(image, timing)
             cached = service.analyze_layout_signature(image.copy())
@@ -63,11 +60,11 @@ class LayoutBatchContractTests(unittest.TestCase):
         self.assertNotIn("text_detection_runtime_client", timing["runtime_client"])
 
     def test_empty_layout_is_valid_and_transport_never_calls_detection(self):
-        empty = {"count": 1, "results": [{**LAYOUT, "raw_output": []}]}
+        empty = [{"boxes": []}]
         with patch.object(client, "is_runtime_configured", return_value=True), \
              patch.object(client, "_post_predict", return_value=empty) as post:
             result = client.remote_analyze_layout(np.zeros((10, 10, 3), np.uint8), layout_only=True)
-        self.assertEqual(result["raw_output"], [])
+        self.assertEqual(result["boxes"], [])
         post.assert_called_once()
 
     def test_layout_gateway_timeout_propagates_without_retry(self):

@@ -1209,13 +1209,12 @@ def analyze_layout_signature(image: np.ndarray, timing: Optional[Dict[str, Any]]
         postprocess_started = time.perf_counter()
         # Consume only the leaf Layout output. Text regions predicted by Layout
         # remain valid, but no TextDetection boxes enter this signature.
-        if (layout_result.get("contract_version") != "leaf-inference-v1"
-                or layout_result.get("kind") != "layout" or layout_result.get("error") is not None
-                or not isinstance(layout_result.get("raw_output"), list)
-                or any(not isinstance(item, dict) for item in layout_result["raw_output"])):
-            raise LayoutAnalysisUnavailableError("Layout signature requires a valid Layout leaf response.")
-        raw_layout_items = _walk_layout_items(layout_result["raw_output"])
-        layout_items = _layout_detection_items_from_response(layout_result["raw_output"])
+        prediction = layout_result.get("res", layout_result)
+        if (layout_result.get("error") is not None or not isinstance(prediction, dict)
+                or not isinstance(prediction.get("boxes"), list)):
+            raise LayoutAnalysisUnavailableError("Layout signature requires a valid raw Layout prediction.")
+        raw_layout_items = _walk_layout_items(prediction["boxes"])
+        layout_items = _layout_detection_items_from_response(prediction["boxes"])
         raw_items = [{**item, "source": "layout"} for item in layout_items]
         if timing is not None:
             timing["response_postprocess_ms"] = round((time.perf_counter() - postprocess_started) * 1000.0, 2)
