@@ -112,12 +112,16 @@ def _gateway_headers() -> Dict[str, str]:
 
 
 def _image_to_data_url(image: np.ndarray) -> str:
+    return "data:image/png;base64," + base64.b64encode(_image_to_png(image)).decode("ascii")
+
+
+def _image_to_png(image: np.ndarray) -> bytes:
     if image is None or image.size == 0:
         raise ValueError("Invalid image for model runtime request.")
     ok, encoded = cv2.imencode(".png", image)
     if not ok:
         raise ValueError("Unable to encode image for model runtime request.")
-    return "data:image/png;base64," + base64.b64encode(encoded.tobytes()).decode("ascii")
+    return encoded.tobytes()
 
 
 def _path_to_data_url(image_path: str) -> str:
@@ -207,6 +211,7 @@ def _post_predict(
     timeout: float = 120.0,
     path_override: Optional[str] = None,
     timing: Optional[Dict[str, Any]] = None,
+    multipart_images: Optional[List[bytes]] = None,
 ) -> Dict[str, Any]:
     if path_override:
         gateway_url = GATEWAY_URL.strip().rstrip("/")
@@ -218,18 +223,33 @@ def _post_predict(
 
     started = time.perf_counter()
     serialize_started = time.perf_counter()
-    body = json.dumps(payload).encode("utf-8")
+    headers = _gateway_headers()
+    if multipart_images is None:
+        body = json.dumps(payload).encode("utf-8")
+    else:
+        boundary = uuid4().hex
+        parts = []
+        for index, image in enumerate(multipart_images):
+            parts.extend([
+                f'--{boundary}\r\nContent-Disposition: form-data; name="images"; filename="image_{index}.png"\r\nContent-Type: image/png\r\n\r\n'.encode("ascii"),
+                image,
+                b"\r\n",
+            ])
+        parts.append(f"--{boundary}--\r\n".encode("ascii"))
+        body = b"".join(parts)
+        del parts, multipart_images
+        headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
     payload_bytes = len(body)
     if timing is not None:
         timing["model_call_id"] = uuid4().hex
         timing["model_kind"] = kind.value
-        timing["json_serialize_ms"] = round((time.perf_counter() - serialize_started) * 1000.0, 2)
+        timing["multipart_serialize_ms" if headers["Content-Type"].startswith("multipart/") else "json_serialize_ms"] = round((time.perf_counter() - serialize_started) * 1000.0, 2)
         timing["payload_bytes"] = payload_bytes
         timing["endpoint_path"] = urllib.request.urlparse(endpoint_url).path
     request = urllib.request.Request(
         endpoint_url,
         data=body,
-        headers=_gateway_headers(),
+        headers=headers,
         method="POST",
     )
     monotonic_started = time.monotonic()
@@ -425,11 +445,11 @@ def remote_detect_text_boxes_batch(images: List[np.ndarray], timing: Optional[Di
     if not is_runtime_configured(ModelRuntimeKind.TEXT_DETECTION):
         return None
     encode_started = time.perf_counter()
-    image_data_urls = [_image_to_data_url(image) for image in images]
+    image_bytes = [_image_to_png(image) for image in images]
     if timing is not None:
         timing["image_encode_ms"] = round((time.perf_counter() - encode_started) * 1000.0, 2)
         timing["image_count"] = len(images)
-        timing["image_data_url_bytes"] = sum(len(item) for item in image_data_urls)
+        timing["image_png_bytes"] = sum(len(item) for item in image_bytes)
         timing["image_shapes"] = [
             [int(image.shape[1]), int(image.shape[0])]
             for image in images
@@ -437,10 +457,11 @@ def remote_detect_text_boxes_batch(images: List[np.ndarray], timing: Optional[Di
         ]
     return _post_predict(
         ModelRuntimeKind.TEXT_DETECTION,
-        {"images": image_data_urls},
+        {},
         timeout=240.0,
         path_override=_active_ocr_path("text_detection", "batch"),
         timing=timing,
+        multipart_images=image_bytes,
     )
 
 
@@ -458,12 +479,19 @@ def remote_recognize_image(image: np.ndarray, timing: Optional[Dict[str, Any]] =
 def remote_recognize_images(images: List[np.ndarray], timing: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     if not is_runtime_configured(ModelRuntimeKind.TEXT_RECOGNITION):
         return None
+    encode_started = time.perf_counter()
+    image_bytes = [_image_to_png(image) for image in images]
+    if timing is not None:
+        timing["image_encode_ms"] = round((time.perf_counter() - encode_started) * 1000.0, 2)
+        timing["image_count"] = len(images)
+        timing["image_png_bytes"] = sum(len(item) for item in image_bytes)
     return _post_predict(
         ModelRuntimeKind.TEXT_RECOGNITION,
-        {"images": [_image_to_data_url(image) for image in images]},
+        {},
         timeout=240.0,
         path_override=_active_ocr_path("text_recognition", "batch"),
         timing=timing,
+        multipart_images=image_bytes,
     )
 
 

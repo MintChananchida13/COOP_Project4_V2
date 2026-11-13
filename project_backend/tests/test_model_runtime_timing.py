@@ -76,6 +76,7 @@ class ModelRuntimeTimingTests(unittest.TestCase):
         with patch("app.core.model_runtime_client.is_runtime_configured", return_value=True), \
                 patch("app.core.model_runtime_client._active_ocr_path", return_value="/api/v1/test"), \
                 patch("app.core.model_runtime_client._image_to_data_url", return_value="image"), \
+                patch("app.core.model_runtime_client._image_to_png", return_value=b"image"), \
                 patch("app.core.model_runtime_client._path_to_data_url", return_value="image"), \
                 patch("app.core.model_runtime_client._post_predict", return_value={}) as predict:
             remote_recognize_image(None, timing=timing)

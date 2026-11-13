@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import cv2
 from app.core import model_runtime_client as client
 from app.model_runtime import layout_analysis_service as det
 from app.model_runtime import paddle_thai_ocr_adapter as rec
@@ -201,7 +202,21 @@ class TextResponseContractTests(unittest.TestCase):
                 self.assertEqual(remote.call_count, 1)
                 request = remote.call_args.args[0]
                 self.assertEqual(request.full_url, 'https://gateway.example/paddle/api/v1/configured?version=custom')
-                self.assertEqual(set(json.loads(request.data)), {'image' if mode == 'single' else 'images'})
+                if mode == 'single':
+                    self.assertEqual(set(json.loads(request.data)), {'image'})
+                else:
+                    from email.parser import BytesParser
+                    from email.policy import default
+                    content_type = request.get_header('Content-type')
+                    message = BytesParser(policy=default).parsebytes(
+                        f'Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n'.encode() + request.data
+                    )
+                    parts = list(message.iter_parts())
+                    self.assertEqual(len(parts), 1)
+                    self.assertEqual(parts[0].get_param('name', header='content-disposition'), 'images')
+                    self.assertEqual(parts[0].get_content_type(), 'image/png')
+                    decoded = cv2.imdecode(np.frombuffer(parts[0].get_payload(decode=True), dtype=np.uint8), cv2.IMREAD_COLOR)
+                    np.testing.assert_array_equal(decoded, image)
 
     def test_layout_table_and_siglip_are_not_subject_to_text_contract_normalization(self):
         data = {'raw_output': [{'arbitrary': 'preserved'}], 'predictions': [], 'regions': []}

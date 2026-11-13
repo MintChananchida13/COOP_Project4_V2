@@ -247,7 +247,7 @@ Raw SigLIP leaf แปลงภาพ RGB, processor text/images, model logits_p
 | ระดับควบคุม | Default ในโค้ด | ความหมาย |
 | --- | --- | --- |
 | MAX_BATCH_IMAGES | 64 | จำกัดภาพต่อ request ไม่ได้แบ่ง request ให้เอง |
-| DET_BATCH_SIZE / REC_BATCH_SIZE | 1 / 1 | internal Paddle predict batch; invalid parse ใช้ 8 ตาม branch |
+| DET_BATCH_SIZE / REC_BATCH_SIZE | 16 / 16 | internal Paddle predict batch; invalid parse ใช้ 8 ตาม branch |
 | LAYOUT_BATCH_SIZE / SIGLIP_BATCH_SIZE | 1 / 4 | internal model batching |
 | TABLE_BATCH_SIZE | 4 | table structure leaf; ไม่ใช่ Table V2 batch endpoint |
 | OCR_RECOGNITION_BATCH_SIZE | min(64,MAX_BATCH_IMAGES) | custom OCR composition ส่ง REC chunks |
