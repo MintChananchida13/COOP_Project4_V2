@@ -383,7 +383,7 @@ def _post_predict(
         result = parsed.get("data")
     if kind in {ModelRuntimeKind.TEXT_DETECTION, ModelRuntimeKind.TEXT_RECOGNITION} and isinstance(result, dict) and runtime_model and "model" not in result:
         result = {**result, "model": runtime_model}
-    if kind == ModelRuntimeKind.TEXT_DETECTION and isinstance(result, list):
+    if kind in {ModelRuntimeKind.TEXT_DETECTION, ModelRuntimeKind.TEXT_RECOGNITION} and isinstance(result, list):
         # Backend-owned wrapper carries model identity without changing predictions.
         return {"predictions": result, **({"model": runtime_model} if runtime_model else {})}
     if kind == ModelRuntimeKind.LAYOUT:
