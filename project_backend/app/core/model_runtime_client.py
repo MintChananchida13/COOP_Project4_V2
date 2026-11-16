@@ -261,6 +261,7 @@ def _post_predict(
     monotonic_ended = None
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
+            model_info_header = response.headers.get("X-Model-Info")
             read_started = time.perf_counter()
             raw_bytes = memory_usage.call('gateway_response_read', response.read)
             read_elapsed = time.perf_counter() - read_started
@@ -314,6 +315,16 @@ def _post_predict(
     del raw
     memory_usage.checkpoint('gateway_json_text_released')
 
+    model_info = parsed.get("meta", {}) if isinstance(parsed, dict) else {}
+    if model_info_header:
+        try:
+            header_info = json.loads(model_info_header)
+            if not isinstance(header_info, dict):
+                raise ValueError("Model info must be an object")
+            model_info = {**model_info, **header_info}
+        except (ValueError, TypeError) as error:
+            raise ModelRuntimeUnavailableError("Model runtime returned invalid identity metadata") from error
+
     if kind == ModelRuntimeKind.IMAGE_VERIFICATION:
         # SigLIP returns raw per-image logits plus transport metadata.
         # Do not accept a bare vector, null/object data, or an error envelope
@@ -329,10 +340,10 @@ def _post_predict(
         detail = parsed.get("detail") or parsed.get("error") or "Model runtime request failed."
         raise ModelRuntimeUnavailableError(f"{kind.value} runtime failed: {detail}")
 
-    sources = [parsed, parsed.get("result"), parsed.get("data"), parsed.get("meta")]
+    sources = [parsed, parsed.get("result"), parsed.get("data"), model_info]
     selections = [source.get("model_selection") for source in sources
                   if isinstance(source, dict) and isinstance(source.get("model_selection"), dict)]
-    runtime_model = parsed.get("model") or next((selection.get("model_name") for selection in selections
+    runtime_model = model_info.get("model") or parsed.get("model") or next((selection.get("model_name") for selection in selections
                                                 if selection.get("model_name")), None)
     selected_id = parse_qs(urlsplit(path_override or "").query).get("model_id", [""])[0]
     confirmed_ids = {str(selection.get("model_id") or selection.get("runtime_model_id") or "")
@@ -392,7 +403,7 @@ def _post_predict(
         return {"predictions": result, **({"model": runtime_model} if runtime_model else {})}
     if kind == ModelRuntimeKind.IMAGE_VERIFICATION:
         try:
-            results = adapt_siglip_response(result, parsed["meta"])
+            results = adapt_siglip_response(result, model_info)
         except ValueError as error:
             raise ModelRuntimeUnavailableError(str(error)) from error
         if "image-classification-batches" in (path_override or ""):
