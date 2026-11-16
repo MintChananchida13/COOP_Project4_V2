@@ -14,7 +14,7 @@ SINGLE = {
     "qr_code": "A square QR code with a black and white matrix pattern.",
 }
 NEGATIVE = {
-    "printed_text": "Ordinary printed text on a document without a logo or emblem.",
+    "text": "A document region containing only printed letters or numbers, with no portrait photograph, logo, emblem, stamp, signature, QR code, or barcode.",
     "table": "A table with rows, columns, and printed text.",
     "blank": "An empty or nearly blank document region.",
     "background": "A decorative document security background without a distinct emblem.",

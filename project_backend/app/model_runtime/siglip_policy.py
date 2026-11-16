@@ -7,7 +7,7 @@ import math
 SCORING_VERSION = "siglip-single-prompt-v2.4"
 NEGATIVE_TOLERANCE = 0.8
 POSITIVE = ("emblem", "thai_garuda", "company_logo", "document_stamp", "portrait", "signature", "barcode", "qr_code")
-NEGATIVE = ("printed_text", "table", "blank", "background", "illustration", "pattern", "bar_chart")
+NEGATIVE = ("text", "table", "blank", "background", "illustration", "pattern", "bar_chart")
 
 
 def normalize_config(config=None):
