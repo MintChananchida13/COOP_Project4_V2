@@ -1,4 +1,4 @@
-from app.model_runtime.inference_adapters import adapt_table
+from app.model_runtime.inference_adapters import adapt_table, InferenceAdapterError
 import logging
 import html
 import math
@@ -2976,8 +2976,8 @@ def _table_result_candidates(output: Any, collected: Optional[List[Dict[str, Any
     return candidates
 
 
-def _unwrap_remote_result(remote_result: Dict[str, Any]) -> Any:
-    return adapt_table(remote_result)
+def _unwrap_remote_result(remote_result: Any) -> Any:
+    return adapt_table(remote_result, expected_count=1) if isinstance(remote_result, list) else adapt_table(remote_result)
 
 
 def _predict_table_model(image: np.ndarray, timing: Optional[Dict[str, Any]] = None) -> Any:
@@ -2994,9 +2994,12 @@ def _predict_table_model(image: np.ndarray, timing: Optional[Dict[str, Any]] = N
         logger.info("Table Recognition phase timing: phase=remote inference elapsed=%.3fs", time.perf_counter() - started)
     if remote_result is None:
         raise TableRecognitionV2UnavailableError("Remote Table Recognition runtime returned no result.")
-    if not isinstance(remote_result, dict):
+    if not isinstance(remote_result, (dict, list)):
         raise TableRecognitionV2UnavailableError("Remote Table Recognition runtime returned an invalid response.")
-    return _unwrap_remote_result(remote_result)
+    try:
+        return _unwrap_remote_result(remote_result)
+    except InferenceAdapterError as error:
+        raise TableRecognitionV2UnavailableError(str(error)) from error
 
 
 def _write_temp_image(image: np.ndarray) -> tuple[Optional[Path], bool]:

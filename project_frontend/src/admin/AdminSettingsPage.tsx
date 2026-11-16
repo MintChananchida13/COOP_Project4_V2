@@ -399,6 +399,9 @@ export default function AdminSettingsPage() {
   const [pendingStrategy, setPendingStrategy] = useState<VerificationStrategy | null>(null);
   const [draftStrategy, setDraftStrategy] = useState<VerificationStrategy>("standard");
   const [modelSettings, setModelSettings] = useState<OcrModelSettings>(emptyModelSettings);
+  const [tableMode, setTableMode] = useState<"follow_main" | "separate">("follow_main");
+  const [tableDet, setTableDet] = useState("");
+  const [tableRec, setTableRec] = useState("");
   const [draftDetectionModelId, setDraftDetectionModelId] = useState("");
   const [draftRecognitionModelId, setDraftRecognitionModelId] = useState("");
   const [loadStatus, setLoadStatus] = useState<"loading" | "loaded" | "error">("loaded");
@@ -470,6 +473,10 @@ export default function AdminSettingsPage() {
 
   const applyOcrModelSettings = (settings: OcrModelSettings) => {
     setModelSettings(settings);
+    const table = settings.pendingTable || settings.table;
+    setTableMode(table?.mode || "follow_main");
+    setTableDet(table?.text_detection || settings.active.text_detection);
+    setTableRec(table?.text_recognition || settings.active.text_recognition);
     setDraftDetectionModelId(settings.pendingActive?.text_detection || settings.active.text_detection);
     setDraftRecognitionModelId(settings.pendingActive?.text_recognition || settings.active.text_recognition);
   };
@@ -561,7 +568,10 @@ export default function AdminSettingsPage() {
 
   const effectiveDraftStrategy = pendingStrategy || savedStrategy;
   const hasStrategyChanges = draftStrategy !== effectiveDraftStrategy;
-  const hasModelChanges =
+  const savedTable = modelSettings.pendingTable || modelSettings.table;
+  const hasTableChanges = tableMode !== (savedTable?.mode || "follow_main") ||
+    (tableMode === "separate" && (tableDet !== savedTable?.text_detection || tableRec !== savedTable?.text_recognition));
+  const hasModelChanges = hasTableChanges ||
     draftDetectionModelId !== (modelSettings.pendingActive?.text_detection || modelSettings.active.text_detection) ||
     draftRecognitionModelId !== (modelSettings.pendingActive?.text_recognition || modelSettings.active.text_recognition);
   const hasUnsavedChanges = hasStrategyChanges || hasModelChanges;
@@ -623,6 +633,7 @@ export default function AdminSettingsPage() {
     try {
       const persistedSettings = await updateActiveOcrModels({
         textDetectionModelId: draftDetectionModelId,
+        table: { mode: tableMode, text_detection: tableDet, text_recognition: tableRec },
         textRecognitionModelId: draftRecognitionModelId,
       });
       applyOcrModelSettings(persistedSettings);
@@ -1235,6 +1246,26 @@ export default function AdminSettingsPage() {
                 {strategySaveStatus === "saving" ? "กำลังบันทึก..." : "บันทึกการตั้งค่า"}
               </button>
             </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h3 className="text-sm font-black text-slate-900">Table</h3>
+            <p className="mt-1 text-xs font-semibold text-slate-500">เลือกโมเดล OCR ภายใน Table V2 จากรายการ DET/REC ที่จัดการไว้</p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 p-3 text-xs font-bold text-slate-700">
+                <input type="radio" name="table-ocr-mode" checked={tableMode === "follow_main"} onChange={() => setTableMode("follow_main")} />ใช้ตามการตั้งค่า DET/REC หลัก
+              </label>
+              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 p-3 text-xs font-bold text-slate-700">
+                <input type="radio" name="table-ocr-mode" checked={tableMode === "separate"} onChange={() => setTableMode("separate")} />เลือกแยกสำหรับ Table
+              </label>
+            </div>
+            {tableMode === "separate" ? <div className="mt-4 grid gap-4 lg:grid-cols-2">
+              {renderModelSelect("text_detection", "Table Text Detection", "โมเดลตรวจหาข้อความภายในตาราง", tableDet, setTableDet)}
+              {renderModelSelect("text_recognition", "Table Text Recognition", "โมเดลอ่านข้อความภายในตาราง", tableRec, setTableRec)}
+            </div> : <p className="mt-3 text-xs font-semibold text-slate-500">ใช้ DET/REC หลักที่มีผลใช้งาน ณ เวลาประมวลผลตาราง</p>}
+            {(modelSettings.pendingTable || modelSettings.pendingActive) && <p className="mt-3 text-xs text-amber-700">มีการตั้งค่ารออัปเดตตามช่วงปิดปรับปรุงระบบ</p>}
+            <div className="mt-4 flex justify-end"><button type="button" onClick={() => void handleSaveModels()} disabled={!hasModelChanges || modelSaveStatus === "saving"} className="rounded-xl bg-indigo-600 px-4 py-3 text-xs font-black text-white disabled:bg-slate-300">{modelSaveStatus === "saving" ? "กำลังบันทึก..." : "บันทึกการตั้งค่าโมเดล"}</button></div>
+            {modelFeedback && <div className="mt-3 text-xs text-slate-600" role="status">{modelFeedback}</div>}
           </div>
 
           <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">

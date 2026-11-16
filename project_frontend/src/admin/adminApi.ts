@@ -468,6 +468,8 @@ const cloneVerificationStrategySettings = (settings: VerificationStrategySetting
 const cloneDetectionBatchModeSettings = (settings: DetectionBatchModeSettings): DetectionBatchModeSettings => ({ ...settings });
 const cloneSystemMaintenanceState = (state: SystemMaintenanceState): SystemMaintenanceState => ({ ...state });
 const cloneOcrModelSettings = (settings: OcrModelSettings): OcrModelSettings => ({
+  table: settings.table ? { ...settings.table } : undefined,
+  pendingTable: settings.pendingTable ? { ...settings.pendingTable } : settings.pendingTable,
   fixedModels: settings.fixedModels,
   active: { ...settings.active },
   pendingActive: settings.pendingActive ? { ...settings.pendingActive } : settings.pendingActive,
@@ -2161,7 +2163,15 @@ export interface OcrModelConfig {
   registryManaged?: boolean;
 }
 
+export interface TableOcrSettings {
+  mode: "follow_main" | "separate";
+  text_detection: string;
+  text_recognition: string;
+}
+
 export interface OcrModelSettings {
+  table?: TableOcrSettings;
+  pendingTable?: TableOcrSettings | null;
   fixedModels?: boolean;
   active: Record<OcrModelKind, string>;
   models: Record<OcrModelKind, OcrModelConfig[]>;
@@ -2188,6 +2198,8 @@ const mapOcrModelSettings = (data: Record<string, unknown>): OcrModelSettings =>
   const active = (settings.active || {}) as Record<string, unknown>;
   const models = (settings.models || {}) as Record<string, unknown>;
   return {
+    table: (settings.table as TableOcrSettings) || { mode: "follow_main", text_detection: "", text_recognition: "" },
+    pendingTable: ((data.pending_ocr_models as Record<string, unknown> | undefined)?.table as TableOcrSettings) || null,
     fixedModels: data.fixed_models === true,
     active: {
       text_detection: String(active.text_detection || active.textDetection || ""),
@@ -2240,11 +2252,13 @@ export const fetchOcrModelSettings = async (options: { forceRefresh?: boolean } 
 export const updateActiveOcrModels = async (payload: {
   textDetectionModelId: string;
   textRecognitionModelId: string;
+  table?: TableOcrSettings;
 }): Promise<OcrModelSettings> => {
   const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/settings/ocr-models/active`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
+      table: payload.table,
       text_detection_model_id: payload.textDetectionModelId,
       text_recognition_model_id: payload.textRecognitionModelId,
     }),

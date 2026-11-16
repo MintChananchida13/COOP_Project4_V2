@@ -5,7 +5,7 @@ import os
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlsplit, urlencode
 from uuid import uuid4
 from enum import Enum
 from pathlib import Path
@@ -16,7 +16,7 @@ import numpy as np
 
 from app.model_runtime.inference_adapters import adapt_layout, InferenceAdapterError
 from app.core.config import GATEWAY_URL
-from app.core.ocr_model_config import DEFAULT_OCR_MODEL_SETTINGS, normalize_saved_ocr_settings
+from app.core.ocr_model_config import DEFAULT_OCR_MODEL_SETTINGS, normalize_saved_ocr_settings, table_ocr_query
 from app.core.db import connect as connect_db
 from app.core.json_utils import jsonb_load
 from app.processing import memory_usage
@@ -41,7 +41,7 @@ MODEL_RUNTIME_GATEWAY_PATH: Dict[ModelRuntimeKind, str] = {
     ModelRuntimeKind.LAYOUT: "/paddle/api/v1/layout-prediction-batches",
     ModelRuntimeKind.TEXT_DETECTION: "/paddle/api/v1/text-detections?version=v6",
     ModelRuntimeKind.TEXT_RECOGNITION: "/paddle/api/v1/text-recognitions",
-    ModelRuntimeKind.TABLE: "/paddle/api/v1/table-model-results?det_version=6&rec_version=5&det_model=baseline&rec_model=thai_ft_v3",
+    ModelRuntimeKind.TABLE: "/paddle/api/v1/table-model-results",
     ModelRuntimeKind.IMAGE_VERIFICATION: "/paddle/api/v1/image-verifications",
 }
 
@@ -187,6 +187,10 @@ def _extract_gateway_timing(parsed: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             for key, value in candidate.items():
                 if key not in selected:
                     selected[key] = value
+
+    meta = parsed.get("meta")
+    if isinstance(meta, dict) and isinstance(meta.get("inference_ms"), (int, float)):
+        selected.setdefault("inference_ms", meta["inference_ms"])
 
     # API Service OCR timing is sometimes a sibling of data.timing.
     # Fill only missing keys so an explicit timing object wins once.
@@ -386,7 +390,7 @@ def _post_predict(
     if kind in {ModelRuntimeKind.TEXT_DETECTION, ModelRuntimeKind.TEXT_RECOGNITION} and isinstance(result, list):
         # Backend-owned wrapper carries model identity without changing predictions.
         return {"predictions": result, **({"model": runtime_model} if runtime_model else {})}
-    if kind == ModelRuntimeKind.LAYOUT:
+    if kind in {ModelRuntimeKind.LAYOUT, ModelRuntimeKind.TABLE}:
         return result
     return result if isinstance(result, dict) else parsed
 
@@ -493,7 +497,7 @@ def remote_recognize_images(images: List[np.ndarray], timing: Optional[Dict[str,
     )
 
 
-def remote_recognize_table_raw(image: np.ndarray, timing: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+def remote_recognize_table_raw(image: np.ndarray, timing: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any] | List[Dict[str, Any]]]:
     if not is_runtime_configured(ModelRuntimeKind.TABLE):
         return None
 
@@ -501,9 +505,17 @@ def remote_recognize_table_raw(image: np.ndarray, timing: Optional[Dict[str, Any
     image_data_url = memory_usage.call('table_image_encode', _image_to_data_url, image)
     if timing is not None:
         timing["image_encode_ms"] = round((time.perf_counter() - encode_started) * 1000.0, 2)
+    try:
+        with connect_db() as conn:
+            row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (OCR_MODEL_SETTINGS_KEY,)).fetchone()
+        settings = normalize_saved_ocr_settings(jsonb_load(row["value"] if row else None, None))
+        table_path = "/paddle/api/v1/table-model-results?" + urlencode(table_ocr_query(settings))
+    except Exception as error:
+        raise ModelRuntimeUnavailableError(f"Unable to resolve Table OCR settings: {error}") from error
     return _post_predict(
         ModelRuntimeKind.TABLE,
         {"image": image_data_url},
+        path_override=table_path,
         timeout=240.0,
         timing=timing,
     )

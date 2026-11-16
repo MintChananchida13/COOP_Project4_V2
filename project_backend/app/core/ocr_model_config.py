@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import Any, Dict
 
 DEFAULT_OCR_MODEL_SETTINGS: Dict[str, Any] = {
+    "table": {"mode": "follow_main", "text_detection": "", "text_recognition": ""},
     "active": {
         "text_detection": "ocr_det_v6_medium",
         "text_recognition": "thai_ocr_v5_mobile",
@@ -67,4 +68,31 @@ def normalize_saved_ocr_settings(value: Any = None) -> Dict[str, Any]:
             settings["active"][kind] = active
         elif settings["active"][kind] not in ids:
             settings["active"][kind] = settings["models"][kind][0]["id"]
+    table = value.get("table")
+    if isinstance(table, dict):
+        settings["table"] = {
+            "mode": "separate" if table.get("mode") == "separate" else "follow_main",
+            "text_detection": str(table.get("text_detection") or ""),
+            "text_recognition": str(table.get("text_recognition") or ""),
+        }
     return settings
+
+
+def table_ocr_query(settings: Dict[str, Any]) -> Dict[str, str]:
+    """Resolve Table V2's OCR choices from the same saved model catalog."""
+    from urllib.parse import parse_qs, urlsplit
+    table = settings.get("table") or {}
+    selected = table if table.get("mode") == "separate" else settings["active"]
+    query = {}
+    for kind, prefix, default_version in (("text_detection", "det", "6"), ("text_recognition", "rec", "5")):
+        model = next((item for item in settings["models"][kind] if item["id"] == selected.get(kind)), None)
+        if model is None:
+            raise ValueError(f"Configured Table {kind} model was not found")
+        params = parse_qs(urlsplit(model["single_api_path"]).query)
+        version = (params.get("version") or [model.get("model_version") or default_version])[0]
+        variant = (params.get("model") or params.get("model_id") or [model.get("runtime_model_id") or "baseline"])[0]
+        if variant == "default":
+            variant = "baseline"
+        query[f"{prefix}_version"] = str(version)
+        query[f"{prefix}_model"] = str(variant)
+    return query

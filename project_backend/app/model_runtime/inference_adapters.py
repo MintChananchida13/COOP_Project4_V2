@@ -164,8 +164,17 @@ def adapt_text_recognition(output: Any, *, expected_count: int | None = None):
     return normalize_single(output, 'rec') if expected_count is None else normalize_batch(output, 'rec', expected_count)
 
 
-def adapt_table(output: Any) -> Any:
+def adapt_table(output: Any, *, expected_count: int | None = None) -> Any:
     """Unwrap the current table transport without changing table contents."""
+    if expected_count is not None:
+        if (not isinstance(output, list) or len(output) != expected_count
+                or any(not isinstance(item, dict) or item.get("error") is not None for item in output)):
+            raise InferenceAdapterError("Table result count or prediction is invalid")
+        for item in output:
+            prediction = item.get("res", item)
+            if not isinstance(prediction, dict) or prediction.get("error") is not None:
+                raise InferenceAdapterError("Invalid Table prediction")
+        return output
     for _ in range(32):
         if not isinstance(output, dict):
             return output

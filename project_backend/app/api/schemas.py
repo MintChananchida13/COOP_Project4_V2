@@ -204,7 +204,14 @@ class OcrModelPayload(BaseModel):
     runtime_model_id: Optional[str] = Field(default=None, validation_alias=AliasChoices("runtime_model_id", "runtimeModelId"))
 
 
+class TableOcrSettings(BaseModel):
+    mode: Literal["follow_main", "separate"] = "follow_main"
+    text_detection: str = ""
+    text_recognition: str = ""
+
+
 class OcrActiveModelsUpdate(BaseModel):
+    table: Optional[TableOcrSettings] = None
     text_detection_model_id: str = Field(validation_alias=AliasChoices("text_detection_model_id", "textDetectionModelId"))
     text_recognition_model_id: str = Field(validation_alias=AliasChoices("text_recognition_model_id", "textRecognitionModelId"))
 

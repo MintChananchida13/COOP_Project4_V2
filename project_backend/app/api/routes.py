@@ -827,6 +827,7 @@ def update_ocr_active_models(payload: OcrActiveModelsUpdate) -> ApiResponse:
         global_settings.update_ocr_active_models(
             payload.text_detection_model_id,
             payload.text_recognition_model_id,
+            table=payload.table.model_dump() if payload.table is not None else None,
         )
     )
 

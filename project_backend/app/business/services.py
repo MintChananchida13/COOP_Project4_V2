@@ -1027,7 +1027,7 @@ class GlobalSettingsService:
             ).fetchone()
         return normalize_ocr_model_settings(row["value"] if row else None)
 
-    def update_ocr_active_models(self, text_detection_model_id: str, text_recognition_model_id: str) -> Dict[str, Any]:
+    def update_ocr_active_models(self, text_detection_model_id: str, text_recognition_model_id: str, table: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         defer_update = self._should_defer_admin_setting_updates()
         settings = self.get_ocr_model_settings()["ocr_models"]
         requested = {
@@ -1039,6 +1039,14 @@ class GlobalSettingsService:
             if model_id not in ids:
                 raise HTTPException(status_code=400, detail=f"Unknown {kind} model id")
             settings["active"][kind] = model_id
+        if table is not None:
+            if table.get("mode") not in {"follow_main", "separate"}:
+                raise HTTPException(status_code=400, detail="Invalid Table OCR mode")
+            if table["mode"] == "separate":
+                for kind in requested:
+                    if table.get(kind) not in {item["id"] for item in settings["models"][kind]}:
+                        raise HTTPException(status_code=400, detail=f"Unknown Table {kind} model id")
+            settings["table"] = dict(table)
         if defer_update:
             self._save_setting(PENDING_OCR_MODEL_SETTINGS_KEY, jsonb_dump(settings))
             active_settings = self._active_ocr_model_settings_no_apply()
@@ -1094,6 +1102,11 @@ class GlobalSettingsService:
             raise HTTPException(status_code=409, detail="Cannot delete the active OCR model")
         if isinstance(pending_settings, dict) and pending_settings.get("active", {}).get(normalized_kind) == target_id:
             raise HTTPException(status_code=409, detail="Cannot delete an OCR model that is pending activation")
+
+        for candidate in (settings, pending_settings):
+            selection = candidate.get("table", {}) if isinstance(candidate, dict) else {}
+            if selection.get("mode") == "separate" and selection.get(normalized_kind) == target_id:
+                raise HTTPException(status_code=409, detail="Cannot delete a model selected for Table OCR")
 
         models = settings["models"][normalized_kind]
         next_models = [model for model in models if model["id"] != target_id]
