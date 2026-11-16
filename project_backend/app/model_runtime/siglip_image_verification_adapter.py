@@ -360,7 +360,7 @@ def verify_image_category(
         raise RuntimeError(f"SigLIP model runtime unavailable: {error}") from error
 
     try:
-        return SiglipImageVerificationResult(**service_contract.parse_decision(remote_result, category_value, payloads))
+        return SiglipImageVerificationResult(**service_contract.score_classification(remote_result, category_value, payloads))
     except ValueError as error:
         return _invalid_service_result(category_value, active_categories, error)
 

@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 import cv2
 import numpy as np
 
-from app.model_runtime.inference_adapters import adapt_layout, InferenceAdapterError
+from app.model_runtime.inference_adapters import adapt_layout, adapt_siglip_response, InferenceAdapterError
 from app.core.config import GATEWAY_URL
 from app.core.ocr_model_config import DEFAULT_OCR_MODEL_SETTINGS, normalize_saved_ocr_settings, table_ocr_query
 from app.core.db import connect as connect_db
@@ -42,7 +42,7 @@ MODEL_RUNTIME_GATEWAY_PATH: Dict[ModelRuntimeKind, str] = {
     ModelRuntimeKind.TEXT_DETECTION: "/paddle/api/v1/text-detections?version=v6",
     ModelRuntimeKind.TEXT_RECOGNITION: "/paddle/api/v1/text-recognitions",
     ModelRuntimeKind.TABLE: "/paddle/api/v1/table-model-results",
-    ModelRuntimeKind.IMAGE_VERIFICATION: "/paddle/api/v1/image-verifications",
+    ModelRuntimeKind.IMAGE_VERIFICATION: "/paddle/api/v1/image-classifications",
 }
 
 OCR_MODEL_SETTINGS_KEY = "ocr_model_settings"
@@ -315,14 +315,14 @@ def _post_predict(
     memory_usage.checkpoint('gateway_json_text_released')
 
     if kind == ModelRuntimeKind.IMAGE_VERIFICATION:
-        # SigLIP's current gateway uses {data: object, meta: object}.
-        # Do not accept a legacy vector, null/list data, or an error envelope
+        # SigLIP returns raw per-image logits plus transport metadata.
+        # Do not accept a bare vector, null/object data, or an error envelope
         # as a successful inference. Keep other model transports unchanged.
         if not isinstance(parsed, dict):
             raise ModelRuntimeUnavailableError("image_verification runtime returned an invalid response envelope.")
         if parsed.get("error") is not None or parsed.get("success", True) is not True:
             raise ModelRuntimeUnavailableError(f"image_verification runtime failed: {parsed.get('error') or parsed.get('detail')}")
-        if not isinstance(parsed.get("data"), dict) or not isinstance(parsed.get("meta"), dict) or "result" in parsed:
+        if not isinstance(parsed.get("data"), list) or not isinstance(parsed.get("meta"), dict) or "result" in parsed:
             raise ModelRuntimeUnavailableError("image_verification runtime returned an invalid response envelope.")
 
     if not parsed.get("success", True):
@@ -390,6 +390,16 @@ def _post_predict(
     if kind in {ModelRuntimeKind.TEXT_DETECTION, ModelRuntimeKind.TEXT_RECOGNITION} and isinstance(result, list):
         # Backend-owned wrapper carries model identity without changing predictions.
         return {"predictions": result, **({"model": runtime_model} if runtime_model else {})}
+    if kind == ModelRuntimeKind.IMAGE_VERIFICATION:
+        try:
+            results = adapt_siglip_response(result, parsed["meta"])
+        except ValueError as error:
+            raise ModelRuntimeUnavailableError(str(error)) from error
+        if "image-classification-batches" in (path_override or ""):
+            return {"results": results, "count": len(results)}
+        if len(results) != 1:
+            raise ModelRuntimeUnavailableError("SigLIP single request must return exactly one prediction")
+        return results[0]
     if kind in {ModelRuntimeKind.LAYOUT, ModelRuntimeKind.TABLE}:
         return result
     return result if isinstance(result, dict) else parsed

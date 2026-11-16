@@ -223,17 +223,39 @@ def _object(data: Any) -> dict:
 
 def adapt_siglip(data: Any, categories: list[dict]) -> list[float]:
     data = _object(data)
-    if data.get("contract_version") != "leaf-inference-v1" or data.get("kind") != "siglip":
-        raise ValueError("Unsupported SigLIP leaf contract")
-    # Prompt order is part of the vector contract; never infer it from scores.
     if data.get("categories") != [item["prompt"] for item in categories]:
         raise ValueError("SigLIP category/prompt order does not match request")
-    raw = data.get("raw_output")
-    if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], dict):
-        raise ValueError("Expected one raw_output item per image")
-    logits = raw[0].get("logits_per_image")
+    if "logits_per_image" in data:
+        logits = data["logits_per_image"]
+    else:
+        if data.get("contract_version") != "leaf-inference-v1" or data.get("kind") != "siglip":
+            raise ValueError("Unsupported SigLIP leaf contract")
+        raw = data.get("raw_output")
+        if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], dict):
+            raise ValueError("Expected one raw_output item per image")
+        logits = raw[0].get("logits_per_image")
     if not isinstance(logits, list) or len(logits) != len(categories):
         raise ValueError("SigLIP logit/category count mismatch")
     _text(data, "device")
     return [number(value, "logits_per_image") for value in logits]
 
+
+
+def adapt_siglip_response(output: Any, meta: Any) -> list[dict[str, Any]]:
+    """Combine transport metadata with raw logits on the Backend only."""
+    if not isinstance(output, list) or not output or not isinstance(meta, dict):
+        raise InferenceAdapterError("Invalid SigLIP raw response")
+    prompts = meta.get("categories")
+    if not isinstance(prompts, list) or not prompts or any(not isinstance(p, str) or not p.strip() for p in prompts):
+        raise InferenceAdapterError("Invalid SigLIP prompt metadata")
+    device = _text(meta, "device")
+    categories = [{"prompt": prompt} for prompt in prompts]
+    result = []
+    for item in output:
+        if not isinstance(item, dict) or item.get("error") is not None:
+            raise InferenceAdapterError("Invalid SigLIP raw prediction")
+        adapted = {**item, "categories": list(prompts), "device": device,
+                   "model_name": meta.get("model", ""), "model_version": meta.get("model_version", "")}
+        adapted["logits_per_image"] = adapt_siglip(adapted, categories)
+        result.append(adapted)
+    return result
