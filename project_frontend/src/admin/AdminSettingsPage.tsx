@@ -1249,30 +1249,10 @@ export default function AdminSettingsPage() {
           </div>
 
           <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h3 className="text-sm font-black text-slate-900">Table</h3>
-            <p className="mt-1 text-xs font-semibold text-slate-500">เลือกโมเดล OCR ภายใน Table V2 จากรายการ DET/REC ที่จัดการไว้</p>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 p-3 text-xs font-bold text-slate-700">
-                <input type="radio" name="table-ocr-mode" checked={tableMode === "follow_main"} onChange={() => setTableMode("follow_main")} />ใช้ตามการตั้งค่า DET/REC หลัก
-              </label>
-              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 p-3 text-xs font-bold text-slate-700">
-                <input type="radio" name="table-ocr-mode" checked={tableMode === "separate"} onChange={() => setTableMode("separate")} />เลือกแยกสำหรับ Table
-              </label>
-            </div>
-            {tableMode === "separate" ? <div className="mt-4 grid gap-4 lg:grid-cols-2">
-              {renderModelSelect("text_detection", "Table Text Detection", "โมเดลตรวจหาข้อความภายในตาราง", tableDet, setTableDet)}
-              {renderModelSelect("text_recognition", "Table Text Recognition", "โมเดลอ่านข้อความภายในตาราง", tableRec, setTableRec)}
-            </div> : <p className="mt-3 text-xs font-semibold text-slate-500">ใช้ DET/REC หลักที่มีผลใช้งาน ณ เวลาประมวลผลตาราง</p>}
-            {(modelSettings.pendingTable || modelSettings.pendingActive) && <p className="mt-3 text-xs text-amber-700">มีการตั้งค่ารออัปเดตตามช่วงปิดปรับปรุงระบบ</p>}
-            <div className="mt-4 flex justify-end"><button type="button" onClick={() => void handleSaveModels()} disabled={!hasModelChanges || modelSaveStatus === "saving"} className="rounded-xl bg-indigo-600 px-4 py-3 text-xs font-black text-white disabled:bg-slate-300">{modelSaveStatus === "saving" ? "กำลังบันทึก..." : "บันทึกการตั้งค่าโมเดล"}</button></div>
-            {modelFeedback && <div className="mt-3 text-xs text-slate-600" role="status">{modelFeedback}</div>}
-          </div>
-
-          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <h3 className="text-sm font-black text-slate-900">การตั้งค่าโมเดล OCR</h3>
-                <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">เลือกโมเดลที่ระบบใช้ในการประมวลผล OCR</p>
+                <h3 className="text-sm font-black text-slate-900">การตั้งค่าโมเดล</h3>
+                <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">เลือกโมเดลที่ระบบใช้ในการประมวลผลข้อความและตาราง</p>
               </div>
               <button type="button" onClick={() => setIsModelManagerOpen(true)} className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 hover:bg-slate-50">
                 <Settings size={14} />
@@ -1293,6 +1273,23 @@ export default function AdminSettingsPage() {
                 </div>
               )}
             </div>
+          <div className="mt-5 border-t border-slate-200 pt-5">
+            <h4 className="text-sm font-black text-slate-900">Table</h4>
+            <p className="mt-1 text-xs font-semibold text-slate-500">เลือกโมเดล OCR ภายใน Table V2 จากรายการ DET/REC ที่จัดการไว้</p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 p-3 text-xs font-bold text-slate-700">
+                <input type="radio" name="table-ocr-mode" checked={tableMode === "follow_main"} onChange={() => setTableMode("follow_main")} />ใช้ตามการตั้งค่า DET/REC หลัก
+              </label>
+              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 p-3 text-xs font-bold text-slate-700">
+                <input type="radio" name="table-ocr-mode" checked={tableMode === "separate"} onChange={() => setTableMode("separate")} />เลือกแยกสำหรับ Table
+              </label>
+            </div>
+            {tableMode === "separate" ? <div className="mt-4 grid gap-4 lg:grid-cols-2">
+              {renderModelSelect("text_detection", "Table Text Detection", "โมเดลตรวจหาข้อความภายในตาราง", tableDet, setTableDet)}
+              {renderModelSelect("text_recognition", "Table Text Recognition", "โมเดลอ่านข้อความภายในตาราง", tableRec, setTableRec)}
+            </div> : <p className="mt-3 text-xs font-semibold text-slate-500">ใช้ DET/REC หลักที่มีผลใช้งาน ณ เวลาประมวลผลตาราง</p>}
+            {(modelSettings.pendingTable || modelSettings.pendingActive) && <p className="mt-3 text-xs text-amber-700">มีการตั้งค่ารออัปเดตตามช่วงปิดปรับปรุงระบบ</p>}
+          </div>
             {modelSaveStatus === "saved" && modelFeedback && <div className="mt-4"><InlineState tone="success" message={modelFeedback} /></div>}
             {modelSaveStatus === "error" && modelFeedback && <div className="mt-4"><InlineState tone="danger" message={modelFeedback} /></div>}
             <div className="mt-5 flex justify-end">
