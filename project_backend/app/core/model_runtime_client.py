@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 import cv2
 import numpy as np
 
+from app.model_runtime.inference_adapters import adapt_layout, InferenceAdapterError
 from app.core.config import GATEWAY_URL
 from app.core.ocr_model_config import DEFAULT_OCR_MODEL_SETTINGS, normalize_saved_ocr_settings
 from app.core.db import connect as connect_db
@@ -324,7 +325,7 @@ def _post_predict(
         detail = parsed.get("detail") or parsed.get("error") or "Model runtime request failed."
         raise ModelRuntimeUnavailableError(f"{kind.value} runtime failed: {detail}")
 
-    sources = [parsed, parsed.get("result"), parsed.get("data")]
+    sources = [parsed, parsed.get("result"), parsed.get("data"), parsed.get("meta")]
     selections = [source.get("model_selection") for source in sources
                   if isinstance(source, dict) and isinstance(source.get("model_selection"), dict)]
     runtime_model = parsed.get("model") or next((selection.get("model_name") for selection in selections
@@ -382,6 +383,9 @@ def _post_predict(
         result = parsed.get("data")
     if kind in {ModelRuntimeKind.TEXT_DETECTION, ModelRuntimeKind.TEXT_RECOGNITION} and isinstance(result, dict) and runtime_model and "model" not in result:
         result = {**result, "model": runtime_model}
+    if kind == ModelRuntimeKind.TEXT_DETECTION and isinstance(result, list):
+        # Backend-owned wrapper carries model identity without changing predictions.
+        return {"predictions": result, **({"model": runtime_model} if runtime_model else {})}
     if kind == ModelRuntimeKind.LAYOUT:
         return result
     return result if isinstance(result, dict) else parsed
@@ -413,16 +417,10 @@ def remote_analyze_layout(
         {"images": [image_data_url]},
         timing=timing,
     )
-    if not isinstance(batch, list) or len(batch) != 1:
-        raise ModelRuntimeUnavailableError("Layout runtime must return exactly one result for one image.")
-    layout = batch[0]
-    if not isinstance(layout, dict) or layout.get("error") is not None:
-        raise ModelRuntimeUnavailableError("Layout runtime returned an invalid prediction.")
-    prediction = layout.get("res", layout)
-    if not isinstance(prediction, dict) or not isinstance(prediction.get("boxes"), list):
-        raise ModelRuntimeUnavailableError("Layout prediction must contain a boxes list.")
-
-    return layout
+    try:
+        return adapt_layout(batch, expected_count=1)[0]
+    except InferenceAdapterError as error:
+        raise ModelRuntimeUnavailableError(str(error)) from error
 
 
 def remote_detect_text_boxes(image_path: str, timing: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:

@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Literal, Tuple
 from pathlib import Path
 import cv2
 import numpy as np
-from app.model_runtime.text_response_contract import normalize_batch, normalize_single, TextResponseContractError
+from app.model_runtime.inference_adapters import normalize_batch, normalize_single, TextResponseContractError, adapt_layout, InferenceAdapterError
 
 from app.core.model_runtime_client import (
     ModelRuntimeKind,
@@ -1209,10 +1209,10 @@ def analyze_layout_signature(image: np.ndarray, timing: Optional[Dict[str, Any]]
         postprocess_started = time.perf_counter()
         # Consume only the leaf Layout output. Text regions predicted by Layout
         # remain valid, but no TextDetection boxes enter this signature.
-        prediction = layout_result.get("res", layout_result)
-        if (layout_result.get("error") is not None or not isinstance(prediction, dict)
-                or not isinstance(prediction.get("boxes"), list)):
-            raise LayoutAnalysisUnavailableError("Layout signature requires a valid raw Layout prediction.")
+        try:
+            prediction = adapt_layout(layout_result)
+        except InferenceAdapterError as error:
+            raise LayoutAnalysisUnavailableError(str(error)) from error
         raw_layout_items = _walk_layout_items(prediction["boxes"])
         layout_items = _layout_detection_items_from_response(prediction["boxes"])
         raw_items = [{**item, "source": "layout"} for item in layout_items]
@@ -1276,7 +1276,7 @@ def analyze_layout_signature(image: np.ndarray, timing: Optional[Dict[str, Any]]
     }
 
 
-def _text_detection_result_from_remote(remote_result: Dict[str, Any], image: np.ndarray) -> Dict[str, Any]:
+def _text_detection_result_from_remote(remote_result: Any, image: np.ndarray) -> Dict[str, Any]:
     height, width = image.shape[:2]
     try:
         normalized = normalize_single(remote_result, 'det')
@@ -1360,7 +1360,7 @@ def detect_text_boxes(image_path: str, timing: Optional[Dict[str, Any]] = None) 
         raise LayoutAnalysisUnavailableError(str(error)) from error
     except Exception as error:
         raise LayoutAnalysisUnavailableError(str(error)) from error
-    if not isinstance(remote_result, dict):
+    if not isinstance(remote_result, (dict, list)):
         raise LayoutAnalysisUnavailableError("TextDetection runtime returned an invalid response.")
     step_started = time.perf_counter()
     result = _text_detection_result_from_remote(remote_result, image)

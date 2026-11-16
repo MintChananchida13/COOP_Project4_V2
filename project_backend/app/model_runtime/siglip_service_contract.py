@@ -39,21 +39,8 @@ def _object(data: Any) -> dict:
     return data
 
 
-def classification_logits(data: Any, categories: list[dict]) -> list[float]:
-    data = _object(data)
-    if data.get("contract_version") != "leaf-inference-v1" or data.get("kind") != "siglip":
-        raise ValueError("Unsupported SigLIP leaf contract")
-    # Prompt order is part of the vector contract; never infer it from scores.
-    if data.get("categories") != [item["prompt"] for item in categories]:
-        raise ValueError("SigLIP category/prompt order does not match request")
-    raw = data.get("raw_output")
-    if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], dict):
-        raise ValueError("Expected one raw_output item per image")
-    logits = raw[0].get("logits_per_image")
-    if not isinstance(logits, list) or len(logits) != len(categories):
-        raise ValueError("SigLIP logit/category count mismatch")
-    _text(data, "device")
-    return [number(value, "logits_per_image") for value in logits]
+# Retained name for callers of the previous contract module.
+from app.model_runtime.inference_adapters import adapt_siglip as classification_logits
 
 
 def score_classification(data: dict, target: str, categories: list[dict]) -> dict:

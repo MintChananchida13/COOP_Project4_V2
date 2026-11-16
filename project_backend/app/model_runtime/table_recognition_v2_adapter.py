@@ -1,3 +1,4 @@
+from app.model_runtime.inference_adapters import adapt_table
 import logging
 import html
 import math
@@ -2976,15 +2977,7 @@ def _table_result_candidates(output: Any, collected: Optional[List[Dict[str, Any
 
 
 def _unwrap_remote_result(remote_result: Dict[str, Any]) -> Any:
-    if isinstance(remote_result.get("data"), dict):
-        return _unwrap_remote_result(remote_result["data"])
-    if "raw_output" in remote_result:
-        return remote_result.get("raw_output")
-    if "output" in remote_result:
-        return remote_result.get("output")
-    if "result" in remote_result:
-        return remote_result.get("result")
-    return remote_result
+    return adapt_table(remote_result)
 
 
 def _predict_table_model(image: np.ndarray, timing: Optional[Dict[str, Any]] = None) -> Any:

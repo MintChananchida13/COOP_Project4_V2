@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 from app.processing.ocr_postprocess import normalize_ocr_text
-from app.model_runtime.text_response_contract import normalize_batch, normalize_single, TextResponseContractError
+from app.model_runtime.inference_adapters import normalize_batch, normalize_single, TextResponseContractError
 from app.core.model_runtime_client import (
     ModelRuntimeKind,
     ModelRuntimeUnavailableError,
