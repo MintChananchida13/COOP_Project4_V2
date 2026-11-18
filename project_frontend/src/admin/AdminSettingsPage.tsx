@@ -1265,15 +1265,15 @@ export default function AdminSettingsPage() {
             <fieldset className="mt-5 rounded-xl border border-slate-200 p-4">
               <legend className="px-1 text-xs font-black text-slate-700">วิธีอ่านข้อความ</legend>
               <div className="flex flex-wrap gap-5 text-sm text-slate-700">
-                <label className="flex items-center gap-2"><input type="radio" name="ocr-engine" checked={ocrEngine === "paddle"} onChange={() => setOcrEngine("paddle")} /> DET + REC</label>
+                <label className="flex items-center gap-2"><input type="radio" name="ocr-engine" checked={ocrEngine === "paddle"} onChange={() => setOcrEngine("paddle")} /> Paddle OCR</label>
                 <label className="flex items-center gap-2"><input type="radio" name="ocr-engine" checked={ocrEngine === "openthai"} onChange={() => setOcrEngine("openthai")} /> OpenThai OCR</label>
               </div>
               <p className="mt-2 text-xs text-slate-500">OpenThai ใช้กับการอ่านข้อความใน Extraction และ Verification ส่วน Table V2 ใช้โมเดลที่ตั้งค่าแยกด้านล่าง</p>
             </fieldset>
-            <div className="mt-5 grid gap-4 lg:grid-cols-2">
+            {ocrEngine === "paddle" && <div className="mt-5 grid gap-4 lg:grid-cols-2">
               {renderModelSelect("text_detection", "Text Detection Model", "โมเดลสำหรับตรวจหาตำแหน่งข้อความ", draftDetectionModelId, setDraftDetectionModelId)}
               {renderModelSelect("text_recognition", "Text Recognition Model", "โมเดลสำหรับอ่านข้อความ", draftRecognitionModelId, setDraftRecognitionModelId)}
-            </div>
+            </div>}
             <div className="mt-4 grid gap-2 text-xs font-semibold text-slate-500 sm:grid-cols-2">
               <div className="rounded-xl bg-slate-50 px-3 py-2">
                 <span className="font-black text-slate-700">ปัจจุบัน:</span> DET {modelName("text_detection", modelSettings.active.text_detection)} / REC {modelName("text_recognition", modelSettings.active.text_recognition)}

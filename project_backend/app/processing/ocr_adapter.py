@@ -437,20 +437,9 @@ def _recognize_openthai_crops(text_items, timing=None):
             output = adapt_openthai(raw)
         except (ModelRuntimeUnavailableError, InferenceAdapterError) as error:
             raise OcrUnavailableError(f"OpenThai OCR failed: {error}") from error
-        segments = []
-        for line in output["lines"]:
-            points = line.get("box")
-            bbox = None
-            if points:
-                xs, ys = [p[0] for p in points], [p[1] for p in points]
-                bbox = {"x": min(xs), "y": min(ys), "width": max(xs)-min(xs), "height": max(ys)-min(ys)}
-            segments.append({"text": line["text"], "confidence": line["confidence"], "bbox": bbox,
-                             "polygon": points, "row": line.get("row"), "engine": "openthai", "model": "OpenThai2.0"})
-        results[key] = {"text": output["text"], "confidence": output["confidence"], "segments": segments,
+        results[key] = {"text": output["text"], "confidence": output["confidence"], "segments": [],
                         "engine": "openthai", "model": "OpenThai2.0", "preprocessing": "openthai",
-                        "text_detection": {"engine": "openthai", "box_count": len(segments), "fallback_used": False},
-                        "geometry_available": output.get("geometry_available"), "image": output.get("image"),
-                        "rotation": output.get("rotation"), "text_angle": output.get("text_angle"), "error": None}
+                        "error": None}
     return results
 
 
