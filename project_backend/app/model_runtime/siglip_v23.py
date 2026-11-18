@@ -3,24 +3,22 @@
 import math
 
 
+# Prompt order matches benchmark_siglip_short_prompts.py.
 SINGLE = {
-    "emblem": "This is an institutional crest, university seal, or organization insignia, not the standalone Thai national Garuda emblem.",
-    "thai_garuda": "This is the standalone official Thai national Garuda (Phra Khrut) emblem, showing a winged human-bird deity, not a university or agency crest.",
-    "company_logo": "This is a commercial brand identity logo, company trademark, or business wordmark.",
-    "document_stamp": "An inked rubber stamp impression applied to a paper document.",
-    "portrait": "An ID-style portrait photograph showing a person's face and upper body, possibly with numbers or measurement lines in the background.",
-    "signature": "A handwritten signature made with a pen.",
-    "barcode": "A linear barcode made of parallel vertical bars.",
-    "qr_code": "A square QR code with a black and white matrix pattern.",
+    'emblem': 'A company logo or official institutional emblem, featuring text, symbols, or decorative designs.',
+    'thai_garuda': 'A Garuda figure with a human body, bird head, and wings.',
+    'portrait': 'An ID-style portrait photograph showing a persons face and upper body, possibly with numbers or measurement lines in the background.',
+    'signature': 'A handwritten signature.',
+    'barcode': 'A barcode with parallel vertical black bars.',
+    'qr_code': 'A square QR code with a black and white matrix pattern.',
 }
 NEGATIVE = {
-    "text": "A document region containing only printed letters or numbers, with no portrait photograph, logo, emblem, stamp, signature, QR code, or barcode.",
-    "table": "A table with rows, columns, and printed text.",
-    "blank": "An empty or nearly blank document region.",
-    "background": "A decorative document security background without a distinct emblem.",
-    "illustration": "A generic illustration, icon, or decorative graphic rather than an official emblem or brand logo.",
-    "pattern": "A repetitive black and white texture or stripes, not a scannable barcode.",
-    "bar_chart": "A bar chart showing statistical values with colored rectangular bars, axes, tick labels, and a legend.",
+    'text': 'Printed or handwritten text, letters, dates, and numbers.',
+    'table': 'A table with rows and columns.',
+    'blank': 'A blank document area.',
+    'background': 'A document background or watermark.',
+    'illustration': 'A drawing, diagram, or illustrative photograph.',
+    'bar_chart': 'A statistical bar chart.',
 }
 LABELS = {
     "emblem": "ตราสถาบัน / องค์กร", "thai_garuda": "ตราครุฑ",

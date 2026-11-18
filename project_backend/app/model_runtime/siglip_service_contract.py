@@ -46,7 +46,8 @@ from app.model_runtime.inference_adapters import adapt_siglip as classification_
 def score_classification(data: dict, target: str, categories: list[dict]) -> dict:
     """Mirror verify_classification's raw-logit path, including stable tie order."""
     logits = classification_logits(data, categories)
-    if target not in {item["value"] for item in categories}:
+    canonical_target = "emblem" if target == "company_logo" else target
+    if canonical_target not in {item["value"] for item in categories}:
         raise ValueError("Target is not in request categories")
     indices = sorted(range(len(logits)), key=lambda index: logits[index], reverse=True)
     top_logit = logits[indices[0]]
@@ -65,10 +66,10 @@ def score_classification(data: dict, target: str, categories: list[dict]) -> dic
             "field_score": float(rank == 1), "evidence_score": float(rank == 1),
             "match_threshold": round(item.get("match_threshold", .7), 4),
             "margin_threshold": round(item.get("margin_threshold", .05), 4),
-            "target": item["value"] == target,
+            "target": item["value"] == canonical_target,
         })
-    selected = next(item for item in labels if item["image_category"] == target)
-    target_index = next(index for index, item in enumerate(categories) if item["value"] == target)
+    selected = next(item for item in labels if item["image_category"] == canonical_target)
+    target_index = next(index for index, item in enumerate(categories) if item["value"] == canonical_target)
     target_config = categories[target_index]
     passed = selected["rank"] == 1
     second_logit = logits[indices[1]] if len(indices) > 1 else top_logit

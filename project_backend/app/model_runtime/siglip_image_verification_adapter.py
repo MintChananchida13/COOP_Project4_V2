@@ -113,13 +113,13 @@ def _normalize_categories(categories: List[Dict[str, Any]] | List[SiglipCategory
             continue
         if not category.value or not category.prompt:
             continue
-        if category.value not in SINGLE:
+        if category.value not in SINGLE and category.value != "company_logo":
             continue
         if category.value in seen:
             continue
         seen.add(category.value)
         normalized.append(SiglipCategoryConfig(
-            value=category.value, label=category.label or LABELS[category.value], prompt=SINGLE[category.value],
+            value=category.value, label=category.label or LABELS[category.value], prompt=SINGLE["emblem" if category.value == "company_logo" else category.value],
             match_threshold=category.match_threshold, margin_threshold=category.margin_threshold,
             evidence_temperature=category.evidence_temperature, enabled=category.enabled,
         ))
@@ -321,8 +321,9 @@ def _runtime_category_payloads(categories: List[SiglipCategoryConfig]) -> List[D
         name = item["value"]
         payload = {"match_threshold": .7, "margin_threshold": .05, **item,
                    "label": LABELS.get(name, name)}
-        if name in configured:
-            payload.update(configured[name].to_dict())
+        configured_item = configured.get(name) or (configured.get("company_logo") if name == "emblem" else None)
+        if configured_item:
+            payload.update({**configured_item.to_dict(), "value": name, "prompt": item["prompt"]})
         payloads.append(payload)
     return payloads
 
