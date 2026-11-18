@@ -1027,7 +1027,7 @@ class GlobalSettingsService:
             ).fetchone()
         return normalize_ocr_model_settings(row["value"] if row else None)
 
-    def update_ocr_active_models(self, text_detection_model_id: str, text_recognition_model_id: str, table: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def update_ocr_active_models(self, text_detection_model_id: str, text_recognition_model_id: str, table: Optional[Dict[str, Any]] = None, ocr_engine: Optional[str] = None) -> Dict[str, Any]:
         defer_update = self._should_defer_admin_setting_updates()
         settings = self.get_ocr_model_settings()["ocr_models"]
         requested = {
@@ -1039,6 +1039,10 @@ class GlobalSettingsService:
             if model_id not in ids:
                 raise HTTPException(status_code=400, detail=f"Unknown {kind} model id")
             settings["active"][kind] = model_id
+        if ocr_engine is not None:
+            if ocr_engine not in {"paddle", "openthai"}:
+                raise HTTPException(status_code=400, detail="Invalid OCR engine")
+            settings["ocr_engine"] = ocr_engine
         if table is not None:
             if table.get("mode") not in {"follow_main", "separate"}:
                 raise HTTPException(status_code=400, detail="Invalid Table OCR mode")

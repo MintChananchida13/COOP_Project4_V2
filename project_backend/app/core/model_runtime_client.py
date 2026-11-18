@@ -33,6 +33,7 @@ class ModelRuntimeKind(str, Enum):
     LAYOUT = "layout"
     TEXT_DETECTION = "text_detection"
     TEXT_RECOGNITION = "text_recognition"
+    OPENTHAI = "openthai"
     TABLE = "table"
     IMAGE_VERIFICATION = "image_verification"
 
@@ -41,6 +42,7 @@ MODEL_RUNTIME_GATEWAY_PATH: Dict[ModelRuntimeKind, str] = {
     ModelRuntimeKind.LAYOUT: "/paddle/api/v1/layout-prediction-batches",
     ModelRuntimeKind.TEXT_DETECTION: "/paddle/api/v1/text-detections?version=v6",
     ModelRuntimeKind.TEXT_RECOGNITION: "/paddle/api/v1/text-recognitions",
+    ModelRuntimeKind.OPENTHAI: "/paddle/api/v1/openthai-text",
     ModelRuntimeKind.TABLE: "/paddle/api/v1/table-model-results",
     ModelRuntimeKind.IMAGE_VERIFICATION: "/paddle/api/v1/image-classifications",
 }
@@ -516,6 +518,21 @@ def remote_recognize_images(images: List[np.ndarray], timing: Optional[Dict[str,
         timing=timing,
         multipart_images=image_bytes,
     )
+
+
+def active_ocr_engine() -> str:
+    try:
+        with connect_db() as conn:
+            row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (OCR_MODEL_SETTINGS_KEY,)).fetchone()
+        return normalize_saved_ocr_settings(jsonb_load(row["value"] if row else None, None))["ocr_engine"]
+    except Exception as error:
+        raise ModelRuntimeUnavailableError("Unable to load active OCR engine") from error
+
+
+def remote_openthai(image: np.ndarray, timing: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if not is_runtime_configured(ModelRuntimeKind.OPENTHAI):
+        raise ModelRuntimeUnavailableError("GATEWAY_URL is not configured")
+    return _post_predict(ModelRuntimeKind.OPENTHAI, {"image": _image_to_data_url(image)}, timeout=240.0, timing=timing)
 
 
 def remote_recognize_table_raw(image: np.ndarray, timing: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any] | List[Dict[str, Any]]]:

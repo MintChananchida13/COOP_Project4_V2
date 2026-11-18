@@ -259,3 +259,30 @@ def adapt_siglip_response(output: Any, meta: Any) -> list[dict[str, Any]]:
         adapted["logits_per_image"] = adapt_siglip(adapted, categories)
         result.append(adapted)
     return result
+
+
+def adapt_openthai(value: Any) -> dict:
+    """Validate OpenThai single-image OCR without fabricating confidence."""
+    if not isinstance(value, dict) or value.get("error") or value.get("success") is False:
+        raise InferenceAdapterError("Invalid OpenThai response")
+    if isinstance(value.get("data"), dict):
+        value = value["data"]
+    text, lines = value.get("text"), value.get("lines")
+    if not isinstance(text, str) or not isinstance(lines, list):
+        raise InferenceAdapterError("OpenThai text and lines are required")
+    result = []
+    for item in lines:
+        if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+            raise InferenceAdapterError("Invalid OpenThai line")
+        confidence = item.get("confidence")
+        if confidence is not None and (isinstance(confidence, bool) or not isinstance(confidence, Real) or not math.isfinite(confidence) or not 0 <= confidence <= 1):
+            raise InferenceAdapterError("Invalid OpenThai line confidence")
+        box = item.get("box")
+        if box is not None and (not isinstance(box, list) or len(box) < 3 or any(not isinstance(p, list) or len(p) != 2 or any(isinstance(v, bool) or not isinstance(v, Real) or not math.isfinite(v) for v in p) for p in box)):
+            raise InferenceAdapterError("Invalid OpenThai line geometry")
+        result.append({**item, "confidence": float(confidence) if confidence is not None else None})
+    confidence = value.get("confidence")
+    if confidence is not None and (isinstance(confidence, bool) or not isinstance(confidence, Real) or not math.isfinite(confidence) or not 0 <= confidence <= 1):
+        raise InferenceAdapterError("Invalid OpenThai confidence")
+    scores = [item["confidence"] for item in result if item["confidence"] is not None and item["text"].strip()]
+    return {**value, "text": text, "lines": result, "confidence": float(confidence) if confidence is not None else (sum(scores) / len(scores) if scores else None)}

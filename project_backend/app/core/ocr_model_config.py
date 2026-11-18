@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import Any, Dict
 
 DEFAULT_OCR_MODEL_SETTINGS: Dict[str, Any] = {
+    "ocr_engine": "paddle",
     "table": {"mode": "follow_main", "text_detection": "", "text_recognition": ""},
     "active": {
         "text_detection": "ocr_det_v6_medium",
@@ -68,6 +69,7 @@ def normalize_saved_ocr_settings(value: Any = None) -> Dict[str, Any]:
             settings["active"][kind] = active
         elif settings["active"][kind] not in ids:
             settings["active"][kind] = settings["models"][kind][0]["id"]
+    settings["ocr_engine"] = "openthai" if value.get("ocr_engine") == "openthai" else "paddle"
     table = value.get("table")
     if isinstance(table, dict):
         settings["table"] = {

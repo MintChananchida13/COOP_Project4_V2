@@ -211,6 +211,7 @@ class TableOcrSettings(BaseModel):
 
 
 class OcrActiveModelsUpdate(BaseModel):
+    ocr_engine: Optional[Literal["paddle", "openthai"]] = None
     table: Optional[TableOcrSettings] = None
     text_detection_model_id: str = Field(validation_alias=AliasChoices("text_detection_model_id", "textDetectionModelId"))
     text_recognition_model_id: str = Field(validation_alias=AliasChoices("text_recognition_model_id", "textRecognitionModelId"))

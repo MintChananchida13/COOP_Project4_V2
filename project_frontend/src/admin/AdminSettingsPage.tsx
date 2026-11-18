@@ -400,6 +400,7 @@ export default function AdminSettingsPage() {
   const [draftStrategy, setDraftStrategy] = useState<VerificationStrategy>("standard");
   const [modelSettings, setModelSettings] = useState<OcrModelSettings>(emptyModelSettings);
   const [tableMode, setTableMode] = useState<"follow_main" | "separate">("follow_main");
+  const [ocrEngine, setOcrEngine] = useState<"paddle" | "openthai">("paddle");
   const [tableDet, setTableDet] = useState("");
   const [tableRec, setTableRec] = useState("");
   const [draftDetectionModelId, setDraftDetectionModelId] = useState("");
@@ -473,6 +474,7 @@ export default function AdminSettingsPage() {
 
   const applyOcrModelSettings = (settings: OcrModelSettings) => {
     setModelSettings(settings);
+    setOcrEngine(settings.pendingOcrEngine || settings.ocrEngine || "paddle");
     const table = settings.pendingTable || settings.table;
     setTableMode(table?.mode || "follow_main");
     setTableDet(table?.text_detection || settings.active.text_detection);
@@ -571,7 +573,7 @@ export default function AdminSettingsPage() {
   const savedTable = modelSettings.pendingTable || modelSettings.table;
   const hasTableChanges = tableMode !== (savedTable?.mode || "follow_main") ||
     (tableMode === "separate" && (tableDet !== savedTable?.text_detection || tableRec !== savedTable?.text_recognition));
-  const hasModelChanges = hasTableChanges ||
+  const hasModelChanges = hasTableChanges || ocrEngine !== (modelSettings.pendingOcrEngine || modelSettings.ocrEngine || "paddle") ||
     draftDetectionModelId !== (modelSettings.pendingActive?.text_detection || modelSettings.active.text_detection) ||
     draftRecognitionModelId !== (modelSettings.pendingActive?.text_recognition || modelSettings.active.text_recognition);
   const hasUnsavedChanges = hasStrategyChanges || hasModelChanges;
@@ -632,6 +634,7 @@ export default function AdminSettingsPage() {
     setModelFeedback("");
     try {
       const persistedSettings = await updateActiveOcrModels({
+        ocrEngine,
         textDetectionModelId: draftDetectionModelId,
         table: { mode: tableMode, text_detection: tableDet, text_recognition: tableRec },
         textRecognitionModelId: draftRecognitionModelId,
@@ -1259,6 +1262,14 @@ export default function AdminSettingsPage() {
                 จัดการโมเดล
               </button>
             </div>
+            <fieldset className="mt-5 rounded-xl border border-slate-200 p-4">
+              <legend className="px-1 text-xs font-black text-slate-700">วิธีอ่านข้อความ</legend>
+              <div className="flex flex-wrap gap-5 text-sm text-slate-700">
+                <label className="flex items-center gap-2"><input type="radio" name="ocr-engine" checked={ocrEngine === "paddle"} onChange={() => setOcrEngine("paddle")} /> DET + REC</label>
+                <label className="flex items-center gap-2"><input type="radio" name="ocr-engine" checked={ocrEngine === "openthai"} onChange={() => setOcrEngine("openthai")} /> OpenThai OCR</label>
+              </div>
+              <p className="mt-2 text-xs text-slate-500">OpenThai ใช้กับการอ่านข้อความใน Extraction และ Verification ส่วน Table V2 ใช้โมเดลที่ตั้งค่าแยกด้านล่าง</p>
+            </fieldset>
             <div className="mt-5 grid gap-4 lg:grid-cols-2">
               {renderModelSelect("text_detection", "Text Detection Model", "โมเดลสำหรับตรวจหาตำแหน่งข้อความ", draftDetectionModelId, setDraftDetectionModelId)}
               {renderModelSelect("text_recognition", "Text Recognition Model", "โมเดลสำหรับอ่านข้อความ", draftRecognitionModelId, setDraftRecognitionModelId)}

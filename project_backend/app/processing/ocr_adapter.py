@@ -1,3 +1,5 @@
+from app.core.model_runtime_client import active_ocr_engine, remote_openthai, ModelRuntimeUnavailableError
+from app.model_runtime.inference_adapters import adapt_openthai, InferenceAdapterError
 import logging
 import os
 import tempfile
@@ -427,6 +429,31 @@ def _crop_box(bgr_crop, box: Dict[str, Any], official_style: bool = True, allow_
     return bgr_crop[y1:y2, x1:x2]
 
 
+def _recognize_openthai_crops(text_items, timing=None):
+    results = {}
+    for key, image in text_items:
+        try:
+            raw = remote_openthai(image, timing=timing)
+            output = adapt_openthai(raw)
+        except (ModelRuntimeUnavailableError, InferenceAdapterError) as error:
+            raise OcrUnavailableError(f"OpenThai OCR failed: {error}") from error
+        segments = []
+        for line in output["lines"]:
+            points = line.get("box")
+            bbox = None
+            if points:
+                xs, ys = [p[0] for p in points], [p[1] for p in points]
+                bbox = {"x": min(xs), "y": min(ys), "width": max(xs)-min(xs), "height": max(ys)-min(ys)}
+            segments.append({"text": line["text"], "confidence": line["confidence"], "bbox": bbox,
+                             "polygon": points, "row": line.get("row"), "engine": "openthai", "model": "OpenThai2.0"})
+        results[key] = {"text": output["text"], "confidence": output["confidence"], "segments": segments,
+                        "engine": "openthai", "model": "OpenThai2.0", "preprocessing": "openthai",
+                        "text_detection": {"engine": "openthai", "box_count": len(segments), "fallback_used": False},
+                        "geometry_available": output.get("geometry_available"), "image": output.get("image"),
+                        "rotation": output.get("rotation"), "text_angle": output.get("text_angle"), "error": None}
+    return results
+
+
 def _recognize_text_crops_with_detection(
     text_items: List[Tuple[str, Any]],
     source: str = "unknown",
@@ -434,6 +461,14 @@ def _recognize_text_crops_with_detection(
 ) -> Dict[str, Dict[str, Any]]:
     if not text_items:
         return {}
+
+    if not str(source or "").startswith("table:"):
+        try:
+            engine = active_ocr_engine()
+        except ModelRuntimeUnavailableError as error:
+            raise OcrUnavailableError(str(error)) from error
+        if engine == "openthai":
+            return _recognize_openthai_crops(text_items, timing=timing)
 
     source_crops = {key: bgr_crop for key, bgr_crop in text_items}
     recognition_crops = []
@@ -922,7 +957,8 @@ def ocr_rois(
         segments = result.get("segments") or []
         results[key] = {
             "text": normalize_ocr_text(result.get("text")),
-            "confidence": round(float(result.get("confidence") or 0.0), 4),
+            "confidence": (None if result.get("engine") == "openthai" and result.get("confidence") is None
+                           else round(float(result.get("confidence") or 0.0), 4)),
             "preprocessing": result.get("preprocessing") or "paddle_text_detection_then_recognition",
             "segments": segments,
             "raw_segments": segments,
