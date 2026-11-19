@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { CalendarDays, Check, ChevronLeft, ChevronRight, Clock, Loader2, Pencil, Plus, RefreshCw, Save, Settings, Trash2, X } from "lucide-react";
 import {
   deleteOcrModel,
+  deleteTyphoonApiKey,
   checkOcrModel,
   fetchOcrModelSettings,
   fetchAdminSystemMaintenance,
@@ -206,6 +207,8 @@ function MaintenanceDatePicker({
     minMonth !== null &&
     new Date(year, month, 0).getTime() < new Date(minMonth.getFullYear(), minMonth.getMonth(), 1).getTime();
 
+
+
   return (
     <div className="relative">
       <button
@@ -402,6 +405,7 @@ export default function AdminSettingsPage() {
   const [tableMode, setTableMode] = useState<"follow_main" | "separate" | "typhoon">("follow_main");
   const [ocrEngine, setOcrEngine] = useState<"paddle" | "openthai" | "typhoon">("paddle");
   const [typhoonApiKey, setTyphoonApiKey] = useState("");
+  const [deletingTyphoonKey, setDeletingTyphoonKey] = useState(false);
   const [tableDet, setTableDet] = useState("");
   const [tableRec, setTableRec] = useState("");
   const [draftDetectionModelId, setDraftDetectionModelId] = useState("");
@@ -631,7 +635,7 @@ export default function AdminSettingsPage() {
   };
 
   const handleSaveModels = async () => {
-    if (!hasModelChanges || modelSaveStatus === "saving") return;
+    if (!hasModelChanges || modelSaveStatus === "saving" || deletingTyphoonKey) return;
     setModelSaveStatus("saving");
     setModelFeedback("");
     try {
@@ -650,6 +654,24 @@ export default function AdminSettingsPage() {
       console.warn("OCR model settings update failed.", error);
       setModelSaveStatus("error");
       setModelFeedback(error instanceof Error ? error.message : "บันทึกการตั้งค่าโมเดลไม่สำเร็จ");
+    }
+  };
+
+  const handleDeleteTyphoonKey = async () => {
+    if (deletingTyphoonKey || modelSaveStatus === "saving") return;
+    setDeletingTyphoonKey(true);
+    setModelFeedback("");
+    try {
+      await deleteTyphoonApiKey();
+      setTyphoonApiKey("");
+      setModelSettings((current) => ({ ...current, typhoonKeyConfigured: false }));
+      setModelSaveStatus("saved");
+      setModelFeedback("ลบ Typhoon API key แล้ว กรุณากรอก key ใหม่ก่อนใช้งาน Typhoon OCR");
+    } catch (error) {
+      setModelSaveStatus("error");
+      setModelFeedback(error instanceof Error ? error.message : "ลบ Typhoon API key ไม่สำเร็จ");
+    } finally {
+      setDeletingTyphoonKey(false);
     }
   };
 
@@ -1173,6 +1195,18 @@ export default function AdminSettingsPage() {
     );
   };
 
+  const renderTyphoonApiKey = () => (
+    <div className="mt-4 text-xs font-bold text-slate-700">
+      <label htmlFor="typhoon-api-key">Typhoon API key</label>
+      <div className="flex items-center gap-2">
+        <input id="typhoon-api-key" type="password" autoComplete="new-password" value={typhoonApiKey} onChange={(event) => setTyphoonApiKey(event.target.value)} placeholder={modelSettings.typhoonKeyConfigured ? "••••••••••••" : "กรอก API key"} className="mt-2 block min-w-0 flex-1 rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal" />
+        {modelSettings.typhoonKeyConfigured && <button type="button" onClick={() => void handleDeleteTyphoonKey()} disabled={deletingTyphoonKey || modelSaveStatus === "saving"} className="mt-2 rounded-xl border border-red-200 px-3 py-2 text-xs text-red-700 disabled:opacity-50">{deletingTyphoonKey ? "กำลังลบ..." : "ลบ key"}</button>}
+      </div>
+      {modelSettings.typhoonKeyConfigured && <span className="mt-2 block font-normal text-slate-500">บันทึก key แล้ว เว้นว่างเพื่อใช้ค่าเดิม หรือกรอก key ใหม่เพื่อเปลี่ยน หากลบจะต้องกรอก key ใหม่ก่อนใช้งาน Typhoon</span>}
+      <span className="mt-2 block font-normal text-slate-500">ภาพที่เลือกใช้ Typhoon OCR จะถูกส่งไปยัง Typhoon เพื่อประมวลผล</span>
+    </div>
+  );
+
   return (
     <section className="space-y-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1272,10 +1306,7 @@ export default function AdminSettingsPage() {
                 <label className="flex items-center gap-2"><input type="radio" name="ocr-engine" checked={ocrEngine === "openthai"} onChange={() => setOcrEngine("openthai")} /> OpenThai OCR</label>
                 <label className="flex items-center gap-2"><input type="radio" name="ocr-engine" checked={ocrEngine === "typhoon"} onChange={() => setOcrEngine("typhoon")} /> Typhoon OCR</label>
               </div>
-              {(ocrEngine === "typhoon" || tableMode === "typhoon") && <label className="mt-4 block text-xs font-bold text-slate-700">Typhoon API key
-                <input type="password" autoComplete="new-password" value={typhoonApiKey} onChange={(event) => setTyphoonApiKey(event.target.value)} placeholder={modelSettings.typhoonKeyConfigured ? "บันทึก API key แล้ว (เว้นว่างเพื่อใช้ค่าเดิม)" : "กรอก API key"} className="mt-2 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal" />
-                <span className="mt-2 block font-normal text-slate-500">ภาพข้อความในแต่ละ field จะถูกส่งไปยัง Typhoon OCR เพื่อประมวลผล</span>
-              </label>}
+              {ocrEngine === "typhoon" && renderTyphoonApiKey()}
               <p className="mt-2 text-xs text-slate-500">OpenThai ใช้กับการอ่านข้อความใน Extraction และ Verification ส่วน Table V2 ใช้โมเดลที่ตั้งค่าแยกด้านล่าง</p>
             </fieldset>
             {ocrEngine === "paddle" && <div className="mt-5 grid gap-4 lg:grid-cols-2">
@@ -1293,29 +1324,31 @@ export default function AdminSettingsPage() {
               )}
             </div>
           <div className="mt-5 border-t border-slate-200 pt-5">
-            <h4 className="text-sm font-black text-slate-900">Table</h4>
-            <p className="mt-1 text-xs font-semibold text-slate-500">เลือกโมเดล OCR ภายใน Table V2 จากรายการ DET/REC ที่จัดการไว้</p>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 p-3 text-xs font-bold text-slate-700">
+            <fieldset className="rounded-xl border border-slate-200 p-4">
+            <legend className="px-1 text-xs font-black text-slate-700">Table</legend>
+            <div className="flex flex-wrap gap-5 text-sm text-slate-700">
+              <label className="flex items-center gap-2">
                 <input type="radio" name="table-ocr-mode" checked={tableMode === "follow_main"} onChange={() => setTableMode("follow_main")} />ใช้ตามการตั้งค่า DET/REC หลัก
               </label>
-              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 p-3 text-xs font-bold text-slate-700">
+              <label className="flex items-center gap-2">
                 <input type="radio" name="table-ocr-mode" checked={tableMode === "separate"} onChange={() => setTableMode("separate")} />เลือกแยกสำหรับ Table
               </label>
-              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 p-3 text-xs font-bold text-slate-700">
+              <label className="flex items-center gap-2">
                 <input type="radio" name="table-ocr-mode" checked={tableMode === "typhoon"} onChange={() => setTableMode("typhoon")} />Typhoon OCR
               </label>
             </div>
+            {tableMode === "typhoon" && ocrEngine !== "typhoon" && renderTyphoonApiKey()}
+            </fieldset>
             {tableMode === "separate" ? <div className="mt-4 grid gap-4 lg:grid-cols-2">
               {renderModelSelect("text_detection", "Table Text Detection", "โมเดลตรวจหาข้อความภายในตาราง", tableDet, setTableDet)}
               {renderModelSelect("text_recognition", "Table Text Recognition", "โมเดลอ่านข้อความภายในตาราง", tableRec, setTableRec)}
-            </div> : <p className="mt-3 text-xs font-semibold text-slate-500">{tableMode === "typhoon" ? "ส่งภาพตารางไปยัง Typhoon OCR โดยใช้ API key ด้านบน" : "ใช้ DET/REC หลักที่มีผลใช้งาน ณ เวลาประมวลผลตาราง"}</p>}
+            </div> : <p className="mt-3 text-xs font-semibold text-slate-500">{tableMode === "typhoon" ? "ส่งภาพตารางไปยัง Typhoon OCR โดยใช้ API key ที่ตั้งค่าไว้" : "ใช้ DET/REC หลักที่มีผลใช้งาน ณ เวลาประมวลผลตาราง"}</p>}
             {(modelSettings.pendingTable || modelSettings.pendingActive) && <p className="mt-3 text-xs text-amber-700">มีการตั้งค่ารออัปเดตตามช่วงปิดปรับปรุงระบบ</p>}
           </div>
             {modelSaveStatus === "saved" && modelFeedback && <div className="mt-4"><InlineState tone="success" message={modelFeedback} /></div>}
             {modelSaveStatus === "error" && modelFeedback && <div className="mt-4"><InlineState tone="danger" message={modelFeedback} /></div>}
             <div className="mt-5 flex justify-end">
-              <button type="button" onClick={() => void handleSaveModels()} disabled={!hasModelChanges || modelSaveStatus === "saving"} className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 text-xs font-black text-white shadow-sm transition-colors hover:bg-indigo-700 disabled:bg-slate-300 disabled:text-slate-500">
+              <button type="button" onClick={() => void handleSaveModels()} disabled={!hasModelChanges || modelSaveStatus === "saving" || deletingTyphoonKey} className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 text-xs font-black text-white shadow-sm transition-colors hover:bg-indigo-700 disabled:bg-slate-300 disabled:text-slate-500">
                 {modelSaveStatus === "saving" ? <Loader2 size={15} className="animate-spin" /> : modelSaveStatus === "saved" ? <Check size={15} /> : <Save size={15} />}
                 {modelSaveStatus === "saving" ? "กำลังบันทึก..." : "บันทึกการตั้งค่าโมเดล"}
               </button>

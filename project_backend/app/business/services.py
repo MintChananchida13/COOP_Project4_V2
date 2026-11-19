@@ -1008,6 +1008,10 @@ class GlobalSettingsService:
         return {"ocr_models": settings, "pending_ocr_models": pending_settings, "registry_error": None, "fixed_models": False,
                 "typhoon_key_configured": bool(self._load_setting_value("typhoon_ocr_api_key"))}
 
+    def delete_typhoon_api_key(self) -> Dict[str, Any]:
+        self._delete_setting("typhoon_ocr_api_key")
+        return {"typhoon_key_configured": False}
+
     def check_ocr_model_runtime(self, kind: str, model_id: str) -> Dict[str, Any]:
         normalized_kind = _normalize_model_kind(kind)
         settings = self.get_ocr_model_settings()["ocr_models"]

@@ -834,6 +834,11 @@ def update_ocr_active_models(payload: OcrActiveModelsUpdate) -> ApiResponse:
     )
 
 
+@router.delete("/admin/settings/ocr-models/typhoon-api-key", response_model=ApiResponse)
+def delete_typhoon_api_key() -> ApiResponse:
+    return ok(global_settings.delete_typhoon_api_key())
+
+
 @router.post("/admin/settings/ocr-models/{kind}/{model_id}/check", response_model=ApiResponse)
 def check_ocr_model(kind: str, model_id: str) -> ApiResponse:
     return ok(global_settings.check_ocr_model_runtime(kind, model_id))

@@ -2261,6 +2261,16 @@ export const fetchOcrModelSettings = async (options: { forceRefresh?: boolean } 
   return ocrModelSettingsPromise.then(cloneOcrModelSettings);
 };
 
+export const deleteTyphoonApiKey = async (): Promise<void> => {
+  const response = await fetchWithAuth(`${ADMIN_API_BASE_URL}/admin/settings/ocr-models/typhoon-api-key`, { method: "DELETE" });
+  const json = await response.json();
+  if (!response.ok || json?.success === false || json?.ok === false) {
+    throw new Error(json?.detail || json?.error?.message || "ลบ Typhoon API key ไม่สำเร็จ");
+  }
+  ocrModelSettingsCache = null;
+  ocrModelSettingsPromise = null;
+};
+
 export const updateActiveOcrModels = async (payload: {
   ocrEngine?: "paddle" | "openthai" | "typhoon";
   typhoonApiKey?: string;
