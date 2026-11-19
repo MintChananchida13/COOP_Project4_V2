@@ -529,6 +529,18 @@ def active_ocr_engine() -> str:
         raise ModelRuntimeUnavailableError("Unable to load active OCR engine") from error
 
 
+def typhoon_api_key() -> str:
+    from app.core.external_ocr_secrets import decrypt_api_key
+    try:
+        with connect_db() as conn:
+            row = conn.execute("SELECT value FROM app_settings WHERE key = ?", ("typhoon_ocr_api_key",)).fetchone()
+        if not row or not row["value"]:
+            raise ValueError("Typhoon API key is not configured")
+        return decrypt_api_key(row["value"])
+    except Exception as error:
+        raise ModelRuntimeUnavailableError("Unable to load Typhoon API key") from error
+
+
 def remote_openthai(image: np.ndarray, timing: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if not is_runtime_configured(ModelRuntimeKind.OPENTHAI):
         raise ModelRuntimeUnavailableError("GATEWAY_URL is not configured")

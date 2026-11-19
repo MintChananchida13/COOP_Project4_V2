@@ -400,7 +400,8 @@ export default function AdminSettingsPage() {
   const [draftStrategy, setDraftStrategy] = useState<VerificationStrategy>("standard");
   const [modelSettings, setModelSettings] = useState<OcrModelSettings>(emptyModelSettings);
   const [tableMode, setTableMode] = useState<"follow_main" | "separate">("follow_main");
-  const [ocrEngine, setOcrEngine] = useState<"paddle" | "openthai">("paddle");
+  const [ocrEngine, setOcrEngine] = useState<"paddle" | "openthai" | "typhoon">("paddle");
+  const [typhoonApiKey, setTyphoonApiKey] = useState("");
   const [tableDet, setTableDet] = useState("");
   const [tableRec, setTableRec] = useState("");
   const [draftDetectionModelId, setDraftDetectionModelId] = useState("");
@@ -474,6 +475,7 @@ export default function AdminSettingsPage() {
 
   const applyOcrModelSettings = (settings: OcrModelSettings) => {
     setModelSettings(settings);
+    setTyphoonApiKey("");
     setOcrEngine(settings.pendingOcrEngine || settings.ocrEngine || "paddle");
     const table = settings.pendingTable || settings.table;
     setTableMode(table?.mode || "follow_main");
@@ -573,7 +575,7 @@ export default function AdminSettingsPage() {
   const savedTable = modelSettings.pendingTable || modelSettings.table;
   const hasTableChanges = tableMode !== (savedTable?.mode || "follow_main") ||
     (tableMode === "separate" && (tableDet !== savedTable?.text_detection || tableRec !== savedTable?.text_recognition));
-  const hasModelChanges = hasTableChanges || ocrEngine !== (modelSettings.pendingOcrEngine || modelSettings.ocrEngine || "paddle") ||
+  const hasModelChanges = hasTableChanges || Boolean(typhoonApiKey.trim()) || ocrEngine !== (modelSettings.pendingOcrEngine || modelSettings.ocrEngine || "paddle") ||
     draftDetectionModelId !== (modelSettings.pendingActive?.text_detection || modelSettings.active.text_detection) ||
     draftRecognitionModelId !== (modelSettings.pendingActive?.text_recognition || modelSettings.active.text_recognition);
   const hasUnsavedChanges = hasStrategyChanges || hasModelChanges;
@@ -635,6 +637,7 @@ export default function AdminSettingsPage() {
     try {
       const persistedSettings = await updateActiveOcrModels({
         ocrEngine,
+        typhoonApiKey: typhoonApiKey.trim() || undefined,
         textDetectionModelId: draftDetectionModelId,
         table: { mode: tableMode, text_detection: tableDet, text_recognition: tableRec },
         textRecognitionModelId: draftRecognitionModelId,
@@ -1267,7 +1270,12 @@ export default function AdminSettingsPage() {
               <div className="flex flex-wrap gap-5 text-sm text-slate-700">
                 <label className="flex items-center gap-2"><input type="radio" name="ocr-engine" checked={ocrEngine === "paddle"} onChange={() => setOcrEngine("paddle")} /> Paddle OCR</label>
                 <label className="flex items-center gap-2"><input type="radio" name="ocr-engine" checked={ocrEngine === "openthai"} onChange={() => setOcrEngine("openthai")} /> OpenThai OCR</label>
+                <label className="flex items-center gap-2"><input type="radio" name="ocr-engine" checked={ocrEngine === "typhoon"} onChange={() => setOcrEngine("typhoon")} /> Typhoon OCR</label>
               </div>
+              {ocrEngine === "typhoon" && <label className="mt-4 block text-xs font-bold text-slate-700">Typhoon API key
+                <input type="password" autoComplete="new-password" value={typhoonApiKey} onChange={(event) => setTyphoonApiKey(event.target.value)} placeholder={modelSettings.typhoonKeyConfigured ? "บันทึก API key แล้ว (เว้นว่างเพื่อใช้ค่าเดิม)" : "กรอก API key"} className="mt-2 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal" />
+                <span className="mt-2 block font-normal text-slate-500">ภาพข้อความในแต่ละ field จะถูกส่งไปยัง Typhoon OCR เพื่อประมวลผล</span>
+              </label>}
               <p className="mt-2 text-xs text-slate-500">OpenThai ใช้กับการอ่านข้อความใน Extraction และ Verification ส่วน Table V2 ใช้โมเดลที่ตั้งค่าแยกด้านล่าง</p>
             </fieldset>
             {ocrEngine === "paddle" && <div className="mt-5 grid gap-4 lg:grid-cols-2">

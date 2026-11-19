@@ -1,5 +1,5 @@
-from app.core.model_runtime_client import active_ocr_engine, remote_openthai, ModelRuntimeUnavailableError
-from app.model_runtime.inference_adapters import adapt_openthai, InferenceAdapterError
+from app.core.model_runtime_client import active_ocr_engine, remote_openthai, typhoon_api_key, ModelRuntimeUnavailableError
+from app.model_runtime.inference_adapters import adapt_openthai, adapt_typhoon, InferenceAdapterError
 import logging
 import os
 import tempfile
@@ -443,6 +443,37 @@ def _recognize_openthai_crops(text_items, timing=None):
     return results
 
 
+def _recognize_typhoon_crops(text_items):
+    import requests
+    try:
+        api_key = typhoon_api_key()
+    except ModelRuntimeUnavailableError as error:
+        raise OcrUnavailableError(str(error)) from error
+    results = {}
+    for key, image in text_items:
+        encoded, image_bytes = cv2.imencode(".png", image)
+        if not encoded:
+            raise OcrUnavailableError("Unable to encode image for Typhoon OCR")
+        try:
+            response = requests.post(
+                "https://api.opentyphoon.ai/v1/ocr",
+                headers={"Authorization": f"Bearer {api_key}"},
+                files={"file": ("image.png", image_bytes.tobytes(), "image/png")},
+                data={"model": "typhoon-ocr-v2", "task_type": "default", "max_tokens": "16384",
+                      "temperature": "0", "top_p": "1", "repetition_penalty": "1.05"},
+                timeout=(10, 180), allow_redirects=False,
+            )
+            if response.status_code != 200:
+                raise OcrUnavailableError(f"Typhoon OCR returned HTTP {response.status_code}")
+            output = adapt_typhoon(response.json())
+        except (requests.RequestException, ValueError, InferenceAdapterError) as error:
+            raise OcrUnavailableError("Typhoon OCR request or response failed") from error
+        results[key] = {"text": output["text"], "confidence": None, "segments": [],
+                        "engine": "typhoon", "model": "typhoon-ocr-v2", "preprocessing": "typhoon",
+                        "error": None}
+    return results
+
+
 def _recognize_text_crops_with_detection(
     text_items: List[Tuple[str, Any]],
     source: str = "unknown",
@@ -458,6 +489,8 @@ def _recognize_text_crops_with_detection(
             raise OcrUnavailableError(str(error)) from error
         if engine == "openthai":
             return _recognize_openthai_crops(text_items, timing=timing)
+        if engine == "typhoon":
+            return _recognize_typhoon_crops(text_items)
 
     source_crops = {key: bgr_crop for key, bgr_crop in text_items}
     recognition_crops = []
@@ -946,7 +979,7 @@ def ocr_rois(
         segments = result.get("segments") or []
         results[key] = {
             "text": normalize_ocr_text(result.get("text")),
-            "confidence": (None if result.get("engine") == "openthai" and result.get("confidence") is None
+            "confidence": (None if result.get("engine") in {"openthai", "typhoon"} and result.get("confidence") is None
                            else round(float(result.get("confidence") or 0.0), 4)),
             "preprocessing": result.get("preprocessing") or "paddle_text_detection_then_recognition",
             "segments": segments,

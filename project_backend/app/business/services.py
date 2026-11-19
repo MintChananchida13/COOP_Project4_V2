@@ -1005,7 +1005,8 @@ class GlobalSettingsService:
                 item["registry_managed"] = False
         pending_raw = self._load_setting_value(PENDING_OCR_MODEL_SETTINGS_KEY)
         pending_settings = normalize_ocr_model_settings(jsonb_load(pending_raw, None)) if pending_raw is not None else None
-        return {"ocr_models": settings, "pending_ocr_models": pending_settings, "registry_error": None, "fixed_models": False}
+        return {"ocr_models": settings, "pending_ocr_models": pending_settings, "registry_error": None, "fixed_models": False,
+                "typhoon_key_configured": bool(self._load_setting_value("typhoon_ocr_api_key"))}
 
     def check_ocr_model_runtime(self, kind: str, model_id: str) -> Dict[str, Any]:
         normalized_kind = _normalize_model_kind(kind)
@@ -1027,7 +1028,7 @@ class GlobalSettingsService:
             ).fetchone()
         return normalize_ocr_model_settings(row["value"] if row else None)
 
-    def update_ocr_active_models(self, text_detection_model_id: str, text_recognition_model_id: str, table: Optional[Dict[str, Any]] = None, ocr_engine: Optional[str] = None) -> Dict[str, Any]:
+    def update_ocr_active_models(self, text_detection_model_id: str, text_recognition_model_id: str, table: Optional[Dict[str, Any]] = None, ocr_engine: Optional[str] = None, typhoon_api_key: Optional[str] = None) -> Dict[str, Any]:
         defer_update = self._should_defer_admin_setting_updates()
         settings = self.get_ocr_model_settings()["ocr_models"]
         requested = {
@@ -1040,7 +1041,7 @@ class GlobalSettingsService:
                 raise HTTPException(status_code=400, detail=f"Unknown {kind} model id")
             settings["active"][kind] = model_id
         if ocr_engine is not None:
-            if ocr_engine not in {"paddle", "openthai"}:
+            if ocr_engine not in {"paddle", "openthai", "typhoon"}:
                 raise HTTPException(status_code=400, detail="Invalid OCR engine")
             settings["ocr_engine"] = ocr_engine
         if table is not None:
@@ -1051,13 +1052,26 @@ class GlobalSettingsService:
                     if table.get(kind) not in {item["id"] for item in settings["models"][kind]}:
                         raise HTTPException(status_code=400, detail=f"Unknown Table {kind} model id")
             settings["table"] = dict(table)
+        key = (typhoon_api_key or "").strip()
+        existing_key = self._load_setting_value("typhoon_ocr_api_key")
+        if settings["ocr_engine"] == "typhoon" and not (key or existing_key):
+            raise HTTPException(status_code=400, detail="Typhoon API key is required")
+        if key:
+            if defer_update and self._active_ocr_model_settings_no_apply()["ocr_engine"] == "typhoon":
+                raise HTTPException(status_code=409, detail="Cannot replace the active Typhoon API key while changes are deferred")
+            from app.core.external_ocr_secrets import encrypt_api_key, ExternalOcrSecretError
+            try:
+                encrypted_key = encrypt_api_key(key)
+            except ExternalOcrSecretError as error:
+                raise HTTPException(status_code=503, detail=str(error)) from error
+            self._save_setting("typhoon_ocr_api_key", encrypted_key)
         if defer_update:
             self._save_setting(PENDING_OCR_MODEL_SETTINGS_KEY, jsonb_dump(settings))
             active_settings = self._active_ocr_model_settings_no_apply()
-            return {"ocr_models": active_settings, "pending_ocr_models": settings, "deferred": True}
+            return {"ocr_models": active_settings, "pending_ocr_models": settings, "deferred": True, "typhoon_key_configured": bool(key or existing_key)}
         self._save_setting(OCR_MODEL_SETTINGS_KEY, jsonb_dump(settings))
         self._delete_setting(PENDING_OCR_MODEL_SETTINGS_KEY)
-        return {"ocr_models": settings, "pending_ocr_models": None, "deferred": False}
+        return {"ocr_models": settings, "pending_ocr_models": None, "deferred": False, "typhoon_key_configured": bool(key or existing_key)}
 
     def upsert_ocr_model(self, kind: str, payload: Any, model_id: Optional[str] = None) -> Dict[str, Any]:
         normalized_kind = _normalize_model_kind(kind)
@@ -1091,7 +1105,8 @@ class GlobalSettingsService:
         else:
             models.append(cleaned)
         self._save_setting(OCR_MODEL_SETTINGS_KEY, jsonb_dump(settings))
-        return {"ocr_models": settings, "model": cleaned, "processing_check": probe, "fixed_models": False}
+        return {"ocr_models": settings, "model": cleaned, "processing_check": probe, "fixed_models": False,
+                "typhoon_key_configured": bool(self._load_setting_value("typhoon_ocr_api_key"))}
 
     def delete_ocr_model(self, kind: str, model_id: str) -> Dict[str, Any]:
         normalized_kind = _normalize_model_kind(kind)
@@ -1128,7 +1143,8 @@ class GlobalSettingsService:
                     model for model in pending_models if isinstance(model, dict) and model.get("id") != target_id
                 ]
                 self._save_setting(PENDING_OCR_MODEL_SETTINGS_KEY, jsonb_dump(pending_settings))
-        return {"ocr_models": settings, "pending_ocr_models": pending_settings, "deleted_model_id": target_id}
+        return {"ocr_models": settings, "pending_ocr_models": pending_settings, "deleted_model_id": target_id,
+                "typhoon_key_configured": bool(self._load_setting_value("typhoon_ocr_api_key"))}
 
     def active_ocr_model(self, kind: str) -> Dict[str, Any]:
         normalized_kind = _normalize_model_kind(kind)

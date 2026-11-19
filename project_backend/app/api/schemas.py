@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, SecretStr
 
 
 class ApiResponse(BaseModel):
@@ -211,7 +211,8 @@ class TableOcrSettings(BaseModel):
 
 
 class OcrActiveModelsUpdate(BaseModel):
-    ocr_engine: Optional[Literal["paddle", "openthai"]] = None
+    ocr_engine: Optional[Literal["paddle", "openthai", "typhoon"]] = None
+    typhoon_api_key: Optional[SecretStr] = Field(default=None, repr=False)
     table: Optional[TableOcrSettings] = None
     text_detection_model_id: str = Field(validation_alias=AliasChoices("text_detection_model_id", "textDetectionModelId"))
     text_recognition_model_id: str = Field(validation_alias=AliasChoices("text_recognition_model_id", "textRecognitionModelId"))

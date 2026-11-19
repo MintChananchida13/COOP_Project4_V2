@@ -468,6 +468,7 @@ const cloneVerificationStrategySettings = (settings: VerificationStrategySetting
 const cloneDetectionBatchModeSettings = (settings: DetectionBatchModeSettings): DetectionBatchModeSettings => ({ ...settings });
 const cloneSystemMaintenanceState = (state: SystemMaintenanceState): SystemMaintenanceState => ({ ...state });
 const cloneOcrModelSettings = (settings: OcrModelSettings): OcrModelSettings => ({
+  typhoonKeyConfigured: settings.typhoonKeyConfigured,
   ocrEngine: settings.ocrEngine,
   pendingOcrEngine: settings.pendingOcrEngine,
   table: settings.table ? { ...settings.table } : undefined,
@@ -2172,8 +2173,9 @@ export interface TableOcrSettings {
 }
 
 export interface OcrModelSettings {
-  ocrEngine?: "paddle" | "openthai";
-  pendingOcrEngine?: "paddle" | "openthai" | null;
+  ocrEngine?: "paddle" | "openthai" | "typhoon";
+  pendingOcrEngine?: "paddle" | "openthai" | "typhoon" | null;
+  typhoonKeyConfigured?: boolean;
   table?: TableOcrSettings;
   pendingTable?: TableOcrSettings | null;
   fixedModels?: boolean;
@@ -2202,10 +2204,11 @@ const mapOcrModelSettings = (data: Record<string, unknown>): OcrModelSettings =>
   const active = (settings.active || {}) as Record<string, unknown>;
   const models = (settings.models || {}) as Record<string, unknown>;
   return {
-    ocrEngine: settings.ocr_engine === "openthai" ? "openthai" : "paddle",
+    typhoonKeyConfigured: data.typhoon_key_configured === true,
+    ocrEngine: settings.ocr_engine === "typhoon" ? "typhoon" : settings.ocr_engine === "openthai" ? "openthai" : "paddle",
     pendingOcrEngine: (() => {
       const pending = data.pending_ocr_models as Record<string, unknown> | undefined;
-      return pending ? (pending.ocr_engine === "openthai" ? "openthai" : "paddle") : null;
+      return pending ? (pending.ocr_engine === "typhoon" ? "typhoon" : pending.ocr_engine === "openthai" ? "openthai" : "paddle") : null;
     })(),
     table: (settings.table as TableOcrSettings) || { mode: "follow_main", text_detection: "", text_recognition: "" },
     pendingTable: ((data.pending_ocr_models as Record<string, unknown> | undefined)?.table as TableOcrSettings) || null,
@@ -2259,7 +2262,8 @@ export const fetchOcrModelSettings = async (options: { forceRefresh?: boolean } 
 };
 
 export const updateActiveOcrModels = async (payload: {
-  ocrEngine?: "paddle" | "openthai";
+  ocrEngine?: "paddle" | "openthai" | "typhoon";
+  typhoonApiKey?: string;
   textDetectionModelId: string;
   textRecognitionModelId: string;
   table?: TableOcrSettings;
@@ -2269,6 +2273,7 @@ export const updateActiveOcrModels = async (payload: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       ocr_engine: payload.ocrEngine,
+      typhoon_api_key: payload.typhoonApiKey || undefined,
       table: payload.table,
       text_detection_model_id: payload.textDetectionModelId,
       text_recognition_model_id: payload.textRecognitionModelId,

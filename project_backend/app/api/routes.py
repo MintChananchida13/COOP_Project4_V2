@@ -829,6 +829,7 @@ def update_ocr_active_models(payload: OcrActiveModelsUpdate) -> ApiResponse:
             payload.text_recognition_model_id,
             table=payload.table.model_dump() if payload.table is not None else None,
             ocr_engine=payload.ocr_engine,
+            typhoon_api_key=payload.typhoon_api_key.get_secret_value() if payload.typhoon_api_key else None,
         )
     )
 

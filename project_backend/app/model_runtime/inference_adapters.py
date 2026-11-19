@@ -1,5 +1,6 @@
 """Backend inference response adapters. No HTTP, model loading or business scoring."""
 import math
+import json
 from numbers import Real
 from typing import Any
 
@@ -140,6 +141,29 @@ def normalize_batch(value: Any, kind: str, expected_count: int) -> list[dict]:
 
 class InferenceAdapterError(ValueError):
     pass
+
+
+def adapt_typhoon(value: Any) -> dict:
+    if not isinstance(value, dict) or not isinstance(value.get("results"), list) or not value["results"]:
+        raise InferenceAdapterError("Invalid Typhoon OCR response")
+    texts = []
+    for result in value["results"]:
+        if not isinstance(result, dict) or result.get("success") is not True:
+            raise InferenceAdapterError("Typhoon OCR failed to process a page")
+        try:
+            content = result["message"]["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            raise InferenceAdapterError("Invalid Typhoon OCR page response") from None
+        if not isinstance(content, str):
+            raise InferenceAdapterError("Invalid Typhoon OCR text")
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict) and isinstance(parsed.get("natural_text"), str):
+                content = parsed["natural_text"]
+        except (ValueError, TypeError):
+            pass
+        texts.append(content)
+    return {"text": "\n".join(texts), "confidence": None}
 
 
 def adapt_layout(output: Any, *, expected_count: int | None = None):
