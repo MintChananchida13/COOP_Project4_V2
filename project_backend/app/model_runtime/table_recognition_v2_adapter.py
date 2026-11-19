@@ -2808,6 +2808,78 @@ def _rows_from_html(table_html: str) -> List[List[str]]:
     return _normalize_table_rows(parser.rows)
 
 
+class _TyphoonTableParser(HTMLParser):
+    """Read cells and their spans without retaining untrusted HTML attributes."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.row = -1
+        self.cells: List[Dict[str, Any]] = []
+        self.occupied = set()
+        self.current = None
+        self.parts: List[str] = []
+        self.in_table = False
+
+    def handle_starttag(self, tag: str, attrs: List[tuple[str, Optional[str]]]) -> None:
+        tag = tag.lower()
+        if tag == "table":
+            self.in_table = True
+        elif self.in_table and tag == "tr":
+            self.row += 1
+        elif self.in_table and tag in {"td", "th"} and self.row >= 0:
+            col = 0
+            while (self.row, col) in self.occupied:
+                col += 1
+            attributes = dict(attrs)
+            def span(name: str) -> int:
+                try:
+                    return min(100, max(1, int(attributes.get(name) or 1)))
+                except (TypeError, ValueError):
+                    return 1
+            row_span, col_span = span("rowspan"), span("colspan")
+            self.current = {"row": self.row, "col": col, "rowSpan": row_span, "colSpan": col_span,
+                            "header": tag == "th"}
+            self.parts = []
+            for r in range(self.row, self.row + row_span):
+                for c in range(col, col + col_span):
+                    self.occupied.add((r, c))
+        elif tag == "br" and self.current is not None:
+            self.parts.append(" ")
+
+    def handle_data(self, data: str) -> None:
+        if self.current is not None:
+            self.parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in {"td", "th"} and self.current is not None:
+            text = " ".join("".join(self.parts).split())
+            self.current.update(text=text, ocrText=text, groundTruth=text, assignmentSource="typhoon_ocr")
+            self.cells.append(self.current)
+            self.current = None
+        elif tag == "table":
+            self.in_table = False
+
+
+def _typhoon_table_structure(table_html: str) -> tuple[List[List[str]], List[Dict[str, Any]], str]:
+    parser = _TyphoonTableParser()
+    parser.feed(table_html)
+    parser.close()
+    if not parser.cells:
+        return [], [], ""
+    height = max(parser.row + 1, max(cell["row"] + cell["rowSpan"] for cell in parser.cells))
+    width = max(cell["col"] + cell["colSpan"] for cell in parser.cells)
+    rows = [[""] * width for _ in range(height)]
+    html_rows = [[] for _ in range(height)]
+    for cell in parser.cells:
+        rows[cell["row"]][cell["col"]] = cell["text"]
+        tag = "th" if cell.pop("header") else "td"
+        attrs = f' rowspan="{cell["rowSpan"]}" colspan="{cell["colSpan"]}"'
+        html_rows[cell["row"]].append(f'<{tag}{attrs}>{html.escape(cell["text"])}</{tag}>')
+    safe_html = "<table>" + "".join("<tr>" + "".join(row) + "</tr>" for row in html_rows) + "</table>"
+    return rows, parser.cells, safe_html
+
+
 def _markdown_table(rows: List[List[str]], *, normalized: bool = False) -> str:
     if not normalized:
         rows = _normalize_table_rows(rows)
@@ -3048,7 +3120,7 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
         rules_ms = (time.perf_counter() - rules_started) * 1000
         format_started = time.perf_counter()
         backend_cells = _backend_cells(cells)
-        rows = _rows_from_html(table_html)
+        rows, cells, safe_html = _typhoon_table_structure(table_html)
         structured = _structured_from_cells(rows, backend_cells, normalized=True)
         text = _markdown_table(rows, normalized=True)
         format_ms = (time.perf_counter() - format_started) * 1000
@@ -3167,11 +3239,7 @@ def recognize_table_v2(image: np.ndarray) -> Dict[str, Any]:
         rows = _rows_from_html(table_html)
         if not rows:
             raise TableRecognitionV2UnavailableError("Typhoon OCR did not return a readable HTML table")
-        safe_html = "<table>" + "".join(
-            "<tr>" + "".join("<td>" + html.escape(cell) + "</td>" for cell in row) + "</tr>"
-            for row in rows
-        ) + "</table>"
-        structured = _structured_from_cells(rows, [], normalized=True)
+        structured = _structured_from_cells(rows, cells, normalized=True)
         structured["postProcessing"] = "typhoon_ocr"
         return {"text": _markdown_table(rows, normalized=True), "confidence": None, "segments": [],
                 "preprocessing": "typhoon_ocr", "engine": "typhoon", "model": "typhoon-ocr-v2",
