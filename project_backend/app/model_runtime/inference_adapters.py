@@ -1,6 +1,7 @@
 """Backend inference response adapters. No HTTP, model loading or business scoring."""
 import math
 import json
+import re
 from numbers import Real
 from typing import Any
 
@@ -156,10 +157,14 @@ def adapt_typhoon(value: Any) -> dict:
             raise InferenceAdapterError("Invalid Typhoon OCR page response") from None
         if not isinstance(content, str):
             raise InferenceAdapterError("Invalid Typhoon OCR text")
+        fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", content.strip(), re.IGNORECASE | re.DOTALL)
+        json_content = fenced.group(1) if fenced else content
         try:
-            parsed = json.loads(content)
+            parsed = json.loads(json_content)
             if isinstance(parsed, dict) and isinstance(parsed.get("natural_text"), str):
                 content = parsed["natural_text"]
+            elif isinstance(parsed, list) and all(isinstance(item, dict) and isinstance(item.get("text"), str) for item in parsed):
+                content = "\n".join(item["text"] for item in parsed)
         except (ValueError, TypeError):
             pass
         texts.append(content)
