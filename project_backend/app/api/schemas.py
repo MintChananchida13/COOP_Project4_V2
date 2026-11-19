@@ -205,7 +205,7 @@ class OcrModelPayload(BaseModel):
 
 
 class TableOcrSettings(BaseModel):
-    mode: Literal["follow_main", "separate"] = "follow_main"
+    mode: Literal["follow_main", "separate", "typhoon"] = "follow_main"
     text_detection: str = ""
     text_recognition: str = ""
 

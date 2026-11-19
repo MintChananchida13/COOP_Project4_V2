@@ -73,7 +73,7 @@ def normalize_saved_ocr_settings(value: Any = None) -> Dict[str, Any]:
     table = value.get("table")
     if isinstance(table, dict):
         settings["table"] = {
-            "mode": "separate" if table.get("mode") == "separate" else "follow_main",
+            "mode": table.get("mode") if table.get("mode") in {"separate", "typhoon"} else "follow_main",
             "text_detection": str(table.get("text_detection") or ""),
             "text_recognition": str(table.get("text_recognition") or ""),
         }

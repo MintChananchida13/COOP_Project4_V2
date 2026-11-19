@@ -1045,7 +1045,7 @@ class GlobalSettingsService:
                 raise HTTPException(status_code=400, detail="Invalid OCR engine")
             settings["ocr_engine"] = ocr_engine
         if table is not None:
-            if table.get("mode") not in {"follow_main", "separate"}:
+            if table.get("mode") not in {"follow_main", "separate", "typhoon"}:
                 raise HTTPException(status_code=400, detail="Invalid Table OCR mode")
             if table["mode"] == "separate":
                 for kind in requested:
@@ -1054,10 +1054,11 @@ class GlobalSettingsService:
             settings["table"] = dict(table)
         key = (typhoon_api_key or "").strip()
         existing_key = self._load_setting_value("typhoon_ocr_api_key")
-        if settings["ocr_engine"] == "typhoon" and not (key or existing_key):
+        if (settings["ocr_engine"] == "typhoon" or settings["table"]["mode"] == "typhoon") and not (key or existing_key):
             raise HTTPException(status_code=400, detail="Typhoon API key is required")
         if key:
-            if defer_update and self._active_ocr_model_settings_no_apply()["ocr_engine"] == "typhoon":
+            active = self._active_ocr_model_settings_no_apply()
+            if defer_update and (active["ocr_engine"] == "typhoon" or active["table"]["mode"] == "typhoon"):
                 raise HTTPException(status_code=409, detail="Cannot replace the active Typhoon API key while changes are deferred")
             from app.core.external_ocr_secrets import encrypt_api_key, ExternalOcrSecretError
             try:

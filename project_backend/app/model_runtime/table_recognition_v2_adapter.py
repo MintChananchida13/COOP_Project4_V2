@@ -21,6 +21,7 @@ from app.core.model_runtime_client import (
     ModelRuntimeKind,
     ModelRuntimeUnavailableError,
     is_runtime_configured,
+    active_table_mode,
     remote_recognize_table_raw,
 )
 
@@ -3152,6 +3153,31 @@ def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
 
 
 def recognize_table_v2(image: np.ndarray) -> Dict[str, Any]:
+    try:
+        mode = active_table_mode()
+    except ModelRuntimeUnavailableError as error:
+        raise TableRecognitionV2UnavailableError(str(error)) from error
+    if mode == "typhoon":
+        from app.processing.ocr_adapter import _recognize_typhoon_crops, OcrUnavailableError
+        try:
+            output = _recognize_typhoon_crops([("table", image)])["table"]
+        except OcrUnavailableError as error:
+            raise TableRecognitionV2UnavailableError(str(error)) from error
+        table_html = output["text"]
+        rows = _rows_from_html(table_html)
+        if not rows:
+            raise TableRecognitionV2UnavailableError("Typhoon OCR did not return a readable HTML table")
+        safe_html = "<table>" + "".join(
+            "<tr>" + "".join("<td>" + html.escape(cell) + "</td>" for cell in row) + "</tr>"
+            for row in rows
+        ) + "</table>"
+        structured = _structured_from_cells(rows, [], normalized=True)
+        structured["postProcessing"] = "typhoon_ocr"
+        return {"text": _markdown_table(rows, normalized=True), "confidence": None, "segments": [],
+                "preprocessing": "typhoon_ocr", "engine": "typhoon", "model": "typhoon-ocr-v2",
+                "table_html": safe_html, "table_rows": rows, "table_structured": structured,
+                "table_debug": {"status": "recognized", "runtime_called": True, "model_kind": "typhoon",
+                                "row_count": len(rows), "column_count": max(map(len, rows), default=0)}}
     if _use_remote_runtime():
         return recognize_table_v2_local(image)
     raise TableRecognitionV2UnavailableError("GATEWAY_URL is not configured.")

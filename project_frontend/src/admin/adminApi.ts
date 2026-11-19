@@ -2167,7 +2167,7 @@ export interface OcrModelConfig {
 }
 
 export interface TableOcrSettings {
-  mode: "follow_main" | "separate";
+  mode: "follow_main" | "separate" | "typhoon";
   text_detection: string;
   text_recognition: string;
 }

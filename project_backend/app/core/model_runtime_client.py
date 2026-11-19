@@ -529,6 +529,15 @@ def active_ocr_engine() -> str:
         raise ModelRuntimeUnavailableError("Unable to load active OCR engine") from error
 
 
+def active_table_mode() -> str:
+    try:
+        with connect_db() as conn:
+            row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (OCR_MODEL_SETTINGS_KEY,)).fetchone()
+        return normalize_saved_ocr_settings(jsonb_load(row["value"] if row else None, None))["table"]["mode"]
+    except Exception as error:
+        raise ModelRuntimeUnavailableError("Unable to load Table OCR settings") from error
+
+
 def typhoon_api_key() -> str:
     from app.core.external_ocr_secrets import decrypt_api_key
     try:

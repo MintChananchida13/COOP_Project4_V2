@@ -399,7 +399,7 @@ export default function AdminSettingsPage() {
   const [pendingStrategy, setPendingStrategy] = useState<VerificationStrategy | null>(null);
   const [draftStrategy, setDraftStrategy] = useState<VerificationStrategy>("standard");
   const [modelSettings, setModelSettings] = useState<OcrModelSettings>(emptyModelSettings);
-  const [tableMode, setTableMode] = useState<"follow_main" | "separate">("follow_main");
+  const [tableMode, setTableMode] = useState<"follow_main" | "separate" | "typhoon">("follow_main");
   const [ocrEngine, setOcrEngine] = useState<"paddle" | "openthai" | "typhoon">("paddle");
   const [typhoonApiKey, setTyphoonApiKey] = useState("");
   const [tableDet, setTableDet] = useState("");
@@ -1272,7 +1272,7 @@ export default function AdminSettingsPage() {
                 <label className="flex items-center gap-2"><input type="radio" name="ocr-engine" checked={ocrEngine === "openthai"} onChange={() => setOcrEngine("openthai")} /> OpenThai OCR</label>
                 <label className="flex items-center gap-2"><input type="radio" name="ocr-engine" checked={ocrEngine === "typhoon"} onChange={() => setOcrEngine("typhoon")} /> Typhoon OCR</label>
               </div>
-              {ocrEngine === "typhoon" && <label className="mt-4 block text-xs font-bold text-slate-700">Typhoon API key
+              {(ocrEngine === "typhoon" || tableMode === "typhoon") && <label className="mt-4 block text-xs font-bold text-slate-700">Typhoon API key
                 <input type="password" autoComplete="new-password" value={typhoonApiKey} onChange={(event) => setTyphoonApiKey(event.target.value)} placeholder={modelSettings.typhoonKeyConfigured ? "บันทึก API key แล้ว (เว้นว่างเพื่อใช้ค่าเดิม)" : "กรอก API key"} className="mt-2 block w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal" />
                 <span className="mt-2 block font-normal text-slate-500">ภาพข้อความในแต่ละ field จะถูกส่งไปยัง Typhoon OCR เพื่อประมวลผล</span>
               </label>}
@@ -1302,11 +1302,14 @@ export default function AdminSettingsPage() {
               <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 p-3 text-xs font-bold text-slate-700">
                 <input type="radio" name="table-ocr-mode" checked={tableMode === "separate"} onChange={() => setTableMode("separate")} />เลือกแยกสำหรับ Table
               </label>
+              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 p-3 text-xs font-bold text-slate-700">
+                <input type="radio" name="table-ocr-mode" checked={tableMode === "typhoon"} onChange={() => setTableMode("typhoon")} />Typhoon OCR
+              </label>
             </div>
             {tableMode === "separate" ? <div className="mt-4 grid gap-4 lg:grid-cols-2">
               {renderModelSelect("text_detection", "Table Text Detection", "โมเดลตรวจหาข้อความภายในตาราง", tableDet, setTableDet)}
               {renderModelSelect("text_recognition", "Table Text Recognition", "โมเดลอ่านข้อความภายในตาราง", tableRec, setTableRec)}
-            </div> : <p className="mt-3 text-xs font-semibold text-slate-500">ใช้ DET/REC หลักที่มีผลใช้งาน ณ เวลาประมวลผลตาราง</p>}
+            </div> : <p className="mt-3 text-xs font-semibold text-slate-500">{tableMode === "typhoon" ? "ส่งภาพตารางไปยัง Typhoon OCR โดยใช้ API key ด้านบน" : "ใช้ DET/REC หลักที่มีผลใช้งาน ณ เวลาประมวลผลตาราง"}</p>}
             {(modelSettings.pendingTable || modelSettings.pendingActive) && <p className="mt-3 text-xs text-amber-700">มีการตั้งค่ารออัปเดตตามช่วงปิดปรับปรุงระบบ</p>}
           </div>
             {modelSaveStatus === "saved" && modelFeedback && <div className="mt-4"><InlineState tone="success" message={modelFeedback} /></div>}
