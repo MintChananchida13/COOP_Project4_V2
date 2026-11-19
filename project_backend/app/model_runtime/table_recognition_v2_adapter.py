@@ -3120,7 +3120,7 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
         rules_ms = (time.perf_counter() - rules_started) * 1000
         format_started = time.perf_counter()
         backend_cells = _backend_cells(cells)
-        rows, cells, safe_html = _typhoon_table_structure(table_html)
+        rows = _rows_from_html(table_html)
         structured = _structured_from_cells(rows, backend_cells, normalized=True)
         text = _markdown_table(rows, normalized=True)
         format_ms = (time.perf_counter() - format_started) * 1000
@@ -3236,7 +3236,7 @@ def recognize_table_v2(image: np.ndarray) -> Dict[str, Any]:
         except OcrUnavailableError as error:
             raise TableRecognitionV2UnavailableError(str(error)) from error
         table_html = output["text"]
-        rows = _rows_from_html(table_html)
+        rows, cells, safe_html = _typhoon_table_structure(table_html)
         if not rows:
             raise TableRecognitionV2UnavailableError("Typhoon OCR did not return a readable HTML table")
         structured = _structured_from_cells(rows, cells, normalized=True)
