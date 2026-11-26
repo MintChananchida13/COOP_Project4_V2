@@ -336,6 +336,8 @@ export default function AdjustZone({
     // Admin has its own AdjustZone flow. Multiple-page PDFs retain full pages.
     setSavedCropUrls({});
     autoBoundsRef.current = null;
+    pendingAutoBoundsRef.current = null;
+    setCropError(null);
     if (!sourceFileType || imagesList.length !== 1) {
       setAutoDetecting(false);
       return;
@@ -375,16 +377,21 @@ export default function AdjustZone({
         const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
         worker = getCardCropWorker();
         autoWorkerRef.current = worker;
-        worker.onmessage = (event: MessageEvent<{ box?: number[] | null; error?: string }>) => {
+        worker.onmessage = (event: MessageEvent<{ box?: number[] | null; suggested?: boolean; error?: string }>) => {
           if (cancelled || autoTouchedRef.current) return finish();
           if (event.data.error) return fail();
           try {
             const box = event.data.box;
-            if (box && box.length === 4) {
+            if (box && box.length === 4 && box.every(Number.isFinite)) {
               const [x0, y0, x1, y1] = box;
               const naturalBox = [x0 * source.naturalWidth / canvas.width, y0 * source.naturalHeight / canvas.height,
                 x1 * source.naturalWidth / canvas.width, y1 * source.naturalHeight / canvas.height];
               const [left, top, right, bottom] = naturalBox;
+              if (event.data.suggested !== false) {
+                autoBoundsRef.current = naturalBox;
+                setCropError("กรอบที่ตรวจพบยังไม่ชัดเจน ระบบใช้ภาพต้นฉบับ คุณเปิดเครื่องมือ Crop เพื่อตรวจและปรับกรอบได้");
+                return finish();
+              }
               const crop = extractAxisAlignedCropUrl(source, [{x:left,y:top}, {x:right,y:top}, {x:right,y:bottom}, {x:left,y:bottom}]);
               if (crop) {
                 autoBoundsRef.current = naturalBox;
@@ -747,6 +754,16 @@ export default function AdjustZone({
     
     if (currentConfig.cropCorners) {
       updateCurrentConfig({ isCropActive: true, isCropped: false });
+      return;
+    }
+
+    if (autoBoundsRef.current && imgEl.naturalWidth && imgEl.naturalHeight) {
+      const [left, top, right, bottom] = autoBoundsRef.current;
+      const sx = imgEl.clientWidth / imgEl.naturalWidth;
+      const sy = imgEl.clientHeight / imgEl.naturalHeight;
+      updateCurrentConfig({ isCropActive: true, isCropped: false, cropCorners: [
+        {x:left*sx,y:top*sy}, {x:right*sx,y:top*sy}, {x:right*sx,y:bottom*sy}, {x:left*sx,y:bottom*sy},
+      ] });
       return;
     }
 

@@ -32,8 +32,8 @@ export async function autoCropDetectionImage(file: File, signal: AbortSignal, so
       const timer = setTimeout(abort, 45000);
       signal.addEventListener("abort", abort, { once: true });
       detector.onerror = abort;
-      detector.onmessage = (event: MessageEvent<{ box?: number[]; error?: string }>) => {
-        finish(event.data.error ? null : event.data.box || null);
+      detector.onmessage = (event: MessageEvent<{ box?: number[]; suggested?: boolean; error?: string }>) => {
+        finish(event.data.error || event.data.suggested !== false ? null : event.data.box || null);
       };
       detector.postMessage({ id: 1, width: canvas.width, height: canvas.height,
         pixels: pixels.data.buffer, sourceType }, [pixels.data.buffer]);

@@ -135,6 +135,30 @@ class OcrFlowTests(unittest.TestCase):
             self.assertNotEqual(saved, path)
             self.assertTrue(saved.exists())
 
+    def test_combined_report_preserves_independent_search_and_ocr_timings(self):
+        from openpyxl import load_workbook
+        rows = [{
+            'file': 'sample.jpg', 'run_number': 1, 'status': 'PASS',
+            'ocr_ui_wall_ms': 250, 'ocr_backend_processing_sum_ms': 110,
+            'auto_roi_setup_ms': 40,
+            '_search': {'status': 'PASS', 'matched': False, 'end_to_end_ms': 130,
+                        'backend_search_ms': 80, '_model_calls': [{'call_id': 'search-only'}]},
+            '_pages': [ocr_flow.page_record(self.job('ocr-only'), [])],
+        }]
+        with report_path() as target:
+            workbook = load_workbook(ocr_flow.save_report(target, rows, include_search=True))
+            try:
+                headers, values = list(workbook['User Flow'].values)
+                summary = dict(zip(headers, values))
+                self.assertEqual(summary['search_ui_wall_ms'], 130)
+                self.assertEqual(summary['ocr_ui_wall_ms'], 250)
+                self.assertEqual(summary['auto_roi_setup_ms'], 40)
+                self.assertEqual(summary['ocr_backend_processing_sum_ms'], 110)
+                self.assertIn('search-only', list(workbook['Search Model Calls'].values)[1])
+                self.assertIn('ocr-only', list(workbook['OCR Model Calls'].values)[1])
+            finally:
+                workbook.close()
+
     def page(self, snapshot):
         page = Mock()
         page.evaluate.side_effect = [None, None, snapshot]

@@ -1,4 +1,4 @@
-"""Standalone selected-ROI OCR benchmark. Template search is unmeasured setup."""
+"""Benchmark selected-ROI OCR, optionally reporting Template Search in the same run."""
 import argparse
 from datetime import datetime
 import json
@@ -36,8 +36,9 @@ CAPTURE = r"""(() => {
     const state = window.__ocrOnlyRun;
     const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url, location.href);
     const method = (options?.method || input?.method || 'GET').toUpperCase();
-    const post = method === 'POST' && url.pathname === '/api/ai/process';
-    const poll = method === 'GET' && url.pathname.match(/^\/api\/ai\/jobs\/([^/]+)$/);
+    const path = url.pathname.replace(/^\/backend\//, '/');
+    const post = method === 'POST' && path === '/api/ai/process';
+    const poll = method === 'GET' && path.match(/^\/api\/ai\/jobs\/([^/]+)$/);
     if (!state || (!post && !poll)) return original(input, options);
     state.pending++;
     let counts = {};
@@ -120,6 +121,7 @@ def run_ocr(page, timeout_ms):
     page.evaluate(CAPTURE)
     page.evaluate('token => {window.__ocrOnlyRun = {token, pending:0, posts:0, jobs:{}, client:[], errors:[]};}', token)
     started = time.monotonic()
+    ready_at = None
     failure = None
     snapshot = {}
     try:
@@ -133,6 +135,7 @@ def run_ocr(page, timeout_ms):
             terminal = jobs and all(job.get('status') in ('completed', 'failed') for job in jobs)
             ready = page.get_by_role('heading', name=EDITOR_HEADING, exact=True).is_visible()
             if terminal and snapshot['pending'] == 0 and ready:
+                ready_at = time.monotonic()
                 break
             # If the UI has stopped loading with only failed/empty jobs, do not wait until timeout.
             button = page.get_by_role('button', name=OCR_BUTTON, exact=True)
@@ -157,7 +160,13 @@ def run_ocr(page, timeout_ms):
         failure = failure or 'One or more OCR pages failed'
     incomplete = any(row['capture_missing_reasons'] for row in records)
     status = 'FAIL' if failure else 'TIMING_INCOMPLETE' if incomplete else 'PASS'
-    return {'status': status, 'error': failure, 'ocr_ui_wall_ms': round((time.monotonic() - started) * 1000, 2),
+    page_durations = [duration(row.get('processing_ms')) for row in records]
+    backend_sum = round(sum(page_durations), 2) if (
+        status != 'FAIL' and page_durations and all(value is not None for value in page_durations)
+    ) else None
+    return {'status': status, 'error': failure,
+            'ocr_ui_wall_ms': round((ready_at - started) * 1000, 2) if ready_at is not None else None,
+            'ocr_backend_processing_sum_ms': backend_sum,
             'page_job_count': len(records), 'result_count': sum(row.get('result_count') or 0 for row in records),
             'capture_errors': snapshot.get('errors') or [], '_pages': records}
 
@@ -165,7 +174,8 @@ def run_ocr(page, timeout_ms):
 def prepare_auto_roi(page, timeout_ms):
     """The existing Auto ROI button analyzes all document pages in one action."""
     started = time.monotonic()
-    with page.expect_response(lambda response: urlparse(response.url).path == '/api/layout/analyze'
+    with page.expect_response(lambda response: urlparse(response.url).path in (
+                                  '/api/layout/analyze', '/backend/api/layout/analyze')
                               and response.request.method == 'POST', timeout=timeout_ms) as pending:
         page.get_by_role('button', name=AUTO_ROI_BUTTON, exact=True).click(timeout=timeout_ms)
     response = pending.value
@@ -182,6 +192,8 @@ def prepare_auto_roi(page, timeout_ms):
 
 
 def run_after_detection(page, setup, timeout_ms):
+    if setup.get('status') == 'SKIP':
+        return {'status': 'SKIP_SEARCH', 'error': setup.get('error')}
     if setup.get('status') != 'PASS':
         return {'status': 'SETUP_FAILED', 'error': setup.get('error')}
     if setup.get('matched') is True:
@@ -206,7 +218,7 @@ def cell(value):
     return value
 
 
-def save_report(path, rows):
+def save_report(path, rows, *, include_search=False):
     from openpyxl import Workbook
     workbook = Workbook()
     workbook.remove(workbook.active)
@@ -218,11 +230,36 @@ def save_report(path, rows):
             page_identity = {**identity, 'job_id': page.get('job_id'), 'page_number': page.get('page_number')}
             stages.extend({**page_identity, 'stage': stage, **values} for stage, values in page.get('_stages', {}).items())
             calls.extend({**page_identity, **call} for call in page.get('_model_calls', []))
-    for name, records, required in (
+    sheets = [
         ('OCR Runs', rows, ['file', 'run_number', 'status', 'ocr_ui_wall_ms', 'page_job_count', 'result_count', 'error']),
         ('OCR Pages', pages, ['file', 'run_number', 'page_number', 'job_id', 'status', 'processing_ms']),
         ('OCR Stages', stages, ['file', 'run_number', 'page_number', 'job_id', 'stage', 'elapsed_ms', 'count']),
-        ('OCR Model Calls', calls, ['file', 'run_number', 'page_number', 'job_id', 'call_id', 'kind', 'http_request_ms', 'inference_ms'])):
+        ('OCR Model Calls', calls, ['file', 'run_number', 'page_number', 'job_id', 'call_id', 'kind', 'http_request_ms', 'inference_ms']),
+    ]
+    if include_search:
+        searches, search_calls, summary = [], [], []
+        for row in rows:
+            search = row['_search']
+            identity = {key: row.get(key) for key in ('file', 'run_number', 'template_id')}
+            searches.append({**search, **identity})
+            search_calls.extend({**identity, 'job_id': search.get('job_id'), **call}
+                                for call in search.get('_model_calls', []))
+            summary.append({
+                **identity, 'matched': search.get('matched'), 'search_status': search.get('status'),
+                'search_ui_wall_ms': search.get('end_to_end_ms'),
+                'backend_search_ms': search.get('backend_search_ms'),
+                'auto_roi_setup_ms': row.get('auto_roi_setup_ms'), 'ocr_status': row.get('status'),
+                'ocr_ui_wall_ms': row.get('ocr_ui_wall_ms'),
+                'ocr_backend_processing_sum_ms': row.get('ocr_backend_processing_sum_ms'),
+            })
+        sheets[:0] = [
+            ('User Flow', summary, ['file', 'run_number', 'search_status', 'search_ui_wall_ms',
+                                    'backend_search_ms', 'auto_roi_setup_ms', 'ocr_status', 'ocr_ui_wall_ms',
+                                    'ocr_backend_processing_sum_ms']),
+            ('Template Search', searches, ['file', 'run_number', 'status', 'end_to_end_ms', 'backend_search_ms']),
+            ('Search Model Calls', search_calls, ['file', 'run_number', 'job_id', 'call_id', 'kind', 'http_request_ms', 'inference_ms']),
+        ]
+    for name, records, required in sheets:
         sheet = workbook.create_sheet(name)
         headers = list(dict.fromkeys(required + [key for row in records for key in row if not key.startswith('_')]))
         sheet.append(headers)
@@ -233,10 +270,13 @@ def save_report(path, rows):
     notes = workbook.create_sheet('Metric Notes')
     notes.append(['metric', 'meaning'])
     for metric, meaning in (
-        ('scope', 'Selected-ROI OCR only. Upload/AdjustZone/template search/Auto ROI are setup and excluded from OCR wall time.'),
+        ('scope', 'Selected-ROI OCR wall time excludes upload, AdjustZone, Template Search and Auto ROI setup.'),
         ('selection', 'Uses template ROIs when matched; otherwise clicks Auto ROI for all pages, then runs selected-ROI OCR.'),
         ('auto_roi_setup_ms', 'Auto ROI preparation only, reported separately and never included in OCR wall time or OCR Model Calls.'),
         ('ocr_ui_wall_ms', 'Click to observed result editor, including all page jobs. Observation interval is 100 ms.'),
+        ('ocr_backend_processing_sum_ms', 'Sum of completed page-job processing times. It can include overlapping work and is not wall time.'),
+        ('search_ui_wall_ms', 'Document confirmation to frontend Template Search result readiness.'),
+        ('backend_search_ms', 'Backend Template Search job duration, including its model waits.'),
         ('frontend_total_ms', 'One page JSON serialization through result receipt, before rendering.'),
         ('processing_ms', 'Backend OCR processing only; excludes job load, queue and final result persistence.'),
         ('job_create_ms', 'Backend payload serialization and database job creation.'),
@@ -275,6 +315,8 @@ def main():
     parser.add_argument('--frontend', default='http://localhost:3000')
     parser.add_argument('--repeats', type=int, default=2)
     parser.add_argument('--timeout-seconds', type=int, default=1200)
+    parser.add_argument('--with-search', action='store_true', help='Report Template Search and OCR in one workbook')
+    parser.add_argument('--expected-mode', choices=sorted(user_flow.MODES))
     args = parser.parse_args()
     if args.repeats < 1 or args.timeout_seconds < 1:
         parser.error('Repeats and timeout must be positive')
@@ -282,7 +324,7 @@ def main():
     if not ((url.scheme == 'http' and url.netloc in ('localhost:3000', '127.0.0.1:3000')) or
             (url.scheme == 'https' and url.netloc == 'coop-project4-v2.vercel.app')) or url.username or url.password:
         parser.error('Use the local Frontend or https://coop-project4-v2.vercel.app')
-    cases = user_flow.input_cases(args.input, None)
+    cases = user_flow.input_cases(args.input, args.expected_mode)
     if not cases:
         parser.error('No supported input files')
     from playwright.sync_api import sync_playwright
@@ -293,14 +335,19 @@ def main():
             try:
                 page = context.pages[0] if context.pages else context.new_page()
                 user_flow.login_user(page, args.frontend)
-                for path, _ in cases:
+                for path, expected_mode in cases:
                     for run_number in range(1, args.repeats + 1):
-                        setup = user_flow.run_case(page, path, None, args.timeout_seconds * 1000)
+                        setup = user_flow.run_case(page, path, expected_mode, args.timeout_seconds * 1000)
+                        if setup.get('status') == 'PASS':
+                            page.evaluate('() => {window.__ocrBenchmarkRun = null;}')
                         identity = {'file': str(path), 'run_number': run_number, 'template_id': setup.get('template_id')}
                         row = run_after_detection(page, setup, args.timeout_seconds * 1000)
-                        rows.append({**identity, **row})
-                        args.output = save_report(args.output, rows)
+                        rows.append({**identity, **row, '_search': setup})
+                        args.output = save_report(args.output, rows, include_search=args.with_search)
                         print(f'{path.name} [{run_number}/{args.repeats}]: {row["status"]}')
+                        if args.with_search:
+                            print(f'  Template Search: UI {setup.get("end_to_end_ms")} ms, Backend {setup.get("backend_search_ms")} ms')
+                            print(f'  OCR: UI {row.get("ocr_ui_wall_ms")} ms, Backend page sum {row.get("ocr_backend_processing_sum_ms")} ms')
                         # A timed-out OCR request must not contaminate a later run.
                         if row['status'] in ('FAIL', 'SETUP_FAILED', 'AUTO_ROI_FAILED'):
                             return 1

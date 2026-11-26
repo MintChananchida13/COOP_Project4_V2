@@ -245,10 +245,10 @@ class UserFlowTests(unittest.TestCase):
             user_flow.login_user(page, "http://localhost:3000")
         self.assertNotIn("user123", str(failure.exception))
 
-    def test_reset_waits_two_seconds_before_new_document(self):
+    def test_reset_waits_five_seconds_before_new_document(self):
         page = Mock()
         user_flow.reset_document(page)
-        self.assertLess(page.mock_calls.index(unittest.mock.call.wait_for_timeout(2000)),
+        self.assertLess(page.mock_calls.index(unittest.mock.call.wait_for_timeout(5000)),
                         page.mock_calls.index(unittest.mock.call.get_by_role("button", name="เอกสารใหม่", exact=True)))
         page.locator.assert_called_once_with(user_flow.UPLOAD_INPUT)
 

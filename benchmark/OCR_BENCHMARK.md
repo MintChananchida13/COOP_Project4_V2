@@ -14,6 +14,20 @@ from OCR timing. No regions gives `SKIP_NO_ROI`; a failed Auto ROI gives
 
 ## Run from the repository root (PowerShell)
 
+To measure both stages for the same document run, use:
+
+```powershell
+.\benchmark\.venv\Scripts\python.exe benchmark/ocr_flow.py --with-search --repeats 1
+```
+
+Open the **User Flow** sheet for side-by-side browser and backend durations.
+**Template Search** and **Search Model Calls** contain the search details, and
+the OCR sheets contain the selected-ROI extraction details. The OCR backend
+total sums per-page processing durations and may count overlapping work.
+Auto ROI preparation is listed separately when no template matches.
+
+For OCR-only reporting, run:
+
 ```powershell
 .\benchmark\.venv\Scripts\python.exe benchmark/ocr_flow.py --repeats 2
 ```

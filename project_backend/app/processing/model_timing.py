@@ -153,6 +153,11 @@ def summarize_model_calls(value: Any) -> dict[str, Any]:
                 "inference_ms": (call.get("gateway_timing") or {}).get("inference_ms"),
                 "serialization_ms": (call.get("gateway_timing") or {}).get("serialization_ms"),
                 "service_total_runtime_ms": (call.get("gateway_timing") or {}).get("total_runtime_ms"),
+                **{
+                    key: call[key]
+                    for key in ("table_requested_selection", "table_model_selection")
+                    if key in call
+                },
             }
             for call_id, call in calls.items()
         ],

@@ -1,5 +1,8 @@
 # Local Frontend user-flow benchmark
 
+For one run that measures both Template Search and selected-ROI OCR, use
+`ocr_flow.py --with-search`. See the [combined timing report instructions](OCR_BENCHMARK.md).
+
 Source review: 2026-11-10. Setup/options checked against user_flow.py. No browser benchmark, deployment or model inference was run in this review. Historical test counts below are not a fresh suite result.
 
 This standalone test tool drives the real `http://localhost:3000` user interface: automatically log in, choose one file, confirm document boundary, and wait for a found/no-match Template result. It saves one Excel row per run, waits **5 seconds**, clicks **เอกสารใหม่**, then uploads the next file/run in the same tab. It stops before Extraction ROI OCR. Verification (including any text/image model calls required by the active mode) remains part of the Template search being measured. The application and global verification settings are unchanged; detection jobs and Processing Logs may still be created by the normal flow.

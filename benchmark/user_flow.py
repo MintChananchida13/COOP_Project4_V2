@@ -71,11 +71,14 @@ CAPTURE_FETCH = r"""(() => {
     const state = window.__ocrBenchmarkRun;
     const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url, location.href);
     const method = (options?.method || input?.method || 'GET').toUpperCase();
-    const post = method === 'POST' && url.pathname === '/api/templates/detect-dev';
-    const poll = method === 'GET' && url.pathname.match(/^\/api\/templates\/detect-dev\/jobs\/([^/]+)$/);
-    if (state && post) state.backend_origin = url.origin;
-    const postSearch = state && state.postSearchStarted && state.backend_origin === url.origin &&
-      (url.pathname === '/api/layout/analyze' || /^\/admin\/templates\/[^/]+$/.test(url.pathname) || url.pathname.startsWith('/debug/detection-queries/'));
+    const prefix = url.pathname.startsWith('/backend/') ? '/backend' : '';
+    const path = url.pathname.slice(prefix.length);
+    const backendBase = url.origin + prefix;
+    const post = method === 'POST' && path === '/api/templates/detect-dev';
+    const poll = method === 'GET' && path.match(/^\/api\/templates\/detect-dev\/jobs\/([^/]+)$/);
+    if (state && post) state.backend_origin = backendBase;
+    const postSearch = state && state.postSearchStarted && state.backend_origin === backendBase &&
+      (path === '/api/layout/analyze' || /^\/admin\/templates\/[^/]+$/.test(path) || path.startsWith('/debug/detection-queries/'));
     if (postSearch) {
       if (typeof input !== 'string' && !(input instanceof URL)) {
         state.post_tracking_incomplete = true;

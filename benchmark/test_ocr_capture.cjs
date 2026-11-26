@@ -32,14 +32,14 @@ test('captures OCR only, matches jobs and excludes OCR content', async () => {
   await window.fetch('http://localhost:8000/api/templates/detect-dev', {method: 'POST'});
   assert.equal(state.posts, 0);
   bodies.push({success: true, job_id: 'ocr', job_create_ms: 0});
-  await window.fetch('http://localhost:8000/api/ai/process', {method: 'POST', body: JSON.stringify({
+  await window.fetch('/backend/api/ai/process', {method: 'POST', body: JSON.stringify({
     image: 'PRIVATE IMAGE', rois: [{type: 'text'}, {type: 'table'}, {type: 'image'}, {roiMode: 'flexible'}],
   })});
   await drain(state);
   bodies.push({success: true, job_id: 'ocr', status: 'completed', result: {
     extracted_data: [{text: 'PRIVATE TEXT'}], extraction_timing: {processing_ms: 10},
   }});
-  await window.fetch('http://localhost:8000/api/ai/jobs/ocr');
+  await window.fetch('/backend/api/ai/jobs/ocr');
   await drain(state);
   console.info('[OCR timing] extraction completed', {job_id: 'ocr', pageNumber: 2, frontend_total_ms: 25,
     backend: {processing_ms: 10}});

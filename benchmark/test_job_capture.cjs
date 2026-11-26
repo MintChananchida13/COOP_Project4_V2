@@ -68,5 +68,17 @@ const poll = id => window.fetch(`http://backend/api/templates/detect-dev/jobs/${
   assert.equal(next.post_requests, 1);
   requests[8].resolve(response({}));
   await layout;
+  const proxied = fresh('docker');
+  const proxiedPost = window.fetch('/backend/api/templates/detect-dev', { method: 'POST' });
+  requests[9].resolve(response({ job_id: 'docker-job' }));
+  await proxiedPost;
+  await settle();
+  assert.equal(proxied.job_id, 'docker-job');
+  assert.equal(proxied.backend_origin, 'http://localhost:3000/backend');
+  proxied.postSearchStarted = true;
+  const proxiedLayout = window.fetch('/backend/api/layout/analyze', { method: 'POST' });
+  assert.equal(new URL(requests[10].input).searchParams.get('benchmark_trace_id'), 'docker');
+  requests[10].resolve(response({}));
+  await proxiedLayout;
   console.log('Fetch capture: out-of-order, stale-run, eviction, failed and mismatched jobs passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

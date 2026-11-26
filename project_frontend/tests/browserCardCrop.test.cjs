@@ -33,6 +33,7 @@ for (const [name, expected] of cases) {
       const result = detect(cv,image);
       assert.equal(Boolean(result.box),Boolean(expected));
       if (expected) for(let i=0;i<4;i++) assert.ok(Math.abs(result.box[i]-expected[i])<=8);
+      if (name === 'faint' || name === 'broken') assert.equal(result.suggested, true);
     } finally { image.delete(); }
   });
 }
@@ -45,9 +46,26 @@ test('image mode detects a card against a surrounding background', async () => {
     cv.rectangle(image, new cv.Point(140,125), new cv.Point(800,535), new cv.Scalar(35,35,35,255), 3);
     const result = detectImage(cv,image);
     assert.ok(result.box, 'Card against background should be found');
+    assert.equal(result.suggested, false);
     for (const [actual, expected] of result.box.map((value,index)=>[value,[132,120,808,540][index]])) {
       assert.ok(Math.abs(actual-expected)<=25, JSON.stringify(result));
     }
+  } finally { image.delete(); }
+});
+
+test('image mode leaves the original when a strong rectangle would cut off other content', async () => {
+  const {cv} = await ready;
+  const color = new cv.Scalar(25,25,25,255);
+  const image = new cv.Mat(630, 1000, cv.CV_8UC4, new cv.Scalar(255,255,255,255));
+  try {
+    cv.rectangle(image, new cv.Point(140,125), new cv.Point(800,535), color, 3);
+    for (let x = 310; x < 480; x += 18) {
+      cv.rectangle(image, new cv.Point(x,65), new cv.Point(x+8,78), color, 2);
+    }
+    const result = detectImage(cv,image);
+    assert.ok(result.box);
+    assert.equal(result.suggested, true);
+    assert.equal(result.reason, 'content_outside_candidate');
   } finally { image.delete(); }
 });
 

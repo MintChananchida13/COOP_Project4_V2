@@ -99,6 +99,8 @@ class TableRuntimePhasesTests(unittest.TestCase):
                 "rec_model": ["thai_custom"], "rec_version": ["v5"],
             })
             self.assertEqual(timing["table_model_selection"], selection)
+            call = summarize_model_calls(timing)["model_calls"][0]
+            self.assertEqual(call["table_model_selection"], selection)
             selection["recognition"]["variant"] = "baseline"
             response.headers["X-Model-Info"] = json.dumps({"model_selection": selection})
             with self.assertRaisesRegex(client.ModelRuntimeUnavailableError, "baseline.*thai_custom"):
