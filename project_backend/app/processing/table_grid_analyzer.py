@@ -27,7 +27,7 @@ def _clip_region(x: int, y: int, width: int, height: int, image_width: int, imag
     return {"x": left, "y": top, "width": right - left, "height": bottom - top}
 
 
-def _line_mask(gray: np.ndarray, orientation: str) -> np.ndarray:
+def _line_mask(gray: np.ndarray, orientation: str, *, dilate: bool = True) -> np.ndarray:
     binary = cv2.adaptiveThreshold(
         gray,
         255,
@@ -42,7 +42,36 @@ def _line_mask(gray: np.ndarray, orientation: str) -> np.ndarray:
     else:
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(12, height // 24)))
     opened = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
-    return cv2.dilate(opened, kernel, iterations=1)
+    return cv2.dilate(opened, kernel, iterations=1) if dilate else opened
+
+
+def has_complete_cell_edges(
+    image: np.ndarray, columns: List[int], rows: List[int], owners: Dict[tuple[int, int], int],
+) -> bool:
+    """Compare visible rules with all edges implied by the model's cell spans."""
+    if min(image.shape[:2]) < 12:
+        return False
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    horizontal = _line_mask(gray, "horizontal", dilate=False)
+    vertical = _line_mask(gray, "vertical", dilate=False).T
+    tolerance = 3
+    for mask, bands, edges, transpose in (
+        (horizontal, columns, rows, False), (vertical, rows, columns, True),
+    ):
+        for edge_index, edge in enumerate(edges):
+            if not 0 <= edge < mask.shape[0]:
+                return False
+            for band_index, (start, end) in enumerate(zip(bands, bands[1:])):
+                if end - start < 12:
+                    return False
+                before = (band_index, edge_index - 1) if transpose else (edge_index - 1, band_index)
+                after = (band_index, edge_index) if transpose else (edge_index, band_index)
+                expected = owners.get(before) != owners.get(after)
+                strip = mask[max(0, edge - tolerance):edge + tolerance + 1, start + 2:end - 1]
+                coverage = np.any(strip, axis=0).mean()
+                if (expected and coverage < 0.95) or (not expected and coverage > 0.20):
+                    return False
+    return True
 
 
 def _contour_summary(mask: np.ndarray, image_width: int, image_height: int) -> Dict[str, Any]:

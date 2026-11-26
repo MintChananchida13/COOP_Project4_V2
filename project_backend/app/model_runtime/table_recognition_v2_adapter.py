@@ -17,6 +17,7 @@ import numpy as np
 from app.processing import memory_usage
 
 from app.processing.ocr_postprocess import normalize_ocr_text
+from app.processing.table_grid_analyzer import has_complete_cell_edges
 from app.core.model_runtime_client import (
     ModelRuntimeKind,
     ModelRuntimeUnavailableError,
@@ -2808,10 +2809,10 @@ def _rows_from_html(table_html: str) -> List[List[str]]:
     return _normalize_table_rows(parser.rows)
 
 
-class _TyphoonTableParser(HTMLParser):
+class _TableCellParser(HTMLParser):
     """Read cells and their spans without retaining untrusted HTML attributes."""
 
-    def __init__(self) -> None:
+    def __init__(self, source: str) -> None:
         super().__init__(convert_charrefs=True)
         self.row = -1
         self.cells: List[Dict[str, Any]] = []
@@ -2819,11 +2820,14 @@ class _TyphoonTableParser(HTMLParser):
         self.current = None
         self.parts: List[str] = []
         self.in_table = False
+        self.table_count = 0
+        self.source = source
 
     def handle_starttag(self, tag: str, attrs: List[tuple[str, Optional[str]]]) -> None:
         tag = tag.lower()
         if tag == "table":
             self.in_table = True
+            self.table_count += 1
         elif self.in_table and tag == "tr":
             self.row += 1
         elif self.in_table and tag in {"td", "th"} and self.row >= 0:
@@ -2854,18 +2858,20 @@ class _TyphoonTableParser(HTMLParser):
         tag = tag.lower()
         if tag in {"td", "th"} and self.current is not None:
             text = " ".join("".join(self.parts).split())
-            self.current.update(text=text, ocrText=text, groundTruth=text, assignmentSource="typhoon_ocr")
+            self.current.update(text=text, ocrText=text, groundTruth=text, assignmentSource=self.source)
             self.cells.append(self.current)
             self.current = None
         elif tag == "table":
             self.in_table = False
 
 
-def _typhoon_table_structure(table_html: str) -> tuple[List[List[str]], List[Dict[str, Any]], str]:
-    parser = _TyphoonTableParser()
+def _table_structure_from_html(
+    table_html: str, *, source: str = "typhoon_ocr",
+) -> tuple[List[List[str]], List[Dict[str, Any]], str]:
+    parser = _TableCellParser(source)
     parser.feed(table_html)
     parser.close()
-    if not parser.cells:
+    if not parser.cells or (source == "paddleocr_grid" and parser.table_count != 1):
         return [], [], ""
     height = max(parser.row + 1, max(cell["row"] + cell["rowSpan"] for cell in parser.cells))
     width = max(cell["col"] + cell["colSpan"] for cell in parser.cells)
@@ -3087,6 +3093,53 @@ def _write_temp_image(image: np.ndarray) -> tuple[Optional[Path], bool]:
         return None, False
 
 
+def _verified_paddle_grid(
+    table_result: Dict[str, Any], cell_boxes: List[Any], image: np.ndarray,
+) -> tuple[List[List[str]], List[Dict[str, Any]], str] | None:
+    source = "paddleocr_grid"
+    raw_html = _extract_table_html(table_result, [table_result])
+    if not raw_html:
+        return None
+    rows, cells, safe_html = _table_structure_from_html(raw_html, source=source)
+    if not cells or len(cells) != len(cell_boxes):
+        return None
+
+    height, width = image.shape[:2]
+    x_edges = [[] for _ in range(len(rows[0]) + 1)]
+    y_edges = [[] for _ in range(len(rows) + 1)]
+    owners: Dict[tuple[int, int], int] = {}
+    for index, (cell, raw_box) in enumerate(zip(cells, cell_boxes)):
+        box = box_from_values(raw_box)
+        if box is None or not all(math.isfinite(value) for value in box):
+            return None
+        left, top, right, bottom = box
+        if left < -1 or top < -1 or right > width + 1 or bottom > height + 1:
+            return None
+        row, col = cell["row"], cell["col"]
+        end_row, end_col = row + cell["rowSpan"], col + cell["colSpan"]
+        x_edges[col].append(left)
+        x_edges[end_col].append(right)
+        y_edges[row].append(top)
+        y_edges[end_row].append(bottom)
+        for grid_row in range(row, end_row):
+            for grid_col in range(col, end_col):
+                key = (grid_row, grid_col)
+                if key in owners:
+                    return None
+                owners[key] = index
+        cell["bbox"] = _backend_bbox(box)
+
+    if len(owners) != len(rows) * len(rows[0]):
+        return None
+    if any(not edge or max(edge) - min(edge) > 6 for edge in x_edges + y_edges):
+        return None
+    columns = [max(0, min(width - 1, round(statistics.median(edge)))) for edge in x_edges]
+    boundaries = [max(0, min(height - 1, round(statistics.median(edge)))) for edge in y_edges]
+    if not has_complete_cell_edges(image, columns, boundaries, owners):
+        return None
+    return rows, cells, safe_html
+
+
 def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, started: float) -> Dict[str, Any]:
     post_started = time.perf_counter()
     height, width = image.shape[:2]
@@ -3100,32 +3153,47 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
         if not isinstance(cell_boxes, list) or not cell_boxes:
             continue
         recognized_items = extract_recognized_items(table_result)
-        if not recognized_items:
-            continue
         memory_usage.checkpoint('table_structure_input', cell_count=len(cell_boxes), ocr_count=len(recognized_items))
 
         rules_started = time.perf_counter()
         try:
-            cells, table_html = memory_usage.call('table_structure_rules', reconstruct_table_from_ocr,
-                cell_boxes,
-                recognized_items,
-                (int(width), int(height)),
-                None,
-            )
-        except Exception as error:
-            last_error = str(error)
-            logger.info("embedded table rules failed: %s", error)
+            direct = _verified_paddle_grid(table_result, cell_boxes, image)
+        except (ValueError, cv2.error) as error:
+            logger.info("PaddleOCR grid verification failed: %s", error)
+            direct = None
+        if direct is not None:
+            rows, cells, table_html = direct
+            source = "paddleocr_grid"
+        elif not recognized_items:
             continue
+        else:
+            source = "embedded_table_rules"
+            try:
+                cells, table_html = memory_usage.call('table_structure_rules', reconstruct_table_from_ocr,
+                    cell_boxes,
+                    recognized_items,
+                    (int(width), int(height)),
+                    None,
+                )
+            except Exception as error:
+                last_error = str(error)
+                logger.info("embedded table rules failed: %s", error)
+                continue
 
         rules_ms = (time.perf_counter() - rules_started) * 1000
         format_started = time.perf_counter()
-        backend_cells = _backend_cells(cells)
-        rows = _rows_from_html(table_html)
+        if direct is not None:
+            backend_cells = cells
+        else:
+            backend_cells = _backend_cells(cells)
+            rows = _rows_from_html(table_html)
         structured = _structured_from_cells(rows, backend_cells, normalized=True)
+        if direct is not None:
+            structured["postProcessing"] = source
         text = _markdown_table(rows, normalized=True)
         format_ms = (time.perf_counter() - format_started) * 1000
         audit_started = time.perf_counter()
-        ocr_audit = _ocr_mapping_audit(recognized_items, backend_cells)
+        ocr_audit = _ocr_mapping_audit(recognized_items, backend_cells) if direct is None else None
         audit_ms = (time.perf_counter() - audit_started) * 1000
         confidence_values = [
             float(item.get("score"))
@@ -3134,7 +3202,7 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
         ]
         debug = {
             "status": "recognized" if rows else "structure_empty",
-            "post_processing": "embedded_table_rules",
+            "post_processing": source,
             "runtime_called": True,
             "model_kind": "remote",
             "input_size": [int(width), int(height)],
@@ -3152,26 +3220,26 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
                 "total_ms": round((time.perf_counter() - post_started) * 1000, 2),
             },
             "central_rules": {
-                "source": "embedded_table_rules",
+                "source": source,
                 "cell_box_count": len(cell_boxes),
                 "recognized_item_count": len(recognized_items),
                 "reconstructed_cell_count": len(backend_cells),
                 "image_path_used": False,
             },
-            "adapter_rule_source": "embedded_table_rules",
+            "adapter_rule_source": source,
         }
         return {
             "text": text,
             "confidence": sum(confidence_values) / len(confidence_values) if confidence_values else 0.0,
             "segments": [],
-            "attempts": [{"step": "embedded_table_rules_reconstruction"}],
-            "preprocessing": "embedded_table_rules",
+            "attempts": [{"step": source if direct is not None else "embedded_table_rules_reconstruction"}],
+            "preprocessing": source,
             "engine": "table_recognition_v2",
             "model": _TABLE_MODEL_NAME,
             "table_html": table_html,
             "table_rows": rows,
             "table_structured": structured,
-            "table_selected_method": "embedded_table_rules",
+            "table_selected_method": source,
             "table_debug": debug,
         }
 
@@ -3218,7 +3286,8 @@ def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
             table_debug["table_runtime_ms"] = gateway_timing.get("table_runtime_ms")
         table_debug["table_wait_ms"] = runtime_timing.get("http_request_ms")
     logger.info(
-        "Table Recognition phase timing: phase=Total path=embedded_table_rules elapsed=%.3fs",
+        "Table Recognition phase timing: phase=Total path=%s elapsed=%.3fs",
+        result.get("table_selected_method"),
         time.perf_counter() - started,
     )
     return result
@@ -3236,7 +3305,7 @@ def recognize_table_v2(image: np.ndarray) -> Dict[str, Any]:
         except OcrUnavailableError as error:
             raise TableRecognitionV2UnavailableError(str(error)) from error
         table_html = output["text"]
-        rows, cells, safe_html = _typhoon_table_structure(table_html)
+        rows, cells, safe_html = _table_structure_from_html(table_html)
         if not rows:
             raise TableRecognitionV2UnavailableError("Typhoon OCR did not return a readable HTML table")
         structured = _structured_from_cells(rows, cells, normalized=True)

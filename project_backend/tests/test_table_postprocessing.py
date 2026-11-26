@@ -3,6 +3,7 @@ import time
 import unittest
 from unittest.mock import patch
 
+import cv2
 import numpy as np
 
 from app.model_runtime import table_recognition_v2_adapter as table
@@ -23,6 +24,36 @@ class TablePostprocessingTests(unittest.TestCase):
         root = {'pixels': [[0, 1, 2], [3, 4, 5]], 'table': [{'nested': child}], 'none': None}
         self.assertEqual(table._collect_dicts(root), [root, root['table'][0], child])
         self.assertIs(table._collect_dicts(root)[-1], child)
+
+    def test_complete_grid_preserves_model_text_and_merged_header(self):
+        output = self.output()
+        candidate = output["table_res_list"][0]
+        candidate["cell_box_list"] = [[10, 10, 210, 50], [10, 50, 110, 90], [110, 50, 210, 90]]
+        candidate["pred_html"] = (
+            '<table><tr><th colspan="2">Model &amp; header</th></tr>'
+            '<tr><td>Model value</td><td>123</td></tr></table>'
+        )
+        image = np.full((101, 221, 3), 255, dtype=np.uint8)
+        cv2.rectangle(image, (10, 10), (210, 90), (0, 0, 0), 2)
+        cv2.line(image, (10, 50), (210, 50), (0, 0, 0), 2)
+        cv2.line(image, (110, 50), (110, 90), (0, 0, 0), 2)
+        with patch.object(table, "reconstruct_table_from_ocr", side_effect=AssertionError("reconstructed")):
+            result = table._reconstruct_with_test_structure_rules(output, image, time.perf_counter())
+        self.assertEqual(result["table_selected_method"], "paddleocr_grid")
+        self.assertEqual(result["table_rows"], [["Model & header", ""], ["Model value", "123"]])
+        self.assertEqual(result["table_structured"]["cells"][0]["colSpan"], 2)
+
+        extra_edge = image.copy()
+        cv2.line(extra_edge, (110, 10), (110, 50), (0, 0, 0), 2)
+        missing_outer_edge = image.copy()
+        missing_outer_edge[7:14, 50:90] = 255
+        missing_inner_edge = image.copy()
+        missing_inner_edge[60:80, 107:114] = 255
+        for incomplete_image in (extra_edge, missing_outer_edge, missing_inner_edge):
+            result = table._reconstruct_with_test_structure_rules(
+                output, incomplete_image, time.perf_counter(),
+            )
+            self.assertEqual(result["table_selected_method"], "embedded_table_rules")
 
     def test_candidates_can_reuse_scan_without_traversing_again(self):
         output = self.output()
