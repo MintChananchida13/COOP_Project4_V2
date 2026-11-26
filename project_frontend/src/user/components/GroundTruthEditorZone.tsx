@@ -596,6 +596,7 @@ const EditableTableResult = ({
   const [isFullScreen, setIsFullScreen] = useState(false);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const editorRootRef = useRef<HTMLDivElement | null>(null);
+  const sliderStartRef = useRef<TableEditorSnapshot | null>(null);
 
   useEffect(() => {
     if (sourceKey === snapshotKey) return;
@@ -909,10 +910,38 @@ const EditableTableResult = ({
     setSelection({ startRow: selectedMerge.row, startCol: selectedMerge.col, endRow: selectedMerge.row, endCol: selectedMerge.col });
   };
 
-  const resizeColumn = (cellIndex: number, delta: number) => {
-    const nextWidths = [...columnWidths];
-    nextWidths[cellIndex] = Math.max(TABLE_COLUMN_MIN_WIDTH, Math.min(TABLE_COLUMN_MAX_WIDTH, (nextWidths[cellIndex] || 144) + delta));
-    commitSnapshot({ rows, mergedCells: merged, columnWidths: nextWidths, headerRowCount });
+  const sliderEvents = (update: (base: TableEditorSnapshot, value: number) => TableEditorSnapshot) => {
+    const finish = (event: React.PointerEvent<HTMLInputElement>) => {
+      const base = sliderStartRef.current;
+      if (!base) return;
+      sliderStartRef.current = null;
+      const next = update(base, event.currentTarget.valueAsNumber);
+      if (snapshotToKey(next) === snapshotToKey(base)) {
+        setSnapshot(base);
+      } else {
+        commitSnapshot(next);
+      }
+    };
+    return {
+      onPointerDown: (event: React.PointerEvent<HTMLInputElement>) => {
+        if (!event.isPrimary || event.button !== 0) return;
+        sliderStartRef.current = snapshot;
+        event.currentTarget.setPointerCapture(event.pointerId);
+      },
+      onPointerUp: finish,
+      onLostPointerCapture: finish,
+      onPointerCancel: () => {
+        const base = sliderStartRef.current;
+        sliderStartRef.current = null;
+        if (base) setSnapshot(base);
+      },
+      onChange: (event: React.ChangeEvent<HTMLInputElement>) => {
+        const base = sliderStartRef.current;
+        const next = update(base ?? snapshot, event.currentTarget.valueAsNumber);
+        if (base) setSnapshot(next);
+        else commitSnapshot(next);
+      },
+    };
   };
 
   const autoFitColumn = (cellIndex: number) => {
@@ -995,9 +1024,6 @@ const EditableTableResult = ({
   const isFullColumnSelected = (cellIndex: number) =>
     Boolean(bounds && bounds.left <= cellIndex && bounds.right >= cellIndex && bounds.top === 0 && bounds.bottom === rows.length - 1);
   const allSelected = Boolean(bounds && bounds.top === 0 && bounds.left === 0 && bounds.bottom === rows.length - 1 && bounds.right === maxColumns - 1);
-  const setHeaderRows = (nextCount: number) => {
-    commitSnapshot({ rows, mergedCells: merged, columnWidths, headerRowCount: Math.max(1, Math.min(rows.length, nextCount)) });
-  };
 
   return (
     <div
@@ -1025,12 +1051,19 @@ const EditableTableResult = ({
             <button type="button" onClick={splitSelectedCell} disabled={!selectedMerge} className={toolbarButtonClass}>
               แยกเซลล์
             </button>
-            <button type="button" onClick={() => setHeaderRows(headerRowCount - 1)} disabled={headerRowCount <= 1} className={toolbarButtonClass}>
-              Header -
-            </button>
-            <button type="button" onClick={() => setHeaderRows(headerRowCount + 1)} disabled={headerRowCount >= rows.length} className={toolbarButtonClass}>
-              Header +
-            </button>
+            <label className={toolbarButtonClass}>
+              แถวหัวตาราง <span className="tabular-nums">{headerRowCount}</span>
+              <input
+                type="range"
+                min={1}
+                max={rows.length}
+                value={headerRowCount}
+                disabled={rows.length <= 1}
+                aria-label="จำนวนแถวหัวตาราง"
+                className="w-16 accent-indigo-600 disabled:opacity-40"
+                {...sliderEvents((base, value) => ({ ...base, headerRowCount: value }))}
+              />
+            </label>
             <button type="button" onClick={autoFitAllColumns} className={toolbarButtonClass}>
               <Columns3 size={12} /> Auto-fit
             </button>
@@ -1065,10 +1098,21 @@ const EditableTableResult = ({
                 >
                   {getSpreadsheetColumnLabel(cellIndex)}
                   <span className="ml-1 text-[9px] font-semibold text-slate-400">{Math.round(columnWidths[cellIndex])}px</span>
-                  <span className="absolute right-0 top-0 flex h-full w-5 flex-col overflow-hidden">
-                    <button type="button" className="h-1/2 text-[9px] leading-none hover:bg-indigo-100" onClick={(event) => { event.stopPropagation(); resizeColumn(cellIndex, 12); }}>+</button>
-                    <button type="button" className="h-1/2 text-[9px] leading-none hover:bg-indigo-100" onClick={(event) => { event.stopPropagation(); resizeColumn(cellIndex, -12); }}>-</button>
-                  </span>
+                  <input
+                    type="range"
+                    min={TABLE_COLUMN_MIN_WIDTH}
+                    max={TABLE_COLUMN_MAX_WIDTH}
+                    value={Math.round(columnWidths[cellIndex])}
+                    aria-label={`ความกว้างคอลัมน์ ${getSpreadsheetColumnLabel(cellIndex)}`}
+                    aria-valuetext={`${Math.round(columnWidths[cellIndex])} พิกเซล`}
+                    className="mt-0.5 block h-4 w-16 cursor-ew-resize accent-indigo-600"
+                    onClick={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                    {...sliderEvents((base, value) => ({
+                      ...base,
+                      columnWidths: base.columnWidths.map((width, index) => index === cellIndex ? value : width),
+                    }))}
+                  />
                 </th>
               ))}
             </tr>
