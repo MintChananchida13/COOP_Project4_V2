@@ -1,0 +1,50 @@
+services:
+  frontend:
+    build: ./project_frontend
+    ports:
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  backend:
+    build: ./project_backend
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://ocr:${POSTGRES_PASSWORD:-ocr-local}@db:5432/ocr_studio}
+      GATEWAY_URL: ${GATEWAY_URL:-}
+      MODEL_GATEWAY_API_KEY: ${MODEL_GATEWAY_API_KEY:-}
+      EXTERNAL_OCR_ENCRYPTION_KEY: ${EXTERNAL_OCR_ENCRYPTION_KEY:-}
+    volumes:
+      - backend-storage:/app/storage
+      - backend-app-storage:/app/app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=3).close()"]
+      interval: 10s
+      timeout: 5s
+      start_period: 45s
+      retries: 12
+    restart: unless-stopped
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ocr_studio
+      POSTGRES_USER: ocr
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ocr-local}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "ocr", "-d", "ocr_studio"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  backend-storage:
+  backend-app-storage:

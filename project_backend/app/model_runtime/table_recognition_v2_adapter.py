@@ -3349,6 +3349,8 @@ def recognize_table_v2_local(image: np.ndarray) -> Dict[str, Any]:
     output = _predict_table_model(image, timing=runtime_timing)
     remote_ms = (time.perf_counter() - remote_started) * 1000
     result = memory_usage.call('table_reconstruction', _reconstruct_with_test_structure_rules, output, image, started)
+    if runtime_timing.get("table_model_selection") and runtime_timing.get("model"):
+        result["model"] = runtime_timing["model"]
     del output
     memory_usage.checkpoint('table_raw_output_released')
     table_debug = result.get("table_debug")

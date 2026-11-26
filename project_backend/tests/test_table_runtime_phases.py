@@ -1,8 +1,12 @@
 import json
 import unittest
 from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs, urlsplit
+
+import numpy as np
 
 from app.core import model_runtime_client as client
+from app.core.ocr_model_config import fixed_ocr_model_settings
 from app.processing.model_timing import summarize_model_calls
 
 
@@ -20,6 +24,7 @@ class TableRuntimePhasesTests(unittest.TestCase):
         def advance(seconds):
             clock[0] += seconds
         response = MagicMock()
+        response.__enter__.return_value.headers = {}
         payload = {'success': True, 'result': {'table': 'unchanged'},
                    'timing': {'queue_wait_ms': 0, 'inference_ms': 10}}
         raw = json.dumps(payload).encode()
@@ -58,6 +63,46 @@ class TableRuntimePhasesTests(unittest.TestCase):
         self.assertEqual(summary['inferences']['table'], 10)
         self.assertEqual(summary['model_calls'][0]['queue_wait_ms'], 0)
         self.assertEqual(summary['model_calls'][0]['json_parse_ms'], 1000)
+
+    def test_table_uses_selected_batch_only_model_ids_and_checks_runtime_identity(self):
+        settings = fixed_ocr_model_settings()
+        for kind, path, variant, version in (
+            ("text_detection", "text-detection", "invoice_det", "v6"),
+            ("text_recognition", "text-recognition", "thai_custom", "v5"),
+        ):
+            settings["active"][kind] = variant
+            settings["models"][kind].append({
+                "id": variant, "display_name": variant,
+                "single_api_path": f"/paddle/api/v1/{path}s",
+                "batch_api_path": f"/paddle/api/v1/{path}-batches?version={version}&model_id={variant}",
+            })
+        connection = MagicMock()
+        connection.__enter__.return_value.execute.return_value.fetchone.return_value = {"value": settings}
+        reply = MagicMock()
+        response = reply.__enter__.return_value
+        response.read.return_value = b'{"data":{"table":"ok"}}'
+        selection = {
+            "detection": {"variant": "invoice_det", "version": "v6"},
+            "recognition": {"variant": "thai_custom", "version": "v5"},
+        }
+        response.headers = {"X-Model-Info": json.dumps({"model_selection": selection})}
+        timing = {}
+        with patch.object(client, "GATEWAY_URL", "http://gateway.example"), \
+             patch.object(client, "connect_db", return_value=connection), \
+             patch.object(client.urllib.request, "urlopen", return_value=reply) as request:
+            image = np.zeros((16, 16, 3), dtype=np.uint8)
+            self.assertEqual(client.remote_recognize_table_raw(image, timing), {"table": "ok"})
+            url = urlsplit(request.call_args.args[0].full_url)
+            self.assertEqual(url.path, "/paddle/api/v1/table-model-results")
+            self.assertEqual(parse_qs(url.query), {
+                "det_model": ["invoice_det"], "det_version": ["v6"],
+                "rec_model": ["thai_custom"], "rec_version": ["v5"],
+            })
+            self.assertEqual(timing["table_model_selection"], selection)
+            selection["recognition"]["variant"] = "baseline"
+            response.headers["X-Model-Info"] = json.dumps({"model_selection": selection})
+            with self.assertRaisesRegex(client.ModelRuntimeUnavailableError, "baseline.*thai_custom"):
+                client.remote_recognize_table_raw(image)
 
     def test_non_table_field_size_measurements_remain_exact(self):
         self.assertEqual(client._field_size_summary({'text': 'hello'})[0]['bytes'], 7)

@@ -1,0 +1,9 @@
+include:
+  - path:
+      - API_Service/docker-compose.yml
+      - compose.gateway.yaml
+
+services:
+  backend:
+    environment:
+      GATEWAY_URL: ${GATEWAY_URL:-http://gateway:8000}

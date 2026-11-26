@@ -1,0 +1,6 @@
+services:
+  gateway:
+    environment:
+      LAYOUT_SERVICE_URL: http://layout:8000
+      TEXT_DETECTION_URL: ${TEXT_DETECTION_URL:-http://text-det-v6:8000}
+      GATEWAY_ENABLED_PIPELINES: ${GATEWAY_ENABLED_PIPELINES:-layout,layout-model,ocr-custom,table,table-model,text-detection,text-recognition,siglip}

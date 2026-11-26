@@ -90,9 +90,14 @@ def table_ocr_query(settings: Dict[str, Any]) -> Dict[str, str]:
         model = next((item for item in settings["models"][kind] if item["id"] == selected.get(kind)), None)
         if model is None:
             raise ValueError(f"Configured Table {kind} model was not found")
-        params = parse_qs(urlsplit(model["single_api_path"]).query)
-        version = (params.get("version") or [model.get("model_version") or default_version])[0]
-        variant = (params.get("model") or params.get("model_id") or [model.get("runtime_model_id") or "baseline"])[0]
+        single = parse_qs(urlsplit(model["single_api_path"]).query)
+        batch = parse_qs(urlsplit(model["batch_api_path"]).query)
+        version = (single.get("version") or batch.get("version") or [model.get("model_version") or default_version])[0]
+        variant = (
+            single.get("model") or single.get("model_id")
+            or batch.get("model") or batch.get("model_id")
+            or [model.get("runtime_model_id") or "baseline"]
+        )[0]
         if variant == "default":
             variant = "baseline"
         query[f"{prefix}_version"] = str(version)

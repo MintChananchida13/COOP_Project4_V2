@@ -84,6 +84,10 @@ Do not use legacy leaf-service URLs in backend routing. Backend-to-Gateway reque
 Authorization: Bearer <MODEL_GATEWAY_API_KEY>
 ```
 
+## Docker
+
+See [README_DOCKER.md](README_DOCKER.md) for setup, model Gateway options, and moving existing data.
+
 ## User Flow
 
 ```text

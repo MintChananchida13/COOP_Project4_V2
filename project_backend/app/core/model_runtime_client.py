@@ -347,11 +347,36 @@ def _post_predict(
                   if isinstance(source, dict) and isinstance(source.get("model_selection"), dict)]
     runtime_model = model_info.get("model") or parsed.get("model") or next((selection.get("model_name") for selection in selections
                                                 if selection.get("model_name")), None)
-    selected_id = parse_qs(urlsplit(path_override or "").query).get("model_id", [""])[0]
+    request_query = parse_qs(urlsplit(path_override or "").query)
+    selected_id = request_query.get("model_id", [""])[0]
     confirmed_ids = {str(selection.get("model_id") or selection.get("runtime_model_id") or "")
                      for selection in selections}
     if selected_id and selected_id != "default" and selected_id not in confirmed_ids and not str(runtime_model or "").endswith(f":{selected_id}"):
         raise ModelRuntimeUnavailableError(f"{kind.value} runtime did not confirm selected model_id={selected_id}")
+
+    if kind == ModelRuntimeKind.TABLE:
+        selection = next((item for item in selections if "detection" in item or "recognition" in item), {})
+        for prefix, component in (("det", "detection"), ("rec", "recognition")):
+            if f"{prefix}_model" not in request_query and f"{prefix}_version" not in request_query:
+                continue
+            requested_model = request_query.get(f"{prefix}_model", ["baseline"])[0].lower()
+            requested_version = request_query.get(f"{prefix}_version", [""])[0].lower().removeprefix("v")
+            actual = selection.get(component)
+            if not isinstance(actual, dict):
+                if requested_model != "baseline":
+                    raise ModelRuntimeUnavailableError(f"Table runtime did not confirm {component} model {requested_model!r}")
+                continue
+            actual_model = str(actual.get("variant") or "").lower()
+            actual_version = str(actual.get("version") or "").lower().removeprefix("v")
+            if actual_model != requested_model or (requested_version and actual_version != requested_version):
+                raise ModelRuntimeUnavailableError(
+                    f"Table runtime returned {component} model {actual_model!r} version {actual_version!r}; "
+                    f"requested {requested_model!r} version {requested_version!r}"
+                )
+        if timing is not None:
+            timing["table_requested_selection"] = {key: values[0] for key, values in request_query.items()}
+            if selection:
+                timing["table_model_selection"] = selection
 
     logger.info(
         "Model Runtime timing: kind=%s model=%s payload_bytes=%s elapsed=%.3fs",
