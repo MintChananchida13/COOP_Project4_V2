@@ -243,6 +243,7 @@ type TableEditorSnapshot = {
   rows: string[][];
   mergedCells: TableMergedCell[];
   columnWidths: number[];
+  rowHeights?: number[];
   headerRowCount: number;
 };
 
@@ -259,6 +260,8 @@ const normalizeEditableRows = (rows?: string[][] | null): string[][] => {
 
 const TABLE_COLUMN_MIN_WIDTH = 88;
 const TABLE_COLUMN_MAX_WIDTH = 640;
+const TABLE_ROW_MIN_HEIGHT = 48;
+const TABLE_ROW_MAX_HEIGHT = 480;
 
 const normalizeColumnWidths = (widths: number[] | undefined, columnCount: number): number[] =>
   Array.from({ length: columnCount }, (_, index) => {
@@ -438,7 +441,12 @@ const sanitizeTableSnapshot = (snapshot: TableEditorSnapshot): TableEditorSnapsh
     });
   });
 
-  return { rows, mergedCells, columnWidths, headerRowCount };
+  const rowHeights = snapshot.rowHeights?.slice(0, rowCount).map(height =>
+    Number.isFinite(height) && height > 0
+      ? Math.max(TABLE_ROW_MIN_HEIGHT, Math.min(TABLE_ROW_MAX_HEIGHT, height))
+      : 0
+  );
+  return { rows, mergedCells, columnWidths, rowHeights: rowHeights?.some(Boolean) ? rowHeights : undefined, headerRowCount };
 };
 
 const snapshotToKey = (snapshot: TableEditorSnapshot) => JSON.stringify(snapshot);
@@ -458,7 +466,7 @@ const structuredTableFromSnapshot = (
   snapshot: TableEditorSnapshot,
   sourceStructured?: StructuredTableResult | null
 ): StructuredTableResult => {
-  const { rows, mergedCells, columnWidths, headerRowCount } = sanitizeTableSnapshot(snapshot);
+  const { rows, mergedCells, columnWidths, rowHeights, headerRowCount } = sanitizeTableSnapshot(snapshot);
   const sourceCells = new Map(
     (sourceStructured?.cells || []).map(cell => [`${cell.row}:${cell.col}`, cell])
   );
@@ -485,6 +493,7 @@ const structuredTableFromSnapshot = (
     rows,
     cells,
     colWidths: columnWidths,
+    rowHeights,
     headerRowCount,
     bbox: sourceStructured?.bbox,
   };
@@ -495,6 +504,7 @@ const structuredTableToJson = (structured: StructuredTableResult) =>
     {
       headerRowCount: structured.headerRowCount ?? 1,
       colWidths: structured.colWidths ?? [],
+      rowHeights: structured.rowHeights,
       cells: (structured.cells || []).map(cell => ({
         row: cell.row,
         col: cell.col,
@@ -541,6 +551,7 @@ const normalizeResultTableForEditor = (result: OCRResult & { pageIndex?: number 
       rows,
       mergedCells,
       columnWidths,
+      rowHeights: result.tableStructured?.rowHeights,
       headerRowCount,
     },
     result.tableStructured
@@ -580,6 +591,7 @@ const EditableTableResult = ({
         rows: normalizedRows,
         mergedCells: sourceMergedCells,
         columnWidths: sourceWidths,
+        rowHeights: structured?.rowHeights,
         headerRowCount,
       });
     },
@@ -596,7 +608,7 @@ const EditableTableResult = ({
   const [isFullScreen, setIsFullScreen] = useState(false);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const editorRootRef = useRef<HTMLDivElement | null>(null);
-  const sliderStartRef = useRef<TableEditorSnapshot | null>(null);
+  const resizeStartRef = useRef<{ base: TableEditorSnapshot; coordinate: number; size: number } | null>(null);
 
   useEffect(() => {
     if (sourceKey === snapshotKey) return;
@@ -607,7 +619,7 @@ const EditableTableResult = ({
   }, [sourceKey]);
 
   const commitSnapshot = (nextSnapshot: TableEditorSnapshot) => {
-    const sanitized = sanitizeTableSnapshot(nextSnapshot);
+    const sanitized = sanitizeTableSnapshot({ rowHeights: snapshot.rowHeights, ...nextSnapshot });
     const nextHistory = [...history.slice(0, historyIndex + 1), sanitized];
     setSnapshot(sanitized);
     setHistory(nextHistory);
@@ -762,7 +774,9 @@ const EditableTableResult = ({
       }
       return cell;
     });
-    commitSnapshot({ rows: nextRows, mergedCells: nextMerged, columnWidths, headerRowCount: insertIndex <= headerRowCount - 1 ? headerRowCount + 1 : headerRowCount });
+    const rowHeights = rows.map((_, index) => snapshot.rowHeights?.[index] ?? 0);
+    rowHeights.splice(insertIndex, 0, 0);
+    commitSnapshot({ rows: nextRows, mergedCells: nextMerged, columnWidths, rowHeights, headerRowCount: insertIndex <= headerRowCount - 1 ? headerRowCount + 1 : headerRowCount });
     setSelection({ startRow: insertIndex, endRow: insertIndex, startCol: 0, endCol: 0 });
   };
 
@@ -794,7 +808,8 @@ const EditableTableResult = ({
         originalCells,
       }];
     });
-    commitSnapshot({ rows: nextRows.length > 0 ? nextRows : [["Column 1"]], mergedCells: nextMerged, columnWidths, headerRowCount: Math.max(1, Math.min(headerRowCount, nextRows.length || 1)) });
+    const rowHeights = snapshot.rowHeights?.filter((_, index) => index < deleteTop || index > deleteBottom);
+    commitSnapshot({ rows: nextRows.length > 0 ? nextRows : [["Column 1"]], mergedCells: nextMerged, columnWidths, rowHeights, headerRowCount: Math.max(1, Math.min(headerRowCount, nextRows.length || 1)) });
     setSelection({ startRow: Math.min(deleteTop, Math.max(0, nextRows.length - 1)), endRow: Math.min(deleteTop, Math.max(0, nextRows.length - 1)), startCol: 0, endCol: 0 });
   };
 
@@ -910,36 +925,59 @@ const EditableTableResult = ({
     setSelection({ startRow: selectedMerge.row, startCol: selectedMerge.col, endRow: selectedMerge.row, endCol: selectedMerge.col });
   };
 
-  const sliderEvents = (update: (base: TableEditorSnapshot, value: number) => TableEditorSnapshot) => {
-    const finish = (event: React.PointerEvent<HTMLInputElement>) => {
-      const base = sliderStartRef.current;
-      if (!base) return;
-      sliderStartRef.current = null;
-      const next = update(base, event.currentTarget.valueAsNumber);
-      if (snapshotToKey(next) === snapshotToKey(base)) {
-        setSnapshot(base);
-      } else {
-        commitSnapshot(next);
+  const resizeEvents = (axis: "column" | "row", index: number) => {
+    const isColumn = axis === "column";
+    const coordinate = (event: React.PointerEvent<HTMLButtonElement>) => isColumn ? event.clientX : event.clientY;
+    const currentSize = (handle: HTMLButtonElement) =>
+      isColumn ? columnWidths[index] : handle.closest("tr")?.getBoundingClientRect().height ?? TABLE_ROW_MIN_HEIGHT;
+    const resize = (base: TableEditorSnapshot, size: number): TableEditorSnapshot => {
+      const min = isColumn ? TABLE_COLUMN_MIN_WIDTH : TABLE_ROW_MIN_HEIGHT;
+      const max = isColumn ? TABLE_COLUMN_MAX_WIDTH : TABLE_ROW_MAX_HEIGHT;
+      const nextSize = Math.max(min, Math.min(max, Math.round(size)));
+      if (isColumn) {
+        const widths = [...base.columnWidths];
+        widths[index] = nextSize;
+        return { ...base, columnWidths: widths };
       }
+      const heights = base.rows.map((_, row) => row === index ? nextSize : base.rowHeights?.[row] ?? 0);
+      return { ...base, rowHeights: heights };
+    };
+    const finish = (event: React.PointerEvent<HTMLButtonElement>) => {
+      const start = resizeStartRef.current;
+      if (!start) return;
+      resizeStartRef.current = null;
+      const delta = coordinate(event) - start.coordinate;
+      const next = delta === 0 ? start.base : resize(start.base, start.size + delta);
+      if (snapshotToKey(next) === snapshotToKey(start.base)) setSnapshot(start.base);
+      else commitSnapshot(next);
     };
     return {
-      onPointerDown: (event: React.PointerEvent<HTMLInputElement>) => {
+      onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
         if (!event.isPrimary || event.button !== 0) return;
-        sliderStartRef.current = snapshot;
+        resizeStartRef.current = { base: snapshot, coordinate: coordinate(event), size: currentSize(event.currentTarget) };
         event.currentTarget.setPointerCapture(event.pointerId);
       },
-      onPointerUp: finish,
-      onLostPointerCapture: finish,
-      onPointerCancel: () => {
-        const base = sliderStartRef.current;
-        sliderStartRef.current = null;
-        if (base) setSnapshot(base);
+      onPointerMove: (event: React.PointerEvent<HTMLButtonElement>) => {
+        const start = resizeStartRef.current;
+        if (!start || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+        const delta = coordinate(event) - start.coordinate;
+        setSnapshot(delta === 0 ? start.base : resize(start.base, start.size + delta));
       },
-      onChange: (event: React.ChangeEvent<HTMLInputElement>) => {
-        const base = sliderStartRef.current;
-        const next = update(base ?? snapshot, event.currentTarget.valueAsNumber);
-        if (base) setSnapshot(next);
-        else commitSnapshot(next);
+      onPointerUp: finish,
+      onLostPointerCapture: () => {
+        const start = resizeStartRef.current;
+        resizeStartRef.current = null;
+        if (start) setSnapshot(start.base);
+      },
+      onClick: (event: React.MouseEvent<HTMLButtonElement>) => event.stopPropagation(),
+      onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => {
+        const decrease = isColumn ? "ArrowLeft" : "ArrowUp";
+        const increase = isColumn ? "ArrowRight" : "ArrowDown";
+        if (event.key !== decrease && event.key !== increase) return;
+        event.preventDefault();
+        const step = event.key === decrease ? -8 : 8;
+        const next = resize(snapshot, currentSize(event.currentTarget) + step);
+        if (snapshotToKey(next) !== snapshotToKey(snapshot)) commitSnapshot(next);
       },
     };
   };
@@ -1061,7 +1099,7 @@ const EditableTableResult = ({
                 disabled={rows.length <= 1}
                 aria-label="จำนวนแถวหัวตาราง"
                 className="w-16 accent-indigo-600 disabled:opacity-40"
-                {...sliderEvents((base, value) => ({ ...base, headerRowCount: value }))}
+                onChange={(event) => commitSnapshot({ ...snapshot, headerRowCount: event.currentTarget.valueAsNumber })}
               />
             </label>
             <button type="button" onClick={autoFitAllColumns} className={toolbarButtonClass}>
@@ -1075,7 +1113,11 @@ const EditableTableResult = ({
       </div>
 
       <div className={`${isFullScreen ? "min-h-0 flex-1" : "max-h-[420px]"} overflow-auto`}>
-        <table className="border-collapse text-left text-xs" style={{ minWidth: columnWidths.reduce((sum, width) => sum + width, 48) + 48, tableLayout: "fixed" }}>
+        <table className="border-collapse text-left text-xs" style={{ width: columnWidths.reduce((sum, width) => sum + width, 48), tableLayout: "fixed" }}>
+          <colgroup>
+            <col style={{ width: 48 }} />
+            {columnWidths.map((width, index) => <col key={index} style={{ width }} />)}
+          </colgroup>
           <thead className="sticky top-0 z-30">
             <tr>
               <th
@@ -1098,20 +1140,12 @@ const EditableTableResult = ({
                 >
                   {getSpreadsheetColumnLabel(cellIndex)}
                   <span className="ml-1 text-[9px] font-semibold text-slate-400">{Math.round(columnWidths[cellIndex])}px</span>
-                  <input
-                    type="range"
-                    min={TABLE_COLUMN_MIN_WIDTH}
-                    max={TABLE_COLUMN_MAX_WIDTH}
-                    value={Math.round(columnWidths[cellIndex])}
+                  <button
+                    type="button"
                     aria-label={`ความกว้างคอลัมน์ ${getSpreadsheetColumnLabel(cellIndex)}`}
-                    aria-valuetext={`${Math.round(columnWidths[cellIndex])} พิกเซล`}
-                    className="mt-0.5 block h-4 w-16 cursor-ew-resize accent-indigo-600"
-                    onClick={(event) => event.stopPropagation()}
-                    onDoubleClick={(event) => event.stopPropagation()}
-                    {...sliderEvents((base, value) => ({
-                      ...base,
-                      columnWidths: base.columnWidths.map((width, index) => index === cellIndex ? value : width),
-                    }))}
+                    className="absolute inset-y-0 right-0 w-2 cursor-col-resize touch-none hover:bg-indigo-400/50 focus-visible:bg-indigo-400"
+                    onDoubleClick={(event) => { event.stopPropagation(); autoFitColumn(cellIndex); }}
+                    {...resizeEvents("column", cellIndex)}
                   />
                 </th>
               ))}
@@ -1119,13 +1153,19 @@ const EditableTableResult = ({
           </thead>
           <tbody>
             {rows.map((row, rowIndex) => (
-              <tr key={rowIndex} className={rowIndex < headerRowCount ? "bg-slate-100" : "odd:bg-white even:bg-slate-50/60"}>
+              <tr key={rowIndex} style={{ height: snapshot.rowHeights?.[rowIndex] || undefined }} className={rowIndex < headerRowCount ? "bg-slate-100" : "odd:bg-white even:bg-slate-50/60"}>
                 <th
                   className={`${rowHeaderClass} ${rowIndex < headerRowCount ? "bg-slate-100 text-slate-700" : ""} ${isFullRowSelected(rowIndex) ? "border-indigo-500 bg-indigo-100 text-indigo-700" : ""}`}
                   onClick={() => selectRow(rowIndex)}
                   title="เลือกทั้งแถว"
                 >
                   {rowIndex + 1}
+                  <button
+                    type="button"
+                    aria-label={`ความสูงแถว ${rowIndex + 1}`}
+                    className="absolute inset-x-0 bottom-0 h-2 cursor-row-resize touch-none hover:bg-indigo-400/50 focus-visible:bg-indigo-400"
+                    {...resizeEvents("row", rowIndex)}
+                  />
                 </th>
                 {row.map((_, cellIndex) => renderEditableCell(rowIndex, cellIndex))}
               </tr>

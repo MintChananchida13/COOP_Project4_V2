@@ -2056,6 +2056,7 @@ function HomeWorkspace() {
           mode: "structure",
           headerRowCount: structured.headerRowCount ?? 1,
           colWidths: structured.colWidths ?? [],
+          rowHeights: structured.rowHeights,
           cells: structured.cells
             .filter((cell) => !cell.hidden)
             .map((cell) => ({
@@ -2268,6 +2269,7 @@ function HomeWorkspace() {
       rows: Array.isArray(structured.rows) ? structured.rows : undefined,
       headerRowCount: structured.headerRowCount,
       colWidths: Array.isArray(structured.colWidths) ? structured.colWidths : undefined,
+      rowHeights: Array.isArray(structured.rowHeights) ? structured.rowHeights : undefined,
       cells: Array.isArray(structured.cells)
         ? structured.cells.map((cell) => {
             const originalText = String(cell.ocrText ?? cell.text ?? "");
@@ -3520,6 +3522,7 @@ function HomeWorkspace() {
             mode: "structure",
             headerRowCount: structured.headerRowCount ?? 1,
             colWidths: structured.colWidths ?? [],
+            rowHeights: structured.rowHeights,
             cells: structured.cells
               .filter((cell) => !cell.hidden)
               .map((cell) => ({

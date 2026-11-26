@@ -94,6 +94,7 @@ export interface StructuredTableResult {
   bbox?: number[];
   rowSpans?: number[];
   colWidths?: number[];
+  rowHeights?: number[];
   headerRowCount?: number;
 }
 
