@@ -2892,12 +2892,87 @@ def _markdown_table(rows: List[List[str]], *, normalized: bool = False) -> str:
     if not rows:
         return ""
     column_count = max(len(row) for row in rows)
+    if column_count == 0:
+        return ""
     normalized = [row + [""] * (column_count - len(row)) for row in rows]
 
     def render(row: List[str]) -> str:
         return "| " + " | ".join(str(cell).strip().replace("|", "/") for cell in row) + " |"
 
     return "\n".join([render(normalized[0]), render(["---"] * column_count), *[render(row) for row in normalized[1:]]])
+
+
+def _remove_empty_table_columns(
+    rows: List[List[str]], cells: List[Dict[str, Any]], table_html: str,
+    *, compact_rows: bool = False,
+) -> tuple[List[List[str]], List[Dict[str, Any]], str]:
+    # HTML rows without span placeholders can shift a later cell to the left.
+    # Use logical coordinates when the HTML represents these same rows.
+    html_parser = _TableCellParser("remote_default_parser")
+    html_parser.feed(table_html)
+    html_parser.close()
+    headers = set()
+    logical_rows = rows
+    logical_cells = cells
+    if html_parser.table_count == 1 and html_parser.cells:
+        headers = {(cell["row"], cell["col"]) for cell in html_parser.cells if cell["header"]}
+        html_values = [[] for _ in rows]
+        for cell in html_parser.cells:
+            if cell["row"] < len(html_values):
+                html_values[cell["row"]].append(cell["text"])
+        matches_html = all(
+            row == values + [""] * (len(row) - len(values))
+            for row, values in zip(rows, html_values)
+        )
+        if compact_rows and (cells or matches_html):
+            width = max(cell["col"] + cell["colSpan"] for cell in html_parser.cells)
+            logical_rows = [[""] * width for _ in rows]
+            row_offsets = [0] * len(rows)
+            for cell in html_parser.cells:
+                row = cell["row"]
+                if row < len(rows) and row_offsets[row] < len(rows[row]):
+                    logical_rows[row][cell["col"]] = rows[row][row_offsets[row]]
+                    row_offsets[row] += 1
+            if not cells:
+                logical_cells = [{key: value for key, value in cell.items() if key != "header"}
+                                 for cell in html_parser.cells]
+
+    width = max(map(len, logical_rows), default=0)
+    populated = {col for row in logical_rows for col, value in enumerate(row) if value.strip()}
+    if len(populated) == width:
+        return rows, cells, table_html
+
+    kept = sorted(populated)
+    targets = {col: index for index, col in enumerate(kept)}
+    filtered_rows = [[row[col] if col < len(row) else "" for col in kept] for row in logical_rows]
+    filtered_cells = []
+    anchors = {}
+    covered = set()
+    for cell in logical_cells:
+        row, col = cell["row"], cell["col"]
+        columns = [targets[index] for index in range(col, col + cell["colSpan"]) if index in targets]
+        if not columns:
+            continue
+        new_cell = {**cell, "col": columns[0], "colSpan": len(columns)}
+        filtered_cells.append(new_cell)
+        anchors[row, columns[0]] = (new_cell, "th" if (row, col) in headers else "td")
+        covered.update((r, c) for r in range(row, row + cell["rowSpan"]) for c in columns)
+
+    rendered_rows = []
+    for row, values in enumerate(filtered_rows):
+        rendered_cells = []
+        for col, value in enumerate(values):
+            position = (row, col)
+            if position in anchors:
+                cell, tag = anchors[position]
+                rendered_cells.append(
+                    f'<{tag} rowspan="{cell["rowSpan"]}" colspan="{cell["colSpan"]}">'
+                    f'{html.escape(value)}</{tag}>'
+                )
+            elif position not in covered:
+                rendered_cells.append(f"<td>{html.escape(value)}</td>")
+        rendered_rows.append("<tr>" + "".join(rendered_cells) + "</tr>")
+    return filtered_rows, filtered_cells, "<table>" + "".join(rendered_rows) + "</table>"
 
 
 def _backend_bbox(bbox: Any) -> Optional[Dict[str, float]]:
@@ -3008,7 +3083,8 @@ def _fallback_result_from_remote_output(
         collected = _collect_dicts(output)
     table_html = _extract_table_html(output, collected)
     rows = _extract_table_rows(output, table_html, collected)
-    structured = _structured_from_cells(rows, [], normalized=True)
+    rows, cells, table_html = _remove_empty_table_columns(rows, [], table_html, compact_rows=True)
+    structured = _structured_from_cells(rows, cells, normalized=True)
     return {
         "text": _markdown_table(rows, normalized=True),
         "confidence": 0.0,
@@ -3187,6 +3263,9 @@ def _reconstruct_with_test_structure_rules(output: Any, image: np.ndarray, start
         else:
             backend_cells = _backend_cells(cells)
             rows = _rows_from_html(table_html)
+        rows, backend_cells, table_html = _remove_empty_table_columns(
+            rows, backend_cells, table_html, compact_rows=direct is None,
+        )
         structured = _structured_from_cells(rows, backend_cells, normalized=True)
         if direct is not None:
             structured["postProcessing"] = source
@@ -3308,6 +3387,7 @@ def recognize_table_v2(image: np.ndarray) -> Dict[str, Any]:
         rows, cells, safe_html = _table_structure_from_html(table_html)
         if not rows:
             raise TableRecognitionV2UnavailableError("Typhoon OCR did not return a readable HTML table")
+        rows, cells, safe_html = _remove_empty_table_columns(rows, cells, safe_html)
         structured = _structured_from_cells(rows, cells, normalized=True)
         structured["postProcessing"] = "typhoon_ocr"
         return {"text": _markdown_table(rows, normalized=True), "confidence": None, "segments": [],

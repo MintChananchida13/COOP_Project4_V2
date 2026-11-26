@@ -55,6 +55,29 @@ class TablePostprocessingTests(unittest.TestCase):
             )
             self.assertEqual(result["table_selected_method"], "embedded_table_rules")
 
+    def test_empty_columns_are_removed_without_removing_rows_or_losing_merges(self):
+        output = {"pred_html": (
+            '<table><tr><th colspan="3">Header</th></tr>'
+            '<tr><td></td><td> </td><td>42</td></tr>'
+            '<tr><td></td><td></td><td></td></tr></table>'
+        )}
+        result = table._reconstruct_with_test_structure_rules(
+            output, np.zeros((100, 100, 3), dtype=np.uint8), time.perf_counter(),
+        )
+        self.assertEqual(result["table_rows"], [["Header", ""], ["", "42"], ["", ""]])
+        cells = result["table_structured"]["cells"]
+        self.assertEqual((cells[0]["col"], cells[0]["colSpan"]), (0, 2))
+        self.assertEqual(next(cell["col"] for cell in cells if cell["text"] == "42"), 1)
+        self.assertEqual(result["table_html"].count("<tr>"), 3)
+        self.assertIn('<th rowspan="1" colspan="2">Header</th>', result["table_html"])
+
+    def test_all_empty_columns_leave_empty_rows(self):
+        rows, cells, rendered = table._remove_empty_table_columns([["", ""], ["", " "]], [], "")
+        self.assertEqual(rows, [[], []])
+        self.assertEqual(cells, [])
+        self.assertEqual(rendered, "<table><tr></tr><tr></tr></table>")
+        self.assertEqual(table._markdown_table(rows, normalized=True), "")
+
     def test_candidates_can_reuse_scan_without_traversing_again(self):
         output = self.output()
         collected = table._collect_dicts(output)
