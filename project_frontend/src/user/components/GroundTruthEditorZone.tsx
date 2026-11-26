@@ -1089,19 +1089,6 @@ const EditableTableResult = ({
             <button type="button" onClick={splitSelectedCell} disabled={!selectedMerge} className={toolbarButtonClass}>
               แยกเซลล์
             </button>
-            <label className={toolbarButtonClass}>
-              แถวหัวตาราง <span className="tabular-nums">{headerRowCount}</span>
-              <input
-                type="range"
-                min={1}
-                max={rows.length}
-                value={headerRowCount}
-                disabled={rows.length <= 1}
-                aria-label="จำนวนแถวหัวตาราง"
-                className="w-16 accent-indigo-600 disabled:opacity-40"
-                onChange={(event) => commitSnapshot({ ...snapshot, headerRowCount: event.currentTarget.valueAsNumber })}
-              />
-            </label>
             <button type="button" onClick={autoFitAllColumns} className={toolbarButtonClass}>
               <Columns3 size={12} /> Auto-fit
             </button>
