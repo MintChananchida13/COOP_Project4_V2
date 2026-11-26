@@ -163,11 +163,11 @@
             if(strongSides<2||meanEdge<.35)continue;
             const score=.35*Math.min(1,areaRatio/.75)+.20*centerScore+.30*meanEdge+.15*strongSides/4;
             candidates.push({box:[Math.max(0,Math.round(x0*width/w)),Math.max(0,Math.round(y0*height/h)),Math.min(width,Math.round(x1*width/w)),Math.min(height,Math.round(y1*height/h))],
-              score,source:'image_'+source,strongSides,suggested:strongSides<4||score<.65||boxArea<.20});
+              score,source:'image_'+source,suggested:strongSides<3});
           }
         } finally {for(const c of cs)c.points.delete();}
       }
-      candidates.sort((a,b)=>Number(b.strongSides>=3)-Number(a.strongSides>=3)||b.score-a.score);
+      candidates.sort((a,b)=>Number(a.suggested)-Number(b.suggested)||b.score-a.score);
       return candidates[0]||null;
     } finally {for(const value of owned)value.delete();}
   }
@@ -177,12 +177,13 @@
       cv.cvtColor(rgba,gray,cv.COLOR_RGBA2GRAY);
       cv.GaussianBlur(gray,blur,new cv.Size(5,5),0);
       cv.Canny(blur,edges,35,110);
-      const [x0,y0,x1,y1]=box, pad=Math.max(3,Math.round(Math.min(rgba.cols,rgba.rows)*.01));
+      const shortSide=Math.min(rgba.cols,rgba.rows);
+      const [x0,y0,x1,y1]=box, pad=Math.max(4,Math.round(shortSide*.006));
       const left=Math.max(0,x0-pad),right=Math.min(rgba.cols,x1+pad);
       const top=Math.max(0,y0-pad),bottom=Math.min(rgba.rows,y1+pad);
       // Inspect local patches so a small header or separate block cannot be
       // averaged away by a mostly empty margin.
-      const pixels=edges.data, tile=Math.max(24,Math.round(Math.min(rgba.cols,rgba.rows)*.08));
+      const pixels=edges.data, tile=Math.max(24,Math.round(shortSide*.06));
       for(const [x,y,w,h] of [[0,0,rgba.cols,top],[0,bottom,rgba.cols,rgba.rows-bottom],
         [0,top,left,bottom-top],[right,top,rgba.cols-right,bottom-top]]) {
         for(let yy=y;yy<y+h;yy+=tile)for(let xx=x;xx<x+w;xx+=tile){
@@ -192,7 +193,7 @@
           for(let row=yy;row<endY;row++)for(let col=xx;col<endX;col++){
             hits+=Number(pixels[row*rgba.cols+col]!==0);
           }
-          if(hits>=Math.max(18,area*.06))return true;
+          if(hits>=Math.max(12,area*.04))return true;
         }
       }
       return false;
@@ -201,17 +202,20 @@
   function detectImage(cv,rgba){
     const photo=detectPhoto(cv,rgba);
     let result;
-    if(photo&&photo.strongSides>=3){
-      const {box,score,source,suggested}=photo;
-      result={box,score,source,suggested};
+    if(photo&&!photo.suggested){
+      result=photo;
     }else{
       result=detectBoundary(cv,rgba,false);
     }
     if(result.box){const [x0,y0,x1,y1]=result.box,aspect=rgba.cols/rgba.rows,area=(x1-x0)*(y1-y0)/(rgba.cols*rgba.rows);
       if(aspect>=1.25&&aspect<=1.85&&area<.30)return {box:null,reason:'already_full_frame_or_ambiguous'};
-      if(hasContentOutsideBox(cv,rgba,result.box))return {...result,suggested:true,reason:'content_outside_candidate'};
     }
-    return result.box?result:photo?{box:null,reason:'weak_boundary'}:result;
+    return result.box?checkOutsideContent(cv,rgba,result):photo?{box:null,reason:'weak_boundary'}:result;
+  }
+  function checkOutsideContent(cv,rgba,result){
+    return result.box&&hasContentOutsideBox(cv,rgba,result.box)
+      ? {...result,suggested:true,reason:'content_outside_candidate'}
+      : result;
   }
   // Build once per PDF page, not once per candidate. Local contrast preserves
   // faint print; connected components and their spatial grouping distinguish
@@ -261,7 +265,7 @@
     const left=b.x-pad,top=b.y-pad,right=b.x+b.width+pad,bottom=b.y+b.height+pad;
     return groups.some(g=>g.x<left||g.y<top||g.right>right||g.bottom>bottom);
   }
-  function detect(cv,rgba){return detectBoundary(cv,rgba,true);}
+  function detect(cv,rgba){return checkOutsideContent(cv,rgba,detectBoundary(cv,rgba,true));}
   function detectBoundary(cv,rgba,preservePdfContent){
     const garbage=[];const mat=()=>{const m=new cv.Mat();garbage.push(m);return m;};
     try {
@@ -290,8 +294,7 @@
           if(losesPdfContent(contentGroups,b,dw,dh))return;
         }
         const score=.35*edge+.25*rect+.25*Math.min(1,1-Math.abs(aspect-1.58)/.5)+.15*strong/4;
-        candidates.push({box:[Math.round(x*W/dw),Math.round(y*H/dh),Math.round((x+w)*W/dw),Math.round((y+h)*H/dh)],score:Math.round(score*10000)/10000,source,
-          suggested:faintPath||strong<4||score<.72||area<.20});
+        candidates.push({box:[Math.round(x*W/dw),Math.round(y*H/dh),Math.round((x+w)*W/dw),Math.round((y+h)*H/dh)],score:Math.round(score*10000)/10000,source,suggested:false});
       }
       for(const [source,edges] of [['normal_contour',normal],['faint_contour',faint]])for(const k of [5,9,15]){
         const closed=close(cv,edges,k);let cs=[];try{cs=contours(cv,closed,cv.RETR_LIST);for(const c of cs){try{if(c.area<=0||c.perimeter<=0)continue;const poly=mat();cv.approxPolyDP(c.points,poly,.025*c.perimeter,true);consider(c.box,source,edges,poly.rows,Math.min(1,c.area/(c.box.width*c.box.height)));poly.delete();garbage.pop();}finally{c.points.delete();}}}finally{closed.delete();}

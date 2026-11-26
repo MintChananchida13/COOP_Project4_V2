@@ -32,8 +32,10 @@ for (const [name, expected] of cases) {
       }
       const result = detect(cv,image);
       assert.equal(Boolean(result.box),Boolean(expected));
-      if (expected) for(let i=0;i<4;i++) assert.ok(Math.abs(result.box[i]-expected[i])<=8);
-      if (name === 'faint' || name === 'broken') assert.equal(result.suggested, true);
+      if (expected) {
+        for(let i=0;i<4;i++) assert.ok(Math.abs(result.box[i]-expected[i])<=8);
+        assert.equal(result.suggested, false);
+      }
     } finally { image.delete(); }
   });
 }
@@ -59,13 +61,13 @@ test('image mode leaves the original when a strong rectangle would cut off other
   const image = new cv.Mat(630, 1000, cv.CV_8UC4, new cv.Scalar(255,255,255,255));
   try {
     cv.rectangle(image, new cv.Point(140,125), new cv.Point(800,535), color, 3);
-    for (let x = 310; x < 480; x += 18) {
-      cv.rectangle(image, new cv.Point(x,65), new cv.Point(x+8,78), color, 2);
-    }
+    cv.line(image, new cv.Point(310,65), new cv.Point(346,65), color, 2);
     const result = detectImage(cv,image);
     assert.ok(result.box);
     assert.equal(result.suggested, true);
     assert.equal(result.reason, 'content_outside_candidate');
+    const pdfResult = detect(cv,image);
+    assert.ok(!pdfResult.box || pdfResult.suggested, 'PDF must also preserve the content above the frame');
   } finally { image.delete(); }
 });
 
