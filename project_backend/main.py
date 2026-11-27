@@ -19,7 +19,6 @@ from PIL import Image
 from pydantic import BaseModel
 
 from app.core.local_env import load_local_env
-from app.core.template_seed import import_configured_seed
 
 load_local_env()
 
@@ -183,7 +182,6 @@ async def startup_warmup() -> None:
     memory_usage.checkpoint('startup_before_warmup')
     ensure_database_ready()
     with db_connect() as conn:
-        import_configured_seed(conn)
         ensure_image_verification_categories_table(conn)
         geometry_backfill = document_aspect.backfill_page_geometry(conn)
     logger.info("Template page image geometry backfill: %s", geometry_backfill)

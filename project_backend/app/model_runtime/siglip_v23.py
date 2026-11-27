@@ -3,7 +3,6 @@
 import math
 
 
-# Prompt order matches benchmark_siglip_short_prompts.py.
 SINGLE = {
     'emblem': 'A company logo or official institutional emblem, featuring text, symbols, or decorative designs.',
     'thai_garuda': 'A Garuda figure with a human body, bird head, and wings.',

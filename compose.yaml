@@ -36,11 +36,9 @@ services:
       GATEWAY_URL: ${GATEWAY_URL:-}
       MODEL_GATEWAY_API_KEY: ${MODEL_GATEWAY_API_KEY:-}
       EXTERNAL_OCR_ENCRYPTION_KEY: ${EXTERNAL_OCR_ENCRYPTION_KEY:-}
-      TEMPLATE_SEED_FILE: ${TEMPLATE_SEED_FILE:-}
     volumes:
       - backend-storage:/app/storage
       - backend-app-storage:/app/app/storage
-      - ./template_seed:/template_seed:ro
     depends_on:
       db:
         condition: service_healthy
