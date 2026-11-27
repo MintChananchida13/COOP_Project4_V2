@@ -36,9 +36,11 @@ services:
       GATEWAY_URL: ${GATEWAY_URL:-}
       MODEL_GATEWAY_API_KEY: ${MODEL_GATEWAY_API_KEY:-}
       EXTERNAL_OCR_ENCRYPTION_KEY: ${EXTERNAL_OCR_ENCRYPTION_KEY:-}
+      TEMPLATE_SEED_FILE: ${TEMPLATE_SEED_FILE:-}
     volumes:
       - backend-storage:/app/storage
       - backend-app-storage:/app/app/storage
+      - ./template_seed:/template_seed:ro
     depends_on:
       db:
         condition: service_healthy
@@ -51,17 +53,22 @@ services:
     restart: unless-stopped
 
   db:
-    image: postgres:16
+    image: ${POSTGRES_IMAGE:-postgres:16}
     environment:
       POSTGRES_DB: ocr_studio
       POSTGRES_USER: ocr
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ocr-local}
+      PGDATA: /var/lib/postgresql/data
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./database_seed:/database_seed:ro
+      - ./scripts/postgres/restore-database.sh:/docker-entrypoint-initdb.d/10-restore-database.sh:ro
+      - ./scripts/postgres/export-database.sh:/usr/local/bin/export-ocr-database.sh:ro
     healthcheck:
-      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "ocr", "-d", "ocr_studio"]
+      test: ["CMD-SHELL", "test ! -f \"$$PGDATA/.ocr-restore-incomplete\" && pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 5s
+      start_period: 10m
       retries: 15
     restart: unless-stopped
 
