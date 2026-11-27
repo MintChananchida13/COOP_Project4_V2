@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 import cv2
 import numpy as np
 
-from app.model_runtime.inference_adapters import adapt_layout, adapt_siglip_response, InferenceAdapterError
+from app.model_runtime.inference_adapters import adapt_layout, adapt_siglip_response, count_detected_text_boxes, InferenceAdapterError
 from app.core.config import GATEWAY_URL
 from app.core.ocr_model_config import DEFAULT_OCR_MODEL_SETTINGS, normalize_saved_ocr_settings, table_ocr_query
 from app.core.db import connect as connect_db
@@ -191,8 +191,12 @@ def _extract_gateway_timing(parsed: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                     selected[key] = value
 
     meta = parsed.get("meta")
-    if isinstance(meta, dict) and isinstance(meta.get("inference_ms"), (int, float)):
-        selected.setdefault("inference_ms", meta["inference_ms"])
+    if isinstance(meta, dict):
+        if isinstance(meta.get("inference_ms"), (int, float)):
+            selected.setdefault("inference_ms", meta["inference_ms"])
+        value = meta.get("duration_ms")
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and np.isfinite(value) and value >= 0:
+            selected["model_duration"] = value
 
     # API Service OCR timing is sometimes a sibling of data.timing.
     # Fill only missing keys so an explicit timing object wins once.
@@ -229,6 +233,13 @@ def _post_predict(
         raise ModelRuntimeUnavailableError("GATEWAY_URL is not configured.")
 
     started = time.perf_counter()
+    if timing is not None:
+        images = payload.get("images")
+        timing["input_count"] = (
+            len(multipart_images) if multipart_images is not None
+            else len(images) if isinstance(images, list)
+            else 1 if "image" in payload else None
+        )
     serialize_started = time.perf_counter()
     headers = _gateway_headers()
     if multipart_images is None:
@@ -391,6 +402,10 @@ def _post_predict(
         result_value = parsed.get("result")
         if result_value is None and "data" in parsed:
             result_value = parsed.get("data")
+        if kind == ModelRuntimeKind.TEXT_DETECTION:
+            timing["detected_box_count"] = count_detected_text_boxes(
+                result_value if result_value is not None else parsed
+            )
 
         gateway_timing = _extract_gateway_timing(parsed)
 

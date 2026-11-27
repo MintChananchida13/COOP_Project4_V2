@@ -449,7 +449,7 @@ async function imageUrlToCanvasSafeSrc(src: string, signal?: AbortSignal) {
   return blobToDataUrl(await response.blob());
 }
 
-async function analyzeLayoutForUserImage(imageDataUrl: string, signal?: AbortSignal, timing?: DetectionTransportTiming) {
+async function analyzeLayoutForUserImage(imageDataUrl: string, signal?: AbortSignal, timing?: DetectionTransportTiming, phase?: "flex_roi") {
   signal?.throwIfAborted();
   try {
   const response = await fetch(`${ADMIN_API_BASE_URL}/api/layout/analyze`, {
@@ -465,7 +465,11 @@ async function analyzeLayoutForUserImage(imageDataUrl: string, signal?: AbortSig
   });
   const data = await response.json().catch(() => null);
   if (timing?.traceId && data?.benchmark_timing?.trace_id === timing.traceId) {
-    (timing.layoutRequests ??= []).push(data.benchmark_timing);
+    const benchmarkTiming = data.benchmark_timing;
+    if (phase && Array.isArray(benchmarkTiming.model_calls)) {
+      benchmarkTiming.model_calls = benchmarkTiming.model_calls.map((call: Record<string, unknown>) => ({ ...call, phase }));
+    }
+    (timing.layoutRequests ??= []).push(benchmarkTiming);
   } else if (timing?.traceId) {
     timing.layoutTelemetryIncomplete = true;
   }
@@ -1262,7 +1266,7 @@ async function buildFlexibleResolvedDisplayRois(
     const scaleY = img.naturalHeight / renderedHeight;
     const boundaryCrop = cropRoiToImage(img, roi, scaleX, scaleY);
     if (!boundaryCrop) continue;
-    const regions = await analyzeLayoutForUserImage(boundaryCrop, signal, timing);
+    const regions = await analyzeLayoutForUserImage(boundaryCrop, signal, timing, "flex_roi");
     const blocks = regions.length > 0
       ? regions
       : [
@@ -1697,6 +1701,7 @@ async function runAiProcessJob(
     textCount: number;
     tableCount: number;
     flexibleCount: number;
+    roiProcessingMode?: "Fixed ROI" | "Flex ROI";
   }
 ) {
   if (diagnostics) {
@@ -3156,6 +3161,8 @@ function HomeWorkspace() {
           textCount: pagePayloadRois.filter((roi) => roi.type === "text" && roi.roiMode !== "flexible").length,
           tableCount: pagePayloadRois.filter((roi) => roi.type === "table").length,
           flexibleCount: pagePayloadRois.filter((roi) => roi.roiMode === "flexible").length,
+          roiProcessingMode: pageRois.some(roi => roi.roiMode === "flexible" || (roi.isResolvedBlock && roi.parentRoiId != null))
+            ? "Flex ROI" as const : "Fixed ROI" as const,
         };
 
         try {

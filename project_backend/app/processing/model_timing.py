@@ -42,6 +42,7 @@ def summarize_model_calls(value: Any) -> dict[str, Any]:
                         "serialization_ms", "model_timings",
                     )}
                     normalized["gateway_timing"]["total_runtime_ms"] = item.get("service_total_runtime_ms")
+                    normalized["gateway_timing"]["model_duration"] = item.get("model_duration")
                 previous = calls.setdefault(call_id, {})
                 for key, field in normalized.items():
                     if key == "gateway_timing" and isinstance(field, dict):
@@ -122,6 +123,8 @@ def summarize_model_calls(value: Any) -> dict[str, Any]:
         reason = "incomplete_model_inference_measurements"
     if reason is None and missing_waits:
         reason = "incomplete_or_shared_model_wait_measurements"
+    box_counts = [call.get("detected_box_count") for call in calls.values()
+                  if call.get("model_kind") == "text_detection"]
     return {
         "waits": {kind: None if kind in missing_waits else round(waits[kind], 2)
                   for kind in waits.keys() | missing_waits},
@@ -132,10 +135,13 @@ def summarize_model_calls(value: Any) -> dict[str, Any]:
         "model_intervals_overlap": overlap,
         "model_timing_missing_reason": reason,
         "model_call_count": len(calls),
+        "detected_box_count": sum(box_counts) if all(count is not None for count in box_counts) else None,
         "model_calls": [
             {
                 "call_id": call_id,
                 "kind": call.get("model_kind"),
+                "model": call.get("model"),
+                "input_count": call.get("input_count"),
                 "endpoint": call.get("endpoint") or call.get("endpoint_path"),
                 "model_call_start_monotonic": call.get("model_call_start_monotonic"),
                 "model_call_end_monotonic": call.get("model_call_end_monotonic"),
@@ -151,6 +157,8 @@ def summarize_model_calls(value: Any) -> dict[str, Any]:
                 "queue_wait_ms": (call.get("gateway_timing") or {}).get("queue_wait_ms"),
                 "inference_lock_wait_ms": (call.get("gateway_timing") or {}).get("inference_lock_wait_ms"),
                 "inference_ms": (call.get("gateway_timing") or {}).get("inference_ms"),
+                "model_duration": (call.get("gateway_timing") or {}).get("model_duration"),
+                "detected_box_count": call.get("detected_box_count"),
                 "serialization_ms": (call.get("gateway_timing") or {}).get("serialization_ms"),
                 "service_total_runtime_ms": (call.get("gateway_timing") or {}).get("total_runtime_ms"),
                 **{

@@ -189,6 +189,26 @@ def adapt_text_detection(output: Any, *, expected_count: int | None = None):
     return normalize_single(output, 'det') if expected_count is None else normalize_batch(output, 'det', expected_count)
 
 
+def count_detected_text_boxes(output: Any, *, remaining_depth: int = 32) -> int | None:
+    """Count DET polygons without copying coordinates or reading unrelated boxes."""
+    if remaining_depth < 1:
+        return None
+    if isinstance(output, dict):
+        if output.get("error") or output.get("success") is False:
+            return None
+        polygons = output.get("dt_polys")
+        if isinstance(polygons, list):
+            return len(polygons)
+        payloads = [output[key] for key in _WRAPPERS if output.get(key) is not None]
+        if len(payloads) == 1:
+            return count_detected_text_boxes(payloads[0], remaining_depth=remaining_depth - 1)
+    elif isinstance(output, list) and output:
+        counts = [count_detected_text_boxes(item, remaining_depth=remaining_depth - 1) for item in output]
+        if all(count is not None for count in counts):
+            return sum(counts)
+    return None
+
+
 def adapt_text_recognition(output: Any, *, expected_count: int | None = None):
     return normalize_single(output, 'rec') if expected_count is None else normalize_batch(output, 'rec', expected_count)
 

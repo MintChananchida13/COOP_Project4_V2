@@ -1,0 +1,5 @@
+*
+!Dockerfile
+!requirements.txt
+!user_flow.py
+!ground_truth.json

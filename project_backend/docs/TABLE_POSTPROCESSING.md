@@ -118,16 +118,9 @@ no such change is included. Reading/decode, JSON parse and diagnostics keep thei
 existing, separate timing boundaries. OCR content, embedded rules and output
 structure are unchanged in this optimization.
 
-Reproduce an offline comparison from the repository root:
-
-```powershell
-python benchmark/table_scan_perf.py --repeats 5
-```
-
-It can also read saved, unwrapped Table API JSON with `--response-json PATH`
-and the original ROI `--width WIDTH --height HEIGHT`. No HTTP requests occur.
-The default synthetic fixture contains 33 OCR tokens and 600 x 600 RGB numeric
-data (3963445 response bytes). Five alternating, fresh-parse runs measured:
+The offline comparison used 33 synthetic OCR tokens and 600 x 600 RGB numeric
+data (3963445 response bytes). It made no HTTP requests. Five alternating,
+fresh-parse runs produced the following medians.
 
 | Median ms | Before | After |
 | --- | ---: | ---: |

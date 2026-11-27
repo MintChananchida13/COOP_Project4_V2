@@ -98,6 +98,10 @@ class AdminAnchorDetectionTests(unittest.TestCase):
         self.assertTrue(result['matched'])
         self.assertEqual(result['best_candidate']['final_score'], 1)
         self.assertEqual(result['best_candidate']['layout_score'], 0)
+        self.assertEqual(result['debug']['anchor_strategy']['performance_counts'], {
+            'candidates_before_prefilter': 1, 'candidates_after_prefilter': 1,
+            'text_anchors_checked': 1, 'image_anchors_checked': 0,
+        })
 
     def test_missing_anchors_and_any_failed_anchor_cannot_pass(self):
         for fields, kwargs in [([], {}), ([dict(data_type='image')], {'required_passed': False})]:
@@ -129,6 +133,10 @@ class AdminAnchorDetectionTests(unittest.TestCase):
                 self.assertEqual(result['candidates'][0]['evaluation_status'], 'skipped')
                 self.assertEqual(result['candidates'][0]['decision_reason'], 'page_count_mismatch')
                 self.assertEqual(result['debug']['anchor_strategy']['page_count_prefilter']['rejected_template_ids'], ['draft'])
+                self.assertEqual(result['debug']['anchor_strategy']['performance_counts'], {
+                    'candidates_before_prefilter': 1, 'candidates_after_prefilter': 0,
+                    'text_anchors_checked': 0, 'image_anchors_checked': 0,
+                })
 
     def test_missing_main_page_is_rejected_before_models(self):
         parallel = Mock(return_value=({}, {}, {}, {}, {}))

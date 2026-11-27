@@ -94,18 +94,9 @@ Gateway request-body hashes and OCR/table response hashes (excluding timings)
 matched for every repetition. This verifies pixels/model input and resulting
 text, structure, cells and audit remain unchanged in the controlled test.
 
-Artifacts: `benchmark/output/table_memory_comparison.json` and per-run JSONs.
-`benchmark/table_memory_probe.py` runs each mode in a fresh process; its
-`--baseline-dir` contains the source snapshot taken before this change. That
-snapshot is an ignored local test artifact, not production code.
-
-```powershell
-python benchmark/table_memory_probe.py --prepare
-python benchmark/table_memory_probe.py --mode before --run-id 1
-python benchmark/table_memory_probe.py --mode after --run-id 1
-python benchmark/table_memory_probe.py --mode before --jobs 2 --run-id 1
-python benchmark/table_memory_probe.py --mode after --jobs 2 --run-id 1
-```
+The comparison ran each mode in a fresh process using a local source snapshot
+for the baseline. The results were saved to
+`benchmark/output/table_memory_comparison.json` and per-run JSON files.
 
 For the live conclusion, deploy Backend changes and rerun this exact document.
 Use the new Render stage/cgroup logs to establish real baseline/peak and confirm

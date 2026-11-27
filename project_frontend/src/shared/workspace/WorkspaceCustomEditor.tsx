@@ -1015,12 +1015,14 @@ export default function WorkspaceCustomEditor({
 
     try {
       const pagesToAnalyze = imagesList.length > 0 ? imagesList : [previewUrl];
+      const traceId = (window as Window & { __ocrBenchmarkAutoRoiTrace?: string }).__ocrBenchmarkAutoRoiTrace;
       const response = await fetch(`${ADMIN_API_BASE_URL}/api/layout/analyze`, {
         method: "POST",
         headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
           auto_roi_mode: "text_line",
           context: processingContext,
+          ...(traceId ? { benchmark_trace_id: traceId } : {}),
           images: pagesToAnalyze.map((imageSrc, pageIndex) => ({
             page_index: pageIndex,
             image: imageSrc,

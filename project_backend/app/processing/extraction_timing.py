@@ -11,6 +11,12 @@ _capture = ContextVar('extraction_timing', default=None)
 logger = logging.getLogger(__name__)
 
 
+def record_roi_count(count: int) -> None:
+    state = _capture.get()
+    if state is not None:
+        state['roi_count'] = count
+
+
 def call(stage, function, *args, **kwargs):
     state = _capture.get()
     if state is None:
@@ -68,6 +74,7 @@ def measure_processing(function):
             summary = summarize_model_calls(state['model_calls'])
             result['extraction_timing'] = {
                 'processing_ms': round(elapsed, 2),
+                'roi_count': state.get('roi_count'),
                 'fixed_text_counts': state['ocr_counts'],
                 'stages': {key: {**value, 'elapsed_ms': round(value['elapsed_ms'], 2)}
                            for key, value in state['stages'].items()},

@@ -338,10 +338,19 @@ export default function AdjustZone({
     autoBoundsRef.current = null;
     pendingAutoBoundsRef.current = null;
     setCropError(null);
+    const benchmark = (window as Window & {
+      __ocrBenchmarkRun?: { preparation: { boundary_ms?: number; boundary_skipped?: boolean; image_preparation?: string } };
+    }).__ocrBenchmarkRun;
     if (!sourceFileType || imagesList.length !== 1) {
+      if (benchmark?.preparation) {
+        benchmark.preparation.image_preparation = "Original";
+        benchmark.preparation.boundary_skipped = true;
+      }
       setAutoDetecting(false);
       return;
     }
+    const boundaryStarted = benchmark?.preparation ? performance.now() : null;
+    let croppedAutomatically = false;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let worker: Worker | null = null;
@@ -351,7 +360,13 @@ export default function AdjustZone({
       if (worker) { worker.onmessage = null; worker.onerror = null; }
       if (autoWorkerRef.current === worker) autoWorkerRef.current = null;
       worker = null;
-      if (!cancelled) setAutoDetecting(false);
+      if (!cancelled) {
+        if (benchmark && boundaryStarted !== null) {
+          benchmark.preparation.boundary_ms = performance.now() - boundaryStarted;
+          benchmark.preparation.image_preparation = croppedAutomatically ? "Auto Crop" : "Original";
+        }
+        setAutoDetecting(false);
+      }
     };
     const fail = () => {
       if (!cancelled && !autoTouchedRef.current) {
@@ -394,6 +409,7 @@ export default function AdjustZone({
               }
               const crop = extractAxisAlignedCropUrl(source, [{x:left,y:top}, {x:right,y:top}, {x:right,y:bottom}, {x:left,y:bottom}]);
               if (crop) {
+                croppedAutomatically = true;
                 autoBoundsRef.current = naturalBox;
                 setSavedCropUrl(0, crop);
                 setPagesConfig(prev => {

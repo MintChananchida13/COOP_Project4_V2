@@ -51,6 +51,18 @@ docker compose -f compose.yaml -f compose.models.yaml --profile table-v2 --profi
 
 หากต้องเปิดเว็บให้เครื่องอื่นในเครือข่ายเข้าถึง ให้ตั้ง `WEB_BIND_ADDRESS=0.0.0.0` ใน `.env` แล้วรัน `docker compose up -d` อีกครั้ง พอร์ตเว็บตั้งได้ด้วย `WEB_PORT` ค่าเริ่มต้นคือ `3000`
 
+## รัน User Flow Benchmark
+
+วางไฟล์ทดสอบใน `benchmark/input` แล้วรันจากโฟลเดอร์หลัก
+
+```powershell
+docker compose --profile benchmark run --rm --build benchmark --repeats 1
+```
+
+Benchmark เปิด Chromium แบบไม่มีหน้าต่าง และบันทึก Excel ลง
+`benchmark/output` บนเครื่อง ดูคำสั่งสำหรับชุดที่รันโมเดลด้วยใน
+[คู่มือ Benchmark](benchmark/README.md)
+
 ## ข้อมูลเดิมและการย้ายเครื่อง
 
 Compose เก็บข้อมูล PostgreSQL และไฟล์ Backend ไว้ใน Docker volumes การรันบนเครื่องใหม่ครั้งแรกจะเริ่มด้วยฐานข้อมูลใหม่ ถ้าต้องการข้อมูลเดิม ให้กู้คืน PostgreSQL backup และย้ายไฟล์จาก `project_backend/storage` กับ `project_backend/app/storage` ไปยัง volumes `backend-storage` และ `backend-app-storage` ตามลำดับ หากข้อมูลเดิมมีคีย์ OCR ที่เข้ารหัสไว้ ให้ย้ายค่า `EXTERNAL_OCR_ENCRYPTION_KEY` เดิมมาด้วย

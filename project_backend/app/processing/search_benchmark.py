@@ -2,6 +2,7 @@
 from contextvars import ContextVar
 from functools import wraps
 from typing import Any
+import logging
 import threading
 import time
 from collections import OrderedDict
@@ -9,6 +10,7 @@ from collections import OrderedDict
 _capture: ContextVar[dict | None] = ContextVar("search_benchmark", default=None)
 _spans: OrderedDict[str, dict] = OrderedDict()
 _spans_lock = threading.Lock()
+logger = logging.getLogger(__name__)
 
 
 def record_span(trace_id: str, kind: str, started: float, ended: float):
@@ -63,6 +65,7 @@ def capture_result(result: dict):
         debug = result.get("debug") or {}
         state["timing"] = debug.get("timing") or {}
         state["mode"] = debug.get("verification_strategy")
+        state["performance_counts"] = (debug.get("anchor_strategy") or {}).get("performance_counts") or {}
 
 
 def record_result_processing(elapsed_ms: float):
@@ -96,7 +99,9 @@ def metrics(state: dict, elapsed_ms: float) -> dict:
     output = {"trace_id": state["trace_id"], "backend_runtime_ms": round(elapsed_ms, 2),
               "template_search_ms": timing.get("template_matching_ms"), "result_processing_ms": state.get("result_processing_ms"),
               "processing_mode": state.get("mode"), "model_calls": summary["model_calls"],
-              "model_intervals_overlap": summary["model_intervals_overlap"]}
+              "detected_box_count": summary["detected_box_count"],
+              "model_intervals_overlap": summary["model_intervals_overlap"],
+              **state.get("performance_counts", {})}
     queues = [item.get("queue_wait_ms") for item in summary["model_calls"]]
     output["model_queue_wait_ms"] = (round(sum(queues), 2) if queues and summary["model_intervals_overlap"] is False
                                       and all(duration(item) for item in queues) else None)
@@ -116,4 +121,5 @@ def metrics(state: dict, elapsed_ms: float) -> dict:
             output[f"{label}_{name}_ms"] = round(sum(values), 2) if not shared and values and all(duration(value) for value in values) else None
         if kind in summary["inferences"]:
             output[f"{label}_inference_ms"] = summary["inferences"][kind]
+    logger.debug("User Flow benchmark: %s", output)
     return output

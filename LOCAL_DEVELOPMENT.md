@@ -65,7 +65,7 @@ Only `standard` and `strict` are supported. Both use Text/Image Anchors:
   extraction after matching are unchanged.
 - `debug.anchor_strategy.staged_batch` records stage mappings, actual processed
   anchors, crop counts and model call counts. Public timing/benchmark payloads
-  also expose `stage_count` and `roi_crop_count`. See `benchmark/STAGED_BATCH.md`.
+  also expose `stage_count` and `roi_crop_count`. See the [benchmark guide](benchmark/README.md).
 
 `POST /admin/templates/{id}/prepublish-simulation` checks stored page images,
 anchor ROIs, expected text, and enabled image categories. It returns `passed`,

@@ -21,6 +21,8 @@ export default function UploadZone({ onUploadSuccess }: UploadZoneProps) {
     }
 
     setIsProcessing(true);
+    const benchmark = (window as Window & { __ocrBenchmarkRun?: { preparation: { upload_ms?: number } } }).__ocrBenchmarkRun;
+    const uploadStarted = benchmark?.preparation ? performance.now() : null;
     const file = files[0];
     let preparedImages: string[] = [];
 
@@ -38,6 +40,7 @@ export default function UploadZone({ onUploadSuccess }: UploadZoneProps) {
       }
 
       if (preparedImages.length > 0) {
+        if (benchmark && uploadStarted !== null) benchmark.preparation.upload_ms = performance.now() - uploadStarted;
         onUploadSuccess(preparedImages, file.name, sourceFileType, file);
       }
     } catch (error) {

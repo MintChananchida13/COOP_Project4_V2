@@ -1566,6 +1566,11 @@ def _detect_template_anchor_strategy(
     match_started = time.perf_counter()
     staged_results, staged_debug, global_text_debug, global_image_debug = _run_staged_anchor_batches(
         eligible_templates, page_image_paths, timing, strategy, progress_callback)
+    checked_anchor_types = [
+        anchor.get("anchor_type") for verification in staged_results.values()
+        for anchor in verification.get("checked_fields", [])
+        if anchor.get("error") != "query_page_missing"
+    ]
     timing["anchor_strategy_global_text_batch_debug"] = global_text_debug
     timing["anchor_strategy_global_image_batch_debug"] = global_image_debug
     timing["anchor_strategy_staged_batch_debug"] = staged_debug
@@ -1657,6 +1662,12 @@ def _detect_template_anchor_strategy(
             "source_type": source_type,
             "verification_strategy": strategy,
             "anchor_strategy": {
+                "performance_counts": {
+                    "candidates_before_prefilter": len(ordered_templates),
+                    "candidates_after_prefilter": len(eligible_templates),
+                    "text_anchors_checked": checked_anchor_types.count("text"),
+                    "image_anchors_checked": checked_anchor_types.count("image"),
+                },
                 "template_anchor_load": load_debug,
                 "anchor_types": sorted(anchor_types),
                 "batch_mode": detection_batch_mode,

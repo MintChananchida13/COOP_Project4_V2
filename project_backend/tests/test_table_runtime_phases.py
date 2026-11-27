@@ -25,7 +25,7 @@ class TableRuntimePhasesTests(unittest.TestCase):
             clock[0] += seconds
         response = MagicMock()
         response.__enter__.return_value.headers = {}
-        payload = {'success': True, 'result': {'table': 'unchanged'},
+        payload = {'success': True, 'result': {'table': 'unchanged'}, 'meta': {'duration_ms': 42},
                    'timing': {'queue_wait_ms': 0, 'inference_ms': 10}}
         raw = json.dumps(payload).encode()
         def read():
@@ -62,6 +62,7 @@ class TableRuntimePhasesTests(unittest.TestCase):
         self.assertEqual(summary['model_call_count'], 1)
         self.assertEqual(summary['inferences']['table'], 10)
         self.assertEqual(summary['model_calls'][0]['queue_wait_ms'], 0)
+        self.assertEqual(summary['model_calls'][0]['model_duration'], 42)
         self.assertEqual(summary['model_calls'][0]['json_parse_ms'], 1000)
 
     def test_table_uses_selected_batch_only_model_ids_and_checks_runtime_identity(self):
@@ -108,6 +109,20 @@ class TableRuntimePhasesTests(unittest.TestCase):
 
     def test_non_table_field_size_measurements_remain_exact(self):
         self.assertEqual(client._field_size_summary({'text': 'hello'})[0]['bytes'], 7)
+
+    def test_det_batch_counts_polygons_including_empty_image_results(self):
+        reply = MagicMock()
+        response = reply.__enter__.return_value
+        response.headers = {}
+        response.read.return_value = b'{"data":[{"dt_polys":[[],[]]},{"res":{"dt_polys":[]}}]}'
+        timing = {}
+        with patch.object(client, "runtime_url", return_value="http://localhost/det"), \
+             patch.object(client.urllib.request, "urlopen", return_value=reply):
+            client._post_predict(client.ModelRuntimeKind.TEXT_DETECTION, {"images": ["a", "b"]}, timing=timing)
+        summary = summarize_model_calls(timing)
+        self.assertEqual(summary["detected_box_count"], 2)
+        self.assertEqual(summary["model_calls"][0]["detected_box_count"], 2)
+        self.assertEqual(summary["model_calls"][0]["input_count"], 2)
 
 
 if __name__ == '__main__':

@@ -132,7 +132,7 @@ Verification strategy labels in UI:
 
 Internal values remain `standard` and `strict`.
 
-Both require all in-scope anchors to pass. Each stage schedules one next anchor per surviving template. Standard runs Text/Image batches concurrently; Strict runs Text before Image. Winner: most anchors among complete passes, then ascending template ID. Legacy weights/final confidence do not choose the winner. See [Staged Batch](benchmark/STAGED_BATCH.md).
+Both require all in-scope anchors to pass. Each stage schedules one next anchor per surviving template. Standard runs Text/Image batches concurrently; Strict runs Text before Image. Winner: most anchors among complete passes, then ascending template ID. Legacy weights/final confidence do not choose the winner. See the [benchmark guide](benchmark/README.md).
 
 ## Admin Flow
 

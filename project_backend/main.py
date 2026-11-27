@@ -1242,6 +1242,7 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
     results = []
 
     if not payload.rois:
+        roi_count = 0
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
             temp_path = temp_file.name
         try:
@@ -1260,6 +1261,8 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
             h = min(h, h_img - y)
 
             crop_img = opencv_img[y : y + h, x : x + w]
+            if crop_img.size > 0:
+                roi_count += 1
             ocr_result = (
                 extraction_timing.call("full_page_text_roi", recognize_text_roi, crop_img, source="full_page_auto_text")
                 if crop_img.size > 0
@@ -1293,6 +1296,7 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
                     "ocr_model": ocr_result.get("model"),
                 }
             )
+        extraction_timing.record_roi_count(roi_count)
     else:
         prepared_items: List[Dict[str, Any]] = []
         for idx, roi in enumerate(payload.rois):
@@ -1334,6 +1338,7 @@ def process_document_payload(payload: DocumentPayload) -> Dict[str, Any]:
                 }
             )
 
+        extraction_timing.record_roi_count(len(prepared_items))
         ocr_by_index: Dict[int, Dict[str, Any]] = {}
         text_items = [
             (str(item["index"]), item["crop_img"])
